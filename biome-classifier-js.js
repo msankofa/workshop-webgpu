@@ -1,12 +1,13 @@
 // JS port of terrain-v3's biome pipeline (noise_fields.py, height_composer.py,
 // derived_maps.py, biome_classifier.py, config.py's Terrain2DConfig defaults).
 // terrain-v3 lives in a separate repo (G:\My Drive\Scripts\html game\html-game-v2\tools\terrain-v3\)
-// and is the only thing that actually assigns biome ids for a real map export -- this
-// module exists purely to demonstrate the same algorithm interactively in
-// biome-explainer.html. It is a hand-synced math twin (see root CLAUDE.md's
-// "CPU/GPU math twins" note re: forest-cull.js/light-cluster.js/post-grade.js), not
-// imported by any production file, and not guaranteed bit-exact with a real Python run
-// (different seeded PRNG -- see the design spec's Non-goals).
+// and is the only thing that actually assigns biome ids for a real map export. It began as a
+// hand-synced math twin for biome-explainer.html and is not guaranteed bit-exact with a real
+// Python run (different seeded PRNG -- see the design spec's Non-goals), but it is no longer
+// demo-only: terrain-source-v5.js builds createUnboundedFieldSampler for its classic height
+// layer, and terrain-biome-point.js calls classifyBiomeCell for every streamed tile.
+
+import { octaveBandWeight } from './terrain-noise.js';
 
 export const BIOMES = [
   'deep_ocean', 'ocean', 'beach', 'desert', 'badlands', 'savanna', 'plains', 'forest',
@@ -215,12 +216,16 @@ export function createUnboundedFieldSampler(seed) {
     const vx1 = v01 * (1 - tx) + v11 * tx;
     return vx0 * (1 - tz) + vx1 * tz;
   }
-  function sample(channel, x, z, period, octaves) {
+  // bandSpacing (metres, 0 = exact) fades octaves a coarse caller cannot resolve toward their
+  // mean of 0, so a far tile reads as one large biome instead of speckle. Same rule the height
+  // stack uses (terrain-noise.js octaveBandWeight), applied here to the climate channels.
+  function sample(channel, x, z, period, octaves, bandSpacing = 0) {
     const oct = Math.max(1, Math.floor(octaves));
     let total = 0, ampSum = 0, amp = 1;
     for (let o = 0; o < oct; o++) {
       const octavePeriod = Math.max(period / Math.pow(2, o), 1e-6);
-      total += sampleCell(octaveSeedFor(channel, o), x / octavePeriod, z / octavePeriod) * amp;
+      const w = octaveBandWeight(octavePeriod, bandSpacing);
+      total += sampleCell(octaveSeedFor(channel, o), x / octavePeriod, z / octavePeriod) * amp * w;
       ampSum += amp;
       amp *= 0.5;
     }

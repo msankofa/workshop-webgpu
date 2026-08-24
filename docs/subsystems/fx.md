@@ -1126,11 +1126,24 @@ profile in uv.
   on top of `materialColor` (instance colours still multiply in). Bot shells use it.
 - **Shared uniforms** (`createRainUniforms`) so drops, splashes, wet ground and lightning
   (`uLightning`, decayed by `update`) move together; `flash(strength, decay)` drives it.
-- **Two page hooks** on `createRainSystem` / `createRainStreaks` / `createRainSplashes`:
+- **Three page hooks** on `createRainSystem` / `createRainStreaks` / `createRainSplashes`:
   `groundHeight(xzNode) → heightNode` cuts drops and lands splashes on an analytic surface
-  (max'd with the occluder map — flight-sim passes its `tslHeight`), and `colorFn(rgbNode) →
-  rgbNode` retints the drops (flight-sim passes `heatMix` so rain reads cold under IR). The
-  roof/ground cut is now sampled once per drop in the vertex stage (`vCut` varying), not per fragment.
+  (max'd with the occluder map — flight-sim passes its `tslHeight`), `colorFn(rgbNode) →
+  rgbNode` retints the drops (flight-sim passes `heatMix` so rain reads cold under IR), and
+  `groundSlope(xzNode) → vec2(dh/dx, dh/dz)` (splashes only) gives the rings a surface to lie on.
+  The roof/ground cut is now sampled once per drop in the vertex stage (`vCut` varying), not per fragment.
+- **Slope-aware splash rings (2026-08-24, for Base Game).** A horizontal ring on a steep slope is half
+  buried and half floating however accurate its height is, so rings fade out above `uSlopeCosLo` and
+  tilt to the surface normal by `uSplashOrient`. `setSplashSlope(maxDeg, fadeDeg)` and
+  `setSplashOrient(v)` drive them; `slopeCos(maxDeg, fadeDeg)` is the exported conversion, and a zero
+  fade collapses to "never suppressed", which is the default. With no `groundSlope` hook the gradient
+  is central-differenced off `groundHeight` at `slopeStep` metres; with neither, the ground is flat.
+  The occluder map is deliberately *not* differenced: it is a hard step at a roof edge, and a step has
+  no slope worth reading.
+- **Constants that became uniforms (2026-08-24).** `uSplashRate` (was 1.6/s), `uNearStart`/`uNearEnd`
+  (was `smoothstep(0.25, 1.4, …)`), `uCamLean` (was a full-strength lean) and `setGustPeriod`
+  (the 0.37 / 0.23 rad/s wander was a ~17 s cycle). Every default reproduces the constant it replaced,
+  so `bot-viewer-v3.html` and `demos/flight-sim.html` draw exactly what they drew before.
 - **Helpers shared by both pages:** `createLightningBolt(scene, {colorFn})` builds a jagged
   `TubeGeometry` bolt with 2–4 branches whose radius scales with length (`strike(top, hit)`,
   `update(dt)` flickers it out); `createRainBed(ctx, dest)` is a pink-noise loop with `set(level)`
@@ -1142,7 +1155,9 @@ profile in uv.
 Tunables and defaults are in `RAIN_DEFAULTS`. The demo adds what a page can and a module cannot
 know about: fog far shrinks by up to 55% with density, bolts strike from 55–70 m, the key light
 jumps to the bolt, and thunder fires `distance/340` s later when the sound bed is on. The flight sim
-wires the same module over its terrain (see `flight.md` §Weather). Not done and
+wires the same module over its terrain (see `flight.md` §Weather), and `base-game.html` wires it
+through `base-game-rain.js` over the streamed sea-depth window (see `base-game.md` §Weather, phase R1).
+Not done and
 worth saying: no depth-fade for streaks that cross geometry side-on (the depth test clips them, but
 hard), wet surface has no real puddle geometry or reflections beyond the PMREM environment, and no
 run-off from roof edges. Node-tested via `test-rain-math.mjs`; the TSL

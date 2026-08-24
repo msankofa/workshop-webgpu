@@ -28,7 +28,7 @@ collision meshes (BVH-accelerated).
 | `terrain-clipmap.js` | Far-distance rings (Phase 9). `createTerrainClipmap({ source, descriptor, useWorker, levels 6, post0 2, ringCells 192, overlapCells 2, morphStart 0.7, morphEnd 0.95, yBias −0.25 })`: one ring mesh per level (full square at level 0, annulus with an N/4−overlap hole above), vertex heights from that level's window texture (four wrapped `textureLoad`s + lerps in global post coordinates), morphing toward the next coarser level across the outer band so seams never crack; normals by central difference at one post; the Base Game tint. Ring 0 discards fragments inside `setHoleRect([minX, minZ, maxX, maxZ])` (the exact chunk square, inset by the overlap). Own `terrain-worker.js` instance (`sourceTile` jobs, `maxInFlight` 12, `maxDispatchPerUpdate` 6) or synchronous `buildTile` in Node. `update(globalPosition)` re-centres, dispatches, uploads dirty windows, snaps centres to two cells; `setSource()` bumps the epoch and refills; `stats` (coverage per level, triangles, tiles in flight, last build ms). Outer half-extent = 96 · post0 · 2^(levels−1) = 6.1 km at the defaults. Visual only: collision never reads it. |
 | (volume LOD cascade) | Not a module: `base-game-terrain.js` runs extra `terrain-system.js` instances with `params.lod > 0`, `segmentsPerChunk` fixed and `volumetric: true`; `params.workerCount` (0 = min(4, cores−2)) sizes the worker pool every terrain system uses (one `worker` facade, round-robin `postMessage`); the v5 source builds `volume` (and `normals`) at any lod with `createDensityPoint(..., spacing)` band-limiting warp/cave noise (`createUnboundedDensityNoiseSampler().fbm3(..., octaves, bandSpacing)`). See `base-game.md`. |
 | `terrain-splat-streamed.js` | Ground textures for the STREAMED terrain (Base Game chunks + volume cascade). Per-fragment layer weights from world height and slope — sand/grass/dirt/rock/snow (`splatWeights(h, ny)` CPU twin; rock triplanar, the rest planar xz) — over ordinary mipmapped textures from `textures/ground/<layer>/{color,normal}.jpg` (`loadStreamedSplatTextures`; `placeholderStreamedSplatTextures` for Node). Built so it cannot turn to static at range: a 7× far tiling takes over from 40–220 m, and from `fadeNear`–`fadeFar` (250–1400 m) the albedo settles on each layer's average colour (its 1×1 mip, measured from the image) while normal strength and the sampler-free macro hash fade to zero (`detailFade(d)` twin). `createStreamedSplatMaterial(textures, overrides)` → `MeshStandardNodeMaterial`. Reads are the cost, so each layer is sampled only where its weight > 0.004 (`If` per layer): the uv derivatives are hoisted to vars in uniform flow (an anchor pins their declaration before the branches) and every sample uses `.grad()`, which is what WGSL requires inside non-uniform control flow — flat grass costs one layer. One `Fn` on `colorNode` does all sampling (three evaluates colour → roughness → normal) and passes roughness and the object-space tilted normal to the other two nodes through `property()`s; the normal goes through `transformNormalToView`; `updateStreamedSplat(mat, { tileMeters, fadeFar, … })` live; `{ lod: { self, finer } }` binds two `terrain-lod-coverage.js` maps for the LOD dissolve (`syncStreamedSplatCoverage(mat)` after a recentre); `{ water }` binds the Base Game water's `groundShade` uniforms for the wet tide band and the Snell caustic emissive. Tests: `test-terrain-splat-streamed.mjs` (headless build via `tsl-build-check.mjs`). |
-| `terrain-sea-depth.js` | Ground height around the player for water: `createSeaDepthMap({ source, useWorker, spacing 16, tileIntervals 16, tilesPerSide 20 })` wraps one `terrain-clipmap-window.js` window (320 posts = 5120 m, past the far cascade) filled by `sourceTile` jobs at lod 1 on its own worker (band-limited `heightAtSpacing`, so shorelines match the far ground), uploaded as a float `DataTexture`. `recentre(x,z)`, `update()` (requests missing tiles nearest-first within `maxInFlight`, uploads on change, returns true when full), `heightAt(x,z)` CPU bilinear or null, `minHeight()` (interior posts, for the "any water in view" gate), `gpuHeightAt(xz, fallback)` TSL bilinear sampler, `setSource`, `clear`, `dispose`. Tests: `test-terrain-sea-depth.mjs`. |
+| `terrain-sea-depth.js` | Ground height around the player for water: `createSeaDepthMap({ source, useWorker, spacing 16, tileIntervals 16, tilesPerSide 20 })` wraps one `terrain-clipmap-window.js` window (320 posts = 5120 m, past the far cascade) filled by `sourceTile` jobs at lod 1 on its own worker (band-limited `heightAtSpacing`, so shorelines match the far ground), uploaded as a float `DataTexture`. `recentre(x,z)`, `update()` (requests missing tiles nearest-first within `maxInFlight`, uploads on change, returns true when full), `heightAt(x,z)` CPU bilinear or null, `minHeight()` (interior posts, for the "any water in view" gate), `gpuHeightAt(xz, fallback, mode)` TSL sampler — `'bilinear'` (the default) or `'min'`, which returns the lowest of the four surrounding posts so a caller that must never over-estimate the ground (Base Game's rain, see `base-game.md` §Weather R1) can ask for a conservative height; same idea as `terrain-lod-coverage.js`'s `erode()`, `setSource`, `clear`, `dispose`. Tests: `test-terrain-sea-depth.mjs`. |
 | `terrain-lod-coverage.js` | Per-chunk presence for LOD dissolves: `createLodCoverage({ chunkSize, texels 96, fadeSeconds 0.6 })` owns a `texels²` R8 `DataTexture` centred on the player's chunk (`recentre(x, z)`), `update(presentKeys, dt)` ramps each tracked chunk up when present (snaps to 0 when absent), re-uploads, and maintains `erodedTexture` (3×3 min) — what a coarser level dissolves against, keeping one chunk of overlap, `coverageAt(x, z)`, `clear()`. Pure apart from the texture. |
 | `terrain-chunk-batches.js` | Resident chunks as a few `BatchedMesh` draws: `createChunkBatcher({ material, slots 256, vertices 600k, indices 3.6M, maxBatches 64, compactWhenUnusedFraction 0.35 })` → `add(key, geometry)` (copies into the first batch with room, opening batches on demand; `false` = caller keeps its own mesh), `remove(key)` (frees on `optimize()` — run when dead space exceeds the fraction or would satisfy a pending add), `setVisible`, `setMaterial`, `stats`. Per-geometry frustum culling is BatchedMesh's; batch meshes are `frustumCulled = false`. Volume chunks get planar world-xz uvs in `terrain-system.js` so both chunk kinds share one attribute set. `test-terrain-chunk-batches.mjs`. |
 | `terrain-volume-collision.js` | Headless volumetric collision for a source with `densityAt`/`buildTile` (the server side of volumetric rooms): `createVolumeCollision(source, { worldQuery, chunkSize 30, coverRadius 1, keepRadius 3, maxBuildsPerCall 4 })` builds lod-0 `volume` tiles with the same chunk size / `volumeChunkIntervals` / apron as `terrain-system.js` (so the meshes match the clients' bit for bit) into a chunk-mesh provider; `ensure(positions)` builds nearest-first within the budget and prunes far chunks, `covers(x, z)` says whether the chunk under a point is collidable. Synchronous, ~40 ms per tile. |
@@ -66,11 +66,97 @@ collision meshes (BVH-accelerated).
 `terrain-source.js`:
 - `normalizeDescriptor(d)` → frozen `{ contractVersion: 1, kind: 'analytic'|'finite-map'|'v5-recipe', key, sourceVersion, algorithmVersion, bounds: null|{minX,maxX,minZ,maxZ}, capabilities: string[], config, seaLevel }`. `seaLevel` (finite number, default 0) is the water plane's y: part of the world identity, not of the tile key (heights ignore it). `analyticDescriptor({ …, seaLevel })` carries it explicitly; `v5Descriptor` fills it from the project's authored `cfg.sea_level`. Rejects unknown kinds, non-finite bounds, `|`/`@` in key/version, and `infinite` capability on a bounded source. `config` is the reproducible source configuration, never render settings.
 - `normalizeTileRequest(r)` → frozen `{ ix, iz, lod=0, xMin, zMin, size, intervals, apron=1, fields=['heights'] }` with integer/finite checks.
-- `validateTileResult(tile, req)` — checks `texels = intervals + 1 + 2*apron`, typed-array lengths for `heights`/`normals`/`biomeIds`/`moisture`/`holeMask`/`materialFields`, coords/bounds agreement and presence of every requested field. Optional fields are absent, never zero-filled.
+- `validateTileResult(tile, req)` — checks `texels = intervals + 1 + 2*apron`, typed-array lengths for `heights`/`surfaceHeights`/`normals`/`biomeIds`/`moisture`/`holeMask`/`materialFields`, coords/bounds agreement and presence of every requested field. Optional fields are absent, never zero-filled.
 - `tileKey(descriptor, epoch, lod, ix, iz)` → `key@version|e<epoch>|l<lod>|<ix>,<iz>`; `parseTileKey` inverts it. Render origin is never part of the key.
 - `registerSourceKind(kind, factory)`, `hasSourceKind`, `createSource(descriptor)`, `validateSource(src)`; throws `TerrainSourceError`.
 - A source object is `{ descriptor, contains(x,z), heightAt(x,z), heightAtSpacing?(x,z,spacing), normalAt(x,z,out), surfaceYAt?, holeAt?, buildTile(request) }`. `buildTile` is synchronous and pure.
 - **Band limit (Phase 9).** A tile at lod > 0 is the field sampled every `size / intervals` metres with everything finer than that spacing removed, so coarse rings never alias into false landforms: `terrain-noise.js` `octaveBandWeight(wavelength, bandSpacing)` fades each fbm/ridged/billow octave (and voronoi as one octave) to its mean between 8 and 4 samples per wavelength, `evaluateStackPoint(prepared, x, z, { spacing })` threads it through every layer (domain warp included; the classic v4 climate layer is not band-limited yet), and `terrain-field.js` `terrainHeightAtSpacing` does the same per wave for the analytic field. lod 0 and every collision query are exact. Two refinements (2026-08-23, after the far cascade sat tens of metres above the near ground): (1) `VOLUME_Y_SPACING_MAX` caps marching-cubes rows at 8 m whatever the XZ step — the density is not linear in y across the floor seal and cave mask, so 160 m rows put the iso-crossing far above the real surface; (2) above 6 m spacing `heightAtSpacing` is a Gaussian-weighted 6×6 supersample over a two-cell footprint (σ = half the spacing, the usual antialiasing kernel; the four-cell/σ = 1 version first shipped rounded summits off by 10 m mean / 52 m worst at 80 m, measured 2026-08-23, now 5.8 / 35.5 — the rest is inherent to sampling a narrow peak at 80 m) of sub-samples band-limited at half the spacing — the octave fade alone drifted under masked/ridged layers because dropped octaves were replaced by a global mean. Volume tiles get chunked-LOD border skirts from the open-sky contour only (lod 0: 6 m, sliced out of collision via `volume.skirtIndexStart`, and `volume.skirtVertexStart` marks where the skirt's own vertices and normals begin so surface-only checks can stop there; the tile request's optional `skirtDepth` overrides, 0 = none (`addBorderSkirts`; cave contours are left open, told apart by each border column's topmost air→rock crossing in the density field). Measured gain 0.33 at 4 samples per wavelength, 0.78 at 8; mean drift vs exact ±0.3 m at 80 m spacing; lod-3 tile ≈ 90 ms.
+
+**Visible surface, biome and moisture fields (plants plan F1, 2026-08-24).** `TILE_FIELDS` gains
+`surfaceHeights`, and `biomeIds`/`moisture` are filled for the first time — until now the contract
+reserved them and no source wrote one.
+
+- `surfaceHeights` is the VISIBLE open-sky surface. On a heightfield source it is `heights`; on a
+  volumetric one the density warps and carves the ground away from `heights`, so anything standing
+  on the drawn world (flora, rain, feet) must read this instead. v5 fills it from `surfaceYAt`,
+  analytic aliases it to `heights` (same array, no copy).
+- `terrain-biome-point.js` — `createBiomePoint(cfg, sampler, { seaLevel })` → `classifyPoint(x, z,
+  height, slope, spacing)`, `moistureAt(biome, height)`, `classifyTile(surfaceHeights, texels, step,
+  originX, originZ, spacing, want)` → `{ biomeIds: Uint8Array, moisture: Float32Array }`. Pure, no
+  three.js. Slope comes from the tile's own surface grid (the apron supplies the borders), climate
+  from `biome-classifier-js.js`'s unbounded sampler, and the decision itself from `classifyBiomeCell`
+  — this module does not re-decide what a biome is. Every input is continuous in position, so a cell
+  classifies the same whichever tile it lands in; `test-terrain-biome-point.mjs` proves it by
+  comparing one tile against four quarter-tiles.
+- `createUnboundedFieldSampler(seed).sample(channel, x, z, period, octaves, bandSpacing = 0)` gained
+  the optional band limit, using the same `octaveBandWeight` rule as the height stack. 0 is the
+  previous behaviour exactly. Climate periods are 1.3–1.55 km, so the fade only bites past ~195 m
+  spacing, where it collapses a tile to one biome rather than letting it speckle.
+- **Two things are deliberately missing.** Erosion, lakes and flow are global, so the streamed
+  `beachMask` keeps `buildDerivedMaps`' local height and slope terms and drops its `lakeMask` factor
+  (regional hydrology, roadmap step 9). And it adds one term the grid path has no equivalent for: a
+  waterline gate. `classifyBiomeCell` applies beach *after* ocean in its priority stack while
+  `detectLakeMask` excludes sea cells, so without the gate a flat seabed scores `beachMask` ~1 and
+  the entire ocean floor classifies as `beach`.
+- **Authored biome paint is not available here.** `classifyProject` rejects a painted project for the
+  infinite runtime ("paint rasters are bounded"), so a streamed v5 source never has one.
+- **Cost, measured 2026-08-24** (30 m tile, 23 intervals, apron 1 = 625 posts, mean of 20 builds,
+  Node): analytic 0.098 ms for heights and 0.168 ms with biome + moisture; v5 1.30 ms for heights,
+  2.51 ms with biome + moisture (×1.9), and **18.56 ms with `surfaceHeights` as well** — `surfaceYAt`
+  alone is 16.1 ms per tile, 25.7 µs per post, because it scans down in 1 m steps from
+  `heightAt + 12` and then bisects eight times. Biome and moisture are affordable per tile;
+  `surfaceHeights` is roughly twelve normal tiles and belongs only on coarse placement windows in
+  volumetric mode, never on the near visible chunks.
+
+**Streamed field windows (plants plan F2, 2026-08-24).** The biome/moisture data F1 produces has to
+reach a placement loop around the player. Three modules do that, and they replace the
+one-worker-per-feature arrangement water and rain were heading toward.
+
+- `terrain-clipmap-window.js` now carries a PAYLOAD. `createClipmapWindow({ …, fields, lod })` holds
+  one typed array per field (`heights` always, plus `surfaceHeights` / `biomeIds` / `moisture`),
+  `tileRequest` asks the source for all of them, `commitTile` refuses a tile missing any (a partial
+  commit would leave holes), and `sampleField(name, x, z)` reads them — **bilinear for values,
+  nearest for ids**, because the average of two biome numbers is a third, unrelated biome. `lod`
+  now defaults to `level + 1` but can be set: a consumer planting things on the drawn ground passes
+  `0`, since the visible chunks are built exact. Every existing caller is unchanged.
+- `terrain-field-scheduler.js` — `createFieldScheduler({ workerCount = 1, maxInFlight = 4 })` →
+  `request({ key, priority, descriptor, request, owner, onTile, onError })`, `cancelOwner(owner)`,
+  `pump()`, `stats`, `dispose()`. One job per tile key however many windows asked for it: the first
+  asker gets the built arrays and the rest get copies, because a transferred buffer has exactly one
+  owner. `FIELD_PRIORITY` orders field work against field work (`contact` 10, `water` 20,
+  `placement` 30, `prefetch` 40). Field work stays behind visible and collision terrain by
+  construction — `terrain-system.js` keeps its own pool of up to four workers, this pool is one, and
+  `maxInFlight` caps what is outstanding. With no `Worker` (Node) it builds synchronously inside
+  `pump()` under a millisecond budget, so a test drives the same scheduling path the page uses.
+- `terrain-field-window.js` — `createFieldWindow({ source, scheduler, fields, post, lod, … })` wraps
+  a payload window with one `THREE.DataTexture` per field and wrap-aware readers on both sides.
+  `sampleAt(name, x, z)` and `ready(x, z)` on the CPU; `gpuSampler(name)` returns a TSL `Fn(xz,
+  fallback)` doing the toroidal `textureLoad` (never normalized uv — the texel under a uv moves as
+  the window recentres, so the seam smears), and `gpuSamplerRenderLocal(name, renderOriginXZ)` is
+  the adapter for render-local callers like grass. Id fields ride an **`r8unorm`** texture decoded
+  by ×255: r184 maps `RedIntegerFormat` for `IntType`/`UnsignedIntType` only, so a `Uint8Array`
+  integer texture is rejected outright. `acquire()` reference-counts; `createFieldWindowRegistry`
+  keys windows so water, weather and flora asking for the same resolution share one.
+
+`base-game-terrain.js` owns one scheduler and one registry, and exposes the seam:
+`acquireFields()` (hold a reference to make it stream), `fields`, `fieldsReady(x, z)`,
+`biomeAt`/`biomeIdAt`/`moistureAt`/`treeDensityAt`/`fieldSurfaceAt`, and `surfaceFieldAt(x, z)` →
+`{ biome, height, normalY, moisture, weights, treeDensity }`, where `weights` is
+`terrain-splat-streamed.js`'s `splatWeights` so flora and the ground texture cannot disagree. The
+placement window is 8 m posts over 2 km — **the canonical placement resolution, fixed so candidate
+identity never changes with visual LOD** — and it requests `surfaceHeights` only in volumetric mode,
+where the drawn ground can actually differ from the heightfield.
+
+**Every read returns `null` when the field has not streamed there yet.** That is the contract, not
+an oversight: a placement loop must defer and requeue, because a default substituted for missing
+data records a candidate that nothing in the world justifies.
+
+**Measured 2026-08-24** (Node, no worker, so tiles build on the calling thread — the browser's
+worker path is cheaper): `terrain.update()` costs 0.022 ms/frame standing with the field off and
+0.036 ms with it on; walking at 6 m/s, 0.040 → 0.064 ms; flying at 120 m/s, 0.518 ms mean and
+3.66 ms worst. The queue peaks at 0 outstanding after the first fill in every case, and the window
+is 576 KB for 256² posts of heights + biomeIds + moisture. Two consumers share one window, so the
+second one issues no requests at all rather than relying on the scheduler's dedupe.
 
 `terrain-source-analytic.js`:
 - `analyticDescriptor({ key='analytic', sourceVersion='1', params })` → descriptor with `algorithmVersion: 'terrain-field-1'`, `capabilities: ['infinite','heights','normals']`, `config.params` (defaults `baseAmp 1, lake 0.45, lakeDepth 3.2`).

@@ -70,6 +70,11 @@ export function createLightingRig(options = {}) {
     return rig;
   }
 
+  // NOTE: this compares the REQUESTED value, not the live light. A caller that writes dirLight or
+  // ambLight directly is therefore NOT corrected on the next unchanged request, so a read-modify-write
+  // from a frame loop compounds forever (base-game.html shipped `ambLight.intensity *= …` once and
+  // whited out the screen in a second). Drive the lights through these setters, or assign — never
+  // multiply — and see test-base-game-light-response.mjs.
   function set(key, val) {
     if (o[key] === val) return;   // per-frame callers with static values skip the push
     o[key] = val;

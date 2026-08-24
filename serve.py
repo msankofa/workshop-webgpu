@@ -305,6 +305,17 @@ def save_ground_look(body_bytes):
     return 'ground-look.json'
 
 
+def save_shot_spread(body_bytes):
+    # base-game.html's "Save as default" in the Weapon spread section. Tuned once and committed,
+    # so the file IS the default the page and the relay both read; shot-spread.js only holds the
+    # fallback for a copy opened without it.
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    target = os.path.join(ROOT, 'shot-spread.json')
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return 'shot-spread.json'
+
+
 def save_bot_state_trace(raw_name, body_bytes):
     # raw_name is untrusted client input: reduce to a basename and validate before any fs use.
     basename = os.path.basename((raw_name or '').replace('\\', '/'))
@@ -557,6 +568,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith('/api/save-water-config'):
             self._handle_save_water_config()
             return
+        if self.path.startswith('/api/save-shot-spread'):
+            return self._handle_save_shot_spread()
         if self.path.startswith('/api/save-ground-look'):
             self._handle_save_ground_look()
             return
@@ -804,6 +817,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             rel_path = save_ground_look(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-shot-spread -- base-game.html's weapon-spread tuning. One file overwritten in
+    # place; both the page and the relay read it on startup, so they fire the same cone.
+    def _handle_save_shot_spread(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 1_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            rel_path = save_shot_spread(self.rfile.read(length))
             self._send_json({'ok': True, 'path': rel_path})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)

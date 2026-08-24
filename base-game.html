@@ -100,6 +100,7 @@ import { createSlotSection } from './bot-viewer-slots.js';
 import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld } from './base-game-protocol.mjs';
 import { createBaseGameWater } from './base-game-water.js';
 import { createBaseGameClouds, deckHorizonAngle } from './base-game-clouds.js';
+import { createBaseGameRain, rainResponse } from './base-game-rain.js';
 import { createBaseGameWaterSim } from './base-game-water-sim.js';
 import { loadWaterConfig, applyWaterConfig } from './water-hybrid.js';
 import { connectBaseGameSession } from './base-game-session.mjs';
@@ -126,7 +127,8 @@ import { createBaseGamePrediction } from './base-game-prediction.js';
 import { createEnvironmentAudio } from './environment-audio.js';
 import { synthVoice } from './weapon-sfx-synth.js';
 import { createBaseGameAudioDirector } from './base-game-audio.js';
-import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor } from './base-game-fire.js';
+import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor, setShotSpread, getShotSpread } from './base-game-fire.js';
+import { SHOT_SPREAD_DEFAULTS, SHOT_SPREAD_LIMITS, SHOT_SPREAD_PATH, normalizeShotSpread, shotSpreadFile } from './shot-spread.js';
 import { createAmmoStore } from './player-ammo.js';
 import { createEffectRenderer, bloodIntensityForHealth } from './effect-renderer.js';
 import { evaluateWhizz, createWhizzVoice, pickImpactVoice } from './ballistic-audio.js';
@@ -141,6 +143,8 @@ import { normalizeTracerFx, tracerLifetime } from './tracer-visual.js';
 import { createRemoteTrack } from './base-game-remote-players.js';
 import { botSeedFromId } from './bot-activity.js';
 import { BASE_GAME_PLAYER_DEFAULT_CONFIG } from './base-game-player-controller.js';
+import { createPlayerBodyPose, playerPoseAnchor, stepPlayerBodyPose } from './player-body-pose.js';
+import { createPlayerHitRigDebug } from './player-hit-rig-debug.js';
 import { createBaseGameRemotePlayers } from './base-game-remote-players.js';
 import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS, BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
 import { ARM_POSE_PRESETS, GAIT_MODELS } from './player-procedural-body.js';
@@ -201,6 +205,27 @@ const DEFAULT_SETTINGS = Object.freeze({
   cloudBVisible: true, cloudBHeight: 2200, cloudBExtent: 40000, cloudBCover: 0.3, cloudBPuff: 4,
   cloudBSoftness: 0.3, cloudBOpacity: 0.5, cloudBFade: 0.5, cloudBFadeFloor: 0.25, cloudBEdgeStart: 0.85,
   cloudBSpeed: 0.6, cloudBOctaves: 3,
+  // Wind is shared: it is what the weather IS. Following the wave heading keeps sea and sky
+  // agreeing without a second authority, and leaves the slider as the override.
+  weatherWindFollowsWaves: true,
+  weatherWindDeg: 38, weatherWindSpeed: 2.1, weatherGust: 3, weatherGustPeriod: 17,
+  // Rain, phase R1: drops and splash rings. Wet ground, the rain shadow map, lightning and the
+  // rain bed are later phases.
+  rainEnabled: true,
+  rainDropsEnabled: true,
+  rainMaxDrops: 40000,
+  rainDensityBase: 0, rainDensityPerRain: 0.9,
+  rainSpeed: 18, rainLength: 1.1, rainWidth: 0.014,
+  rainOpacityBase: 0.45, rainOpacityPerRain: 0.25,
+  rainColor: '#b8bcc4', rainSkyTint: 0.35,
+  rainVolumeXZ: 44, rainVolumeY: 36,
+  rainNearStart: 0.25, rainNearEnd: 1.4, rainCamLean: 1,
+  rainSplashEnabled: true, rainMaxSplashes: 5000,
+  rainSplashRadius: 20, rainSplashSize: 0.22, rainSplashRate: 1.6,
+  rainSplashSlopeMax: 38, rainSplashSlopeFade: 12, rainSplashOrient: true, rainSplashMaxAgl: 160,
+  rainGroundSource: 'coarse',
+  rainGroundConservative: true,
+  rainUnderwaterOff: true,
   terrainFarLod: true,
   terrainTextures: true,
   terrainTextureTile: 4,
@@ -213,6 +238,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   playerControlMode: 'player',
   playerViewMode: 'thirdPerson',
   playerCapsuleVisible: false,
+  playerHurtRigVisible: false,
+  playerHurtZoneColors: true,
+  playerHurtJoints: false,
+  playerLastHitVisible: true,
   playerBodyMode: 'thirdPerson',
   bodyDesign: 'default',
   weaponPrimary: BASE_GAME_DEFAULT_LOADOUT.primary,
@@ -364,9 +393,18 @@ const NUMBER_LIMITS = Object.freeze({
   cloudBHeight: [0, 10000], cloudBExtent: [200, 60000], cloudBCover: [0, 1], cloudBPuff: [0.05, 12],
   cloudBSoftness: [0.005, 1], cloudBOpacity: [0, 1], cloudBFade: [0, 2], cloudBFadeFloor: [0, 1],
   cloudBEdgeStart: [0.05, 0.99], cloudBSpeed: [-8, 8], cloudBOctaves: [1, 6],
+  weatherWindDeg: [0, 360], weatherWindSpeed: [0, 60], weatherGust: [0, 40], weatherGustPeriod: [0.5, 60],
+  rainMaxDrops: [1000, 200000], rainDensityBase: [0, 1], rainDensityPerRain: [0, 2],
+  rainSpeed: [0, 120], rainLength: [0, 12], rainWidth: [0.001, 0.4],
+  rainOpacityBase: [0, 1], rainOpacityPerRain: [0, 1], rainSkyTint: [0, 1],
+  rainVolumeXZ: [4, 400], rainVolumeY: [4, 400],
+  rainNearStart: [0, 5], rainNearEnd: [0, 10], rainCamLean: [0, 3],
+  rainMaxSplashes: [200, 40000], rainSplashRadius: [2, 160], rainSplashSize: [0.01, 3], rainSplashRate: [0.1, 12],
+  rainSplashSlopeMax: [0, 90], rainSplashSlopeFade: [0, 45], rainSplashMaxAgl: [0, 2000],
 });
 const STRING_VALUES = Object.freeze({
   weatherFogSource: ['sky', 'custom'],
+  rainGroundSource: ['coarse', 'off'],
   primaryBody: ['sun', 'moon'],
   worldMode: ['empty', 'traversalLab', 'terrain'],
   playerControlMode: ['player', 'orbit'],
@@ -396,6 +434,8 @@ function applyArmPresetToSettings(name) {
 let activeMode = 'menu';
 let networkSession = null;
 let networkSnapshot = null;
+let bodyModelSession = null;
+let bodyModelRequested = null;
 let networkStatus = { state: 'offline' };
 let networkUiReady = false;
 let gameplayPaused = true;
@@ -502,6 +542,49 @@ function applyCloudSettings() {
     if (patch.height !== undefined) controlRegistry.get(`${prefix}Extent`)?.sync();
   }
 }
+// Rain. Same dirty-checked shape as the cloud apply; the allocation keys are a rebuild, the rest
+// are uniform writes. Wind follows the wave heading unless the link is off, so the sea and the sky
+// blow the same way without a second shared authority.
+const RAIN_LOOK_KEYS = Object.freeze({
+  speed: 'rainSpeed', length: 'rainLength', width: 'rainWidth',
+  volumeXZ: 'rainVolumeXZ', volumeY: 'rainVolumeY',
+  nearStart: 'rainNearStart', nearEnd: 'rainNearEnd', camLean: 'rainCamLean',
+  color: 'rainColor', skyTint: 'rainSkyTint',
+  splashRadius: 'rainSplashRadius', splashSize: 'rainSplashSize', splashRate: 'rainSplashRate',
+  splashSlopeMax: 'rainSplashSlopeMax', splashSlopeFade: 'rainSplashSlopeFade',
+  windSpeed: 'weatherWindSpeed', gust: 'weatherGust', gustPeriod: 'weatherGustPeriod',
+});
+function rainWindDeg() {
+  return settings.weatherWindFollowsWaves ? settings.waveWindDeg : settings.weatherWindDeg;
+}
+// Reallocating disposes both rain materials, so the next frame recompiles two TSL graphs. A slider
+// drag fires one input event per pixel, so the rebuild waits for the drag to settle — the same idea
+// as queueSharedWorldPatch's 75 ms coalesce, just a longer window because a shader compile is dearer.
+let rainAllocTimer = 0;
+function scheduleRainAllocation() {
+  if (rainAllocTimer) clearTimeout(rainAllocTimer);
+  rainAllocTimer = setTimeout(() => {
+    rainAllocTimer = 0;
+    rain.setAllocation(settings.rainMaxDrops, settings.rainMaxSplashes);
+  }, 300);
+}
+function applyRainSettings() {
+  if (rain.maxDrops !== settings.rainMaxDrops || rain.maxSplashes !== settings.rainMaxSplashes) scheduleRainAllocation();
+  const response = rainResponse(settings);
+  const look = { density: settings.rainEnabled ? response.density : 0, opacity: response.opacity, windDeg: rainWindDeg() };
+  for (const [lookKey, settingKey] of Object.entries(RAIN_LOOK_KEYS)) look[lookKey] = settings[settingKey];
+  look.splashOrient = settings.rainSplashOrient ? 1 : 0;
+  rain.setLook(look);
+  rain.setEnabled(settings.rainEnabled);
+  rain.setDropsVisible(settings.rainDropsEnabled);
+  rain.setSplashesVisible(settings.rainSplashEnabled);
+  rain.setSplashMaxAgl(settings.rainSplashMaxAgl);
+  rain.setGroundSource(settings.worldMode === 'terrain' ? settings.rainGroundSource : 'off');
+  rain.setConservative(settings.rainGroundConservative);
+  // Rain lands on the sea surface rather than the sea bed, but only where there is a sea.
+  rain.setWaterLevel(settings.waterEnabled && settings.worldMode === 'terrain' ? terrain.seaLevel : null);
+}
+
 // How lidded the sky is: the manual slider plus the master's response, capped at 1. One number
 // feeds the dome, both cloud decks and (through the sky colour) the fog tint.
 function overcastAmount() {
@@ -764,15 +847,50 @@ const remotePlayers = createBaseGameRemotePlayers({ scene, worldCoordinates });
 const weaponLoader = attachDracoLoader(new GLTFLoader());
 const weaponSystem = createWeaponMountSystem({ THREE, scene, loadGLB: (url) => weaponLoader.loadAsync(url), getWeapon });
 const playerBodies = createBaseGamePlayerBodies({ THREE, scene, worldQuery, worldCoordinates, weaponSystem });
+const playerHitRigDebug = createPlayerHitRigDebug({ THREE, scene, worldCoordinates });
 // Local weapon state: the active slot, an aim hold (right mouse), a fire hold (left mouse) and a
 // one-frame reload edge. Ammo and the trigger gate are predicted with the same base-game-fire.js
 // step the server runs; the snapshot's ammo and health overwrite the local copy when they differ.
 const weaponState = { slot: 0, aiming: false, reloadEdge: false, firing: false, throwEdge: false };
 const localTrigger = createTriggerState();
 const localThrowTrigger = createTriggerState();
+// Weapon accuracy. Deliberately NOT in `settings`: the autosave writes settings to web storage, and
+// this is tuned once and committed, so shot-spread.json is the default and the file must win over a
+// stale local copy. The relay reads the same file; online the SERVER's copy decides where a round
+// goes, and these sliders only move what this client predicts -- so tune in Solo.
+const shotSpread = { ...SHOT_SPREAD_DEFAULTS };
+const shotSpreadSyncs = [];
+const syncShotSpreadControls = () => { for (const sync of shotSpreadSyncs) sync(); };
+let shotSpreadSource = 'built-in defaults';
+function applyShotSpread() { setShotSpread(shotSpread); }
+async function loadShotSpread() {
+  try {
+    const response = await fetch(`./${SHOT_SPREAD_PATH}?t=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) return;
+    Object.assign(shotSpread, normalizeShotSpread(await response.json()));
+    shotSpreadSource = SHOT_SPREAD_PATH;
+  } catch { /* no file, or opened without a server: the built-in defaults stand */ }
+  applyShotSpread();
+  syncShotSpreadControls();
+  shotSpreadNote.textContent = shotSpreadNoteText();
+}
+async function saveShotSpread(button) {
+  const label = button.textContent;
+  try {
+    const response = await fetch('/api/save-shot-spread', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(shotSpreadFile(shotSpread), null, 2) });
+    const body = await response.json().catch(() => null);
+    button.textContent = body?.ok ? `Saved ${body.path}` : `Save failed: ${body?.error ?? response.status}`;
+    if (body?.ok) shotSpreadSource = SHOT_SPREAD_PATH;
+  } catch (error) {
+    button.textContent = `Save failed: ${error.message}`;   // opened over file://, or serve.py is not running
+  }
+  shotSpreadNote.textContent = shotSpreadNoteText();
+  setTimeout(() => { button.textContent = label; }, 2500);
+}
 const localAmmo = createAmmoStore();
 const LOCAL_AMMO_ID = 'local';
 const combatState = { health: 100, dead: false, hitFlashUntil: 0, damageUntil: 0, killedBy: null, lastHitTick: -1, lastDeathTick: -1 };
+const localCombatPose = createPlayerBodyPose();
 const combatStatus = document.getElementById('combat');
 const damageFlash = document.getElementById('damage-flash');
 // One predicted trigger tick: fires the local report, recoil and reload choreography. Hits are
@@ -941,8 +1059,13 @@ function spawnLocalShotEffects(weaponId, tick, trigger = localTrigger) {
   if (!weapon || (weapon.mode || 'hitscan') === 'melee') return;
   const dir = shotDirectionFor(trigger, { yaw: playerView.yaw, pitch: playerView.pitch, weaponId, tick, seed: localShotSeed(), moveSpeed01: localMoveSpeed01() });
   spawnMuzzleFlash(playerBodies.localMount, dir, weaponId);
-  const cap = playerController.getCapsule();
-  const origin = [cap.end[0], cap.end[1] + cap.radius, cap.end[2]];   // capsule top: combat.js's head origin, as the server fires
+  stepPlayerBodyPose(localCombatPose, {
+    position: playerController.getPosition(), velocity: playerController.getVelocity(),
+    yaw: playerView.yaw, pitch: playerView.pitch, grounded: playerController.grounded,
+    swimming: playerController.swimming, aiming: weaponState.aiming, tick,
+    fixedHz: playerController.config.fixedHz, alive: !combatState.dead,
+  });
+  const origin = playerPoseAnchor(localCombatPose, 'muzzle');
   if (weapon.mode === 'projectile') {
     // Online the server flies it and its snapshot entry renders; solo flies it here.
     if (!isOnline()) {
@@ -1329,6 +1452,9 @@ loadWaterConfig('').then(cfg => { applyWaterConfig(cfg, { ocean: water.profile }
 // Two cloud decks (base-game-clouds.js). They follow the camera, take their colour from the same
 // key light the terrain does, and carry the render-origin offset so the noise field survives a rebase.
 const clouds = createBaseGameClouds({ scene, worldCoordinates });
+// Rain (base-game-rain.js). Its ground comes from the sea-depth clipmap window, so it asks the
+// terrain to stream that window whether or not there is a sea.
+const rain = createBaseGameRain({ scene, terrain, worldCoordinates });
 
 const frameProfiler = createFrameProfiler();
 function applySkyComponentVisibility() {
@@ -1348,6 +1474,7 @@ function updateWorld(dt) {
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
   applyWaterSettings();
   applyCloudSettings();
+  applyRainSettings();
   if (terrain.splatEnabled !== settings.terrainTextures) terrain.setSplatEnabled(settings.terrainTextures);
   if (terrain.splatMaterial) terrain.updateSplat({ tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) });
   // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners. A
@@ -1372,6 +1499,12 @@ function updateWorld(dt) {
   remotePlayers.setEnabled(settings.remotePlayersEnabled);
   playerBodies.setLocalMode(settings.playerBodyMode);
   playerBodies.setBodyDesign(settings.bodyDesign);
+  if (isOnline() && (bodyModelSession !== networkSession || bodyModelRequested !== settings.bodyDesign)) {
+    if (networkSession.setBodyModel(settings.bodyDesign)) {
+      bodyModelSession = networkSession;
+      bodyModelRequested = settings.bodyDesign;
+    }
+  }
   if (playerBodies.localWeapon && playerBodies.localWeapon.id !== localWeaponId()) playerBodies.setWeapon(localWeaponId());
   applyWeaponPresentation();
   if (weaponViewModel.weaponId !== localWeaponId()) weaponViewModel.setWeapon(localWeaponId());
@@ -1382,6 +1515,7 @@ function updateWorld(dt) {
 
   let sunIntensity = 0;
   let moonIntensity = 0;
+  let ambientBase = 0;
   let sunDir;
   let moonDir;
 
@@ -1421,9 +1555,10 @@ function updateWorld(dt) {
       _lastSunColorT = sunColorT;
       rig.setSunColor(lerpHex(TOD_SUN_WARM, TOD_SUN_NEUTRAL, sunColorT));
     }
-    rig.setAmbientIntensity(settings.ambientLightEnabled
+    ambientBase = settings.ambientLightEnabled
       ? TOD_AMBIENT_NIGHT + (settings.ambientIntensity - TOD_AMBIENT_NIGHT) * (1 - sky.nightness)
-      : 0);
+      : 0;
+    rig.setAmbientIntensity(ambientBase);
     moonIntensity = TOD_MOON_MAX * smoothstep(-2, 10, moon.elevationDeg) * sky.nightness;
   } else {
     sunDir = dirFromAzEl(settings.sunElevation, settings.sunAzimuth, _sunDir);
@@ -1432,7 +1567,8 @@ function updateWorld(dt) {
     rig.setAzimuth(settings.sunAzimuth);
     rig.setSunColor(TOD_SUN_NEUTRAL);
     _lastSunColorT = -1;
-    rig.setAmbientIntensity(settings.ambientLightEnabled ? settings.ambientIntensity : 0);
+    ambientBase = settings.ambientLightEnabled ? settings.ambientIntensity : 0;
+    rig.setAmbientIntensity(ambientBase);
     sky.setCelestialOpacityMode(false);
     sky.setSunDir(sunDir);
     sky.setMoonDir(moonDir);
@@ -1450,13 +1586,15 @@ function updateWorld(dt) {
   sunIntensity = settings.sunLightEnabled ? sunIntensity : 0;
   moonIntensity = settings.moonLightEnabled ? moonIntensity : 0;
   // Weather takes the key light down and lifts the ambient a little: overcast is flat, not just dark.
-  // Both branches above write the ambient every frame, so this multiply never compounds (it does
-  // leave the rig's own recorded ambientIntensity showing the slider value, which is what the
-  // Lighting panel should show).
+  // The ambient lift must be an ASSIGNMENT from the value just requested, not a multiply on the
+  // light. createLightingRig's set() early-returns when the REQUESTED value has not changed, and it
+  // tracks that separately from ambLight.intensity — so a multiply is not undone next frame and
+  // compounds every frame (1.15x at 60 fps is ~4400x after one second, i.e. a white screen).
+  // sunIntensity/moonIntensity are safe because they are locals that go back through the rig.
   const weatherDim = 1 - settings.sunDimPerRain * settings.weatherRain;
   sunIntensity *= weatherDim;
   moonIntensity *= weatherDim;
-  rig.ambLight.intensity *= 1 + settings.ambientLiftPerRain * settings.weatherRain;
+  rig.ambLight.intensity = ambientBase * (1 + settings.ambientLiftPerRain * settings.weatherRain);
 
   // Only one directional shadow map per frame, and it is ALWAYS rig.dirLight: three r184 disposes
   // a light's ShadowNode the moment castShadow flips false while render objects built earlier
@@ -1566,6 +1704,9 @@ function changed(key) {
     applyMusicSetting().catch(reportBaseGameError);
   } else if (key?.startsWith('audio')) {
     applyAudioSettings();
+  } else if (key === 'waveWindDeg' || key === 'weatherWindFollowsWaves') {
+    // The wind readout quotes the heading it is actually using, which is the wave one when linked.
+    controlRegistry.get('weatherWindDeg')?.sync();
   } else if (key === 'armPreset') {
     // The preset dropdown fills the sliders; sliders then override the preset individually.
     applyArmPresetToSettings(settings.armPreset);
@@ -1651,6 +1792,10 @@ const cloudSec = createSection(weatherSec, 'Clouds', { collapsed: false });
 const cloudASec = createSection(cloudSec, 'Cloud deck A (low)', { collapsed: true });
 const cloudBSec = createSection(cloudSec, 'Cloud deck B (high)', { collapsed: true });
 const cloudSharedSec = createSection(cloudSec, 'Cloud appearance', { collapsed: true });
+const rainSec = createSection(weatherSec, 'Rain', { collapsed: false });
+const rainDropSec = createSection(rainSec, 'Rain drops', { collapsed: true });
+const rainSplashSec = createSection(rainSec, 'Rain splashes', { collapsed: true });
+const rainGroundSec = createSection(rainSec, 'Rain ground', { collapsed: true });
 const atmosphereSec = createSection(weatherSec, 'Atmosphere response', { collapsed: true });
 
 const captureLabelLabel = document.createElement('label');
@@ -1793,6 +1938,39 @@ addSelect(playerSec, 'weaponPrimary', 'Primary weapon (1)', [...BASE_GAME_WEAPON
 addSelect(playerSec, 'weaponSidearm', 'Sidearm (2)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponMelee', 'Melee (3)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
+// Weapon spread: bot-viewer-v3's labels and ranges, over shot-spread.js instead of botAimSettings.
+const spreadSec = createSection(playerSec, 'Weapon spread', { collapsed: true });
+function addSpreadRange(label, key, format, title) {
+  const [min, max] = SHOT_SPREAD_LIMITS[key];
+  const step = (max - min) / 200;
+  const wrap = document.createElement('div'); wrap.className = 'control';
+  const row = document.createElement('div'); row.className = 'control-line';
+  const text = document.createElement('label'); text.textContent = label;
+  const output = document.createElement('output');
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step);
+  row.append(text, output); wrap.append(row, input); spreadSec.append(wrap);
+  if (title) wrap.title = title;
+  // Not registerControl: that registry is the settings save/load check and these live in a file.
+  const sync = () => { input.value = String(shotSpread[key]); output.textContent = format(shotSpread[key]); };
+  input.addEventListener('input', () => { shotSpread[key] = Number(input.value); output.textContent = format(shotSpread[key]); applyShotSpread(); });
+  shotSpreadSyncs.push(sync);
+  sync();
+}
+addSpreadRange('Weapon cone x', 'spreadScale', v => `${v.toFixed(2)}x`, "Multiplies every weapon's own authored spreadRad from weapons.js, so their relative accuracy is preserved.");
+addSpreadRange('Moving spread', 'moveSpreadDeg', v => `${v.toFixed(2)} deg`, 'Added at full sprint.');
+addSpreadRange('First-shot spread', 'firstShotSpreadDeg', v => `${v.toFixed(2)} deg`, 'Added the instant the trigger or aim goes down; decays over the settle time.');
+addSpreadRange('Aim settle', 'settleMs', v => `${v.toFixed(0)} ms`, 'How long a held aim takes to earn the tight cone.');
+addSpreadRange('Recoil per shot', 'bloomPerShotDeg', v => `${v.toFixed(2)} deg`, 'Cone growth per round fired.');
+addSpreadRange('Recoil cap', 'bloomMaxDeg', v => `${v.toFixed(2)} deg`, 'Widest the cone gets from sustained fire.');
+addSpreadRange('Recoil recovery', 'bloomDecayDegPerSecond', v => `${v.toFixed(2)} deg/s`, 'How fast the cone tightens once you stop shooting.');
+const shotSpreadNoteText = () => `Loaded from ${shotSpreadSource}. Saving overwrites ${SHOT_SPREAD_PATH}, which the relay reads too — tune in Solo, since online the server's copy decides where the round actually goes.`;
+const shotSpreadNote = document.createElement('div'); shotSpreadNote.className = 'note';
+shotSpreadNote.textContent = shotSpreadNoteText();
+spreadSec.append(shotSpreadNote);
+addAction(spreadSec, 'Save as default', (event) => saveShotSpread(event.currentTarget));
+addAction(spreadSec, 'Reset to built-in', () => { Object.assign(shotSpread, SHOT_SPREAD_DEFAULTS); applyShotSpread(); syncShotSpreadControls(); });
+
 addSelect(playerSec, 'bodyFacing', 'Body faces', ['look', 'travel']);
 const facingNote = document.createElement('div'); facingNote.className = 'note';
 facingNote.textContent = 'look is the environment-viewer behaviour: the body faces the camera and strafes. travel is experimental: the body faces its movement, the torso and head carry the look, and the body turns in place past the threshold.';
@@ -1821,6 +1999,10 @@ const weaponNote = document.createElement('div'); weaponNote.className = 'note';
 weaponNote.textContent = 'Keys 1 to 4 pick a slot, R reloads, hold the right mouse button to aim. T resets the player.';
 playerSec.append(weaponNote);
 addToggle(playerSec, 'playerCapsuleVisible', 'Diagnostic capsule');
+addToggle(playerSec, 'playerHurtRigVisible', 'Diagnostic hurt rig');
+addToggle(playerSec, 'playerHurtZoneColors', 'Hurt rig zone colors');
+addToggle(playerSec, 'playerHurtJoints', 'Hurt rig joints');
+addToggle(playerSec, 'playerLastHitVisible', 'Last server hit marker');
 addRange(playerSec, 'playerMoveSpeed', 'Walk speed', 1, 15, 0.25, value => `${value.toFixed(2)} m/s`);
 addRange(playerSec, 'playerSprintMultiplier', 'Sprint multiplier', 1, 3, 0.05, value => `${value.toFixed(2)}x`);
 addRange(playerSec, 'playerJumpSpeed', 'Jump speed', 2, 16, 0.25, value => `${value.toFixed(2)} m/s`);
@@ -1884,6 +2066,7 @@ addRange(armSec, 'bodyArmAsym', 'Backswing (fraction of forward swing)', 0, 1.5,
 
 // Mirrors bot-viewer-v3's Movement tuning section: same controls, ranges, tooltips and defaults.
 const f1 = value => value.toFixed(1), f2 = value => value.toFixed(2);
+const metres = value => `${value.toFixed(0)} m`;
 addRange(bodyMoveSec, 'bodyTurnStiffness', 'Turn follow', 8, 60, 1, f1).title =
   'How hard the body turns towards the way it wants to face. Higher snaps round corners, lower drifts through them.';
 addRange(bodyMoveSec, 'bodyTurnDamping', 'Turn drag', 2, 24, 1, f1).title =
@@ -1975,9 +2158,59 @@ addRange(waterSec, 'waveSeed', 'Wave seed', 0, 1000, 1);
 // ---- Weather: clouds (phase C1; rain, lightning and the shared master land in later phases) ----
 // The master. It multiplies through the response sliders below rather than writing them, so a
 // hand-tuned fog or dimming survives a drag. Drops, wet ground and lightning are later phases.
-addRange(weatherSec, 'weatherRain', 'Weather strength (no drops yet)', 0, 1, 0.01, value => value.toFixed(2));
+addRange(weatherSec, 'weatherRain', 'Weather strength', 0, 1, 0.01, value => value.toFixed(2));
 addRange(weatherSec, 'weatherOvercast', 'Overcast (manual, adds to the master)', 0, 1, 0.01, value => value.toFixed(2));
 addToggle(weatherSec, 'cloudsEnabled', 'Clouds');
+// Wind. The link wins over the slider rather than writing it, so a guest whose room owner moved the
+// wave heading follows along without needing permission to write a shared key.
+addToggle(weatherSec, 'weatherWindFollowsWaves', 'Link wind to the wave heading (overrides the slider)');
+addRange(weatherSec, 'weatherWindDeg', 'Wind heading', 0, 360, 1,
+  value => `${value.toFixed(0)}°${settings.weatherWindFollowsWaves ? ` · using ${settings.waveWindDeg.toFixed(0)}°` : ''}`);
+addRange(weatherSec, 'weatherWindSpeed', 'Wind speed', 0, 60, 0.1, value => `${value.toFixed(1)} m/s`);
+addRange(weatherSec, 'weatherGust', 'Gust amplitude', 0, 40, 0.1, value => `${value.toFixed(1)} m/s`);
+addRange(weatherSec, 'weatherGustPeriod', 'Gust period', 0.5, 60, 0.1, value => `${value.toFixed(1)} s`);
+
+// ---- Weather: rain (phase R1 — drops and splash rings; wet ground and lightning are later) ----
+addToggle(rainSec, 'rainEnabled', 'Rain');
+addRange(rainSec, 'rainDensityPerRain', 'Drop density per unit of weather', 0, 2, 0.01, f2);
+addRange(rainSec, 'rainDensityBase', 'Drop density when clear', 0, 1, 0.01, f2);
+addToggle(rainSec, 'rainUnderwaterOff', 'Hide rain while the camera is under water');
+
+addToggle(rainDropSec, 'rainDropsEnabled', 'Drops visible');
+// Reallocating the instanced geometry is a rebuild, not a uniform write.
+addRange(rainDropSec, 'rainMaxDrops', 'Maximum drops (reallocates)', 1000, 200000, 1000, value => value.toFixed(0));
+addRange(rainDropSec, 'rainSpeed', 'Fall speed', 0, 120, 0.5, value => `${value.toFixed(1)} m/s`);
+addRange(rainDropSec, 'rainLength', 'Streak length', 0, 12, 0.01, value => `${value.toFixed(2)} m`);
+addRange(rainDropSec, 'rainWidth', 'Streak width', 0.001, 0.4, 0.001, value => `${(value * 100).toFixed(1)} cm`);
+addRange(rainDropSec, 'rainOpacityBase', 'Opacity when clear', 0, 1, 0.01, f2);
+addRange(rainDropSec, 'rainOpacityPerRain', 'Opacity per unit of weather', 0, 1, 0.01, f2);
+addColor(rainDropSec, 'rainColor', 'Drop colour');
+addRange(rainDropSec, 'rainSkyTint', 'Tint toward the sky', 0, 1, 0.01, f2);
+// The drop field is a box that follows the camera; widening it spreads the same drops thinner.
+addRange(rainDropSec, 'rainVolumeXZ', 'Volume width', 4, 400, 1, metres);
+addRange(rainDropSec, 'rainVolumeY', 'Volume height', 4, 400, 1, metres);
+addRange(rainDropSec, 'rainNearStart', 'Near fade starts', 0, 5, 0.01, value => `${value.toFixed(2)} m`);
+addRange(rainDropSec, 'rainNearEnd', 'Near fade ends', 0, 10, 0.01, value => `${value.toFixed(2)} m`);
+addRange(rainDropSec, 'rainCamLean', 'Lean into camera motion', 0, 3, 0.01, f2);
+
+addToggle(rainSplashSec, 'rainSplashEnabled', 'Splashes visible');
+addRange(rainSplashSec, 'rainMaxSplashes', 'Maximum splashes (reallocates)', 200, 40000, 100, value => value.toFixed(0));
+addRange(rainSplashSec, 'rainSplashRadius', 'Radius around the camera', 2, 160, 1, metres);
+addRange(rainSplashSec, 'rainSplashSize', 'Ring size', 0.01, 3, 0.01, value => `${value.toFixed(2)} m`);
+addRange(rainSplashSec, 'rainSplashRate', 'Ring rate', 0.1, 12, 0.1, value => `${value.toFixed(1)} /s`);
+// Rain runs off a rock face rather than beading on it, and a horizontal ring on a steep slope is
+// half buried whatever its height is — so the steep ones fade out and the rest lie on the surface.
+addRange(rainSplashSec, 'rainSplashSlopeMax', 'Suppress rings on slopes above', 0, 90, 1, value => `${value.toFixed(0)}°`);
+addRange(rainSplashSec, 'rainSplashSlopeFade', 'Slope fade width', 0, 45, 1, value => `${value.toFixed(0)}°`);
+addToggle(rainSplashSec, 'rainSplashOrient', 'Lay rings on the surface');
+addRange(rainSplashSec, 'rainSplashMaxAgl', 'Hide rings above this height', 0, 2000, 5, metres);
+
+// The ground rain lands on is the 16 m sea-depth window, so on a cliff it is band-limited at 16 m.
+// Conservative sampling takes the lowest of the four surrounding posts: the depth buffer hides a
+// height read too low, while one read too high shows as rain cut off in mid air.
+addSelect(rainGroundSec, 'rainGroundSource', 'Ground source', ['coarse', 'off'],
+  ['Sea-depth window (16 m posts)', 'Flat (the lab floor height, no window)']);
+addToggle(rainGroundSec, 'rainGroundConservative', 'Conservative (lowest of four posts)');
 
 addRange(atmosphereSec, 'overcastPerRain', 'Overcast per unit of weather', 0, 2, 0.01, f2);
 addRange(atmosphereSec, 'sunDimPerRain', 'Sun dimming per unit', 0, 1, 0.01, f2);
@@ -1990,7 +2223,6 @@ addRange(atmosphereSec, 'weatherFogBase', 'Fog when clear', 0, 0.02, 0.0001, fog
 addRange(atmosphereSec, 'weatherFogPerRain', 'Fog per unit of weather', 0, 0.02, 0.0001, fogVisibility);
 addSelect(atmosphereSec, 'weatherFogSource', 'Fog colour', ['sky', 'custom'], ['Follow the sky', 'Custom']);
 addColor(atmosphereSec, 'weatherFogColor', 'Custom fog colour');
-const metres = value => `${value.toFixed(0)} m`;
 for (const [sec, prefix] of [[cloudASec, 'cloudA'], [cloudBSec, 'cloudB']]) {
   addToggle(sec, `${prefix}Visible`, 'Deck visible');
   addRange(sec, `${prefix}Height`, 'Height', 0, 10000, 10, metres);
@@ -2032,6 +2264,8 @@ addToggle(audioSec, 'audioMusicEnabled', 'Play music from sfx/music');
 
 const missingControls = Object.keys(DEFAULT_SETTINGS).filter(key => !controlRegistry.has(key));
 if (missingControls.length) throw new Error(`Unsaved/unconfigured settings: ${missingControls.join(', ')}`);
+
+loadShotSpread();   // the committed accuracy numbers; the built-in fallback stands until it lands
 
 const multiplayerStatus = document.createElement('div');
 multiplayerStatus.className = 'note';
@@ -2077,6 +2311,7 @@ function applyPlayerSnapshot(snapshot, session) {
     for (const raw of snapshot.hits ?? []) {
       const hit = sanitizeBaseGameHitEvent(raw);
       if (!hit) continue;
+      playerHitRigDebug.setLastHit(hit.point);
       if (hit.shooter === session.clientId) combatState.hitFlashUntil = now + 180;
       if (hit.victim === session.clientId) { combatState.damageUntil = now + 400; audioDirector.localDamage(); }
       else { const l = worldCoordinates.toRenderLocal(hit.point, remoteAudioLocal); audioDirector.hitAt({ x: l[0], y: l[1], z: l[2] }); }
@@ -2656,6 +2891,7 @@ function networkDiagnostics() {
     remoteCount: remote.remoteCount,
     remoteModes: remote.modes,
     bodies: playerBodies.diagnostics,
+    hitRig: playerHitRigDebug.diagnostics,
   };
 }
 function renderNetworkDebug() {
@@ -2858,6 +3094,18 @@ async function animate() {
       viewBlend: viewFrame ? fpState.viewBlend : 0,
     });
     fpState.hasEye = !!playerBodies.localEyePoint(fpState.eye);
+    stepPlayerBodyPose(localCombatPose, {
+      position: playerController.getPosition(), velocity: playerController.getVelocity(),
+      yaw: playerView.yaw, pitch: playerView.pitch, grounded: playerController.grounded,
+      swimming: playerController.swimming, aiming: weaponState.aiming, tick: playerController.tick,
+      fixedHz: playerController.config.fixedHz, alive: !combatState.dead,
+    });
+    playerHitRigDebug.update(localCombatPose, {
+      visible: settings.playerHurtRigVisible,
+      zoneColors: settings.playerHurtZoneColors,
+      joints: settings.playerHurtJoints,
+      lastHit: settings.playerLastHitVisible,
+    });
     if (online) {
       remotePlayers.update(performance.now(), { interpolationDelayMs: settings.interpolationDelayMs });
       playerBodies.beginRemoteFrame();
@@ -2884,6 +3132,7 @@ async function animate() {
             aiming: record.sample.aiming,
             action: record.sample.action,
             actionTick: record.sample.actionTick,
+            bodyModel: record.sample.bodyModel,
           });
         }
       }
@@ -2903,6 +3152,11 @@ async function animate() {
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
     frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); });
     frameProfiler.time('sky', () => updateWorld(dt));
+    // After the sky slot: the drop tint reads scene.background, which updateWorld has just written.
+    frameProfiler.time('weather', () => rain.update(dt, camera, {
+      underwater: settings.rainUnderwaterOff && water.underwater,
+      skyColor: scene.background,
+    }));
     if (!terrainStudio.open) {
       if (settings.dofEnabled) {
         depthOfField.setParams({ enabled: true, autoFocus: settings.dofAutoFocus, focusDistance: settings.dofFocusDistance, aperture: settings.dofAperture, maxRadius: settings.dofMaxRadius, farScale: settings.dofFarScale });
@@ -2935,6 +3189,7 @@ addEventListener('beforeunload', () => {
   stopRebasePresentation();
   playerView.dispose();
   playerBodies.dispose();
+  playerHitRigDebug.dispose();
   remotePlayers.dispose();
   envAudio.dispose();
   traversalLab.dispose();

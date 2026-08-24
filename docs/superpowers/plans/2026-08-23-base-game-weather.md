@@ -189,7 +189,7 @@ as the clouds, so the rim stops being a boundary between white and blue. The dec
   the doc, because "server-authoritative" elsewhere on this page means simulated.
 - Tests: extend `server/test-base-game-rooms.mjs` for clamping and echo of the new keys.
 
-### R1 — `base-game-rain.js`: drops that land on the real ground
+### R1 — `base-game-rain.js`: drops that land on the real ground — SHIPPED 2026-08-24
 
 - `createRainSystem({ maxDrops: 40000, maxSplashes: 5000, density: 0, uniforms: { wetness: 0 },
   groundHeight, colorFn })` where `groundHeight = (xz) => max(terrain.seaDepth.gpuHeightAt(xz.add(uOffset)),
@@ -251,6 +251,46 @@ metres from the drawn rock. Four things fix it, in order of value per unit of wo
 
 Items 1 and 3 are a few lines each inside `rain.js` and should land with R1. Item 2 is a new streamed
 window and can follow as its own step once there is something on screen to judge it against.
+
+**Shipped 2026-08-24 (R1 and R1b items 1 and 3), with these notes.**
+
+- The conservative sample went into `terrain-sea-depth.js` rather than into rain: `gpuHeightAt(xz,
+  fallback, 'min')` returns the lowest of the four posts it already fetches, so the water keeps the
+  bilinear call unchanged and any future caller can ask for the same thing. Both branches are in the
+  graph and a uniform mixes them, so the panel toggle is a slider and not a material rebuild.
+- The slope hook is a *separate* argument (`groundSlope`) rather than a finite difference of
+  `groundHeight`, which is what this plan said. Differencing the conservative hook does not work: the
+  min filter is a staircase, and its central difference is zero across most of a cell. `base-game-rain.js`
+  therefore passes the min sample for the cut and the ring height and the bilinear one for the gradient.
+  For a page that gives no slope hook, `rain.js` still falls back to differencing `groundHeight`, so
+  the flight sim gets slope-aware rings for free if it ever wants them.
+- Four constants named as sliders in the control tables were still hard-coded in `rain.js` and are
+  uniforms now: the near fade, the camera lean, the splash rate and the gust period. Every default
+  reproduces the old constant exactly, and ring slope suppression and orientation default to off, so
+  `bot-viewer-v3.html` and `demos/flight-sim.html` draw what they drew before. `RAIN_DEFAULTS.gustPeriod`
+  is 17 s because that is what 0.37 rad/s already was — the plan's suggested default was already the
+  shipped behaviour.
+- `weatherEnabled` from the master table was not built. `weatherRain` at 0 already means no weather,
+  and a second switch above it would have to gate the clouds too, changing what C1 shipped. `rainEnabled`
+  covers what it was for.
+- `rainGroundSource` ships as `coarse` / `off`. `fine` arrives with R1b item 2; adding an option later
+  is not narrowing a range.
+- `rainWetnessPerRain` and the rest of the wet-surface table are not wired: `uWetness` and `uPuddle`
+  exist on the shared uniforms but nothing reads them until R2.
+- Shared keys went from six to ten (`weatherWindDeg`, `weatherWindSpeed`, `weatherGust`,
+  `weatherGustPeriod`). `weatherWindFollowsWaves` stays local and *overrides* the shared slider at the
+  point of use rather than writing it, so a guest follows the room's wave heading without needing
+  permission to write a shared key.
+- Coverage: `test-base-game-rain.mjs` (65 checks) including a CPU twin of the conservative-versus-
+  bilinear claim this whole section rests on, the module built for real over a real sea-depth window,
+  and headless GLSL builds of both rain graphs with the hooks and without. `server/test-base-game-rooms.mjs`
+  gained the wind echo and clamping. `test-base-game-clouds.mjs`'s static scan now classifies settings
+  by the value the page defaults rather than by a pattern in the key's name, which had already gone
+  stale twice. Unseen in a browser.
+- Still open from the plan's own list: whether the DOF pass computes a drop's circle of confusion from
+  the opaque surface behind it. Drops write no depth, so at a wide aperture a drop 30 cm from the eye
+  may be blurred as if it were at the ground's distance. That needs a browser look before anything else
+  in R2 is tuned.
 
 ### R2 — Wet ground and wet things
 

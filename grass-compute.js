@@ -107,9 +107,16 @@ export function createComputeGrass(opts) {
     bladeWidth: opts.bladeWidth ?? 1.0,
     verticalOffset: opts.verticalOffset ?? 0.0,
   };
-  const hasHeightTex = !!(opts.heightTex && opts.heightTexBounds);
+  // Injected samplers (plants plan F5): a host with its own streamed terrain hands in TSL Fns
+  // taking (x, z) SCALARS in the same frame the candidates are generated in, and does its own
+  // render-local/global conversion. Both are optional; omitted, nothing below changes.
+  const injectedHeight = opts.heightNode ?? null;
+  const injectedDensity = opts.densityNode ?? null;
+  if (injectedHeight && typeof injectedHeight !== 'function') throw new TypeError('grass heightNode must be a TSL node function');
+  if (injectedDensity && typeof injectedDensity !== 'function') throw new TypeError('grass densityNode must be a TSL node function');
+  const hasHeightTex = !injectedHeight && !!(opts.heightTex && opts.heightTexBounds);
   const heightTex = hasHeightTex ? opts.heightTex : null;
-  const hasDensityTex = !!(opts.densityTex && opts.densityTexBounds);
+  const hasDensityTex = !injectedDensity && !!(opts.densityTex && opts.densityTexBounds);
   const densityTex = hasDensityTex ? opts.densityTex : null;
   const uBoundsMinX = hasHeightTex ? uniform(opts.heightTexBounds.minX) : null;
   const uBoundsMinZ = hasHeightTex ? uniform(opts.heightTexBounds.minZ) : null;
@@ -209,8 +216,8 @@ export function createComputeGrass(opts) {
     stats.dirty = true;
   };
 
-  // TSL terrain height: texture path for authored maps, closed-form for procedural.
-  const heightFn = hasHeightTex
+  // TSL terrain height: injected by the host, texture path for authored maps, else closed-form.
+  const heightFn = injectedHeight ? injectedHeight : hasHeightTex
     ? Fn(([x, z]) => {
         const u = clamp(x.sub(uBoundsMinX).div(uBoundsW), 0, 1);
         const v = clamp(z.sub(uBoundsMinZ).div(uBoundsH), 0, 1);
@@ -231,7 +238,7 @@ export function createComputeGrass(opts) {
         return h.sub(basinSS.mul(uLakeDepth));
       });
 
-  const densityFn = hasDensityTex
+  const densityFn = injectedDensity ? injectedDensity : hasDensityTex
     ? Fn(([x, z]) => {
         const u = clamp(x.sub(uDensityMinX).div(uDensityW), 0, 1);
         const v = clamp(z.sub(uDensityMinZ).div(uDensityH), 0, 1);

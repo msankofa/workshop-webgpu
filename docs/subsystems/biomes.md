@@ -37,10 +37,19 @@
 A biome is just a name (`"forest"`, `"desert"`, ...) attached to one cell of a
 `resolution × resolution` grid stored in an authored map's `-data.json` sidecar. There is
 no runtime biome *simulation* — no temperature/moisture fields, no blending logic beyond
-bilinear sampling of whatever grid values the map file contains. Biomes only exist for
-**authored maps** (`loadTerrainMap()` in `terrain-loader.js`); the procedural infinite
-terrain (`terrain-system.js` / `cdlod-terrain.js`) has no biome concept at all — it's a
-single ground everywhere.
+bilinear sampling of whatever grid values the map file contains.
+
+**There are now two paths.** For **authored maps** (`loadTerrainMap()` in `terrain-loader.js`)
+a biome is that baked grid cell. For the **streamed infinite terrain**, since 2026-08-24
+(plants plan F1), `terrain-biome-point.js` classifies each tile as it is built: slope from the
+tile's own visible surface, temperature/humidity/weirdness from `biome-classifier-js.js`'s
+unbounded sampler, and the same `classifyBiomeCell` rules, written into the tile's reserved
+`biomeIds`/`moisture` fields. Every input is continuous in position, so tiles agree across their
+seams without a global pass. `cdlod-terrain.js` and the older `terrain-system.js` render paths
+still draw a single ground everywhere; what changed is that the data now exists. Erosion, lakes and
+flow stay bounded-only, so the streamed classifier drops the lake factor from its beach mask and
+its moisture is `moisture-proxy.js`'s proxy until regional hydrology lands. See
+[terrain.md](terrain.md) for the tile fields and their measured cost.
 
 ## Canonical biome list
 
@@ -112,7 +121,7 @@ Overridden regardless of biome when `worldY <= seaLevel - 0.5` → `sand`,
 (`1 - |normalY|`) exceeds `0.58` → `rock` (unless already `snow`) / `0.34` on
 grass-family layers → `dirt`.
 
-## Biome → tree density fallback (`terrain-loader.js`, `TREE_DENSITY`)
+## Biome → tree density fallback (`terrain-biome-point.js`, `BIOME_TREE_DENSITY`)
 
 | Biome | Density | Biome | Density |
 |---|---|---|---|
@@ -128,6 +137,12 @@ grass-family layers → `dirt`.
 
 Only used when the map's `-data.json` has no explicit `treeDensity` grid — explicit
 per-cell density always wins over this table.
+
+The table lived in `terrain-loader.js` until 2026-08-24. It moved to `terrain-biome-point.js`
+(pure) so the streamed path can read it too — `terrain-loader.js` imports it and keeps its
+`TREE_DENSITY` name, and `base-game-terrain.js`'s `treeDensityAt(x, z)` reads the same numbers.
+One table, both paths; `terrain-loader.js` itself is unreachable from Node or a worker because it
+imports `GLTFLoader`.
 
 ## Notes for anyone touching this
 

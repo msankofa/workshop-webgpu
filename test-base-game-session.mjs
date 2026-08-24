@@ -48,6 +48,8 @@ assert.equal(session.roomCode, 'WOLF');
 assert.equal(snapshots.length, 1);
 assert.equal(session.setWorld({ todHour: 99, skyEnabled: false }), true);
 assert.deepEqual(ws.sent[1].patch, { todHour: 0 });
+assert.equal(session.setBodyModel('soldier:medic'), true);
+assert.deepEqual(ws.sent[2], { type: 'base:set_body', protocol: BASE_GAME_PROTOCOL_VERSION, bodyModel: 'soldier:medic' });
 
 session.destroy();
 await new Promise(resolve => setTimeout(resolve, 20));

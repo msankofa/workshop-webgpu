@@ -44,7 +44,9 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Body presentation owner | `base-game-player-bodies.js` |
 | Web Audio graph, positional SFX, http music playlist | `environment-audio.js` (see `audio.md`) |
 | Sound director: what fires when, budgets, cull, sample-or-synth | `base-game-audio.js` |
-| Hitscan, shot validation, lag-compensation pose history | `combat.js` |
+| Hitscan and shot validation | `combat.js` |
+| Semantic player pose, hurt-rig math and rewind history | `player-body-pose.js` / `player-hit-rig.js` |
+| Shared humanoid topology and body-model whitelist | `humanoid-rig-topology.js` / `base-game-body-models.js` |
 | Player hp / alive / revive | `player-combat.js` |
 | Magazines (lifted from `environment-viewer.html`) | `player-ammo.js` |
 | Dispersion cone | `bot-aim.js` |
@@ -106,7 +108,8 @@ All controls work without reloading the page.
 
 - World: Empty Space or Traversal Lab, collision wireframe, and origin marker.
 - Player: Player or Orbit debug control, first/third person, player body (off, third-person rig,
-  lower-body rig), diagnostic capsule, movement, jump, gravity, slope, step-up, snap-down, camera
+  lower-body rig), diagnostic capsule, semantic hurt rig/zone/joint/last-hit overlays, movement,
+  jump, gravity, slope, step-up, snap-down, camera
   damping, distance, sensitivity, and wall padding.
 - Network: remote player bodies, remote diagnostic capsules, network diagnostics line, and
   interpolation delay.
@@ -147,9 +150,10 @@ paused.
 ## Server-authoritative multiplayer foundation
 
 The existing Environment Viewer host/guest relay protocol remains intact. Base Game messages use a
-separate version-3 protocol handled by `server/base-game-rooms.js`:
+separate version-10 protocol handled by `server/base-game-rooms.js`:
 
-- Client: `base:create`, `base:join`, `base:resume`, `base:set_world`, `base:input`.
+- Client: `base:create`, `base:join`, `base:resume`, `base:set_world`, terrain messages,
+  `base:input`, `base:loadout`, `base:set_body`, `base:respawn`, and `base:resync`.
 - Server: `base:joined`, `base:snapshot`, `base:error`.
 
 The server owns each room's canonical world state, revision, roster, owner identity, clock, and
@@ -163,9 +167,10 @@ Sessions receive an opaque reconnect token. A disconnected identity and room sur
 period the server transfers room ownership to a connected player; an empty room is deleted. The
 current server is in-memory, so process restart persistence remains a later milestone.
 
-Protocol version 3 replicates players. Roster entries carry `id`, `connected`, `owner`,
+Protocol version 10 replicates players. Roster entries carry `id`, `connected`, `owner`,
 `spawnRevision`, `tick`, `lastProcessedTick`, `queueDepth`, `lastInputClientTime`, global
-`position`, `velocity`, `yaw`, `pitch`, and `grounded`. Clients send only numbered tick inputs;
+`position`, `velocity`, `yaw`, `pitch`, `grounded`, combat/loadout state, `bodyModel`, the
+server-selected `hitProfile`, and `poseEpoch`. Clients send only numbered tick inputs;
 there is no position message. The implementation state is recorded under roadmap Step 4 below.
 
 Shared world keys are `primaryBody`, all `tod*` clock/astronomy values, manual sun elevation and
@@ -173,6 +178,33 @@ azimuth, and sun/ambient intensity. Guests see these controls disabled. Camera s
 save slots, sky-part visibility, light-part visibility, and shadows remain local so every client can
 isolate rendering components without changing the world for others. Loading a state as room owner
 publishes its shared values through the server; loading as a guest applies only local values.
+
+## Server-authoritative player hurt rig (protocol 10)
+
+Player world traversal still uses the 1.8 m kinematic capsule. Damage no longer does. The room
+server derives a renderer-free 16-joint humanoid pose from each authoritative 120 Hz movement tick
+and resolves players against 18 semantic head/torso/limb capsules. This fixes both the inherent
+phantom volume between limbs and the old conversion bug that sent total capsule height to a ray
+function expecting straight-segment height.
+
+The live pose stores a global root plus Float32 root-relative joint offsets, so stacked players and
+flight-scale coordinates remain distinct. Each player has a 32-slot preallocated rewind ring;
+100 ms lag compensation interpolates only inside the same model profile and pose epoch. Respawn,
+world replacement and model/profile changes start a new epoch. Hitscan and melee use rewound rigs,
+projectiles sweep current rigs with projectile-radius inflation, and explosion falloff measures to
+the nearest rig surface. Creatures and mobs retain their existing capsule path.
+
+`base-game-body-models.js` is the whitelist. A client requests only `bodyModel`; the server chooses
+`hitProfile` and accepts no joint positions or dimensions. All current designs share the canonical
+`humanoid-default` profile pending the measured model corpus. Hit events carry `zone`, `side`, and
+the compatibility `head` flag; damage remains flat.
+
+The Player panel exposes the authoritative hurt rig, semantic zone colors, joint points and last
+server impact independently of the movement capsule. These are live controls and state/performance
+capture settings. The diagnostic uses `player-body-pose.js` and `player-hit-rig-debug.js`, not mesh
+bounds. The rich procedural render gait is still a separate stateful solve; visual endpoint parity
+is therefore an explicit remaining acceptance gate, documented in
+`docs/superpowers/plans/2026-08-24-base-game-server-hit-rig.md`.
 
 ## State contract
 
@@ -850,6 +882,28 @@ the RPG's yaws are now 0. The provenance is worth stating once: **first-person h
 with the Weapon sliders in `environment-viewer.html`; the third-person hold is unrelated — it comes
 from `weapon-anchors.json` grips through `weapon-mount.js` and `weapon-hold-resolver.js`.
 
+**Weapon accuracy is tuned, then committed (2026-08-24).** The cone came from `AIM_DEFAULTS` in
+`bot-aim.js` — numbers tuned for *bots*, read by the player's trigger only because that was the one
+spread model in the repo. **`shot-spread.js`** now owns the seven that matter: `spreadScale` (a
+multiplier on each weapon's authored `spreadRad`, so their relative accuracy stays in `weapons.js`),
+`moveSpreadDeg`, `firstShotSpreadDeg`, `settleMs`, `bloomPerShotDeg`, `bloomMaxDeg`,
+`bloomDecayDegPerSecond`. `base-game-fire.js` gained `setShotSpread()` / `getShotSpread()` and builds
+one `aimSettingsFor(weapon)` that feeds `spreadHalfAngleRad`, `bloomAfterShot` and `decayBloomDeg`.
+
+**`shot-spread.json` is the default**, not a per-room setting and not replicated: the relay reads it
+at startup (`server/server.js`, logging which source it used) and the page fetches it, so both fire
+the same cone without a protocol field. The page's Weapon spread section (under Player / Camera,
+v3's labels and ranges) writes a local object — deliberately *not* `settings`, whose autosave goes to
+web storage, because a stale local copy must never win over the committed file — and "Save as
+default" POSTs to `serve.py`'s new `/api/save-shot-spread`. `shot-spread.js`'s frozen block is only
+the fallback for a page or relay with no file. Tune in Solo: online the relay's copy decides where
+the round goes, and the sliders move only what this client predicts. `test-shot-spread.mjs`.
+
+Also fixed that day: the melee assertions in `test-base-game-fire.mjs` were flaky. The block reused
+the yaw/pitch computed before the kill, but the respawn puts the victim back on the spawn point the
+shooter is standing on — sometimes directly overhead — so the stale aim swung at empty ground. It
+now aims at where the victim is.
+
 Still open in this phase: the head multiplier. `hits[].head` is always false, and this is deliberate
 rather than forgotten — every other head decision in the repo comes from a rig
 (`bot-body-hit.js` → `bot-limb-map.js`), the server has no rig, and a capsule-top zone would be a
@@ -1257,6 +1311,20 @@ sliders, so a hand-tuned value is never overwritten by a drag of the master:
 the decks rather than soften their edge, so they keep `clouds.js`'s `fog: false`. The lid is what makes
 the rim disappear: at full overcast the sky behind the clouds is the same grey as the clouds.
 
+**Fixed 2026-08-24 (found in the browser).** The ambient lift shipped as
+`rig.ambLight.intensity *= 1 + ambientLiftPerRain · rain` and turned the whole screen white within a
+second of raising the master. `createLightingRig`'s `set()` (`lights.js:73`) returns early when the
+*requested* value has not changed, and it tracks that request separately from the live light — so on
+every frame after the first the rig wrote nothing and the multiply stacked: 1.15× per frame is about
+4400× after one second. Both day/night branches now assign their requested ambient to a local
+`ambientBase` and the lift is `ambLight.intensity = ambientBase · (1 + …)` — an assignment, so it is
+idempotent whether or not the rig's setter fires. `sunIntensity`/`moonIntensity` were never affected:
+they are locals recomputed each frame and handed back through `rig.setSunIntensity`. Guarded by
+`test-base-game-light-response.mjs`, which runs the response for 600 frames and asserts it equals one
+frame, and keeps the old multiply in the file as the thing being guarded against. The general rule
+this is an instance of: **do not write a rig-owned light directly from the frame loop** — a
+dirty-checked setter makes any read-modify-write on the object it owns compound.
+
 ### Weather, phase C3: shared world keys (shipped 2026-08-24)
 
 Six weather keys are owner-owned and replicated: `weatherRain`, `weatherOvercast`, `cloudACover`,
@@ -1278,7 +1346,60 @@ is not sent, so a client without weather carries none and everyone keeps their o
 rewrites a legal local value the moment it crosses the network. The test covers every shared key and
 reads the protocol's boolean/string key sets from source so it cannot fall behind.
 
-Next in the plan: rain.
+### Weather, phase R1: rain (shipped 2026-08-24)
+
+`base-game-rain.js` wraps `rain.js`'s instanced streaks and splash rings the way `base-game-water.js`
+wraps the wave surface: it owns the render-origin offset, the ground hook, the enable rules and one
+`update(dt, camera, {underwater, skyColor})` that the page calls in its own `weather` profiler slot.
+Wet ground, the rain shadow map, lightning and the rain bed are later phases.
+
+**The ground drops land on.** There is no analytic terrain height here as there is in the flight sim,
+so the hook is `terrain.seaDepth.gpuHeightAt` — the 16 m sea-depth clipmap window. Rain calls
+`terrain.setSeaDepthActive(true)` itself, because a world with the sea turned off would otherwise have
+no window streaming and no ground at all. The height comes back global and the graph subtracts the
+render origin's Y, so drops keep cutting at the right height across a rebase. Where the ground is
+below sea level the hook maxes with the sea level, so rain over water lands on the surface rather than
+the sea bed. In the Traversal Lab there is no window: a uniform mixes the whole hook to the lab's flat
+floor (y = 0) instead, with no branch in the graph.
+
+**Accuracy on a cliff (plan item R1b, parts 1 and 3).** Both rain materials leave `depthTest` on, so a
+ground height read too *low* is hidden by the depth buffer while one read too *high* shows as rain cut
+off in mid air in front of a rock face. The error is therefore asymmetric and the sample must be
+conservative: `gpuHeightAt(xz, fallback, 'min')` returns the lowest of the four surrounding posts
+instead of the bilinear blend (the same trick as `terrain-lod-coverage.js`'s `erode()`). Both branches
+live in the graph and a uniform mixes between them, so the toggle is a slider and not a rebuild.
+Separately, a horizontal splash ring on a 40° slope is half buried and half floating however accurate
+its height is, so `rain.js` now takes an optional `groundSlope` hook: rings fade out above 38° (over a
+12° band) and the survivors lie on the surface normal. The slope is central-differenced from the
+*bilinear* sample one post apart — the min filter is a staircase whose differences are zero across
+most of a cell. The fine 1.25 m near-window (R1b part 2) has not been built; the panel's ground-source
+select carries `coarse` and `off` today and gains `fine` when it exists.
+
+**Wind is shared, look is local.** `weatherWindDeg`, `weatherWindSpeed`, `weatherGust` and
+`weatherGustPeriod` join `BASE_GAME_SHARED_KEYS`: wind leans every peer's drops the same way, and it
+is what the wave heading already agrees with. The drop and splash budgets, colours, volume, near fade
+and ground settings stay local, so two players can run 40,000 drops and 2,000 drops in one storm.
+`weatherWindFollowsWaves` (local, on by default) makes the page *use* `waveWindDeg` rather than write
+it into the shared slider, so a guest follows the sea without needing permission to write a shared key.
+
+**The master fan-out.** `rainResponse(settings)` — exported so it is testable in Node — turns
+`weatherRain` into a drop density and an opacity through `rainDensityBase`/`rainDensityPerRain` and
+`rainOpacityBase`/`rainOpacityPerRain`. As with the C2 atmosphere response, the master multiplies
+through a response slider instead of writing the individual value, so a hand-tuned number survives a
+drag of the master.
+
+**Things that used to be constants in `rain.js` and are settings now**, all defaulting to the value
+that was baked in so `bot-viewer-v3.html` and `demos/flight-sim.html` draw exactly what they drew
+before: the near fade (`smoothstep(0.25, 1.4, …)`), the camera lean, the splash generation rate (1.6/s)
+and the gust period (the 0.37 rad/s wander was a ~17 s cycle). Ring slope suppression and orientation
+default to off for the same reason.
+
+Coverage is `test-base-game-rain.mjs` (65 checks): the fan-out, the wind conversion, the slope window,
+a CPU twin of the conservative-versus-bilinear claim, the module built for real over a real sea-depth
+window (allocation rebuild, visibility gates, rebase), and headless GLSL builds of both rain graphs —
+with the hooks and without, so a regression for the other two pages fails in Node. Unseen in a browser.
+
+Next in the plan: R2 (wet ground) and R3 (the rain shadow map), which touch nothing each other touches.
 
 ### Terrain authoring and Terrain Studio
 
@@ -1660,7 +1781,8 @@ rapid foam at local drops; and no vertical or diagonal standing-water walls.
 
 ### Moisture-driven plants and other world dressing
 
-**Planned, not built (plan `docs/superpowers/plans/2026-08-23-base-game-plants.md`).** Roadmap step
+**F1 and F2 shipped 2026-08-24; grass onward is still planned (plan
+`docs/superpowers/plans/2026-08-23-base-game-plants.md`).** Roadmap step
 11, and it starts by closing the gap this doc's terrain section names: the plan's first two phases
 give the streamed terrain a biome field. `terrain-source-v5.js` fills the `biomeIds` and `moisture`
 tile fields that `terrain-source.js:8` has always reserved, using `biome-classifier-js.js`'s
@@ -1669,9 +1791,12 @@ tile's own grid and temperature/humidity/weirdness from the unbounded sampler th
 constructs — all continuous in position, so tiles classify without a global pass. Erosion, lakes and
 flow-derived materials still wait for regional hydrology, so the streamed `beachMask` drops its lake
 factor and moisture stays a proxy (`moisture-proxy.js`) behind one function.
-`base-game-terrain.js` then exposes `biomeAt` / `moistureAt` / `treeDensityAt` / `surfaceFieldAt`
-in the shapes `terrain-loader.js` already gives the forest and grass modules for authored maps, so
-both consumers wire up unchanged. On top of that: `flora-field.js` reconciles biome ambition against
+`base-game-terrain.js` now exposes `acquireFields()`, `fieldsReady(x, z)`, `biomeAt` /
+`biomeIdAt` / `moistureAt` / `treeDensityAt` / `fieldSurfaceAt` and `surfaceFieldAt(x, z)` over a
+reference-counted 8 m placement window fed by one shared field scheduler (`terrain.md` has the
+modules and the measured cost) — the shapes `terrain-loader.js` already gives the forest and grass
+modules for authored maps, so both consumers wire up unchanged. Every reader returns `null` where
+the field has not streamed, so placement defers instead of inventing a candidate. On top of that: `flora-field.js` reconciles biome ambition against
 `terrain-splat-streamed.js`'s `splatWeights()` so nothing grows on ground painted as rock,
 `flora-chunks.js` (lifted from the three inline copies in `environment-viewer.html`) streams the
 placement window, ground height comes from the shared fine `createHeightWindow` instance (the

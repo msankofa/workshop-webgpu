@@ -150,6 +150,8 @@ export function createBaseGameRemotePlayers({ scene, worldCoordinates, radius = 
         // Weapon state is not interpolated: the latest authoritative values ride along.
         weapon: latest?.weapon ?? null, slot: latest?.slot ?? 0, aiming: latest?.aiming === true,
         action: latest?.action ?? 0, actionTick: latest?.actionTick ?? 0, health: latest?.health ?? 100,
+        bodyModel: latest?.bodyModel ?? 'default', hitProfile: latest?.hitProfile ?? 'humanoid-default',
+        poseEpoch: latest?.poseEpoch ?? 0,
       };
       if (!enabled) { record.mesh.visible = false; record.mode = sample.mode; continue; }
       worldCoordinates.toRenderLocal(sample.position, _local);

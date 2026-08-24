@@ -2,6 +2,8 @@ import {
   BASE_GAME_PROTOCOL_VERSION,
   BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_WEAPON_ACTION, BASE_GAME_WEAPON_SLOTS, BASE_GAME_RELOAD_TICKS, sanitizeBaseGameLoadout, weaponForSlot,
   BASE_GAME_LAG_COMP_MS, BASE_GAME_RESPAWN_TICKS, BASE_GAME_FIRE_ACTION_TICKS, wireAmmo,
+  BASE_GAME_POSITION_HISTORY,
+  DEFAULT_BASE_GAME_BODY_MODEL, bodyModelById, hitProfileForBodyModel, sanitizeBaseGameBodyModel,
   BASE_GAME_ROOM_GRACE_MS,
   BASE_GAME_ROOM_PLAYER_CAP,
   BASE_GAME_SIM_HZ,
@@ -24,7 +26,14 @@ import { createTerrainStore } from './terrain-store.js';
 import { createBaseGamePlayerController } from '../base-game-player-controller.js';
 // Firing reuses the multiplayer-guns stack: combat.js (hitscan, validation, pose history for lag
 // compensation), player-combat.js (hp/alive/revive) and player-ammo.js (magazines).
-import { resolveHitscan, pushPlayerPose, samplePlayerPose, prunePlayerPoseHistory } from '../combat.js';
+import { resolveHitscan } from '../combat.js';
+import { createPlayerBodyPose, playerPoseAnchor, stepPlayerBodyPose } from '../player-body-pose.js';
+import {
+  createPlayerHitRigHistory,
+  distanceToPlayerHitRig,
+  pushPlayerHitRigPose,
+  samplePlayerHitRigPose,
+} from '../player-hit-rig.js';
 import { createPlayerCombatFacade } from '../player-combat.js';
 import { createAmmoStore } from '../player-ammo.js';
 import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor } from '../base-game-fire.js';
@@ -182,8 +191,12 @@ export function createBaseGameRoomService({
         if (!(range > 0)) return null;
         const dir = [dx / range, dy / range, dz / range];
         const players = [];
-        for (const other of room.clients.values()) if (other.controller) players.push(combatCapsule(other));
-        const hit = resolveHitscan({ shooterId: ownerId, origin: from, dir, range, players, occluder: worldOccluder(room) });
+        for (const other of room.clients.values()) {
+          if (!other.controller) continue;
+          updateClientHitPose(other);
+          players.push({ id: other.id, rig: other.hitPose, alive: other.hitPose.alive });
+        }
+        const hit = resolveHitscan({ shooterId: ownerId, origin: from, dir, range, players, playerInflate: radius, occluder: worldOccluder(room) });
         if (!hit || hit.kind === 'none') return null;
         if (hit.kind === 'world' && terrainHeight && hit.normal && hit.normal[1] > 0.5) return null;   // ground: the entity bounces or detonates itself
         return { point: hit.point, kind: hit.kind, id: hit.id };
@@ -207,19 +220,19 @@ export function createBaseGameRoomService({
     room.events.explosions.push({ p: [...point], radius, owner: proj.ownerId, weapon: proj.weaponId, contact: isSurfaceDetonation(init?.cause), tick: room.tick });
     for (const victim of room.clients.values()) {
       if (!victim.controller) continue;
-      const cap = combatCapsule(victim);
-      if (!cap.alive) continue;
-      const dmg = blastDamageAt(damage, Math.hypot(cap.p[0] - point[0], cap.p[1] - point[1], cap.p[2] - point[2]), radius);
+      updateClientHitPose(victim);
+      if (!victim.hitPose.alive) continue;
+      const dmg = blastDamageAt(damage, distanceToPlayerHitRig(point, victim.hitPose), radius);
       if (dmg <= 0) continue;
-      applyDamage(room, victim, dmg, { shooter: owner, point: cap.p, weaponId: weapon?.id ?? proj.weaponId, source: 'explosion' });
+      applyDamage(room, victim, dmg, { shooter: owner, point, weaponId: weapon?.id ?? proj.weaponId, source: 'explosion' });
     }
   }
 
-  function applyDamage(room, victim, amount, { shooter = null, point = null, normal = null, weaponId = null, source = 'gun' } = {}) {
+  function applyDamage(room, victim, amount, { shooter = null, point = null, normal = null, weaponId = null, source = 'gun', zone = null, side = 'center' } = {}) {
     const wasAlive = room.combat.getSnapshot(victim.id).alive;
     if (!wasAlive) return;
     const after = room.combat.applyDamage({ targetId: victim.id, amount, source, attackerId: shooter?.id ?? null, hitPoint: point, weaponId });
-    room.events.hits.push({ shooter: shooter?.id ?? null, victim: victim.id, point: point ?? victim.controller.getPosition(), normal, damage: amount, head: false, tick: room.tick });
+    room.events.hits.push({ shooter: shooter?.id ?? null, victim: victim.id, point: point ?? victim.controller.getPosition(), normal, damage: amount, zone, side, head: zone === 'head', tick: room.tick });
     if (after.alive) return;
     victim.deaths++;
     if (shooter && shooter !== victim) shooter.kills++;
@@ -236,6 +249,27 @@ export function createBaseGameRoomService({
       spawn: sim.spawn,
       config: { fixedHz: simHz },
       waterSurfaceAt: (x, z, t) => client.room.water.heightAt(x, z, t),
+    });
+    updateClientHitPose(client);
+  }
+
+  function updateClientHitPose(client) {
+    if (!client.controller) return null;
+    const combat = client.room.combat.getSnapshot(client.id);
+    return stepPlayerBodyPose(client.hitPose, {
+      position: client.controller.getPosition(),
+      velocity: client.controller.getVelocity(),
+      yaw: client.lastInput.yaw,
+      pitch: client.lastInput.pitch,
+      grounded: client.controller.grounded,
+      swimming: client.controller.swimming,
+      aiming: client.aiming,
+      tick: client.lastConsumedTick,
+      fixedHz: simHz,
+      poseEpoch: client.poseEpoch,
+      profileId: client.hitProfile,
+      alive: combat.alive,
+      hp: combat.hp,
     });
   }
 
@@ -272,6 +306,9 @@ export function createBaseGameRoomService({
       health: room.combat.getSnapshot(client.id).hp,
       dead: !room.combat.getSnapshot(client.id).alive,
       ammo: wireAmmo(weaponForSlot(client.loadout, client.slot) ? room.ammo.ensureAmmo(client.id, weaponForSlot(client.loadout, client.slot)) : null),
+      bodyModel: client.bodyModel,
+      hitProfile: client.hitProfile,
+      poseEpoch: client.poseEpoch,
     };
   }
 
@@ -360,6 +397,12 @@ export function createBaseGameRoomService({
       deaths: 0,
       trigger: createTriggerState(),
       throwTrigger: createTriggerState(),
+      bodyModel: DEFAULT_BASE_GAME_BODY_MODEL,
+      pendingBodyModel: null,
+      hitProfile: hitProfileForBodyModel(DEFAULT_BASE_GAME_BODY_MODEL),
+      poseEpoch: 1,
+      hitPose: createPlayerBodyPose(),
+      rewindPose: createPlayerBodyPose(),
     };
     room.combat.ensurePlayer(id);
     room.clients.set(id, client);
@@ -496,6 +539,8 @@ export function createBaseGameRoomService({
       attachProjectiles(room);
       for (const c of room.clients.values()) {
         c.controller = null;
+        c.poseEpoch++;
+        room.poseHistory.delete(c.id);
         attachController(c);
         c.lastInput = neutralBaseGameInput(c.lastInput.yaw, c.lastInput.pitch);
         c.spawnRevision++;
@@ -586,6 +631,15 @@ export function createBaseGameRoomService({
     client.throwTrigger = createTriggerState();
     client.respawnAtTick = 0;
     client.action = BASE_GAME_WEAPON_ACTION.idle;
+    if (client.pendingBodyModel) {
+      client.bodyModel = client.pendingBodyModel;
+      client.hitProfile = hitProfileForBodyModel(client.bodyModel);
+      client.pendingBodyModel = null;
+    }
+    client.poseEpoch++;
+    client.room.poseHistory.delete(client.id);
+    updateClientHitPose(client);
+    rememberPose(client);
     client.spawnRevision++;
     client.respawns = (client.respawns ?? 0) + 1;
     requestResync(client);
@@ -617,6 +671,7 @@ export function createBaseGameRoomService({
     if (!msg || typeof msg !== 'object') return false;
     if (msg.type === 'base:respawn') return respawn(ws, msg);
     if (msg.type === 'base:loadout') return setLoadout(ws, msg);
+    if (msg.type === 'base:set_body') return setBodyModel(ws, msg);
     if (msg.type === 'base:resync') return resync(ws, msg);
     if (msg.type === 'base:create') return createRoom(ws, msg);
     if (msg.type === 'base:join') return joinRoom(ws, msg);
@@ -668,18 +723,18 @@ export function createBaseGameRoomService({
     rememberPose(client);
   }
 
-  // combat.js pose history, keyed on room time so lag compensation is deterministic.
+  // Fixed-capacity articulated hit-pose history, keyed on room time for deterministic rewind.
   function roomMs(room) { return room.tick * stepMs; }
-  function combatCapsule(client) {
-    const c = client.controller.getCapsule();
-    const h = c.end[1] - c.start[1] + c.radius * 2;
-    return { id: client.id, p: [c.start[0], (c.start[1] + c.end[1]) * 0.5, c.start[2]], r: c.radius, h, alive: client.room.combat.getSnapshot(client.id).alive };
-  }
   function rememberPose(client) {
     const room = client.room;
-    const cap = combatCapsule(client);
-    pushPlayerPose(room.poseHistory, client.id, { p: cap.p, q: null, h: cap.h, r: cap.r, alive: cap.alive, hp: room.combat.getSnapshot(client.id).hp }, roomMs(room));
-    prunePlayerPoseHistory(room.poseHistory, roomMs(room));
+    const pose = updateClientHitPose(client);
+    if (!pose) return;
+    let history = room.poseHistory.get(client.id);
+    if (!history) {
+      history = createPlayerHitRigHistory(BASE_GAME_POSITION_HISTORY);
+      room.poseHistory.set(client.id, history);
+    }
+    pushPlayerHitRigPose(history, pose, roomMs(room));
   }
 
   // How fast the shooter is moving, 0..1 of full sprint, for bot-aim.js's move spread.
@@ -696,8 +751,8 @@ export function createBaseGameRoomService({
     // Hitscan and melee both resolve a ray; melee just uses the weapon's short range (env-viewer's
     // rule). Only the client's presentation differs — a knife draws no tracer.
     const room = client.room;
-    const me = combatCapsule(client);
-    const origin = [me.p[0], me.p[1] + me.h * 0.5, me.p[2]];   // combat.js shooterHeadOrigin convention
+    updateClientHitPose(client);
+    const origin = playerPoseAnchor(client.hitPose, mode === 'melee' ? 'eye' : 'muzzle');
     const dir = shotDirectionFor(trigger, { yaw: input.yaw, pitch: input.pitch, weaponId, tick: input.tick, seed: botSeedFromId(client.id), moveSpeed01: moveSpeed01(client), simHz });
     if (mode === 'projectile') {
       // environment-viewer's spawnCombatProjectile field forwarding; damage lands on detonation.
@@ -714,14 +769,24 @@ export function createBaseGameRoomService({
     const players = [];
     for (const other of room.clients.values()) {
       if (other === client || !other.controller) continue;
-      const past = samplePlayerPose(room.poseHistory, other.id, at);
-      players.push(past ? { id: other.id, p: past.p, r: past.r, h: past.h, alive: past.alive } : combatCapsule(other));
+      updateClientHitPose(other);
+      const history = room.poseHistory.get(other.id);
+      const past = history ? samplePlayerHitRigPose(history, at, other.rewindPose) : null;
+      const rig = past || other.hitPose;
+      players.push({ id: other.id, rig, alive: rig.alive });
     }
     const hit = resolveHitscan({ shooterId: client.id, origin, dir, range: weapon.range ?? 300, players, occluder: worldOccluder(room) });
     room.events.shots.push({ shooter: client.id, weapon: weaponId, origin, dir, end: hit.point, normal: hit.normal ?? null, kind: hit.kind, tick: room.tick });
     if (hit.kind !== 'player') return;
     const victim = room.clients.get(hit.id);
-    if (victim) applyDamage(room, victim, weapon.damage, { shooter: client, point: hit.point, normal: hit.normal ?? null, weaponId });
+    if (victim) applyDamage(room, victim, weapon.damage, {
+      shooter: client,
+      point: hit.point,
+      normal: hit.normal ?? null,
+      weaponId,
+      zone: hit.zone ?? null,
+      side: hit.side ?? 'center',
+    });
   }
 
   function setLoadout(ws, msg) {
@@ -732,6 +797,29 @@ export function createBaseGameRoomService({
     client.loadout = sanitizeBaseGameLoadout(msg.loadout);
     client.action = BASE_GAME_WEAPON_ACTION.idle;
     client.room.ammo.resetPlayer(client.id);
+    broadcast(client.room);
+    return true;
+  }
+
+  function setBodyModel(ws, msg) {
+    const client = socketClients.get(ws);
+    if (!client || client.ws !== ws) return true;
+    if (msg.protocol !== BASE_GAME_PROTOCOL_VERSION) { client.rejectedInputs++; return true; }
+    if (!client.rate.allow(now())) { client.rejectedInputs++; return true; }
+    if (!bodyModelById(msg.bodyModel)) { client.rejectedInputs++; return true; }
+    const bodyModel = sanitizeBaseGameBodyModel(msg.bodyModel);
+    if (bodyModel === client.bodyModel) return true;
+    const nextProfile = hitProfileForBodyModel(bodyModel);
+    if (nextProfile !== client.hitProfile && client.room.combat.getSnapshot(client.id).alive) {
+      client.pendingBodyModel = bodyModel;
+      return true;
+    }
+    client.bodyModel = bodyModel;
+    client.hitProfile = nextProfile;
+    client.poseEpoch++;
+    client.room.poseHistory.delete(client.id);
+    updateClientHitPose(client);
+    rememberPose(client);
     broadcast(client.room);
     return true;
   }
@@ -755,6 +843,7 @@ export function createBaseGameRoomService({
     if (!connected) {
       controller.stepOnce(neutralBaseGameInput(client.lastInput.yaw, client.lastInput.pitch), false);
       client.serverSteps++;
+      rememberPose(client);
       if (!client.awaitingResync) requestResync(client);
       return;
     }
@@ -763,6 +852,7 @@ export function createBaseGameRoomService({
       if (client.stalledTicks > stallTicks) {
         controller.stepOnce(neutralBaseGameInput(client.lastInput.yaw, client.lastInput.pitch), false);
         client.serverSteps++;
+        rememberPose(client);
         if (!client.awaitingResync) requestResync(client);
       }
       return;

@@ -239,21 +239,25 @@ for (const octaves of [1, 2, 4, 6]) {
   const settingsBlock = html.match(/const DEFAULT_SETTINGS = Object\.freeze\(\{([\s\S]*?)\n\}\);/)?.[1] ?? '';
   // Several keys share a line, and the block carries comments, so strip those and match anywhere.
   const settingsCode = settingsBlock.split('\n').filter(line => !line.trim().startsWith('//')).join('\n');
-  const weatherKeys = [...settingsCode.matchAll(/\b(cloud[A-Za-z]+|weather[A-Za-z]+)\s*:/g)].map(m => m[1]);
+  // Classify by the VALUE the page defaults, not by the key's name: a name pattern goes stale the
+  // first time someone adds a boolean whose name does not end in "Enabled".
+  const entries = [...settingsCode.matchAll(/\b(cloud[A-Za-z]+|weather[A-Za-z]+|rain[A-Za-z]+)\s*:\s*([^,\n]+)/g)]
+    .map(m => [m[1], m[2].trim()]);
+  const weatherKeys = entries.map(e => e[0]);
+  const numeric = new Set(entries.filter(([, v]) => /^-?[\d.]/.test(v)).map(([k]) => k));
   const loopSuffixes = [...html.matchAll(/add(?:Toggle|Range)\(sec, `\$\{prefix\}(\w+)`/g)].map(m => m[1]);
   const literal = new Set([...html.matchAll(/add(?:Toggle|Range|Select|Color)\([\w.]+, '([\w]+)'/g)].map(m => m[1]));
   const covered = key => literal.has(key)
     || (/^cloud[AB]/.test(key) && loopSuffixes.includes(key.slice(6)));
   const missing = weatherKeys.filter(k => !covered(k));
-  ok(weatherKeys.length >= 37, `the page defaults every weather setting (found ${weatherKeys.length})`);
+  ok(weatherKeys.length >= 66, `the page defaults every weather setting (found ${weatherKeys.length})`);
   ok(loopSuffixes.length === 12, `the deck loop builds all twelve per-deck controls (found ${loopSuffixes.length})`);
   ok(missing.length === 0, `every weather setting has a panel control${missing.length ? `: missing ${missing.join(', ')}` : ''}`);
 
   const limitsBlock = html.match(/const NUMBER_LIMITS = Object\.freeze\(\{([\s\S]*?)\n\}\);/)?.[1] ?? '';
   const limited = new Set([...limitsBlock.matchAll(/(\w+):\s*\[/g)].map(m => m[1]));
   // Booleans and strings are validated by their own branch in assignLoadedSettings, not by limits.
-  const numericWeather = weatherKeys.filter(k => !/Visible$|Enabled$|DepthWrite$|FollowsSun$|Tint$|Source$|Color$/.test(k));
-  const unlimited = numericWeather.filter(k => !limited.has(k));
+  const unlimited = [...numeric].filter(k => !limited.has(k));
   ok(unlimited.length === 0, `every numeric weather setting is clamped on load${unlimited.length ? `: missing ${unlimited.join(', ')}` : ''}`);
 }
 

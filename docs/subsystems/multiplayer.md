@@ -1139,12 +1139,37 @@ host-only feature looked complete.
 
 ## Weather in the shared world (2026-08-24)
 
-Base Game's weather rides the same shared-world channel as the sun and the wave spectrum. Six keys are
+Base Game's weather rides the same shared-world channel as the sun and the wave spectrum. Ten keys are
 owner-owned — `weatherRain`, `weatherOvercast`, `cloudACover`, `cloudAHeight`, `cloudBCover`,
-`cloudBHeight` — and everything else about how weather is drawn (fog response, dimming response, cloud
-extent, octaves, drop budgets later) stays local, so a guest can run a cheaper sky in the same storm.
-The server carries these keys but does not simulate them: nothing in movement or collision reads
-weather, so unlike the terrain and the waves this is state carriage only.
+`cloudBHeight`, and (with rain, phase R1) `weatherWindDeg`, `weatherWindSpeed`, `weatherGust`,
+`weatherGustPeriod`. Everything else about how weather is drawn (fog response, dimming response, cloud
+extent and octaves, drop and splash budgets, drop colour, ground sampling) stays local, so a guest can
+run a cheaper sky and 2,000 drops in the same storm as a host running 40,000. The server carries these
+keys but does not simulate them: nothing in movement or collision reads weather, so unlike the terrain
+and the waves this is state carriage only.
+
+One local key deliberately overrides a shared one. `weatherWindFollowsWaves` makes the page *use*
+`waveWindDeg` for the rain instead of writing it into `weatherWindDeg`, so a guest follows the room's
+sea without needing permission to write a shared key — and the wind slider's readout says which
+heading is actually in force.
+
+## Base Game articulated hit authority (protocol 10, 2026-08-24)
+
+Base Game rooms now keep locomotion and damage geometry separate. The predicting client and room
+server still move the same stable capsule, but only the server derives the 16-joint hurt pose and
+decides player damage. Clients never send bones, primitive radii, claimed zones or impact points.
+
+Each identity stores a whitelisted `bodyModel`, server-selected `hitProfile`, and `poseEpoch`.
+`base:set_body` is rate limited and rejects unknown ids; the identity survives reconnect. Snapshot
+roster entries echo those three fields so each observer builds the correct remote model. Changing a
+local model no longer changes every remote model on that page. All current render designs share
+`humanoid-default`; a profile-changing model must be measured and versioned before admission.
+
+The server keeps 32 preallocated root-relative poses per player and rewinds victims by the existing
+100 ms interpolation delay. A respawn, world replacement or model/profile change clears history and
+increments the epoch, so interpolation cannot stretch a body across a teleport. Hit events add
+validated semantic `zone` and `side`; `head` is derived compatibility data. This protocol bump means
+the OnRender relay/server and browser assets must be deployed together.
 
 `test-base-game-shared-keys.mjs` checks that the protocol's `NUMBER_LIMITS` and `base-game.html`'s agree
 for every shared key. They are two separate tables clamping the same numbers — one on the wire, one when

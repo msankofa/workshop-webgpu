@@ -10,15 +10,17 @@
 // limit constraints (min/max reach on knees/elbows so limbs don't collapse to a point or
 // hyperextend). Verlet integration + iterative constraint projection + ground collision.
 
+import { HUMANOID_JOINTS, HUMANOID_PROPORTIONS } from './humanoid-rig-topology.js';
+
 // ---- proportions (from player-procedural-body.js: H=1.8, R=0.35) ----
-const H = 1.8, R = 0.35;
-const legLen = H * 0.62;
-const thighLen = legLen * 0.52;
-const shinLen = legLen * 0.48;
-const armLen = H * 0.42;
-const upperArmLen = armLen * 0.5;
-const forearmLen = armLen * 0.5;
-const limbThickness = R * 0.32;
+const H = HUMANOID_PROPORTIONS.height, R = HUMANOID_PROPORTIONS.radius;
+const legLen = H * HUMANOID_PROPORTIONS.legLenRatio;
+const thighLen = legLen * HUMANOID_PROPORTIONS.thighFrac;
+const shinLen = legLen * HUMANOID_PROPORTIONS.shinFrac;
+const armLen = H * HUMANOID_PROPORTIONS.armLenRatio;
+const upperArmLen = armLen * HUMANOID_PROPORTIONS.upperArmFrac;
+const forearmLen = armLen * HUMANOID_PROPORTIONS.forearmFrac;
+const limbThickness = R * HUMANOID_PROPORTIONS.limbThicknessRatio;
 
 export const RAGDOLL_PROPORTIONS = {
   H, R, legLen, thighLen, shinLen, armLen, upperArmLen, forearmLen, limbThickness,
@@ -156,7 +158,7 @@ export function createRagdoll(opts = {}) {
 
   const particles = [];
   const index = {};
-  for (const name of Object.keys(locals)) {
+  for (const name of HUMANOID_JOINTS) {
     const pos = place(locals[name], yaw, origin);
     index[name] = particles.length;
     particles.push({ name, pos, prev: copy(pos), radius: JOINT_RADIUS[name] || limbThickness * 0.5, invMass: 1 });

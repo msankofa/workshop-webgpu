@@ -4,6 +4,7 @@ import {
   BASE_GAME_MAX_TICKS_PER_PACKET,
   BASE_GAME_PROTOCOL_VERSION,
   sanitizeBaseGameLoadout,
+  sanitizeBaseGameBodyModel,
   normalizeBaseGameRoomCode,
   pickBaseGameSharedWorld,
   sanitizeBaseGamePlayerState,
@@ -188,6 +189,11 @@ export function connectBaseGameSession({
     setLoadout(loadout) {
       if (ws?.readyState !== WebSocketImpl.OPEN) return false;
       ws.send(JSON.stringify({ type: 'base:loadout', protocol: BASE_GAME_PROTOCOL_VERSION, loadout: sanitizeBaseGameLoadout(loadout) }));
+      return true;
+    },
+    setBodyModel(bodyModel) {
+      if (ws?.readyState !== WebSocketImpl.OPEN) return false;
+      ws.send(JSON.stringify({ type: 'base:set_body', protocol: BASE_GAME_PROTOCOL_VERSION, bodyModel: sanitizeBaseGameBodyModel(bodyModel) }));
       return true;
     },
     requestResync() {

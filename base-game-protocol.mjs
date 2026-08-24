@@ -1,7 +1,14 @@
 import { normalizeDescriptor } from './terrain-source.js';
 import { normalizeProject, hashProject, classifyProject } from './terrain-project-v5.js';
+import {
+  BASE_GAME_BODY_MODEL_IDS,
+  DEFAULT_BASE_GAME_BODY_MODEL,
+  bodyModelById,
+  hitProfileForBodyModel,
+  sanitizeBaseGameBodyModel,
+} from './base-game-body-models.js';
 
-export const BASE_GAME_PROTOCOL_VERSION = 9;
+export const BASE_GAME_PROTOCOL_VERSION = 10;
 // Firing (phase 3): the tick's `fire` is consumed by the server, ammo and health are authoritative,
 // and snapshots carry one-shot `hits` / `deaths` events for feedback.
 export const BASE_GAME_LAG_COMP_MS = 100;             // rewind victims by the client interpolation delay
@@ -17,6 +24,8 @@ export const BASE_GAME_DEFAULT_LOADOUT = Object.freeze({ primary: 'cz_805_bren',
 export const BASE_GAME_WEAPON_ACTION = Object.freeze({ idle: 0, reload: 1, fire: 2, holster: 3, draw: 4, throw: 5 });
 export const BASE_GAME_RELOAD_TICKS = 180;           // 1.5 s at SIM_HZ; the server clears the action after this
 export const BASE_GAME_POSITION_HISTORY = 32;        // per-client server positions kept for lag compensation (phase 3)
+export const BASE_GAME_HIT_ZONES = Object.freeze(['head', 'neck', 'torso', 'pelvis', 'upperArm', 'lowerArm', 'hand', 'thigh', 'calf', 'foot']);
+export const BASE_GAME_HIT_SIDES = Object.freeze(['center', 'left', 'right']);
 export const BASE_GAME_TERRAIN_CONFIG_MAX_BYTES = 512 * 1024;
 export const BASE_GAME_TERRAIN_KINDS = Object.freeze(['traversalLab', 'terrain']);
 export const BASE_GAME_ROOM_GRACE_MS = 30_000;
@@ -72,6 +81,12 @@ export const BASE_GAME_SHARED_KEYS = Object.freeze([
   'cloudAHeight',
   'cloudBCover',
   'cloudBHeight',
+  // Wind is what the weather IS, not how it is drawn: it leans every peer's drops the same way and
+  // it is what the wave heading already agrees with. The drop budget and look stay local.
+  'weatherWindDeg',
+  'weatherWindSpeed',
+  'weatherGust',
+  'weatherGustPeriod',
 ]);
 
 const NUMBER_LIMITS = Object.freeze({
@@ -100,6 +115,10 @@ const NUMBER_LIMITS = Object.freeze({
   cloudAHeight: [0, 10000],
   cloudBCover: [0, 1],
   cloudBHeight: [0, 10000],
+  weatherWindDeg: [0, 360],
+  weatherWindSpeed: [0, 60],
+  weatherGust: [0, 40],
+  weatherGustPeriod: [0.5, 60],
 });
 
 const STRING_VALUES = Object.freeze({ primaryBody: ['sun', 'moon'] });
@@ -318,7 +337,19 @@ export function sanitizeBaseGameHitEvent(event) {
   const damage = Number(event.damage);
   if (!Number.isFinite(damage) || damage < 0) return null;
   const normal = finiteVec3(event.normal, 2) ? [...event.normal] : null;
-  return { shooter: event.shooter, victim: event.victim, point: [...event.point], normal, damage, head: event.head === true, tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
+  const zone = BASE_GAME_HIT_ZONES.includes(event.zone) ? event.zone : null;
+  const side = BASE_GAME_HIT_SIDES.includes(event.side) ? event.side : 'center';
+  return {
+    shooter: event.shooter,
+    victim: event.victim,
+    point: [...event.point],
+    normal,
+    damage,
+    zone,
+    side,
+    head: zone === 'head' || event.head === true,
+    tick: nonNegativeInteger(event.tick) ? event.tick : 0,
+  };
 }
 
 // A resolved shot, for tracers on every client: where it left and where it ended.
@@ -377,6 +408,7 @@ export function sanitizeBaseGamePlayerState(state) {
   if (!finiteVec3(velocity, MAX_ABS_VELOCITY)) return null;
   const yaw = Number.isFinite(state.yaw) ? state.yaw : 0;
   const pitch = Number.isFinite(state.pitch) ? Math.max(-MAX_PITCH, Math.min(MAX_PITCH, state.pitch)) : 0;
+  const bodyModel = sanitizeBaseGameBodyModel(state.bodyModel);
   return {
     position: [...state.position],
     velocity: [...velocity],
@@ -395,8 +427,19 @@ export function sanitizeBaseGamePlayerState(state) {
     health: Number.isFinite(state.health) ? Math.max(0, Math.min(BASE_GAME_MAX_HEALTH, state.health)) : BASE_GAME_MAX_HEALTH,
     dead: state.dead === true,
     ammo: cleanAmmo(state.ammo),
+    bodyModel,
+    hitProfile: hitProfileForBodyModel(bodyModel),
+    poseEpoch: nonNegativeInteger(state.poseEpoch) ? state.poseEpoch : 0,
   };
 }
+
+export {
+  BASE_GAME_BODY_MODEL_IDS,
+  DEFAULT_BASE_GAME_BODY_MODEL,
+  bodyModelById,
+  hitProfileForBodyModel,
+  sanitizeBaseGameBodyModel,
+};
 
 // A tick is accepted only when newer than the last consumed one and not absurdly far ahead.
 export function isAcceptableBaseGameTick(tick, lastConsumedTick, maxAhead = BASE_GAME_MAX_TICKS_AHEAD) {

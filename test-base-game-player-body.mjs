@@ -183,6 +183,14 @@ for (const { key } of BASE_GAME_BODY_DESIGNS) {
   ok(!threw && designBodies.bodyDesign === key, `body design '${key}' builds and updates local + remote (${threw ? threw.message : 'ok'})`);
 }
 ok(designBodies.setBodyDesign('nonsense') === 'default', 'unknown design key falls back to the bare rig');
+designBodies.beginRemoteFrame();
+designBodies.updateRemote(1 / 60, 'model-a', { globalFoot: [-10, 0, 8], velocity: [0, 0, 0], yaw: 0, grounded: true, bodyModel: 'v4' });
+designBodies.updateRemote(1 / 60, 'model-b', { globalFoot: [-8, 0, 8], velocity: [0, 0, 0], yaw: 0, grounded: true, bodyModel: 'soldier:medic' });
+designBodies.endRemoteFrame();
+ok(designBodies.remoteBodyModel('model-a') === 'v4' && designBodies.remoteBodyModel('model-b') === 'soldier:medic',
+  'remote bodies keep independent authoritative model identities');
+designBodies.setBodyDesign('v2');
+ok(designBodies.remoteBodyModel('model-a') === 'v4', 'changing the local model does not rebuild a remote as the local design');
 designBodies.dispose();
 
 // ---- weapons: mount per body, aim channels, remote weapon from the sample, reload on a new tick ----

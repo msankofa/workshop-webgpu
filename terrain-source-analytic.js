@@ -4,6 +4,8 @@
 
 import { terrainHeightAt, terrainHeightAtSpacing, terrainNormalAt, buildHeightTile } from './terrain-field.js';
 import { normalizeDescriptor, normalizeTileRequest, validateTileResult, registerSourceKind, TerrainSourceError } from './terrain-source.js';
+import { BIOME_INDEX } from './terrain-biome-point.js';
+import { moistureProxyForBiome } from './moisture-proxy.js';
 
 export const ANALYTIC_ALGORITHM_VERSION = 'terrain-field-1';
 export const DEFAULT_ANALYTIC_PARAMS = Object.freeze({ baseAmp: 1.0, lake: 0.45, lakeDepth: 3.2 });
@@ -29,6 +31,10 @@ export function analyticDescriptor({ key = 'analytic', sourceVersion = '1', para
     seaLevel,
   });
 }
+
+// The analytic field has no climate channels, so every tile reports one neutral biome.
+export const ANALYTIC_BIOME = 'plains';
+const ANALYTIC_BIOME_ID = BIOME_INDEX[ANALYTIC_BIOME];
 
 export function createAnalyticSource(descriptorLike) {
   const descriptor = descriptorLike && descriptorLike.kind ? normalizeDescriptor(descriptorLike) : analyticDescriptor(descriptorLike);
@@ -64,6 +70,16 @@ export function createAnalyticSource(descriptorLike) {
           }
         }
         out.normals = normals;
+      }
+      // No climate model here: the analytic field is one ground everywhere. surfaceHeights is the
+      // heightfield itself (nothing carves it), and the biome is the neutral one, so the analytic
+      // world and the Traversal Lab stay valid consumers of the same tile contract.
+      if (req.fields.includes('surfaceHeights')) out.surfaceHeights = tile.heights;
+      if (req.fields.includes('biomeIds')) out.biomeIds = new Uint8Array(tile.texels * tile.texels).fill(ANALYTIC_BIOME_ID);
+      if (req.fields.includes('moisture')) {
+        const moisture = new Float32Array(tile.texels * tile.texels);
+        for (let i = 0; i < moisture.length; i++) moisture[i] = moistureProxyForBiome(ANALYTIC_BIOME, tile.heights[i], descriptor.seaLevel ?? 0);
+        out.moisture = moisture;
       }
       return validateTileResult(out, req);
     },

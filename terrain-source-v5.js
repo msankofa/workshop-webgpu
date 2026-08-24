@@ -10,6 +10,7 @@ import { prepareStack, evaluateStackPoint } from './terrain-stack.js';
 import { sampleHeightTileBilinear } from './terrain-field.js';
 import { createClassicHeightPoint, createDensityPoint, createUnboundedDensityNoiseSampler, marchingCubesGrid } from './terrain-generator-js.js';
 import { createUnboundedFieldSampler } from './biome-classifier-js.js';
+import { createBiomePoint } from './terrain-biome-point.js';
 import { normalizeProject, hashProject, classifyProject, PROJECT_ALGORITHM_UNBOUNDED } from './terrain-project-v5.js';
 import { normalizeDescriptor, normalizeTileRequest, validateTileResult, registerSourceKind, TerrainSourceError } from './terrain-source.js';
 
@@ -170,6 +171,15 @@ export function createV5Source(descriptorLike) {
   }
 
   // Signed density at a global point (positive = solid); `h` may be passed to skip the height eval.
+  // Biome/moisture for streamed tiles. Paint is not available here: classifyProject rejects a
+  // painted project for the infinite runtime, so this is the noise-and-slope half only.
+  const biomePoint = createBiomePoint(cfg, sampler, { seaLevel: cfg.sea_level });
+  function biomeAtPoint(x, z, h = surfaceYAt(x, z)) {
+    const e = NORMAL_EPSILON;
+    const gx = (surfaceYAt(x + e, z) - surfaceYAt(x - e, z)) / (2 * e);
+    const gz = (surfaceYAt(x, z + e) - surfaceYAt(x, z - e)) / (2 * e);
+    return biomePoint.classifyPoint(x, z, h, Math.hypot(gx, gz));
+  }
   function densityAt(x, y, z, h = heightAt(x, z)) { return densityPoint(x, y, z, h); }
   // The density's real surface at (x, z): the highest solid sample scanning down from above the
   // heightfield, refined by bisection. The warp moves it up to ~warp_strength from heightAt, so
@@ -256,6 +266,10 @@ export function createV5Source(descriptorLike) {
     contains() { return true; },
     heightAt,
     heightAtSpacing,
+    // One-off CPU queries (a debug readout, a spawn point). Placement reads streamed tile fields:
+    // this pays a surfaceYAt scan plus four heightAt evaluations for the slope, per call.
+    biomeAt: biomeAtPoint,
+    moistureAt(x, z) { const h = surfaceYAt(x, z); return biomePoint.moistureAt(biomeAtPoint(x, z, h), h); },
     normalAt,
     densityAt,
     surfaceYAt,
@@ -285,6 +299,27 @@ export function createV5Source(descriptorLike) {
           }
         }
         out.normals = normals;
+      }
+      // The visible open-sky surface. Expensive (surfaceYAt scans down from h + VOLUME_TOP_MARGIN
+      // in 1 m steps, then bisects 8 times), so it is filled only when a consumer asks for it.
+      if (req.fields.includes('surfaceHeights')) {
+        const surface = new Float32Array(texels * texels);
+        for (let iz = 0; iz < texels; iz++) {
+          const z = originZ + iz * step;
+          for (let ix = 0; ix < texels; ix++) {
+            const i = iz * texels + ix;
+            surface[i] = surfaceYAt(originX + ix * step, z, heights[i]);
+          }
+        }
+        out.surfaceHeights = surface;
+      }
+      if (req.fields.includes('biomeIds') || req.fields.includes('moisture')) {
+        const { biomeIds, moisture } = biomePoint.classifyTile(
+          out.surfaceHeights ?? heights, texels, step, originX, originZ, spacing,
+          { biomeIds: req.fields.includes('biomeIds'), moisture: req.fields.includes('moisture') },
+        );
+        if (biomeIds) out.biomeIds = biomeIds;
+        if (moisture) out.moisture = moisture;
       }
       // Every visual tile gets skirts (the exact window's edge cracks against the cascade too);
       // collision consumers slice the index at volume.skirtIndexStart. The server's collision

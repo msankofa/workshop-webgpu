@@ -15,6 +15,11 @@ import { createChunkBatcher } from './terrain-chunk-batches.js';
 import { createStreamedSplatMaterial, syncStreamedSplatCoverage, updateStreamedSplat } from './terrain-splat-streamed.js';
 import { createLodCoverage } from './terrain-lod-coverage.js';
 import { createSeaDepthMap } from './terrain-sea-depth.js';
+import { createFieldScheduler, FIELD_PRIORITY } from './terrain-field-scheduler.js';
+import { createFieldWindow, createFieldWindowRegistry } from './terrain-field-window.js';
+import { BIOMES, BIOME_INDEX, treeDensityForBiome } from './terrain-biome-point.js';
+import { createTileCover, COVER_CHANNELS, decodeCover } from './flora-field.js';
+import { splatWeights } from './terrain-splat-streamed.js';
 
 export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   chunkSize: 30,
@@ -24,6 +29,17 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   killPlaneBelowSurface: 80,   // metres under the local ground before the player is respawned
   collisionRadius: 2,          // volumetric: chunks around the player that get a BVH (5x5 = 150 m square)
   farLodLevels: 6,             // heightfield mode: clipmap rings (6 → 6.1 km half-extent at post0 2 m)
+  // Streamed biome/moisture field around the player (plants plan F2). 8 m posts over 2 km is the
+  // canonical placement resolution: candidate identity and species must not change with visual LOD.
+  fieldPost: 8,
+  fieldTileIntervals: 16,
+  fieldTilesPerSide: 16,
+  // Contact window: what things SIT on. 1.25 m posts at lod 0 - the exact field the near chunks
+  // are built from - over 160 m, the weather plan's R1b footprint. Small and expensive per post,
+  // so it is separate from the 8 m placement field rather than folded into it.
+  contactPost: 1.25,
+  contactTileIntervals: 16,
+  contactTilesPerSide: 8,
   // Volumetric mode: marching-cubes LOD cascade. Each level is a chunk system with a fixed
   // segment count, so spacing grows with the chunk (120/24 = 5 m, 20 m, 80 m); radius 2 → five
   // chunks a side → half-extents 300 m, 1.2 km, 4.8 km. Coarser levels sit a little lower so the
@@ -229,6 +245,134 @@ export function createBaseGameTerrain({
   const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
   // Ground height around the player for water (terrain-sea-depth.js): streams only while active.
   const seaDepth = createSeaDepthMap({ source: system.source, useWorker });
+  // Field windows (biome, moisture, visible surface) share one small worker pool, deliberately
+  // separate from and smaller than terrain-system's, so a placement tile can never be what a
+  // visible or collision chunk is queued behind.
+  const fieldScheduler = createFieldScheduler({ useWorker });
+  const fieldRegistry = createFieldWindowRegistry({ scheduler: fieldScheduler });
+  const fieldHandles = new Set();   // one registry handle per consumer; the registry owns the window
+  const contactHandles = new Set();
+  // surfaceHeights costs a surfaceYAt scan per post (~26 us), so it is requested only where the
+  // ground can actually differ from the heightfield: volumetric mode.
+  // Cover is derived per texel as each tile lands, from the biome, the moisture and the very
+  // splat weights the ground is textured with (flora-field.js). One number per layer per texel.
+  const tileCover = createTileCover({ seaLevel: system.source?.descriptor?.seaLevel ?? 0, biomeNames: BIOMES });
+  function placementFields() {
+    return volumetricMode ? ['surfaceHeights', 'biomeIds', 'moisture'] : ['biomeIds', 'moisture'];
+  }
+  function fieldKey() {
+    return `placement:${cfg.fieldPost}:${placementFields().join(',')}`;
+  }
+  function openFieldWindow() {
+    const fields = placementFields();
+    return fieldRegistry.acquire(fieldKey(), ({ scheduler }) => createFieldWindow({
+      source: system.source, descriptor: system.source.descriptor, scheduler, label: 'placement',
+      fields: [...fields, ...COVER_CHANNELS], derived: COVER_CHANNELS, derive: tileCover.derive,
+      post: cfg.fieldPost, tileIntervals: cfg.fieldTileIntervals, tilesPerSide: cfg.fieldTilesPerSide,
+      priority: FIELD_PRIORITY.placement,
+    }));
+  }
+  function contactFields() { return volumetricMode ? ['surfaceHeights'] : ['heights']; }
+  function openContactWindow() {
+    const fields = contactFields();
+    return fieldRegistry.acquire(`contact:${cfg.contactPost}:${fields.join(',')}`, ({ scheduler }) => createFieldWindow({
+      source: system.source, descriptor: system.source.descriptor, scheduler, label: 'contact',
+      fields, lod: 0, post: cfg.contactPost, tileIntervals: cfg.contactTileIntervals, tilesPerSide: cfg.contactTilesPerSide,
+      priority: FIELD_PRIORITY.contact,
+    }));
+  }
+  // Grass and rain hold this; it is the surface they touch, at the spacing the ground is drawn at.
+  function acquireContactField() {
+    const handle = openContactWindow();
+    contactHandles.add(handle);
+    let released = false;
+    return () => { if (released) return; released = true; contactHandles.delete(handle); handle.release(); };
+  }
+  function contactWindow() { for (const handle of contactHandles) return handle.window; return null; }
+  function contactHeightAt(x, z) {
+    const w = contactWindow();
+    if (!w) return null;
+    return w.fields.includes('surfaceHeights') ? w.sampleAt('surfaceHeights', x, z) : w.sampleAt('heights', x, z);
+  }
+  // Consumers (flora, later the ground material) hold a reference each; the window streams only
+  // while someone does, and a mode switch rebuilds it because the field set differs.
+  function acquireFields() {
+    const handle = openFieldWindow();
+    fieldHandles.add(handle);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      fieldHandles.delete(handle);
+      handle.release();
+    };
+  }
+  // Re-acquire every consumer against the current key, then drop the old handles: the window only
+  // changes if the key did, so an unchanged mode switch is a no-op rather than a restream.
+  function reopenFieldWindow() {
+    for (const [set, open] of [[fieldHandles, openFieldWindow], [contactHandles, openContactWindow]]) {
+      if (!set.size) continue;
+      const previous = [...set];
+      set.clear();
+      for (const _ of previous) set.add(open());
+      for (const handle of previous) handle.release();
+    }
+  }
+  function fieldWindow() {
+    for (const handle of fieldHandles) return handle.window;
+    return null;
+  }
+  // Every read is null when the field has not streamed here yet. A placement loop must defer on
+  // null rather than substitute a default, or the world records a candidate missing data invented.
+  function biomeIdAt(x, z) {
+    const id = fieldWindow()?.sampleAt('biomeIds', x, z);
+    return id == null ? null : id | 0;
+  }
+  function biomeAt(x, z) {
+    const id = biomeIdAt(x, z);
+    return id == null ? null : (BIOMES[id] ?? null);
+  }
+  function moistureAt(x, z) {
+    const m = fieldWindow()?.sampleAt('moisture', x, z);
+    return m == null ? null : m;
+  }
+  // PLACEMENT height: the field's own post spacing, band-limited to it. It decides where things
+  // go, never where they sit — contact height comes from the fine lod-0 window or a ground probe.
+  function fieldSurfaceAt(x, z) {
+    const w = fieldWindow();
+    if (!w) return null;
+    return w.fields.includes('surfaceHeights') ? w.sampleAt('surfaceHeights', x, z) : w.sampleAt('heights', x, z);
+  }
+  // 0..1 per layer, or null where the field has not streamed. This is what placement reads.
+  function coverAt(x, z) {
+    const w = fieldWindow();
+    if (!w) return null;
+    const grass = w.sampleAt('coverGrass', x, z);
+    if (grass == null) return null;
+    return { grass: decodeCover(grass), plant: decodeCover(w.sampleAt('coverPlant', x, z)), tree: decodeCover(w.sampleAt('coverTree', x, z)) };
+  }
+  function treeDensityAt(x, z) {
+    const biome = biomeAt(x, z);
+    return biome == null ? null : treeDensityForBiome(biome);
+  }
+  // What the ground is made of where flora wants to grow: the biome's ambition and the splat
+  // weights the terrain is actually textured with, from one sample.
+  function surfaceFieldAt(x, z) {
+    const biome = biomeAt(x, z);
+    if (biome == null) return null;
+    const height = fieldSurfaceAt(x, z);
+    if (height == null) return null;
+    const post = cfg.fieldPost;
+    const hx = fieldSurfaceAt(x + post, z), hx0 = fieldSurfaceAt(x - post, z);
+    const hz = fieldSurfaceAt(x, z + post), hz0 = fieldSurfaceAt(x, z - post);
+    let normalY = 1;
+    if (hx != null && hx0 != null && hz != null && hz0 != null) {
+      const gx = (hx - hx0) / (2 * post), gz = (hz - hz0) / (2 * post);
+      normalY = 1 / Math.sqrt(gx * gx + gz * gz + 1);
+    }
+    const weights = splatWeights(height, normalY, splatMaterial?.userData?.streamedSplat?.cfg);
+    return { biome, height, normalY, moisture: moistureAt(x, z) ?? 0, weights, treeDensity: treeDensityForBiome(biome) };
+  }
   let seaDepthActive = false;
   // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
   let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
@@ -374,6 +518,8 @@ export function createBaseGameTerrain({
   function setSeaLevel(level) {
     if (!Number.isFinite(level) || level === seaLevel) return false;
     seaLevel = level;
+    tileCover.setSeaLevel(level);
+    fieldWindow()?.clear();          // cover was derived against the old waterline
     recolorAll();
     return true;
   }
@@ -395,6 +541,18 @@ export function createBaseGameTerrain({
     setSeaLevel,
     seaDepth,
     setSeaDepthActive(flag) { seaDepthActive = !!flag; },
+    // Streamed biome/moisture field (plants plan F2). Hold a reference to make it stream.
+    acquireFields,
+    get fields() { return fieldWindow(); },
+    get fieldScheduler() { return fieldScheduler; },
+    fieldsReady: (x, z) => fieldWindow()?.ready(x, z) === true,
+    acquireContactField,
+    get contactField() { return contactWindow(); },
+    contactHeightAt,
+    contactReady: (x, z) => contactWindow()?.ready(x, z) === true,
+    biomeAt, biomeIdAt, moistureAt, treeDensityAt, surfaceFieldAt, coverAt,
+    get tileCover() { return tileCover; },
+    fieldSurfaceAt,
     // Kill plane follows the local surface so deep valleys never respawn a grounded player;
     // in volumetric mode caves reach down to the density floor, so it sits below that.
     killPlaneYAt(x, z) {
@@ -412,6 +570,8 @@ export function createBaseGameTerrain({
     setSplatMaterial(material, textures = null) {
       splatMaterial = material ?? null;
       splatTextures = textures;
+      tileCover.setSplatCfg(material?.userData?.streamedSplat?.cfg ?? null);
+      fieldWindow()?.clear();        // cover is reconciled against these weights
       for (const m of splatInstances.values()) m.dispose();
       splatInstances.clear();
       applyMaterials();
@@ -454,6 +614,7 @@ export function createBaseGameTerrain({
       if (next && !system.source?.densityAt) throw new Error('the active terrain source has no density field (volumetric needs a v5 project)');
       system.setVolumetric(next);
       volumetricMode = next;
+      reopenFieldWindow();          // volumetric adds surfaceHeights, so the payload differs
       handoffPending = next;     // heightfield -> volume waits for the chunk; the other way is immediate
       handoffDone = !next;
       applyProviders();
@@ -482,6 +643,8 @@ export function createBaseGameTerrain({
       for (const c of cascade) c.system.setSource(next);
       seaLevel = system.source?.descriptor?.seaLevel ?? 0;
       seaDepth.setSource(system.source);
+      fieldWindow()?.setSource(system.source, system.source.descriptor);
+      contactWindow()?.setSource(system.source, system.source.descriptor);
       // nothing survives a swap, so there is nothing to dissolve from: coverage restarts at zero
       coverExact.clear(); for (const cl of coverLevels) cl.clear();
       installedTotal = 0;
@@ -489,6 +652,7 @@ export function createBaseGameTerrain({
       if (wantVolumetric && system.source?.densityAt) { system.params.volumetric = true; volumetricMode = true; }
       handoffPending = volumetricMode;
       handoffDone = !volumetricMode && wantVolumetric;
+      reopenFieldWindow();          // the new source may need a different field set
       applyProviders();
       syncVolumeColliders();
     },
@@ -523,6 +687,10 @@ export function createBaseGameTerrain({
         if (cascadeChanged) applyMaterials();
         lastClipmapMs = performance.now() - t1;
       }
+      const fw = fieldWindow(), cw = contactWindow();
+      if (fw) fw.update(globalPosition[0], globalPosition[2]);
+      if (cw) cw.update(globalPosition[0], globalPosition[2]);
+      if (fw || cw) fieldScheduler.pump();
       updateCoverage(globalPosition, dt, changed || cascadeChanged);
       if (handoffPending && volumeProvider.hasChunk(chunkKeyAt(globalPosition[0], globalPosition[2]))) {
         handoffPending = false;
@@ -586,6 +754,12 @@ export function createBaseGameTerrain({
 
     dispose() {
       stopRebase();
+      for (const handle of fieldHandles) handle.release();
+      fieldHandles.clear();
+      for (const handle of contactHandles) handle.release();
+      contactHandles.clear();
+      fieldRegistry.dispose();
+      fieldScheduler.dispose();
       seaDepth.dispose();
       unregisterProvider();
       unregisterVolumeProvider();

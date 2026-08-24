@@ -8,6 +8,8 @@ import { handlePublishRequest } from './publish-map.js';
 import { guestSendVerdict } from './backpressure.js';
 import { createBaseGameRoomService } from './base-game-rooms.js';
 import { createTerrainStore } from './terrain-store.js';
+import { setShotSpread } from '../base-game-fire.js';
+import { SHOT_SPREAD_PATH, normalizeShotSpread } from '../shot-spread.js';
 
 const PORT = process.env.PORT || 8080;
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -160,6 +162,16 @@ const wss = new WebSocketServer({ server: httpServer });
 // Published terrain projects survive restarts on disk (content-addressed, <hash>.json).
 const terrainStore = createTerrainStore({ dir: path.join(ROOT_DIR, 'server', 'terrain-store') });
 console.log(`[base-game] terrain store: ${terrainStore.loadFromDisk()} project(s) on disk`);
+// Weapon accuracy is tuned in base-game.html and committed as shot-spread.json. The relay reads
+// the same file the page fetches: disagree and the shooter's predicted tracer is not the ray this
+// server fired. Missing file = the fallback in shot-spread.js, which is what shipped before.
+{
+  const file = path.join(ROOT_DIR, SHOT_SPREAD_PATH);
+  let loaded = null;
+  try { loaded = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* no file: keep the fallback */ }
+  const spread = setShotSpread(loaded ? normalizeShotSpread(loaded) : undefined);
+  console.log(`[base-game] shot spread: ${loaded ? SHOT_SPREAD_PATH : 'built-in defaults'} (scale ${spread.spreadScale}, bloom cap ${spread.bloomMaxDeg} deg)`);
+}
 const baseGameRooms = createBaseGameRoomService({ terrainStore });
 
 // Server-authoritative base-game rooms: the server simulates every player at 60 Hz from

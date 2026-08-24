@@ -5,7 +5,10 @@
 
 export const SOURCE_CONTRACT_VERSION = 1;
 export const SOURCE_KINDS = Object.freeze(['analytic', 'finite-map', 'v5-recipe']);
-export const TILE_FIELDS = Object.freeze(['heights', 'normals', 'biomeIds', 'materialFields', 'moisture', 'holeMask', 'volume']);
+// surfaceHeights is the VISIBLE open-sky surface. On a heightfield source it is `heights`; on a
+// volumetric one the density warps and carves the ground away from `heights`, and anything that
+// stands on the drawn world (flora, rain, feet) must use this instead.
+export const TILE_FIELDS = Object.freeze(['heights', 'surfaceHeights', 'normals', 'biomeIds', 'materialFields', 'moisture', 'holeMask', 'volume']);
 
 const isFiniteNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const isInt = (v) => Number.isInteger(v);
@@ -102,6 +105,7 @@ export function validateTileResult(t, req) {
   if (t.xMin !== req.xMin || t.zMin !== req.zMin || t.size !== req.size) fail('tile bounds mismatch');
   if (!isFiniteNum(t.step) || !isFiniteNum(t.originX) || !isFiniteNum(t.originZ)) fail('tile step/origin must be finite');
   if (!(t.heights instanceof Float32Array) || t.heights.length !== n) fail('heights must be Float32Array of texels^2');
+  if (t.surfaceHeights != null && !(t.surfaceHeights instanceof Float32Array && t.surfaceHeights.length === n)) fail('surfaceHeights must be Float32Array of texels^2');
   if (t.normals != null && !(t.normals instanceof Float32Array && t.normals.length === n * 3)) fail('normals must be Float32Array of texels^2*3');
   if (t.biomeIds != null && !(ArrayBuffer.isView(t.biomeIds) && t.biomeIds.length === n)) fail('biomeIds must be a typed array of texels^2');
   if (t.moisture != null && !(t.moisture instanceof Float32Array && t.moisture.length === n)) fail('moisture must be Float32Array of texels^2');

@@ -96,7 +96,6 @@ export function createBaseGamePlayerBodies({
   let remoteUpdates = 0;
   let armTuning = null;   // last applied arm tuning, re-applied to bodies created later
   let designKey = 'default';
-  let design = null;      // null = the bare rig; otherwise a composed bot design
   let movementTuning = { ...BASE_GAME_MOVEMENT_DEFAULTS };
   // The arm-pose presets blend walk->run on absolute m/s; rescale them to the real move speeds.
   const movementSpeeds = { walk: 5.5, sprint: 1.75 };
@@ -125,7 +124,7 @@ export function createBaseGamePlayerBodies({
   const _velocity = { x: 0, y: 0, z: 0 };
   const _local = [0, 0, 0];
 
-  function makeBody(rigMode, style, instanced) {
+  function makeBody(rigMode, style, instanced, modelKey = designKey) {
     const support = createBodySupportAdapter({ worldQuery, worldCoordinates });
     const body = createProceduralPlayerBody({
       THREE,
@@ -134,13 +133,13 @@ export function createBaseGamePlayerBodies({
       mode: rigMode,
       style,
       batches: instanced ? batches : null,
-      design,
+      design: composeDesign(modelKey),
       ...LOCOMOTION_OPTIONS,
     });
     applyMovementTuningTo(body, movementTuning);
     if (armTuning) applyArmTuningTo(body, armTuning);
     else applyMovementSpeedsTo(body);
-    return { body, support, instanced, heading: null, aim: newAimChannels(), weapon: newWeaponRecord() };
+    return { body, support, instanced, bodyModel: modelKey, heading: null, aim: newAimChannels(), weapon: newWeaponRecord() };
   }
 
   // Phase 1 shape; `ammo` is phase 3's, `slot` phase 4's.
@@ -406,15 +405,12 @@ export function createBaseGamePlayerBodies({
     weaponSystem.endFrame();
   }
 
-  // Swaps the appearance for the local body and every remote; bodies are rebuilt in place and
-  // remotes re-create themselves on their next update.
+  // Swaps only the local appearance. Remote model identities come from authoritative snapshots.
   function setBodyDesign(key) {
     const entry = BASE_GAME_BODY_DESIGNS.find((d) => d.key === key) || BASE_GAME_BODY_DESIGNS[0];
     if (entry.key === designKey) return designKey;
     designKey = entry.key;
-    design = composeDesign(entry.key);
     if (local) { releaseWeapon(local); local.body.destroy(); local = makeBody(BODY_MODE_TO_RIG[localMode], {}, false); requestWeapon(local, localWeaponId); }
-    clearRemotes();
     return designKey;
   }
 
@@ -445,8 +441,13 @@ export function createBaseGamePlayerBodies({
 
   function updateRemote(dt, id, sample) {
     let record = remotes.get(id);
+    const model = BASE_GAME_BODY_DESIGNS.some(entry => entry.key === sample.bodyModel) ? sample.bodyModel : 'default';
+    if (record && record.bodyModel !== model) {
+      releaseRemote(id);
+      record = null;
+    }
     if (!record) {
-      record = makeBody('remote', {}, !!batches);
+      record = makeBody('remote', {}, !!batches, model);
       const color = remotePlayerColor(id);
       record.body.setTint?.({ h: color.getHSL({}).h, s: 0.62, l: 0.56 });
       remotes.set(id, record);
@@ -523,6 +524,7 @@ export function createBaseGamePlayerBodies({
     get localWeapon() { return local?.weapon ?? null; },
     get localMount() { return local?.weapon.mount ?? null; },
     remoteMount(id) { return remotes.get(id)?.weapon.mount ?? null; },
+    remoteBodyModel(id) { return remotes.get(id)?.bodyModel ?? null; },
     get localHeading() { return local?.heading ?? null; },
     remoteWeapon(id) { return remotes.get(id)?.weapon ?? null; },
     setArmTuning,

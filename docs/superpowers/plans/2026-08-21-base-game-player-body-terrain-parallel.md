@@ -6,6 +6,10 @@ a browser review. The deployed two-tab multiplayer gate passed the same day; the
 unmeasured. Track B has not started; terrain must not enter the authoritative runtime world until
 its own gate passes.
 
+COMBAT ADDENDUM 2026-08-24: the capsule remains authoritative for locomotion, but its use as the
+final player damage volume is superseded by the planned semantic server hurt rig in
+[`2026-08-24-base-game-server-hit-rig.md`](2026-08-24-base-game-server-hit-rig.md).
+
 ## Objective
 
 Add a visible local and remote player body and begin the common terrain source without creating a

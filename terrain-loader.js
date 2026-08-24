@@ -4,27 +4,9 @@ import {
   applyTerrainTextures, TERRAIN_TEXTURE_LAYERS, FALLBACK_COLORS, MASK_ALIASES, BIOME_MATERIAL,
 } from './terrain-textures.js';
 import { moistureProxyForBiome, upnessFromNormalY, smoothstep as ssMoist } from './moisture-proxy.js';
+import { BIOME_TREE_DENSITY } from './terrain-biome-point.js';
 
-const TREE_DENSITY = {
-  deep_ocean: 0.0,
-  ocean: 0.0,
-  beach: 0.03,
-  desert: 0.0,
-  badlands: 0.04,
-  savanna: 0.20,
-  plains: 0.10,
-  forest: 0.85,
-  dark_forest: 0.95,
-  jungle: 0.90,
-  swamp: 0.45,
-  taiga: 0.70,
-  snowy_taiga: 0.55,
-  snowy_plains: 0.05,
-  stony_peaks: 0.03,
-  snowy_peaks: 0.0,
-  windswept_hills: 0.18,
-  meadow: 0.16,
-};
+const TREE_DENSITY = BIOME_TREE_DENSITY;   // one table, shared with the streamed path
 
 function clamp(v, lo, hi) {
   return Math.min(hi, Math.max(lo, v));

@@ -49,12 +49,14 @@ ok(mismatched.length === 0, `the two limit tables agree${mismatched.length ? `: 
 
 // 3. The weather keys specifically: the ones that decide what everyone sees, and no more.
 const weatherShared = BASE_GAME_SHARED_KEYS.filter(k => /^weather|^cloud/.test(k));
-ok(weatherShared.length === 6, `six weather keys are shared (found ${weatherShared.length}: ${weatherShared.join(', ')})`);
-for (const key of ['weatherRain', 'weatherOvercast', 'cloudACover', 'cloudAHeight', 'cloudBCover', 'cloudBHeight']) {
+ok(weatherShared.length === 10, `ten weather keys are shared (found ${weatherShared.length}: ${weatherShared.join(', ')})`);
+for (const key of ['weatherRain', 'weatherOvercast', 'cloudACover', 'cloudAHeight', 'cloudBCover', 'cloudBHeight',
+  'weatherWindDeg', 'weatherWindSpeed', 'weatherGust', 'weatherGustPeriod']) {
   ok(weatherShared.includes(key), `${key} is owner-owned`);
 }
 // Response curves and look stay local: a guest may run its own fog and drop budget.
-for (const key of ['overcastPerRain', 'sunDimPerRain', 'weatherFogPerRain', 'weatherFogColor', 'cloudAOctaves', 'cloudAExtent', 'cloudsEnabled']) {
+for (const key of ['overcastPerRain', 'sunDimPerRain', 'weatherFogPerRain', 'weatherFogColor', 'cloudAOctaves', 'cloudAExtent', 'cloudsEnabled',
+  'weatherWindFollowsWaves', 'rainMaxDrops', 'rainSplashEnabled', 'rainGroundConservative', 'rainSkyTint']) {
   ok(!BASE_GAME_SHARED_KEYS.includes(key), `${key} stays local`);
 }
 

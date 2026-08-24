@@ -15,6 +15,7 @@ import { createWorldQueryService } from './world-query.js';
 import { createTraversalLabWorldQuery } from './traversal-lab-collider.js';
 import { createBaseGameRoomService } from './server/base-game-rooms.js';
 import { getWeapon } from './weapons.js';
+import { playerPoseAnchor, playerPosePoint } from './player-body-pose.js';
 import { readFileSync } from 'node:fs';
 
 let pass = 0, fail = 0;
@@ -164,8 +165,9 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   both(30); both(120, {}, { moveZ: 1 }); both(60);
   const sp = shooter.controller.getPosition(), vp = victim.controller.getPosition();
   ok(vp[2] < sp[2] - 2, 'the victim stands ahead of the shooter');
-  const sc = shooter.controller.getCapsule();
-  const dx = vp[0] - sp[0], dy = (vp[1] + 1.0) - (sc.end[1] + sc.radius), dz = vp[2] - sp[2];
+  const shotOrigin = playerPoseAnchor(shooter.hitPose, 'muzzle');
+  const shotTarget = playerPosePoint(victim.hitPose, 'chest');
+  const dx = shotTarget[0] - shotOrigin[0], dy = shotTarget[1] - shotOrigin[1], dz = shotTarget[2] - shotOrigin[2];
   const yaw = Math.atan2(-dx, -dz), pitch = Math.atan2(dy, Math.hypot(dx, dz));
   ok(hp(victim) === 100 && mag(shooter) === 30, 'everyone starts at full health with a full magazine');
   const spreadTick = ticks[shooterId];
@@ -182,6 +184,7 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   service.broadcastSnapshots();
   let snap = lastOf(victimWs, 'base:snapshot');
   ok(snap.hits?.length === 1 && snap.hits[0].shooter === shooterId && snap.hits[0].victim === victimId && snap.hits[0].damage === 24, 'the snapshot carries the hit event');
+  ok(snap.hits[0].zone === 'torso' && snap.hits[0].side === 'center' && snap.hits[0].head === false, 'the server reports the semantic body zone');
   ok(Array.isArray(snap.hits[0].normal), 'the hit event carries a normal, so blood can face out of the wound');
   ok(snap.players.find(p => p.id === shooterId).ammo.mag === 29 && snap.players.find(p => p.id === victimId).health === 76, 'ammo and health ride the snapshot');
   service.broadcastSnapshots();
@@ -213,7 +216,13 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
     room.events = { hits: [], deaths: [], shots: [], explosions: [] };
     both(4, { slot: 2, aim: true });   // knife in hand, trigger up: the slot change eats the press edge
     const hpBefore = hp(victim);
-    both(1, { slot: 2, aim: true, fire: true });
+    // Aim at where the victim IS. The respawn puts it back on the spawn point the shooter is
+    // standing on, so it can be directly overhead and the stale yaw/pitch points at empty ground.
+    const mp = victim.controller.getPosition(), ms = shooter.controller.getPosition();
+    const mc = shooter.controller.getCapsule();
+    const mdx = mp[0] - ms[0], mdy = (mp[1] + 0.9) - (mc.end[1] + mc.radius), mdz = mp[2] - ms[2];
+    const mYaw = Math.atan2(-mdx, -mdz), mPitch = Math.atan2(mdy, Math.hypot(mdx, mdz));
+    both(1, { slot: 2, aim: true, yaw: mYaw, pitch: mPitch, fire: true });
     const swing = room.events.shots.at(-1);
     ok(swing && swing.weapon === 'knife' && swing.kind === 'player', 'a knife swing at point blank resolves onto the victim');
     ok(hp(victim) === hpBefore - getWeapon('knife').damage, 'the knife deals its damage');
@@ -222,7 +231,7 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
     // Out of reach: the same swing from across the room hits nothing.
     both(100, { slot: 2 }, { moveZ: 1 });   // clear of the 2 m reach, still on the platform
     both(120, { slot: 2 });                 // and out past the knife's own 1.5 s interval
-    both(1, { slot: 2, aim: true, fire: true });
+    both(1, { slot: 2, aim: true, yaw: mYaw, pitch: mPitch, fire: true });
     const far = room.events.shots.at(-1);
     ok(far && far.kind !== 'player' && hp(victim) === hpBefore - getWeapon('knife').damage, 'a knife swing beyond its 2 m range hits nobody');
     service.handle(shooterWs, { type: 'base:loadout', protocol: P, loadout: { primary: 'cz_805_bren' } });
@@ -235,9 +244,9 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   service.handle(shooterWs, { type: 'base:loadout', protocol: P, loadout: { primary: 'rpg' } });
   room.events = { hits: [], deaths: [], shots: [], explosions: [] };
   both(320);   // one trigger per player, so the knife's cadence still gates: wait out the rpg's 2.5 s
-  const vp2 = victim.controller.getPosition(), sp2 = shooter.controller.getPosition();
-  const sc2 = shooter.controller.getCapsule();
-  const dx2 = vp2[0] - sp2[0], dy2 = (vp2[1] + 0.9) - (sc2.end[1] + sc2.radius), dz2 = vp2[2] - sp2[2];
+  const shotOrigin2 = playerPoseAnchor(shooter.hitPose, 'muzzle');
+  const shotTarget2 = playerPosePoint(victim.hitPose, 'chest');
+  const dx2 = shotTarget2[0] - shotOrigin2[0], dy2 = shotTarget2[1] - shotOrigin2[1], dz2 = shotTarget2[2] - shotOrigin2[2];
   const yaw2 = Math.atan2(-dx2, -dz2), pitch2 = Math.atan2(dy2, Math.hypot(dx2, dz2));
   const hpBefore = hp(victim);
   both(1, { yaw: yaw2, pitch: pitch2, aim: true, fire: true });

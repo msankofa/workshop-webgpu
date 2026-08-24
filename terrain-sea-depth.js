@@ -5,7 +5,7 @@
 // "any water in view" gate. Shorelines match the far cascade because both use heightAtSpacing.
 
 import * as THREE from 'three';
-import { Fn, float, vec2, ivec2, floor, fract, mix, uniform, textureLoad, select } from 'three/tsl';
+import { Fn, float, vec2, ivec2, floor, fract, mix, min, uniform, textureLoad, select } from 'three/tsl';
 import { createClipmapWindow } from './terrain-clipmap-window.js';
 import { tileKey } from './terrain-source.js';
 
@@ -107,7 +107,10 @@ export function createSeaDepthMap({ source, descriptor = null, useWorker = true,
   }
 
   // TSL: bilinear ground height at a global xz from the window, or `fallback` outside the window.
-  function gpuHeightAt(xz, fallback = float(-1000)) {
+  // `mode: 'min'` returns the lowest of the four surrounding posts instead of the blend. Rain wants
+  // that: a height read too LOW is hidden by the depth buffer, one read too high shows as drops cut
+  // off in mid air. Same idea as terrain-lod-coverage.js's erode().
+  function gpuHeightAt(xz, fallback = float(-1000), mode = 'bilinear') {
     const p = xz.div(uniforms.post).sub(uniforms.origin);
     const c = floor(p), f = fract(p), r = uniforms.res;
     const inside = c.x.greaterThanEqual(0).and(c.y.greaterThanEqual(0)).and(c.x.lessThan(r.sub(1))).and(c.y.lessThan(r.sub(1)));
@@ -116,7 +119,7 @@ export function createSeaDepthMap({ source, descriptor = null, useWorker = true,
     const i0 = wrap(gi), i1 = wrap(gi.add(1));
     const h00 = textureLoad(texture, ivec2(i0.x, i0.y)).x, h10 = textureLoad(texture, ivec2(i1.x, i0.y)).x;
     const h01 = textureLoad(texture, ivec2(i0.x, i1.y)).x, h11 = textureLoad(texture, ivec2(i1.x, i1.y)).x;
-    const h = mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+    const h = mode === 'min' ? min(min(h00, h10), min(h01, h11)) : mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
     return select(inside, h, fallback);
   }
 

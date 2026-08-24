@@ -8,6 +8,11 @@
 //
 // Nothing here knows about rings, textures or cameras: terrain-clipmap.js wraps one of these per
 // level, renders it, and the Node test drives it directly.
+//
+// A window carries one or more tile FIELDS (plants plan F2). `heights` is always present and is
+// what the clipmap ring renders; a placement window adds `surfaceHeights`, `biomeIds`, `moisture`
+// and reads them through the same toroidal addressing. Ids are nearest-sampled — averaging two
+// biome numbers produces a third, unrelated biome.
 
 export const CLIPMAP_WINDOW_DEFAULTS = Object.freeze({
   tileIntervals: 32,   // posts per tile side (tile = 32 posts = 64 m at a 2 m post)
@@ -16,12 +21,32 @@ export const CLIPMAP_WINDOW_DEFAULTS = Object.freeze({
 
 export const wrapIndex = (i, n) => ((i % n) + n) % n;
 
-export function createClipmapWindow({ level, post, tileIntervals = CLIPMAP_WINDOW_DEFAULTS.tileIntervals, tilesPerSide = CLIPMAP_WINDOW_DEFAULTS.tilesPerSide } = {}) {
+// Tile fields a window can carry, and how each is stored and read back.
+export const WINDOW_FIELD_KINDS = Object.freeze({
+  heights: { Array: Float32Array, sampling: 'bilinear' },
+  surfaceHeights: { Array: Float32Array, sampling: 'bilinear' },
+  moisture: { Array: Float32Array, sampling: 'bilinear' },
+  biomeIds: { Array: Uint8Array, sampling: 'nearest' },
+  // Derived per texel when a tile commits (flora-field.js), not built by the source. u8 channels
+  // read back 0..255 on both sides; decodeCover turns that into 0..1.
+  coverGrass: { Array: Uint8Array, sampling: 'bilinear' },
+  coverPlant: { Array: Uint8Array, sampling: 'bilinear' },
+  coverTree: { Array: Uint8Array, sampling: 'bilinear' },
+});
+
+export function createClipmapWindow({ level, post, tileIntervals = CLIPMAP_WINDOW_DEFAULTS.tileIntervals, tilesPerSide = CLIPMAP_WINDOW_DEFAULTS.tilesPerSide, fields = ['heights'], lod = null } = {}) {
   if (!Number.isInteger(level) || level < 0) throw new TypeError('clipmap window needs an integer level >= 0');
   if (!(post > 0)) throw new TypeError('clipmap window needs a positive post spacing');
+  // lod defaults to level + 1 so the source band-limits at the window's own spacing; a consumer
+  // that plants things on the drawn ground passes 0, because the visible chunks are built exact.
+  const tileLod = lod == null ? level + 1 : lod;
+  if (!Number.isInteger(tileLod) || tileLod < 0) throw new TypeError('clipmap window lod must be a non-negative integer');
+  const fieldNames = fields.includes('heights') ? [...fields] : ['heights', ...fields];
+  for (const f of fieldNames) if (!WINDOW_FIELD_KINDS[f]) throw new TypeError(`clipmap window cannot carry field ${f}`);
   const n = tileIntervals;
   const res = n * tilesPerSide;
-  const heights = new Float32Array(res * res);
+  const data = new Map(fieldNames.map(name => [name, new WINDOW_FIELD_KINDS[name].Array(res * res)]));
+  const heights = data.get('heights');
   const present = new Set();        // tile keys "ix,iz" currently written into the window
   let originPX = 0, originPZ = 0;   // window covers global posts [origin, origin + res - 1]
   let placed = false;
@@ -69,20 +94,24 @@ export function createClipmapWindow({ level, post, tileIntervals = CLIPMAP_WINDO
   // The source tile request for tile (ix, iz) at this level. lod = level + 1 so the source always
   // band-limits (lod 0 is reserved for exact collision tiles).
   function tileRequest(ix, iz) {
-    return { ix, iz, lod: level + 1, xMin: ix * tileSize, zMin: iz * tileSize, size: tileSize, intervals: n, apron: 1, fields: ['heights'] };
+    return { ix, iz, lod: tileLod, xMin: ix * tileSize, zMin: iz * tileSize, size: tileSize, intervals: n, apron: 1, fields: fieldNames.slice() };
   }
 
   // Write a completed tile into the window. Ignored (false) when the tile no longer fits.
   function commitTile(tile) {
     const { ix, iz } = tile;
     if (!tileInside(ix, iz)) return false;
+    for (const name of fieldNames) if (!tile[name]) return false;   // a partial tile would leave holes
     const pad = tile.apron ?? 0, texels = tile.texels;
-    for (let p = 0; p <= n; p++) {
-      const gz = iz * n + p, tz = wrapIndex(gz, res);
-      const row = (p + pad) * texels + pad;
-      for (let q = 0; q <= n; q++) {
-        const gx = ix * n + q;
-        heights[tz * res + wrapIndex(gx, res)] = tile.heights[row + q];
+    for (const name of fieldNames) {
+      const dst = data.get(name), src = tile[name];
+      for (let p = 0; p <= n; p++) {
+        const gz = iz * n + p, tz = wrapIndex(gz, res);
+        const row = (p + pad) * texels + pad;
+        for (let q = 0; q <= n; q++) {
+          const gx = ix * n + q;
+          dst[tz * res + wrapIndex(gx, res)] = src[row + q];
+        }
       }
     }
     present.add(tileKey(ix, iz));
@@ -90,21 +119,35 @@ export function createClipmapWindow({ level, post, tileIntervals = CLIPMAP_WINDO
     return true;
   }
 
-  // Bilinear height from the window, or null when (x, z) is not covered by present tiles.
-  function sample(x, z) {
+  // True when all four posts around (x, z) are inside the window and their tiles have arrived.
+  function resolved(x, z) {
     const fx = x / post, fz = z / post;
     const gx = Math.floor(fx), gz = Math.floor(fz);
     if (gx < originPX || gx + 1 > originPX + res - 1 || gz < originPZ || gz + 1 > originPZ + res - 1) return null;
     const tx = Math.floor(gx / n), tz = Math.floor(gz / n);
     const tx1 = Math.floor((gx + 1) / n), tz1 = Math.floor((gz + 1) / n);
     for (const [a, b] of [[tx, tz], [tx1, tz], [tx, tz1], [tx1, tz1]]) if (!present.has(tileKey(a, b))) return null;
-    const t = fx - gx, u = fz - gz;
-    const h = (X, Z) => heights[wrapIndex(Z, res) * res + wrapIndex(X, res)];
-    return (h(gx, gz) * (1 - t) + h(gx + 1, gz) * t) * (1 - u) + (h(gx, gz + 1) * (1 - t) + h(gx + 1, gz + 1) * t) * u;
+    return { gx, gz, t: fx - gx, u: fz - gz };
   }
+
+  // Bilinear value from a field, or null when (x, z) is not covered by present tiles.
+  function sampleField(name, x, z) {
+    const arr = data.get(name);
+    if (!arr) return null;
+    const at = resolved(x, z);
+    if (!at) return null;
+    const { gx, gz, t, u } = at;
+    const v = (X, Z) => arr[wrapIndex(Z, res) * res + wrapIndex(X, res)];
+    if (WINDOW_FIELD_KINDS[name].sampling === 'nearest') return v(gx + (t < 0.5 ? 0 : 1), gz + (u < 0.5 ? 0 : 1));
+    return (v(gx, gz) * (1 - t) + v(gx + 1, gz) * t) * (1 - u) + (v(gx, gz + 1) * (1 - t) + v(gx + 1, gz + 1) * t) * u;
+  }
+  const sample = (x, z) => sampleField('heights', x, z);
 
   return {
     level, post, res, tileIntervals: n, tilesPerSide, tileSize, heights,
+    lod: tileLod, fields: Object.freeze(fieldNames.slice()),
+    array: (name) => data.get(name) ?? null,
+    sampleField, resolved,
     get originPX() { return originPX; },
     get originPZ() { return originPZ; },
     get placed() { return placed; },
@@ -115,7 +158,7 @@ export function createClipmapWindow({ level, post, tileIntervals = CLIPMAP_WINDO
     desiredOrigin, recentre, missingTiles, tileRequest, commitTile, sample, tileInside,
     // Global post extent the window holds, for callers that need to know what is addressable.
     covers(x, z) { const gx = x / post, gz = z / post; return gx >= originPX && gx <= originPX + res - 1 && gz >= originPZ && gz <= originPZ + res - 1; },
-    clear() { present.clear(); heights.fill(0); version++; },
+    clear() { present.clear(); for (const arr of data.values()) arr.fill(0); version++; },
   };
 }
 

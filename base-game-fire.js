@@ -7,6 +7,27 @@ import { getWeapon } from './weapons.js';
 import { AIM_DEFAULTS, spreadHalfAngleRad, bloomAfterShot, decayBloomDeg, dispersedDirection } from './bot-aim.js';
 import { mulberry32, hashSeed } from './biome-classifier-js.js';
 import { BASE_GAME_RELOAD_TICKS, BASE_GAME_SIM_HZ } from './base-game-protocol.mjs';
+import { SHOT_SPREAD_DEFAULTS, normalizeShotSpread } from './shot-spread.js';
+
+// The accuracy numbers, shared by every trigger on this side of the wire. The relay sets them from
+// shot-spread.json at startup and the page from its own copy of the same file; both sides must hold
+// the same values or the shooter's predicted tracer is not the ray the server fired.
+let spread = { ...SHOT_SPREAD_DEFAULTS };
+export function setShotSpread(values) { spread = normalizeShotSpread(values); return spread; }
+export function getShotSpread() { return { ...spread }; }
+// bot-aim.js's settings shape, built from the tuned numbers. `weaponId` supplies the base cone.
+function aimSettingsFor(weapon) {
+  return {
+    ...AIM_DEFAULTS,
+    baseSpreadDeg: (weapon?.spreadRad ?? 0) * 180 / Math.PI * spread.spreadScale,
+    moveSpreadDeg: spread.moveSpreadDeg,
+    firstShotSpreadDeg: spread.firstShotSpreadDeg,
+    settleMs: spread.settleMs,
+    bloomPerShotDeg: spread.bloomPerShotDeg,
+    bloomMaxDeg: spread.bloomMaxDeg,
+    bloomDecayDegPerSecond: spread.bloomDecayDegPerSecond,
+  };
+}
 
 // Per-player trigger state. `lastShot` is the combat.js shape validateShot reads.
 export function createTriggerState() {
@@ -27,7 +48,7 @@ export function stepTrigger(trigger, ammo, { playerId, weaponId, tick, fire, rel
   trigger.held = !!fire;
   // bot-aim.js bloom decays every tick; "contact" (the first-shot settle timer) runs from the
   // first tick the player holds aim or the trigger and resets when both are released.
-  trigger.bloomDeg = decayBloomDeg(trigger.bloomDeg, 1 / simHz);
+  trigger.bloomDeg = decayBloomDeg(trigger.bloomDeg, 1 / simHz, aimSettingsFor(weapon));
   if (aim || fire) { if (trigger.contactSinceTick < 0) trigger.contactSinceTick = tick; } else trigger.contactSinceTick = -1;
   if (!weapon || !alive) return out;
   const reloading = trigger.reloadUntilTick > tick;
@@ -50,7 +71,7 @@ export function stepTrigger(trigger, ammo, { playerId, weaponId, tick, fire, rel
   }
   if (usesAmmo) ammo.consumeAmmo(playerId, weaponId);
   trigger.lastShot = { at: nowMs, shotSeq: tick };
-  trigger.bloomDeg = bloomAfterShot(trigger.bloomDeg);
+  trigger.bloomDeg = bloomAfterShot(trigger.bloomDeg, aimSettingsFor(weapon));
   out.fired = true;
   return out;
 }
@@ -73,7 +94,7 @@ export function stepThrow(trigger, ammo, opts) {
 export function shotDirectionFor(trigger, { yaw, pitch, weaponId, tick, seed = 0, moveSpeed01 = 0, simHz = BASE_GAME_SIM_HZ }) {
   const weapon = weaponId ? getWeapon(weaponId) : null;
   const look = lookDirection(yaw, pitch);
-  const settings = { ...AIM_DEFAULTS, baseSpreadDeg: (weapon?.spreadRad ?? 0) * 180 / Math.PI };
+  const settings = aimSettingsFor(weapon);
   const heldMs = trigger.contactSinceTick >= 0 ? (tick - trigger.contactSinceTick) * 1000 / simHz : 0;
   const half = spreadHalfAngleRad({ moveSpeed01, heldMs, bloomDeg: trigger.bloomDeg }, settings);
   const roll = mulberry32(hashSeed(seed, tick));

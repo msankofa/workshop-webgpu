@@ -67,6 +67,28 @@ const clamped = message(guest, 'base:snapshot');
 assert.equal(clamped.world.weatherRain, 1, 'the server clamps an over-range master');
 assert.equal(clamped.world.cloudBHeight, 0, 'the server clamps a negative deck height');
 
+// Wind (phase R1). It leans every peer's drops, so it is the owner's, and it is clamped the same way.
+service.handle(owner, {
+  type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION,
+  patch: { weatherWindDeg: 210, weatherWindSpeed: 9.5, weatherGust: 6, weatherGustPeriod: 24, rainMaxDrops: 999 },
+});
+const wind = message(guest, 'base:snapshot');
+assert.equal(wind.world.weatherWindDeg, 210);
+assert.equal(wind.world.weatherWindSpeed, 9.5);
+assert.equal(wind.world.weatherGust, 6);
+assert.equal(wind.world.weatherGustPeriod, 24);
+assert.equal('rainMaxDrops' in wind.world, false, 'a drop budget is local, so it never enters the room world');
+
+service.handle(owner, {
+  type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION,
+  patch: { weatherWindDeg: 999, weatherWindSpeed: -4, weatherGust: 1e6, weatherGustPeriod: 0 },
+});
+const windClamped = message(guest, 'base:snapshot');
+assert.equal(windClamped.world.weatherWindDeg, 360, 'an over-range heading clamps to 360');
+assert.equal(windClamped.world.weatherWindSpeed, 0, 'a negative wind speed clamps to 0');
+assert.equal(windClamped.world.weatherGust, 40, 'an absurd gust clamps to the ceiling');
+assert.equal(windClamped.world.weatherGustPeriod, 0.5, 'a zero gust period clamps to the floor, so nothing divides by it');
+
 // `message` returns the LAST packet of a type and never clears, so a rejected patch has to be
 // checked by counting broadcasts rather than by re-reading the newest snapshot.
 const snapshotsBefore = guest.sent.filter(p => p.type === 'base:snapshot').length;
@@ -81,6 +103,20 @@ service.handle(owner, { type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VER
 assert.equal(guest.sent.filter(p => p.type === 'base:snapshot').length, quietBefore,
   'an all-local patch is dropped before the broadcast');
 
+// Body identity is server-owned and survives reconnect. Clients choose only a whitelisted model;
+// the server chooses its hit profile and starts a new pose epoch.
+const ownerClient = service.rooms.get('TEST').clients.get(ownerJoined.clientId);
+const bodyEpoch = ownerClient.poseEpoch;
+service.handle(owner, { type: 'base:set_body', protocol: BASE_GAME_PROTOCOL_VERSION, bodyModel: 'v4' });
+const bodyPlayer = message(guest, 'base:snapshot').players.find(player => player.id === ownerJoined.clientId);
+assert.equal(bodyPlayer.bodyModel, 'v4');
+assert.equal(bodyPlayer.hitProfile, 'humanoid-default');
+assert.equal(bodyPlayer.poseEpoch, bodyEpoch + 1);
+const rejectedBefore = ownerClient.rejectedInputs;
+service.handle(owner, { type: 'base:set_body', protocol: BASE_GAME_PROTOCOL_VERSION, bodyModel: 'client-made-tiny-rig' });
+assert.equal(ownerClient.bodyModel, 'v4', 'an unknown body cannot change server hit identity');
+assert.equal(ownerClient.rejectedInputs, rejectedBefore + 1);
+
 const resumeToken = ownerJoined.resumeToken;
 owner.readyState = 3;
 assert.equal(service.disconnect(owner), true);
@@ -90,6 +126,7 @@ service.handle(resumed, {
 });
 assert.equal(message(resumed, 'base:joined').clientId, ownerJoined.clientId);
 assert.equal(message(resumed, 'base:joined').owner, true);
+assert.equal(message(resumed, 'base:snapshot').players.find(player => player.id === ownerJoined.clientId).bodyModel, 'v4');
 
 resumed.readyState = 3;
 service.disconnect(resumed);

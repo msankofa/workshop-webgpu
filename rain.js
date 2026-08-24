@@ -37,7 +37,24 @@ export const RAIN_DEFAULTS = Object.freeze({
   ripple: 1.0,            // ripple normal strength on wet ground
   puddle: 0.45,           // puddle coverage 0 (dry) .. 1 (flooded); noise-shaped, not cells
   gust: 3.0,              // m/s peak of the CPU gust wander added on top of uWind
+  gustPeriod: 17,         // s per gust cycle; 17 is the rate this file used before it was a setting
+  splashRate: 1.6,        // ring generations per second
+  splashSlopeMax: 90,     // degrees of ground slope above which rings stop drawing (90 = never)
+  splashSlopeFade: 0,     // degrees the suppression fades over, below splashSlopeMax
+  splashOrient: 0,        // 0 horizontal rings (as before), 1 laid on the surface normal
+  nearStart: 0.25,        // m: streaks fade in over this .. nearEnd so none smear across the lens
+  nearEnd: 1.4,
+  camLean: 1.0,           // how much camera motion leans the streaks (0 = not at all)
 });
+
+// Slope fade as a pair of cosines: rings are full where normal.y > hi and gone below lo. A zero
+// fade collapses to "never suppressed", which is what every consumer that does not set it wants.
+export function slopeCos(maxDeg, fadeDeg) {
+  const R = Math.PI / 180;
+  const hi = Math.cos(Math.max(0, Math.min(90, maxDeg - Math.max(0, fadeDeg))) * R);
+  const lo = fadeDeg > 0 ? Math.cos(Math.max(0, Math.min(90, maxDeg)) * R) : hi - 0.001;
+  return [Math.min(lo, hi - 0.001), hi];
+}
 
 // One shared set of uniforms so drops, splashes, wet ground and lightning stay in lockstep.
 export function createRainUniforms(overrides = {}) {
@@ -60,6 +77,14 @@ export function createRainUniforms(overrides = {}) {
     uLightning: uniform(0),
     uSplashRadius: uniform(d.splashRadius),
     uSplashSize: uniform(d.splashSize),
+    uSplashRate: uniform(d.splashRate),
+    // Ring suppression by slope, as cosines so the shader compares against the normal's y directly.
+    uSlopeCosLo: uniform(slopeCos(d.splashSlopeMax, d.splashSlopeFade)[0]),
+    uSlopeCosHi: uniform(slopeCos(d.splashSlopeMax, d.splashSlopeFade)[1]),
+    uSplashOrient: uniform(d.splashOrient),
+    uNearStart: uniform(d.nearStart),
+    uNearEnd: uniform(d.nearEnd),
+    uCamLean: uniform(d.camLean),
     uWetness: uniform(d.wetness),
     uRipple: uniform(d.ripple),
     uPuddle: uniform(d.puddle),
@@ -108,7 +133,7 @@ export function createRainStreaks(U, { maxDrops = 30000, groundHeight = null, co
 
   const windEff = U.uWind.add(U.uGust);
   // Motion relative to the eye: a panning camera sees rain lean the other way, exactly like a car window.
-  const velRel = vec3(windEff.x, U.uSpeed.mul(speedK).negate(), windEff.z).sub(U.uCamVel);
+  const velRel = vec3(windEff.x, U.uSpeed.mul(speedK).negate(), windEff.z).sub(U.uCamVel.mul(U.uCamLean));
   const relSpeed = length(velRel);
   const vel = velRel.div(relSpeed.max(0.001));
   const toCam = normalize(cameraPosition.sub(pos));
@@ -120,7 +145,7 @@ export function createRainStreaks(U, { maxDrops = 30000, groundHeight = null, co
 
   const vY = varying(world.y);
   const vRnd = varying(rnd);
-  const vNear = varying(smoothstep(0.25, 1.4, length(pos.sub(cameraPosition))));  // no smears across the lens
+  const vNear = varying(smoothstep(U.uNearStart, U.uNearEnd, length(pos.sub(cameraPosition))));  // no smears across the lens
   let cut = roofAt(U, pos.xz);
   if (groundHeight) cut = max(cut, groundHeight(pos.xz));
   const vCut = varying(cut);                                                     // sampled once per drop, in the vertex stage
@@ -141,7 +166,11 @@ export function createRainStreaks(U, { maxDrops = 30000, groundHeight = null, co
 }
 
 // ---- splashes: expanding rings that sit on the roof height under them --------------------------
-export function createRainSplashes(U, { maxSplashes = 6000, groundHeight = null, colorFn = null } = {}) {
+// `groundSlope(xzNode) -> vec2(dh/dx, dh/dz)` (optional) gives the rings a surface to lie on: they
+// fade out above uSlopeCosLo (rain runs off a rock face rather than beading on it) and, with
+// uSplashOrient up, tilt to the normal instead of staying horizontal. With no hook the slope is
+// central-differenced off `groundHeight` at `slopeStep` metres; with neither, the ground is flat.
+export function createRainSplashes(U, { maxSplashes = 6000, groundHeight = null, groundSlope = null, slopeStep = 2, colorFn = null } = {}) {
   const geom = instancedQuad(maxSplashes);
   const mat = new MeshBasicNodeMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide });
 
@@ -149,8 +178,9 @@ export function createRainSplashes(U, { maxSplashes = 6000, groundHeight = null,
   const sx = hash(idx.add(uint(31337)));
   const sz = hash(idx.add(uint(65537)));
   const birth = hash(idx.add(uint(999983)));
-  const cycle = fract(time.mul(1.6).add(birth));                       // 0..1 age of this ring
-  const gen = floor(time.mul(1.6).add(birth)).toUint().mul(uint(maxSplashes)); // which ring this is
+  const clock = time.mul(U.uSplashRate).add(birth);
+  const cycle = fract(clock);                                          // 0..1 age of this ring
+  const gen = floor(clock).toUint().mul(uint(maxSplashes));            // which ring this is
   const jx = hash(idx.add(gen).add(uint(3)));                           // re-place a little each generation
   const jz = hash(idx.add(gen).add(uint(17)));
   // A square that follows the camera, wrapped like the drops: rings stay put in the world and only
@@ -162,15 +192,35 @@ export function createRainSplashes(U, { maxSplashes = 6000, groundHeight = null,
   const cx = xz.x, cz = xz.y;
   let ground = roofAt(U, vec2(cx, cz));
   if (groundHeight) ground = max(ground, groundHeight(vec2(cx, cz)));
-  const y = ground.add(0.012);
+  // Surface normal from the height gradient. The occluder map is not differenced: it is a hard
+  // step at a roof edge, and a step has no slope worth reading.
+  let grad = null;
+  if (groundSlope) grad = groundSlope(vec2(cx, cz));
+  else if (groundHeight) {
+    const st = float(slopeStep);
+    const dx = groundHeight(vec2(cx.add(st), cz)).sub(groundHeight(vec2(cx.sub(st), cz)));
+    const dz = groundHeight(vec2(cx, cz.add(st))).sub(groundHeight(vec2(cx, cz.sub(st))));
+    grad = vec2(dx, dz).div(st.mul(2));
+  }
+  const normal = grad ? normalize(vec3(grad.x.negate(), 1, grad.y.negate())) : vec3(0, 1, 0);
+  // Flat basis and surface basis are the same vectors when the ground is level, so orient 0 and 1
+  // agree there and the slider only does anything on a slope.
+  const tang = normalize(cross(normal, vec3(0, 0, 1)));
+  const bitan = cross(tang, normal);
+  const ax = mix(vec3(1, 0, 0), tang, U.uSplashOrient);
+  const az = mix(vec3(0, 0, 1), bitan, U.uSplashOrient);
+  const lift = mix(vec3(0, 1, 0), normal, U.uSplashOrient).mul(0.012);
   const size = U.uSplashSize.mul(float(0.3).add(cycle.mul(0.7)));
-  const world = vec3(cx.add(positionLocal.x.mul(size)), y, cz.add(positionLocal.y.mul(size)));
+  const world = vec3(cx, ground, cz).add(lift)
+    .add(ax.mul(positionLocal.x.mul(size)))
+    .add(az.mul(positionLocal.y.mul(size)));
   mat.positionNode = world;
 
   const vCycle = varying(cycle);
+  const vSlope = varying(smoothstep(U.uSlopeCosLo, U.uSlopeCosHi, normal.y));
   const d = length(uv().sub(0.5)).mul(2);                               // 0 centre .. 1 edge
   const ring = smoothstep(0.55, 0.85, d).mul(smoothstep(1.0, 0.9, d));
-  const alpha = ring.mul(float(1).sub(vCycle)).mul(0.6).mul(U.uOpacity.mul(1.4).clamp(0, 1));
+  const alpha = ring.mul(float(1).sub(vCycle)).mul(0.6).mul(U.uOpacity.mul(1.4).clamp(0, 1)).mul(vSlope);
   let rgb = U.uColor.mul(float(1.1).add(U.uLightning.mul(2)));
   if (colorFn) rgb = colorFn(rgb);
   mat.colorNode = vec4(rgb, alpha);
@@ -384,11 +434,14 @@ export function createRainSystem(opts = {}) {
   let lightningDecay = 0;
   const gustT = [0, 0], lastCam = new THREE.Vector3(), camVel = new THREE.Vector3(), tmp = new THREE.Vector3();
   let haveCam = false, gustAmp = opts.gust ?? RAIN_DEFAULTS.gust;
+  // The two wander rates below were 0.37 and 0.23 rad/s, i.e. a ~17 s cycle. Keep that the default
+  // and scale both together, so a storm can gust slowly and a drizzle quickly.
+  let gustRate = RAIN_DEFAULTS.gustPeriod / (opts.gustPeriod ?? RAIN_DEFAULTS.gustPeriod);
   return {
     group, uniforms: U, streaks, splashes,
     // Advance the fall/wind accumulators; pass the camera so streaks can lean against its motion.
     update(dt, camera) {
-      gustT[0] += dt * 0.37; gustT[1] += dt * 0.23;
+      gustT[0] += dt * 0.37 * gustRate; gustT[1] += dt * 0.23 * gustRate;
       U.uGust.value.set(Math.sin(gustT[0]) * Math.sin(gustT[1] * 1.7) * gustAmp, 0, Math.sin(gustT[1]) * Math.cos(gustT[0] * 0.6) * gustAmp);
       U.uFall.value += U.uSpeed.value * dt;
       tmp.copy(U.uWind.value).add(U.uGust.value);
@@ -402,6 +455,13 @@ export function createRainSystem(opts = {}) {
     },
     setGust(a) { gustAmp = a; },
     getGust() { return gustAmp; },
+    setGustPeriod(seconds) { gustRate = RAIN_DEFAULTS.gustPeriod / Math.max(0.05, seconds); },
+    // Degrees of ground slope where rings stop, and how many degrees below that the fade takes.
+    setSplashSlope(maxDeg, fadeDeg) {
+      const [lo, hi] = slopeCos(maxDeg, fadeDeg);
+      U.uSlopeCosLo.value = lo; U.uSlopeCosHi.value = hi;
+    },
+    setSplashOrient(v) { U.uSplashOrient.value = Math.max(0, Math.min(1, v)); },
     setDensity(f) { density = f; streaks.setDensity(f); splashes.setDensity(f); },
     getDensity() { return density; },
     setWind(x, z) { U.uWind.value.set(x, 0, z); },

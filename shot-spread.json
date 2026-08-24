@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "savedAt": "2026-08-24T18:28:05.832Z",
+  "spread": {
+    "spreadScale": 1,
+    "moveSpreadDeg": 2.5,
+    "firstShotSpreadDeg": 2,
+    "settleMs": 800,
+    "bloomPerShotDeg": 0.45,
+    "bloomMaxDeg": 4,
+    "bloomDecayDegPerSecond": 3
+  }
+}

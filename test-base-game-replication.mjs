@@ -29,7 +29,7 @@ const near = (a, b, epsilon = 0.02) => Math.abs(a - b) <= epsilon;
 const P = BASE_GAME_PROTOCOL_VERSION;
 
 // ---- protocol sanitizers ----
-ok(P === 9, 'protocol is version 9');
+ok(P === 10, 'protocol is version 10');
 const goodTick = sanitizeBaseGameTickInput({ tick: 5, moveX: 3, moveZ: -0.5, yaw: 1.2, pitch: 9, sprint: 1, jump: true });
 ok(goodTick && goodTick.moveX === 1 && goodTick.moveZ === -0.5 && near(goodTick.pitch, Math.PI / 2, 1e-9)
   && goodTick.sprint === false && goodTick.jump === true, 'tick sanitizer clamps movement and keeps booleans strict');
@@ -44,6 +44,11 @@ ok(sanitizeBaseGameInputPacket({ ticks: [t(2), t(1)] }) === null, 'packet reject
 ok(sanitizeBaseGameInputPacket({ ticks: [] }) === null && sanitizeBaseGameInputPacket({ ticks: Array.from({ length: 65 }, (_, i) => t(i + 1)) }) === null,
   'packet rejects empty and oversized tick lists');
 ok(sanitizeBaseGamePlayerState({ position: [1, 2, 3], velocity: [0, 0, 0] })?.position[1] === 2, 'player state sanitizer accepts a valid entry');
+const bodyState = sanitizeBaseGamePlayerState({ position: [1, 2, 3], bodyModel: 'soldier:sniper', poseEpoch: 7 });
+ok(bodyState.bodyModel === 'soldier:sniper' && bodyState.hitProfile === 'humanoid-default' && bodyState.poseEpoch === 7,
+  'player snapshots carry validated body identity and server-selected hit profile');
+ok(sanitizeBaseGamePlayerState({ position: [1, 2, 3], bodyModel: 'not-a-model' }).bodyModel === 'default',
+  'unknown body identity is sanitized to the canonical default');
 ok(sanitizeBaseGamePlayerState({ position: [1, NaN, 3] }) === null, 'player state sanitizer rejects NaN');
 ok(isAcceptableBaseGameTick(6, 5) && !isAcceptableBaseGameTick(5, 5) && !isAcceptableBaseGameTick(4, 5)
   && !isAcceptableBaseGameTick(5 + 10_000, 5), 'tick helper rejects stale, duplicate, and far-future values');
@@ -165,7 +170,11 @@ ok(ownerClient.queue.length === queueBefore, 'malformed packets are dropped whol
   s1 = lastOf(guest, 'base:snapshot').players.find((p) => p.id === ownerId);
   ok(s1.weapon === 'm24', 'base:loadout replaces the loadout and the snapshot echoes it');
   const poses = room.poseHistory.get(c.id);
-  ok(poses && poses.length > 0 && poses[poses.length - 1].t <= room.tick * 1000 / 120 + 1e-6 && poses[0].t >= poses[poses.length - 1].t - 750, 'server keeps a bounded combat.js pose history per client');
+  const oldestPose = poses?.slots[poses.start];
+  const newestPose = poses?.slots[(poses.start + poses.length - 1) % poses.capacity];
+  ok(poses && poses.capacity === 32 && poses.length > 0 && poses.length <= poses.capacity
+    && Number.isFinite(oldestPose?.t) && Number.isFinite(newestPose?.t) && oldestPose.t <= newestPose.t,
+  'server keeps a fixed-capacity articulated pose history per client');
   sendTicks(owner, walk(1, { slot: 2, reload: true }));
   runSteps(1);
   ok(c.action === BASE_GAME_WEAPON_ACTION.idle, 'no reload on a slot that holds a knife');

@@ -6,6 +6,8 @@
 // per-player pose history used for host-side lag compensation (M1 has no networking wired
 // in yet — that lands in M2/M3).
 
+import { rayPlayerHitRig } from './player-hit-rig.js';
+
 // ---- vector helpers (internal) --------------------------------------------------------
 function add(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
 function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
@@ -171,21 +173,32 @@ export function raymarchTerrainHit(origin, dir, range, heightAt, normalAt, step 
 // vertical columns (`{ id, x, z, r, minY, maxY }`); terrain via heightAt/normalAt.
 export function resolveHitscan({
   shooterId, origin, dir, range,
-  players, creatures, mobs, obstacles, heightAt, normalAt, terrainStep = 0.5, occluder,
+  players, creatures, mobs, obstacles, heightAt, normalAt, terrainStep = 0.5, occluder, playerInflate = 0,
 }) {
   const d = normalizeDir(dir);
   if (!d || !(range > 0)) return null;
   let best = null;
-  const consider = (distance, kind, id, point, normal) => {
+  const consider = (distance, kind, id, point, normal, detail = null) => {
     if (distance < 0 || distance > range) return;
     if (best !== null && distance >= best.distance) return;
-    best = { kind, id, point, normal, distance };
+    best = { kind, id, point, normal, distance, ...(detail || {}) };
   };
 
   const capsuleHit = (list, kind) => {
     if (!list) return;
     for (const c of list) {
       if (!c || c.id === shooterId || c.alive === false) continue;
+      if (kind === 'player' && c.rig) {
+        const rigHit = rayPlayerHitRig(origin, d, range, c.rig, { inflate: playerInflate });
+        if (rigHit.hit) {
+          consider(rigHit.distance, kind, c.id, rigHit.point, rigHit.normal, {
+            zone: rigHit.zone,
+            side: rigHit.side,
+            primitive: rigHit.primitive,
+          });
+        }
+        continue;
+      }
       const res = rayCapsuleHit(origin, d, range, { p: c.p, r: c.r, h: c.h });
       if (res.hit) {
         const nlen = Math.hypot(res.point[0] - c.p[0], res.point[2] - c.p[2]) || 1;
@@ -246,12 +259,20 @@ export function findPlayerHit({ shooterId, players, origin, dir, range, occlusio
   for (const player of players) {
     if (!player || player.id === shooterId) continue;
     if (player.alive === false) continue;
-    const capsule = { p: player.p, r: player.r, h: player.h };
-    const result = rayCapsuleHit(origin, d, range, capsule);
+    const result = player.rig
+      ? rayPlayerHitRig(origin, d, range, player.rig)
+      : rayCapsuleHit(origin, d, range, { p: player.p, r: player.r, h: player.h });
     if (!result.hit) continue;
     if (best !== null && result.distance >= best.distance) continue;
     if (typeof occlusion === 'function' && occlusion(origin, result.point)) continue;
-    best = { targetId: player.id, distance: result.distance, point: result.point };
+    best = {
+      targetId: player.id,
+      distance: result.distance,
+      point: result.point,
+      zone: result.zone || null,
+      side: result.side || null,
+      primitive: result.primitive ?? null,
+    };
   }
   return best;
 }
