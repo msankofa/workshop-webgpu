@@ -455,7 +455,11 @@ export function playThunder(ctx, destination, { volume = 0.9, distance = 0 } = {
 
 // ---- system: everything wired together ---------------------------------------------------------
 export function createRainSystem(opts = {}) {
-  const U = createRainUniforms(opts.uniforms || {});
+  // `uniformSet` reuses an existing set instead of building one. A page that reallocates the
+  // instanced geometry (a max-drops slider) must pass it, or every other holder of the old set —
+  // a wet-ground material graph, which captured the node objects at compile time — is left reading
+  // uniforms nothing writes to any more.
+  const U = opts.uniformSet || createRainUniforms(opts.uniforms || {});
   const streaks = createRainStreaks(U, opts);
   const splashes = createRainSplashes(U, opts);
   const group = new THREE.Group();

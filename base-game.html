@@ -594,7 +594,26 @@ function scheduleRainAllocation() {
     rain.setAllocation(settings.rainMaxDrops, settings.rainMaxSplashes);
   }, 300);
 }
+// Every key the apply below reads, so an unchanged frame costs one loop over this list instead of a
+// response object, a look object and two Object.entries walks. Measured at 5.5 us vs 0.6 us per
+// call; small, but it is 60 times a second and applyCloudSettings and applyFloraSettings beside it
+// already work this way.
+const RAIN_APPLY_KEYS = Object.freeze([
+  'weatherRain', 'rainEnabled', 'rainDensityBase', 'rainDensityPerRain',
+  'rainOpacityBase', 'rainOpacityPerRain', 'rainWetnessPerRain', 'rainSplashOrient',
+  'weatherWindFollowsWaves', 'weatherWindDeg', 'waveWindDeg',
+  'rainDropsEnabled', 'rainSplashEnabled', 'rainSplashMaxAgl', 'rainGroundSource',
+  'rainGroundConservative', 'rainWetEnabled', 'rainDryTime', 'rainWetRise',
+  'rainMaxDrops', 'rainMaxSplashes', 'waterEnabled', 'worldMode',
+  ...Object.values(RAIN_LOOK_KEYS),
+]);
+const appliedRain = {};
 function applyRainSettings() {
+  // terrain.seaLevel is not a setting, so it is watched by value like the keys are.
+  let dirty = appliedRain._seaLevel !== terrain.seaLevel;
+  appliedRain._seaLevel = terrain.seaLevel;
+  for (const key of RAIN_APPLY_KEYS) if (appliedRain[key] !== settings[key]) { appliedRain[key] = settings[key]; dirty = true; }
+  if (!dirty) return;
   if (rain.maxDrops !== settings.rainMaxDrops || rain.maxSplashes !== settings.rainMaxSplashes) scheduleRainAllocation();
   const response = rainResponse(settings);
   const look = {
@@ -1218,6 +1237,7 @@ function updateProjectiles(now, dt) {
   }
   for (let i = n; i < projectileMeshes.length; i++) projectileMeshes[i].visible = false;
 }
+let shownCombatStatus = null, shownDamageFlash = null;
 function renderCombatStatus(now) {
   const weaponId = localWeaponId();
   const ammo = weaponId && (getWeapon(weaponId)?.mode || 'hitscan') !== 'melee' ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, weaponId) : null;
@@ -1228,8 +1248,12 @@ function renderCombatStatus(now) {
   const throwableId = localThrowableId();
   const pouch = throwableId ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, throwableId) : null;
   const throwable = pouch ? `<br>[G] ${throwableId} ${pouch.mag + pouch.reserve}` : '';
-  combatStatus.innerHTML = `${hit}${hp}<br>${gun}${throwable}${killed}`;
-  damageFlash.style.opacity = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
+  // Write only on change. innerHTML reparses, and health, ammo and the hit flag hold still for whole
+  // seconds at a time, so the great majority of frames wrote the identical markup back.
+  const markup = `${hit}${hp}<br>${gun}${throwable}${killed}`;
+  if (markup !== shownCombatStatus) { shownCombatStatus = markup; combatStatus.innerHTML = markup; }
+  const flash = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
+  if (flash !== shownDamageFlash) { shownDamageFlash = flash; damageFlash.style.opacity = flash; }
 }
 const aimRayOrigin = new THREE.Vector3(), aimRayDirection = new THREE.Vector3(), aimPointScratchArray = [0, 0, 0];
 const aimPointLocal = new THREE.Vector3();

@@ -136,8 +136,9 @@ export function placeholderStreamedSplatTextures(layers = STREAMED_SPLAT_LAYERS)
 // wetRippleOffset / wetAlbedoScale / wetRoughness) rather than being re-derived here, so rain beads
 // the same way on the terrain as on everything standing on it. `offset` is the render origin, so
 // scene xz + offset is the global xz the puddles are anchored to and a rebase does not move them.
-// The graph is built once and gated on `uWetness`: a uniform branch is coherent across the draw,
-// and rebuilding the splat instances the first time it rains is a visible hitch.
+// The graph is built once and the whole wet block sits behind `If(uWetness > 0)`: a uniform branch
+// is coherent across the draw, so a dry world pays nothing for the noise, and rebuilding the splat
+// instances the first time it rains would be a visible hitch.
 //
 // `water` (optional): { sceneLevel, offset, sunDir, sunColor, time, causticStrength, causticSpread
 // uniforms; waveNormalFold(xzNode) -> vec4 } — adds a wet tide band above the waterline and the
@@ -282,12 +283,24 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
     }
     let rainRipple = null;
     if (rain) {
-      const pw = rain.offset ? P.xz.add(rain.offset) : P.xz;
-      const dry = oneMinus(submerged);                       // no puddles on the seabed
-      const puddle = wetPuddleField(rain.uniforms, pw, smoothstep(0.6, 0.9, N.y).mul(dry), rain.puddleScale ?? 0.09);
-      rainRipple = wetRippleOffset(rain.uniforms, pw, puddle, rain.rippleScale ?? 3.0).mul(dry);
-      outCol = outCol.mul(mix(float(1), wetAlbedoScale(rain.uniforms, puddle), dry));
-      rough = mix(rough, wetRoughness(rain.uniforms, rough, puddle), dry);
+      // Behind a UNIFORM branch, not just a build-time one: three octaves of FBM plus the ripple
+      // maths is ~315 lines of fragment shader, and the ground is most of the screen. Every
+      // fragment takes the same side of this test, so a dry world skips all of it and a wet one
+      // pays nothing to ask. (No texture sampling inside, so no implicit-derivative problem.)
+      const wetCol = outCol.toVar('wetCol');
+      const wetRough = rough.toVar('wetRough');
+      const wetRip = vec2(0).toVar('wetRipple');
+      If(rain.uniforms.uWetness.greaterThan(0), () => {
+        const pw = rain.offset ? P.xz.add(rain.offset) : P.xz;
+        const dry = oneMinus(submerged);                     // no puddles on the seabed
+        const puddle = wetPuddleField(rain.uniforms, pw, smoothstep(0.6, 0.9, N.y).mul(dry), rain.puddleScale ?? 0.09);
+        wetRip.assign(wetRippleOffset(rain.uniforms, pw, puddle, rain.rippleScale ?? 3.0).mul(dry));
+        wetCol.assign(wetCol.mul(mix(float(1), wetAlbedoScale(rain.uniforms, puddle), dry)));
+        wetRough.assign(mix(wetRough, wetRoughness(rain.uniforms, wetRough, puddle), dry));
+      });
+      outCol = wetCol;
+      rough = wetRough;
+      rainRipple = wetRip;
     }
     roughProp.assign(clamp(rough, 0.3, 1));
     const nmT = nm.mul(2).sub(1);

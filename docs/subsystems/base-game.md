@@ -1435,6 +1435,32 @@ the line in `rain.js`; it was left opt-in rather than defaulted so the other pag
 materials and another session is mid-rewrite there for the server hit rig, so the three sheen
 settings were dropped rather than shipped as sliders that do nothing.
 
+**WebGPU audit, 2026-08-24.** Four defects, three of them introduced by R1/R2 and none caught by a
+test, found by auditing the page against `.claude/skills/improve-webgpu`:
+
+1. **The wet-ground maths was not behind a uniform branch.** R2's doc comment claimed it was; the
+   code had a JavaScript `if (rain)` at graph-build time, which decides whether the code is *emitted*,
+   not whether it *runs*. Measured on the generated GLSL: the rain bundle adds 315 fragment-shader
+   lines and 4 noise evaluations, and they sat at brace depth 1 in `main` — unconditional, on every
+   ground pixel of every frame, in a world with no rain in it. Now wrapped in
+   `If(uWetness > 0)`, which moves the noise to depth 2 for 11 extra lines. A uniform branch is
+   coherent across the draw, so a dry world skips all of it.
+2. **A reallocation orphaned the ground's uniforms.** `createRainSystem` built a fresh uniform set
+   on every call, so moving the max-drops slider handed the drops a new set while the splat's
+   compiled graph still held the old one — the ground froze at `RAIN_DEFAULTS.wetness` (0.8),
+   permanently wet whatever the weather, and leaked a fallback texture per rebuild. `createRainSystem`
+   now accepts `uniformSet`, and `base-game-rain.js` builds one set for the life of the page.
+3. **`applyRainSettings` did full work every frame** — a response object, a look object and two
+   `Object.entries` walks, about 43 short-lived allocations per frame. Measured 5.5 µs against
+   0.6 µs dirty-checked, so ~5 µs a frame: small, but `applyCloudSettings` and `applyFloraSettings`
+   beside it already gate, and now so does this.
+4. **The combat HUD wrote `innerHTML` every frame** (pre-existing, not from the weather work).
+   Health, ammo and the hit flag hold still for seconds at a time, so nearly every write reparsed
+   identical markup. Both it and the damage-flash opacity now write only on change.
+
+All four are locked down in `test-base-game-rain.mjs`, which reads the generated GLSL for the branch
+depth rather than trusting the comment that was wrong the first time.
+
 Next in the plan: R3 (the rain shadow map) and R4 (lightning, thunder and the rain bed).
 
 ### Terrain authoring and Terrain Studio

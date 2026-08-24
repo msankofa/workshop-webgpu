@@ -17,7 +17,7 @@
 
 import * as THREE from 'three';
 import { uniform, float, vec2, max, mix } from 'three/tsl';
-import { createRainSystem } from './rain.js';
+import { createRainSystem, createRainUniforms } from './rain.js';
 
 export const BASE_GAME_RAIN_DEFAULTS = Object.freeze({
   maxDrops: 40000,
@@ -108,10 +108,14 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
     system.setWind(Math.cos(r) * look.windSpeed, Math.sin(r) * look.windSpeed);
   }
 
+  // One uniform set for the life of the page. The splat's wet-ground graph captures these node
+  // objects when it compiles, so a reallocation must not hand it a fresh set — the ground would be
+  // left reading RAIN_DEFAULTS.wetness (0.8) for ever while the drops read the real value.
+  const uniformSet = createRainUniforms({ splashRadius: 20 });
   function build() {
     system = createRainSystem({
       maxDrops, maxSplashes, density: look.density,
-      uniforms: { splashRadius: look.splashRadius },
+      uniformSet,
       groundHeight, groundSlope,
       // A little of the sky's own colour, so drops belong to the weather they fall out of.
       colorFn: rgb => mix(rgb, uSkyTint, uSkyTintAmount),
@@ -130,7 +134,7 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
   // What the ground material needs (terrain.setSplatRain(groundShade)), the same shape water's
   // bundle has: the rain uniforms plus the global-xz offset, so puddles are anchored to the world.
   const groundShade = {
-    uniforms: system.uniforms, offset: uOffset,
+    uniforms: uniformSet, offset: uOffset,
     puddleScale: 0.09, rippleScale: 3.0,
   };
 

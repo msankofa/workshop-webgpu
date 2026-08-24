@@ -1121,6 +1121,12 @@ profile in uv.
   up-facing surface (`smoothstep(0.6, 0.9, normal.y)`); side faces instead get a darker, glossier
   film with run-off streaks sliding down them (one `mx_noise_float` tap on `x+z` vs `y − t`,
   `streaks: false` removes them), so the same call dresses floors, roofs, walls and cover.
+- **`createRainSystem({ uniformSet })` (2026-08-24)** reuses an existing uniform set instead of
+  building one. A page that reallocates the instanced geometry (a max-drops slider rebuilds it) must
+  pass it: any other holder of the old set — a wet-ground material graph, which captured the node
+  objects when it compiled — is otherwise left reading uniforms nothing writes to any more, and each
+  rebuild leaks a fallback texture. Omitting it keeps the old behaviour, which is what
+  `bot-viewer-v3.html` and `demos/flight-sim.html` rely on.
 - **Shared wet fields (2026-08-24).** `wetPuddleField(U, pw, up, puddleScale)`,
   `wetRippleOffset(U, pw, puddle, rippleScale)`, `wetAlbedoScale(U, puddle, streak)` and
   `wetRoughness(U, rough, puddle, streak)` are exported so a second consumer reuses this maths

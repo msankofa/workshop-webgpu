@@ -109,6 +109,17 @@ section('field window: fill, sample, readiness');
   check('a recentre keeps values it still holds or drops them cleanly',
     fw.sampleAt('surfaceHeights', 40, 40) === null || Math.abs(fw.sampleAt('surfaceHeights', 40, 40) - before) < 1e-6);
 
+  // A full window must not walk its tile grid every frame: that scan builds a string per tile and
+  // returns nothing, which was 9 of the 15 us terrain.update() cost while standing still.
+  for (let i = 0; i < 20; i++) { fw.update(0, 0); scheduler.pump(); }      // settle back at the origin
+  const requestedAfterFill = fw.stats.tilesRequested;
+  for (let i = 0; i < 50; i++) { fw.update(0, 0); scheduler.pump(); }
+  check('a full window issues no further requests', fw.stats.tilesRequested === requestedAfterFill,
+    `${fw.stats.tilesRequested - requestedAfterFill} extra`);
+  fw.update(2000, 2000);
+  check('moving resumes requesting', fw.stats.tilesRequested > requestedAfterFill);
+  for (let i = 0; i < 12; i++) { fw.update(0, 0); scheduler.pump(); }
+
   check('one texture per field', ['surfaceHeights', 'biomeIds', 'moisture', 'heights'].every(f => fw.texture(f)));
   check('id fields upload as one byte per texel', fw.texture('biomeIds').image.data instanceof Uint8Array);
   check('value fields upload as floats', fw.texture('moisture').image.data instanceof Float32Array);

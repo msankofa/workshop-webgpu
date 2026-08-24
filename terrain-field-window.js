@@ -66,9 +66,16 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     stats.bytes += win.array(name).byteLength;
   }
 
+  // The scan walks tilesPerSide^2 keys and builds a string per tile, so it is skipped whenever the
+  // answer cannot have changed: a full window, or no commit and no move since the last one.
+  let scanVersion = -1, scanOriginPX = null, scanOriginPZ = null, scanEmpty = false;
   function requestTiles() {
     if (disposed || refs <= 0) return 0;
+    if (win.coverage >= 1) return 0;
+    if (scanEmpty && win.version === scanVersion && win.originPX === scanOriginPX && win.originPZ === scanOriginPZ) return 0;
     const missing = win.missingTiles(focus[0], focus[1]);
+    scanVersion = win.version; scanOriginPX = win.originPX; scanOriginPZ = win.originPZ;
+    scanEmpty = missing.length === 0;
     let sent = 0;
     for (const { ix, iz } of missing) {
       if (sent >= cfg.maxRequestsPerUpdate) break;

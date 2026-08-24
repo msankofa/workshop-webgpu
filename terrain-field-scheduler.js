@@ -31,6 +31,7 @@ export const FIELD_SCHEDULER_DEFAULTS = Object.freeze({
 export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
   const cfg = { ...FIELD_SCHEDULER_DEFAULTS, ...opts };
   const queue = [];                 // { key, priority, seq, descriptor, request, onTile, onError, owner }
+  const queuedByKey = new Map();    // key -> job, so a re-request is a lookup and not a queue walk
   const inFlight = new Map();       // key -> job
   const waiting = new Map();        // key -> [job, ...] merged onto one in-flight job
   const sources = new Map();        // descriptor JSON -> source, for the synchronous path
@@ -122,9 +123,10 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
     if (disposed) return 0;
     const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     let started = 0;
+    if (queue.length > 1) queue.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
     while (queue.length && inFlight.size < cfg.maxInFlight) {
-      queue.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
       const job = queue.shift();
+      queuedByKey.delete(job.key);
       stats.queued = queue.length;
       if (job.cancelled) { continue; }
       const wasSync = dispatch(job);
@@ -151,8 +153,8 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
         waiting.set(jobKey, list);
         return true;
       }
-      const queued = queue.find(j => j.key === jobKey && !j.cancelled);
-      if (queued) {
+      const queued = queuedByKey.get(jobKey);
+      if (queued && !queued.cancelled) {
         stats.deduped++;
         queued.priority = Math.min(queued.priority, priority);
         const list = waiting.get(jobKey) ?? [];
@@ -160,7 +162,10 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
         waiting.set(jobKey, list);
         return true;
       }
-      queue.push({ key: jobKey, priority, seq: seq++, descriptor, request: req, epoch, owner, onTile, onError, cancelled: false });
+      // Appended in arrival order; pump() sorts once before it dispatches.
+      const job = { key: jobKey, priority, seq: seq++, descriptor, request: req, epoch, owner, onTile, onError, cancelled: false };
+      queue.push(job);
+      queuedByKey.set(jobKey, job);
       stats.queued = queue.length;
       return true;
     },
@@ -169,7 +174,7 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
     cancelOwner(owner) {
       let n = 0;
       for (const job of queue) if (job.owner === owner && !job.cancelled) { job.cancelled = true; n++; }
-      for (let i = queue.length - 1; i >= 0; i--) if (queue[i].cancelled) queue.splice(i, 1);
+      for (let i = queue.length - 1; i >= 0; i--) if (queue[i].cancelled) { queuedByKey.delete(queue[i].key); queue.splice(i, 1); }
       stats.queued = queue.length;
       stats.cancelled += n;
       return n;
@@ -180,6 +185,7 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
       for (const w of workers) w.terminate();
       workers = [];
       queue.length = 0;
+      queuedByKey.clear();
       inFlight.clear();
       waiting.clear();
       sources.clear();

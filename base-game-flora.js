@@ -54,9 +54,13 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
 
   // Global = render-local + origin. One vec3 uniform, mutated on rebase; the graph never rebuilds.
   const uRenderOrigin = uniform(new injectedTHREE.Vector3());
+  const originScratch = [0, 0, 0];        // getOrigin() allocates without one, and this runs per frame
+  function readOrigin() {
+    return worldCoordinates?.getOrigin?.(originScratch) ?? originScratch;
+  }
   function syncOrigin() {
-    const o = worldCoordinates?.getOrigin?.();
-    if (o) uRenderOrigin.value.set(o[0], o[1], o[2]);
+    const o = readOrigin();
+    uRenderOrigin.value.set(o[0], o[1], o[2]);
   }
   syncOrigin();
 
@@ -101,7 +105,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       bladeHeight: cfg.grassBladeHeight,
       bladeWidth: cfg.grassBladeWidth,
       verticalOffset: cfg.grassVerticalOffset,
-      waterLevel: terrain.seaLevel - (worldCoordinates?.getOrigin?.()?.[1] ?? 0),
+      waterLevel: terrain.seaLevel - readOrigin()[1],
       heightNode: samplers.heightNode,
       densityNode: samplers.densityNode,
     });
@@ -153,7 +157,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       syncOrigin();
       if (!built) { const ok = await build(); if (!ok) return false; }
       // Sea level and the origin both move; the water gate is in render-local Y like the blades.
-      grass.setWaterLevel(terrain.seaLevel - (worldCoordinates?.getOrigin?.()?.[1] ?? 0));
+      grass.setWaterLevel(terrain.seaLevel - uRenderOrigin.value.y);
       await grass.update(seconds);
       stats.blades = grass.stats?.lastCount ?? stats.blades;
       stats.coverage = terrain.contactField?.coverage ?? 0;

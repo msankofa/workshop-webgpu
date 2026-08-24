@@ -332,6 +332,70 @@ const rain = createBaseGameRain({ scene, terrain, worldCoordinates, maxDrops: 20
   ok(/applyWetSurface\(material, rain\.uniforms/.test(html), 'the Traversal Lab materials are decorated too');
 }
 
+// ---- 12. the WebGPU audit's findings, so they cannot come back ------------------------------------
+// Every one of these was a real defect found by auditing the page rather than by a test failing.
+{
+  // (a) The wet-ground maths must sit behind a UNIFORM branch, not just a build-time `if (rain)`.
+  // Three octaves of FBM plus the ripple maths is ~315 lines of fragment shader and the ground is
+  // most of the screen, so a dry world was paying for it on every ground pixel of every frame.
+  const { createStreamedSplatMaterial, placeholderStreamedSplatTextures } = await import('./terrain-splat-streamed.js');
+  const { createRainUniforms } = await import('./rain.js');
+  const { uniform } = await import('three/tsl');
+  const geo = new THREE.PlaneGeometry(1, 1, 2, 2); geo.computeVertexNormals();
+  const bundle = { uniforms: createRainUniforms(), offset: uniform(new THREE.Vector2()), puddleScale: 0.09, rippleScale: 3 };
+  const built = await buildMaterial(createStreamedSplatMaterial(placeholderStreamedSplatTextures(), {}, { rain: bundle }), geo);
+  const body = built.fragment.slice(built.fragment.lastIndexOf('void main'));
+  let depth = 0; const noiseDepths = [];
+  for (const line of body.split('\n')) {
+    if (/mx_fractal_noise_float\s*\(/.test(line)) noiseDepths.push(depth);
+    depth += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+  }
+  ok(noiseDepths.length > 0, 'the wet ground graph really does evaluate the puddle noise');
+  ok(noiseDepths.every(d => d >= 2), `the puddle noise is inside a branch, not at the top of main (depths ${noiseDepths.join(',')})`);
+  ok(/if\s*\([^)]*>\s*0\.0\s*\)/.test(body), 'and the branch is a plain uniform comparison, so every fragment takes the same side');
+
+  // (b) One uniform set for the life of the page. The splat's graph captures these node objects
+  // when it compiles, so handing it a fresh set on a reallocation left the ground reading
+  // RAIN_DEFAULTS.wetness (0.8) for ever while the drops read the real value.
+  const bound = rain.groundShade.uniforms;
+  ok(bound === rain.uniforms, 'the ground bundle and the drops share one uniform set');
+  const fallbackBefore = rain.uniforms._fallback;
+  rain.setAllocation(rain.maxDrops + 1000, rain.maxSplashes + 100);
+  ok(rain.groundShade.uniforms === rain.uniforms, 'and still share it after a reallocation');
+  ok(bound === rain.uniforms, 'the bundle was not re-pointed either, so a compiled graph stays valid');
+  ok(fallbackBefore === rain.uniforms._fallback, 'the fallback texture is reused, not leaked per rebuild');
+  const camera = new THREE.PerspectiveCamera();
+  rain.setWetRise(0); rain.setDryTime(0);
+  rain.setLook({ wetness: 0.42 });
+  rain.update(1 / 60, camera, {});
+  ok(Math.abs(bound.uWetness.value - 0.42) < 1e-9, 'so wetness set after a reallocation still reaches the ground');
+
+  // (c) createRainSystem's own contract: without uniformSet it still builds its own, which is what
+  // bot-viewer-v3 and the flight sim rely on.
+  const a = createRainSystem({ maxDrops: 10, maxSplashes: 10 });
+  const b = createRainSystem({ maxDrops: 10, maxSplashes: 10 });
+  ok(a.uniforms !== b.uniforms, 'two systems with no uniformSet get independent uniforms, as before');
+  const shared = createRainUniforms();
+  const c = createRainSystem({ maxDrops: 10, maxSplashes: 10, uniformSet: shared });
+  ok(c.uniforms === shared, 'and uniformSet is honoured when given');
+}
+
+// ---- 13. the page's per-frame applies are gated ----------------------------------------------------
+{
+  const html = await (await import('fs/promises')).readFile('./base-game.html', 'utf8');
+  // applyRainSettings runs 60 times a second. Unchanged frames must not build a response object, a
+  // look object and walk Object.entries twice (measured 5.5 us vs 0.6 us per call).
+  const fn = html.slice(html.indexOf('function applyRainSettings()'));
+  const gate = fn.slice(0, fn.indexOf('const response'));
+  ok(/if \(!dirty\) return;/.test(gate), 'applyRainSettings returns early when nothing it reads has changed');
+  ok(/appliedRain\._seaLevel !== terrain\.seaLevel/.test(gate), 'and watches the sea level, which is not a setting');
+  ok(/RAIN_APPLY_KEYS/.test(gate), 'against an explicit key list');
+
+  // The HUD wrote innerHTML every frame; health and ammo hold still for seconds at a time.
+  ok(/if \(markup !== shownCombatStatus\)/.test(html), 'the combat HUD writes innerHTML only when the markup changes');
+  ok(/if \(flash !== shownDamageFlash\)/.test(html), 'and the damage flash only when its opacity changes');
+}
+
 seaDepth.dispose();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
