@@ -180,7 +180,11 @@ server's hit events: `localDamage()` (`player_damage`, non-positional) when the 
 victim and `hitAt(position)` (`enemy_hit` at the hit point, handling profile) for anyone else.
 With tracers and projectiles (same day) came `impactAt(position)` (`bullet_impact` at a world hit,
 environment-audio's `minor` numbers) and `explosionAt(position)` (`explosion`, environment-audio's
-`largeExplosion` numbers so a blast carries across open terrain).
+`largeExplosion` numbers so a blast carries across open terrain). Melee and the feedback layer added
+`impactAt(eventId, position)` — the id comes from `ballistic-audio.js`'s `pickImpactVoice`, so a
+ricochet replaces the impact instead of stacking — and `whizzAt(position, voice)`, where `voice` is
+that round's `createWhizzVoice(pass)`. `emit()` therefore takes an optional voice override: there is
+no single whizz sample, since the synth encodes the miss distance and the time of flight.
 
 ## Wiring in `bot-viewer-v2.html`
 

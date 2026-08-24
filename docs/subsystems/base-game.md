@@ -804,11 +804,29 @@ FX-only since solo has nothing to damage) and renders it through the same sphere
 behaves identically offline. `presentExplosion(globalPoint, radius)` is the one presentation both
 the snapshot `explosions[]` events and the solo manager call.
 
-Not done: melee (the server's `fireShot` returns early for that mode), the head multiplier (`head`
-is always false — `combat.js`'s `rayCapsuleHit` returns a point but no zone), and phase 3.4's
-feedback layer: blood spray/stain on a player hit, `ballistic-audio.js` whizz and ricochet, and the
-projectile whizz v3 plays as a rocket passes. Remote recoil is NOT open — `applyAction` already
-kicks a remote's mount and aim on a new fire tick.
+**Melee and the feedback layer (2026-08-23).** A knife now resolves the same ray as any hitscan
+weapon at its own 2 m `range` — environment-viewer's rule that hitscan and melee share the path and
+only the presentation differs, so the client draws the spark and skips the tracer. Note one trigger
+per player, not per slot: switching to the knife does not clear the cadence of the gun you were
+holding, which is what stops a swap from firing twice in an interval.
+
+Both `shots[]` and `hits[]` now carry the surface `normal`, which pays for three things that were
+guessing without it: the spark faces out of the surface, `ballistic-audio.js`'s grazing angle can be
+computed, and blood faces out of the wound. On each shot the client asks `pickImpactVoice` for the
+ONE voice that hit deserves (a ricochet replaces the impact rather than stacking), and `evaluateWhizz`
+whether the round passed close enough to the listener to be heard going by — that voice is built per
+round by `createWhizzVoice(pass)` from its own miss distance and time of flight, so
+`base-game-audio.js`'s `emit` gained an optional voice override (`whizzAt`). A player hit spawns
+`blood-tuning.js`'s burst (`sprayParams` / `stainParams` / `splatterParams`) scaled by
+`bloodIntensityForHealth` of the victim's health after the hit; with no rig on the wire the stain
+takes its fixed size instead of fitting a part's cross-section.
+
+Still open in this phase: the head multiplier. `hits[].head` is always false, and this is deliberate
+rather than forgotten — every other head decision in the repo comes from a rig
+(`bot-body-hit.js` → `bot-limb-map.js`), the server has no rig, and a capsule-top zone would be a
+second, disagreeing convention. It wants either a rig on the server or an explicit decision to hit-zone
+capsules. Remote recoil is NOT open — `applyAction` already kicks a remote's mount and aim on a new
+fire tick.
 
 Tests: `test-base-game-fire.mjs` (trigger step, seeded spread, protocol, a two-player room where
 one shoots the other dead and the server respawns them, then an RPG flight that detonates and

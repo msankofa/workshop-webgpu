@@ -297,7 +297,8 @@ export function sanitizeBaseGameHitEvent(event) {
   if (!finiteVec3(event.point, MAX_ABS_COORDINATE)) return null;
   const damage = Number(event.damage);
   if (!Number.isFinite(damage) || damage < 0) return null;
-  return { shooter: event.shooter, victim: event.victim, point: [...event.point], damage, head: event.head === true, tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
+  const normal = finiteVec3(event.normal, 2) ? [...event.normal] : null;
+  return { shooter: event.shooter, victim: event.victim, point: [...event.point], normal, damage, head: event.head === true, tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
 }
 
 // A resolved shot, for tracers on every client: where it left and where it ended.
@@ -305,8 +306,9 @@ export function sanitizeBaseGameShotEvent(event) {
   if (!event || typeof event !== 'object' || typeof event.shooter !== 'string') return null;
   if (!finiteVec3(event.origin, MAX_ABS_COORDINATE) || !finiteVec3(event.end, MAX_ABS_COORDINATE)) return null;
   const dir = finiteVec3(event.dir, 2) ? [...event.dir] : null;
+  const normal = finiteVec3(event.normal, 2) ? [...event.normal] : null;
   const weapon = typeof event.weapon === 'string' && BASE_GAME_WEAPON_IDS.includes(event.weapon) ? event.weapon : null;
-  return { shooter: event.shooter, weapon, origin: [...event.origin], dir, end: [...event.end], kind: typeof event.kind === 'string' ? event.kind : 'none', tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
+  return { shooter: event.shooter, weapon, origin: [...event.origin], dir, normal, end: [...event.end], kind: typeof event.kind === 'string' ? event.kind : 'none', tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
 }
 
 export function sanitizeBaseGameExplosionEvent(event) {

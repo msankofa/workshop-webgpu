@@ -81,7 +81,7 @@ export function createBaseGameAudioDirector({
     return true;
   }
 
-  function emit(eventId, position = null, profile = null, volume = undefined) {
+  function emit(eventId, position = null, profile = null, volume = undefined, voiceOverride = null) {
     if (!cfg.sfxEnabled) return false;
     if (position) {
       const l = getListenerPosition();
@@ -99,7 +99,7 @@ export function createBaseGameAudioDirector({
       return true;
     }
     if (!cfg.synthFallback || !audio.playSynthAt) return false;
-    const voice = synthVoice(eventId);
+    const voice = voiceOverride || synthVoice(eventId);
     if (!voice) return false;
     const at = position || getListenerPosition();
     if (!at) return false;
@@ -198,7 +198,11 @@ export function createBaseGameAudioDirector({
     localDamage() { fired.length = 0; emit('player_damage'); return fired; },
     // A server hit event on someone else: the flesh impact at the hit point (environment viewer's rule).
     hitAt(position) { fired.length = 0; emit('enemy_hit', position, BASE_GAME_SFX_PROFILES.handling); return fired; },
-    impactAt(position) { fired.length = 0; emit('bullet_impact', position, BASE_GAME_SFX_PROFILES.impact); return fired; },
+    // ballistic-audio.js's pickImpactVoice chooses the id (impact / ricochet / flesh); this only plays it.
+    impactAt(eventId, position) { fired.length = 0; if (eventId) emit(eventId, position, BASE_GAME_SFX_PROFILES.impact); return fired; },
+    // A round passing close. `voice` is ballistic-audio.js's createWhizzVoice(pass), which encodes
+    // that round's miss distance and time of flight — there is no one whizz sample to play.
+    whizzAt(position, voice) { fired.length = 0; emit('bullet_whizz', position, BASE_GAME_SFX_PROFILES.impact, undefined, voice); return fired; },
     explosionAt(position) { fired.length = 0; emit('explosion', position, BASE_GAME_SFX_PROFILES.explosion); return fired; },
     localSlotChange() { fired.length = 0; emit('weapon_draw'); return fired; },
     localFire(weaponId) { fired.length = 0; emit(weaponFireEvent(weaponId)); return fired; },

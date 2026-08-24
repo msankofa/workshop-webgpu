@@ -201,11 +201,11 @@ export function createBaseGameRoomService({
     }
   }
 
-  function applyDamage(room, victim, amount, { shooter = null, point = null, weaponId = null, source = 'gun' } = {}) {
+  function applyDamage(room, victim, amount, { shooter = null, point = null, normal = null, weaponId = null, source = 'gun' } = {}) {
     const wasAlive = room.combat.getSnapshot(victim.id).alive;
     if (!wasAlive) return;
     const after = room.combat.applyDamage({ targetId: victim.id, amount, source, attackerId: shooter?.id ?? null, hitPoint: point, weaponId });
-    room.events.hits.push({ shooter: shooter?.id ?? null, victim: victim.id, point: point ?? victim.controller.getPosition(), damage: amount, head: false, tick: room.tick });
+    room.events.hits.push({ shooter: shooter?.id ?? null, victim: victim.id, point: point ?? victim.controller.getPosition(), normal, damage: amount, head: false, tick: room.tick });
     if (after.alive) return;
     victim.deaths++;
     if (shooter && shooter !== victim) shooter.kills++;
@@ -660,7 +660,9 @@ export function createBaseGameRoomService({
   function fireShot(client, weaponId, input) {
     const weapon = weaponId ? getWeapon(weaponId) : null;
     const mode = weapon?.mode || 'hitscan';
-    if (!weapon || mode === 'melee') return;   // melee: later phase
+    if (!weapon) return;
+    // Hitscan and melee both resolve a ray; melee just uses the weapon's short range (env-viewer's
+    // rule). Only the client's presentation differs — a knife draws no tracer.
     const room = client.room;
     const me = combatCapsule(client);
     const origin = [me.p[0], me.p[1] + me.h * 0.5, me.p[2]];   // combat.js shooterHeadOrigin convention
@@ -684,10 +686,10 @@ export function createBaseGameRoomService({
       players.push(past ? { id: other.id, p: past.p, r: past.r, h: past.h, alive: past.alive } : combatCapsule(other));
     }
     const hit = resolveHitscan({ shooterId: client.id, origin, dir, range: weapon.range ?? 300, players, occluder: worldOccluder(room) });
-    room.events.shots.push({ shooter: client.id, weapon: weaponId, origin, dir, end: hit.point, kind: hit.kind, tick: room.tick });
+    room.events.shots.push({ shooter: client.id, weapon: weaponId, origin, dir, end: hit.point, normal: hit.normal ?? null, kind: hit.kind, tick: room.tick });
     if (hit.kind !== 'player') return;
     const victim = room.clients.get(hit.id);
-    if (victim) applyDamage(room, victim, weapon.damage, { shooter: client, point: hit.point, weaponId });
+    if (victim) applyDamage(room, victim, weapon.damage, { shooter: client, point: hit.point, normal: hit.normal ?? null, weaponId });
   }
 
   function setLoadout(ws, msg) {

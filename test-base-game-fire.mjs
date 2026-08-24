@@ -158,11 +158,13 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
     const expected = shotDirectionFor({ ...createTriggerState(), bloomDeg: shooter.trigger.bloomDeg, contactSinceTick: shooter.trigger.contactSinceTick }, { yaw, pitch, weaponId: 'cz_805_bren', tick: spreadTick, seed: botSeedFromId(shooterId) });
     ok(shot && shot.shooter === shooterId && shot.weapon === 'cz_805_bren' && shot.dir.every((v, i) => near(v, expected[i], 1e-12)), 'the shot event carries the seeded dispersed ray a client can reproduce');
     ok(shot.kind === 'player' && shot.end.every(Number.isFinite), 'the shot event ends on the victim');
+    ok(Array.isArray(shot.normal) && shot.normal.some(v => v !== 0), 'the shot event carries the surface normal ballistic-audio grazing and the spark need');
   }
   ok(hp(victim) === 100 - getWeapon('cz_805_bren').damage, 'the victim takes the weapon damage through player-combat.js');
   service.broadcastSnapshots();
   let snap = lastOf(victimWs, 'base:snapshot');
   ok(snap.hits?.length === 1 && snap.hits[0].shooter === shooterId && snap.hits[0].victim === victimId && snap.hits[0].damage === 24, 'the snapshot carries the hit event');
+  ok(Array.isArray(snap.hits[0].normal), 'the hit event carries a normal, so blood can face out of the wound');
   ok(snap.players.find(p => p.id === shooterId).ammo.mag === 29 && snap.players.find(p => p.id === victimId).health === 76, 'ammo and health ride the snapshot');
   service.broadcastSnapshots();
   ok(lastOf(victimWs, 'base:snapshot').hits.length === 0, 'events drain after one broadcast');
@@ -188,12 +190,33 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   ok(near(victim.controller.getPosition()[2], lab.layout.spawn[2], 1e-6), 'the respawn lands on the spawn point');
   ok(room.poseHistory.get(victimId)?.length > 0, 'combat.js pose history is kept for lag compensation');
 
+  // Melee resolves the same ray at the weapon's short range; only the presentation differs.
+  {
+    room.events = { hits: [], deaths: [], shots: [], explosions: [] };
+    both(4, { slot: 2, aim: true });   // knife in hand, trigger up: the slot change eats the press edge
+    const hpBefore = hp(victim);
+    both(1, { slot: 2, aim: true, fire: true });
+    const swing = room.events.shots.at(-1);
+    ok(swing && swing.weapon === 'knife' && swing.kind === 'player', 'a knife swing at point blank resolves onto the victim');
+    ok(hp(victim) === hpBefore - getWeapon('knife').damage, 'the knife deals its damage');
+    ok(room.ammo.ensureAmmo(shooterId, 'knife').mag === 0, 'melee draws from no magazine');
+    room.events = { hits: [], deaths: [], shots: [], explosions: [] };
+    // Out of reach: the same swing from across the room hits nothing.
+    both(100, { slot: 2 }, { moveZ: 1 });   // clear of the 2 m reach, still on the platform
+    both(120, { slot: 2 });                 // and out past the knife's own 1.5 s interval
+    both(1, { slot: 2, aim: true, fire: true });
+    const far = room.events.shots.at(-1);
+    ok(far && far.kind !== 'player' && hp(victim) === hpBefore - getWeapon('knife').damage, 'a knife swing beyond its 2 m range hits nobody');
+    service.handle(shooterWs, { type: 'base:loadout', protocol: P, loadout: { primary: 'cz_805_bren' } });
+    both(4, { slot: 0 });
+  }
+
   // Projectiles: an RPG flies as a bot-projectiles.js record, shows in the snapshot, and its blast
   // damages through entity-types/explosion.js falloff.
   ok(room.projectiles && room.projectiles.list.length === 0, 'the room owns a projectile manager with nothing in the air');
   service.handle(shooterWs, { type: 'base:loadout', protocol: P, loadout: { primary: 'rpg' } });
   room.events = { hits: [], deaths: [], shots: [], explosions: [] };
-  both(20); both(120, {}, { moveZ: 1 }); both(60);   // the respawned victim walks clear of the shooter again
+  both(320);   // one trigger per player, so the knife's cadence still gates: wait out the rpg's 2.5 s
   const vp2 = victim.controller.getPosition(), sp2 = shooter.controller.getPosition();
   const sc2 = shooter.controller.getCapsule();
   const dx2 = vp2[0] - sp2[0], dy2 = (vp2[1] + 0.9) - (sc2.end[1] + sc2.radius), dz2 = vp2[2] - sp2[2];
@@ -217,7 +240,7 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
 // ---- page wiring markers ----
 {
   const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
-  for (const marker of ['base-game-fire.js', 'stepTrigger(', 'audioDirector.localFire(', 'snapshot.hits', 'snapshot.deaths', 'combatStatus', 'createEffectRenderer(', 'tracerLifetime(', "pushEffect('muzzle_flash'", "pushEffect('explosion'", 'snapshot.projectiles', 'shotDirectionFor(', 'createFlashLights(', "pushEffect('smoke_puff'", 'soloProjectiles.spawn(', 'presentExplosion(', 'weaponThrowsRubble', 'isSurfaceDetonation(', 'createDebrisSim(', 'createDebrisRenderer(', 'spawnBlastDebris(', 'debrisSim.step(']) {
+  for (const marker of ['base-game-fire.js', 'stepTrigger(', 'audioDirector.localFire(', 'snapshot.hits', 'snapshot.deaths', 'combatStatus', 'createEffectRenderer(', 'tracerLifetime(', "pushEffect('muzzle_flash'", "pushEffect('explosion'", 'snapshot.projectiles', 'shotDirectionFor(', 'createFlashLights(', "pushEffect('smoke_puff'", 'soloProjectiles.spawn(', 'presentExplosion(', 'weaponThrowsRubble', 'isSurfaceDetonation(', 'pickImpactVoice(', 'evaluateWhizz(', 'spawnHitBlood(', 'sprayParams(', 'createDebrisSim(', 'createDebrisRenderer(', 'spawnBlastDebris(', 'debrisSim.step(']) {
     ok(html.includes(marker), `base-game.html wires ${marker}`);
   }
 }
