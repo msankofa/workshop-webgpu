@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import {
   uniform, float, int, vec2, vec4, max, abs, normalize, smoothstep, oneMinus, saturate, mix, reflect, select,
   screenUV, positionView, positionWorld, positionGeometry, cameraPosition, cameraNear, cameraFar, cameraViewMatrix, cameraProjectionMatrix,
-  viewportDepthTexture, viewportSharedTexture, perspectiveDepthToViewZ, reflector, getScreenPosition, Fn, If, Loop, Break, exp, clamp,
+  viewportDepthTexture, viewportSharedTexture, perspectiveDepthToViewZ, reflector, getScreenPosition, Fn, If, Loop, Break, exp, clamp, length,
 } from 'three/tsl';
 import { MeshBasicNodeMaterial } from 'three/webgpu';
 import { makeWaterProfile, applyWaterPreset, rebuildWaveTable, createOceanSurface, makeWaveFns } from './water-hybrid.js';
@@ -101,13 +101,21 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     // Reflection by profile.reflMode: 0 sky dome, 1 planar mirror, 2 screen-space march against
     // the opaque depth buffer (the demo's march, sampling the framebuffer instead of a pre-pass).
     reflection: (viewDir, N) => {
-      planar.uvNode = planar.uvNode.add(N.xz.mul(profile.reflRipple));   // ripple the mirror by the wave normal
+      // Ripple the mirror by the wave normal, weaker with distance (a constant offset is a bigger
+      // fraction of the reflected image far away, and pushes the sample off the target).
+      const rippleFade = oneMinus(smoothstep(80.0, 900.0, length(positionWorld.sub(cameraPosition))));
+      const mirrorUv = planar.uvNode.add(N.xz.mul(profile.reflRipple).mul(rippleFade));
+      planar.uvNode = mirrorUv;
+      // Outside the mirror target there is nothing to sample and it reads back black — the dark
+      // strip that showed along shorelines, where fresnel is ~1 so the black was all you saw.
+      const inTarget = smoothstep(0.0, 0.02, mirrorUv.x).mul(smoothstep(0.0, 0.02, oneMinus(mirrorUv.x)))
+        .mul(smoothstep(0.0, 0.02, mirrorUv.y)).mul(smoothstep(0.0, 0.02, oneMinus(mirrorUv.y)));
       return Fn(() => {
       const R = reflect(viewDir.negate(), N);
       const skyRefl = sky.colorAlong(R);
       const refl = skyRefl.toVar();
       If(profile.reflMode.equal(int(1)), () => {
-        refl.assign(planar.rgb.mul(profile.reflBright));
+        refl.assign(mix(skyRefl, planar.rgb.mul(profile.reflBright), inTarget));
       }).ElseIf(profile.reflMode.equal(int(2)), () => {
         const Rv = cameraViewMatrix.mul(vec4(R, 0.0)).xyz;
         const p0 = positionView.xyz;
