@@ -804,7 +804,11 @@ FX-only since solo has nothing to damage) and renders it through the same sphere
 behaves identically offline. `presentExplosion(globalPoint, radius)` is the one presentation both
 the snapshot `explosions[]` events and the solo manager call.
 
-Not done: remote recoil on bodies, head multiplier (`head` is always false), melee.
+Not done: melee (the server's `fireShot` returns early for that mode), the head multiplier (`head`
+is always false — `combat.js`'s `rayCapsuleHit` returns a point but no zone), and phase 3.4's
+feedback layer: blood spray/stain on a player hit, `ballistic-audio.js` whizz and ricochet, and the
+projectile whizz v3 plays as a rocket passes. Remote recoil is NOT open — `applyAction` already
+kicks a remote's mount and aim on a new fire tick.
 
 Tests: `test-base-game-fire.mjs` (trigger step, seeded spread, protocol, a two-player room where
 one shoots the other dead and the server respawns them, then an RPG flight that detonates and
