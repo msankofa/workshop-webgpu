@@ -160,9 +160,13 @@
                 border-radius: 3px; font: 10px/1.4 ui-monospace, monospace; white-space: nowrap;
                 background: rgba(20,12,12,.82); border: 1px solid currentColor; }
   /* Bone names sit beside their joint rather than above it, so a label never covers the dot it names. */
+  /* Clickable, unlike the fault callouts, so a name is a way to pick a bone without repainting it. */
   .bonelabel { position: absolute; transform: translate(6px, -50%); padding: 0 3px;
                font: 9px/1.35 ui-monospace, monospace; white-space: nowrap;
-               background: rgba(10,12,16,.72); border-radius: 2px; }
+               background: rgba(10,12,16,.72); border-radius: 2px;
+               pointer-events: auto; cursor: pointer; }
+  .bonelabel:hover { background: rgba(30,42,58,.95); }
+  .bonelabel.sel { outline: 1px solid #fff; }
 
   /* Where the session is being written. Loud when it is not being written anywhere. */
   #savebar { border: 1px solid #2f3742; border-radius: 5px; padding: 6px 8px; margin: 0 0 8px;
@@ -445,10 +449,15 @@
       <p class="hint">Green is a leg segment, <b style="color:#9fe870">pale green the foot</b>,
         <b style="color:#46c2b0">teal the knee</b>, amber the bone the limb hangs off, and
         <b style="color:#e5807a">red means the bone is in more than one leg at once</b> — which is the
-        mapper mistaking one limb with two toes for two limbs. Click a bone for its details.</p>
+        mapper mistaking one limb with two toes for two limbs.</p>
+      <p class="hint">Click a bone in the viewport to select it and step its colour through red, orange,
+        yellow, green, blue, indigo, violet and back to its role colour. Click a bone's name to select it
+        without changing its colour. Hand colours are saved with the session and are how you tell four
+        identical stubs apart while you are mapping them.</p>
       <div id="boneInfo" class="hint"></div>
       <div class="row wrap" style="margin-top:6px">
         <button id="roleOpen">edit bone roles</button>
+        <button id="tintClear">clear bone colours</button>
       </div>
       <div class="row wrap">
         <input type="checkbox" id="faults" checked><span>fault markers</span>
@@ -1593,7 +1602,8 @@ function showSliders(values) {
 
 function selectCreature(id) {
   selectedId = id;
-  selectedBone = null;
+  selectedBone = null;                        // bone names are per rig, so a held selection would be a lie
+  boneInfoEl.textContent = '';
   syncSelected();
   if (current) showSliders(current.values);
   refreshFacts();
@@ -2029,6 +2039,30 @@ const BONE_COLOURS = {
   other: new THREE.Color(0x5a6570),
 };
 
+// A hand tint that overrides the role colour, cycled by clicking the bone. Role colours answer "what does
+// the mapper think this is"; this answers "which of these four identical grey stubs am I looking at", which
+// no automatic colouring can, because the answer is only in the head of whoever is doing the mapping.
+const ROYGBIV = [0xff3b30, 0xff9500, 0xffe234, 0x4cd964, 0x2f7bff, 0x4b3bd0, 0x9b3bd0]
+  .map(h => new THREE.Color(h));
+const TINT_NAMES = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
+
+session.boneTints ||= {};
+const tintsFor = (species) => (session.boneTints[species] ||= {});
+function tintIndex(species, name) {
+  const i = session.boneTints[species]?.[name];
+  return Number.isInteger(i) && i >= 0 && i < ROYGBIV.length ? i : null;
+}
+/** Violet steps back to no tint, so a mis-click costs seven clicks rather than being permanent. */
+function cycleBoneTint(species, name) {
+  const tints = tintsFor(species);
+  const cur = tintIndex(species, name);
+  if (cur === null) tints[name] = 0;
+  else if (cur >= ROYGBIV.length - 1) delete tints[name];
+  else tints[name] = cur + 1;
+  saveDoc();
+  return tintIndex(species, name);
+}
+
 /** What the mapper decided each bone is, keyed by the object name the scene graph uses. */
 function boneRoles(map) {
   const byName = new Map();
@@ -2096,10 +2130,18 @@ function buildSkeleton(e) {
   group.visible = false;
   scene.add(group);
 
-  const labels = objs.map(() => {
+  // Clicking the name selects the bone without repainting it, which is the only way to select a bone whose
+  // tint you are happy with — a click in the viewport always advances the colour.
+  const labels = objs.map((o) => {
     const el = document.createElement('div');
     el.className = 'bonelabel';
     el.style.display = 'none';
+    el.addEventListener('pointerdown', (ev) => {
+      ev.stopPropagation();
+      if (e !== current) selectCreature(e.id);
+      selectBone(o.name);
+      refreshStage();
+    });
     labelHost.append(el);
     return el;
   });
@@ -2117,6 +2159,11 @@ function colourFor(role) {
     return BONE_COLOURS.leg;
   }
   return BONE_COLOURS[role.kind] || BONE_COLOURS.other;
+}
+/** A hand tint beats the role colour, since it was asked for on purpose and the role colour was derived. */
+function boneColour(e, name, role) {
+  const i = tintIndex(e.name, name);
+  return i === null ? colourFor(role) : ROYGBIV[i];
 }
 function isLegish(role) {
   return role && (role.kind === 'leg' || role.kind === 'attach' || role.kind === 'spine'
@@ -2145,7 +2192,8 @@ function updateSkeleton(e, drawn) {
     }
     link.from.getWorldPosition(_bw);
     link.to.getWorldPosition(_bw2);
-    const c = colourFor(link.role);
+    // Keyed on the FROM bone, which is the same id the picker reports, so what you clicked is what paints.
+    const c = boneColour(e, link.from.name, link.role);
     s.pos[k] = _bw.x; s.pos[k + 1] = _bw.y; s.pos[k + 2] = _bw.z;
     s.pos[k + 3] = _bw2.x; s.pos[k + 4] = _bw2.y; s.pos[k + 5] = _bw2.z;
     for (const o of [0, 3]) { s.col[k + o] = c.r; s.col[k + o + 1] = c.g; s.col[k + o + 2] = c.b; }
@@ -2167,11 +2215,15 @@ function updateSkeleton(e, drawn) {
     }
     o.getWorldPosition(_bw);
     jp[i * 3] = _bw.x; jp[i * 3 + 1] = _bw.y; jp[i * 3 + 2] = _bw.z;
-    const c = colourFor(role);
+    const c = boneColour(e, o.name, role);
     const lit = o.name === selectedBone;
-    jc[i * 3] = lit ? 1 : c.r; jc[i * 3 + 1] = lit ? 1 : c.g; jc[i * 3 + 2] = lit ? 1 : c.b;
+    // A tinted joint keeps its tint even when selected, or clicking a bone would hide the colour the click
+    // just applied. The white outline on its label is what says "selected" instead.
+    const tinted = tintIndex(e.name, o.name) !== null;
+    const white = lit && !tinted;
+    jc[i * 3] = white ? 1 : c.r; jc[i * 3 + 1] = white ? 1 : c.g; jc[i * 3 + 2] = white ? 1 : c.b;
 
-    const wantLabel = labelMode === 'all' || (labelMode === 'legs' && role?.kind === 'leg') || lit;
+    const wantLabel = labelMode === 'all' || (labelMode === 'legs' && role?.kind === 'leg') || lit || tinted;
     if (!wantLabel) { el.style.display = 'none'; return; }
     projected.copy(_bw).project(camera);
     if (projected.z > 1) { el.style.display = 'none'; return; }
@@ -2179,13 +2231,29 @@ function updateSkeleton(e, drawn) {
     el.style.left = `${(projected.x * 0.5 + 0.5) * innerWidth}px`;
     el.style.top = `${(-projected.y * 0.5 + 0.5) * innerHeight}px`;
     el.textContent = o.name + (role?.legs?.length > 1 ? ` (${role.legs.join('+')})` : '');
-    el.style.color = lit ? '#ffffff' : `#${colourFor(role).getHexString()}`;
+    el.style.color = white ? '#ffffff' : `#${c.getHexString()}`;
+    el.classList.toggle('sel', lit);
   });
   s.joints.geometry.attributes.position.needsUpdate = true;
   s.joints.geometry.attributes.color.needsUpdate = true;
 }
 
 let selectedBone = null;
+
+/**
+ * The one way a bone becomes the selected one, from the viewport, a label or the stance dropdown.
+ *
+ * The dropdown is synced through a dispatched change so the stance sliders reset the same way they do when
+ * the dropdown is used by hand — a stale angle there would be read as part of the pose.
+ */
+function selectBone(name) {
+  selectedBone = name;
+  if (current) describeBone(current, name);
+  refreshRolePanel();
+  refreshStanceBoneList();
+  if (name && stanceBoneInput.value === name) stanceBoneInput.dispatchEvent(new Event('change'));
+}
+
 function describeBone(e, name) {
   const role = e.skel?.roles.get(name);
   const obj = e.skel?.objs.find(o => o.name === name);
@@ -2199,6 +2267,7 @@ function describeBone(e, name) {
     `parent    ${parent}`,
     `children  ${kids.join(', ') || '—'}`,
     `world     ${_bw.x.toFixed(3)}, ${_bw.y.toFixed(3)}, ${_bw.z.toFixed(3)}`,
+    `colour    ${TINT_NAMES[tintIndex(e.name, name)] ?? `${role.kind} (no hand colour)`}`,
   ];
   if (role.legs.length > 1) {
     lines.push('', `IN ${role.legs.length} LEGS AT ONCE — the mapper has split one limb into ${role.legs.length}.`);
@@ -2548,6 +2617,14 @@ document.getElementById('roleOpen').addEventListener('click', () => {
   refreshRolePanel();
 });
 
+// Clears the selected species only. Colours are a note about one rig, so wiping every species at once is
+// never what someone tidying up one of them meant.
+document.getElementById('tintClear').addEventListener('click', () => {
+  if (!current) return;
+  delete session.boneTints[current.name];
+  saveDoc();
+});
+
 document.getElementById('roleApply').addEventListener('click', () => {
   if (!current) return;
   remapSpecies(current.name).catch(showError);
@@ -2743,18 +2820,15 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   if (ev.button !== 0) return;
   pickNdc.set((ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1);
   pickRay.setFromCamera(pickNdc, camera);
-  // Bones first when the skeleton is up, and only on the selected creature — clicking a bone means "tell
-  // me about this bone", clicking anywhere else still means "select that creature". Both go through the
-  // same tested picker; a bone segment is a capsule like any other.
+  // Bones first when the skeleton is up, and only on the selected creature — clicking a bone means "this
+  // one, and paint it so I can find it again", clicking anywhere else still means "select that creature".
+  // Both go through the same tested picker; a bone segment is a capsule like any other.
   if (current && skelModeInput.value !== 'off') {
     const bone = pickCapsule(pickRay.ray.origin, pickRay.ray.direction, boneCapsules(current));
-    if (bone) { selectedBone = bone; describeBone(current, bone); refreshRolePanel(); return; }
+    if (bone) { cycleBoneTint(current.name, bone); selectBone(bone); return; }
   }
   const hit = pickCapsule(pickRay.ray.origin, pickRay.ray.direction, capsulesNow());
-  if (hit) {
-    selectedBone = null; boneInfoEl.textContent = '';
-    selectCreature(hit); refreshStage(); refreshRolePanel();
-  }
+  if (hit) { selectCreature(hit); refreshStage(); refreshRolePanel(); refreshStanceBoneList(); }
 });
 
 /** The roster list, the scope count, and the selection highlight. */

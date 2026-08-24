@@ -15,7 +15,10 @@ import { makeWaterProfile, applyWaterPreset, rebuildWaveTable, createOceanSurfac
 import { surfaceAt } from './water-waves.js';
 
 export const BASE_GAME_WATER_DEFAULTS = Object.freeze({
-  gridR1: 12000,                  // outer ring radius (m), beyond any far plane this page uses
+  gridR0: 8,                      // innermost ring radius: below ~6 m the rings land centimetres
+  gridRings: 128,                 // apart and the mesh moires under a walking camera
+  gridSpokes: 224,
+  gridR1: 9000,                   // outer ring radius (m), past the far cascade's 4.8 km
   dispFade: [600, 2400],          // displacement fades to flat over this scene distance
   normalFade: [1500, 6000],       // normal fades to straight up
   foamFade: [800, 2500],          // foam gone before the far cascade's coarse shorelines
@@ -66,7 +69,7 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
 
   const surface = createOceanSurface({
     profile,
-    grid: { rings: 160, spokes: 224, r0: 2, r1: cfg.gridR1 },
+    grid: { rings: cfg.gridRings, spokes: cfg.gridSpokes, r0: cfg.gridR0, r1: cfg.gridR1 },
     level: uLevel.value,
     depthWrite: false,
     renderOrder: 1,

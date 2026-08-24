@@ -131,6 +131,30 @@ The heuristics get some species wrong in ways `rig-audit.js` can name and nothin
 on. This is the correction layer, and the demo's **Bone roles** panel is its editor: turn the skeleton
 on, click a bone, give it a role.
 
+### Two ways to pick a bone, because the click also paints
+
+Clicking a bone in the viewport selects it **and** steps its colour on through red, orange, yellow,
+green, blue, indigo, violet and back to nothing. Clicking a bone's **name** selects it without changing
+its colour, which is the only way to re-select a bone whose colour you are happy with.
+
+The role colours answer "what does the mapper think this is". A hand colour answers "which of these four
+identical grey stubs am I looking at", and nothing automatic can, because the answer only exists in the
+head of whoever is doing the mapping. That is the whole job on a species like Sandslash, where the fault
+is one limb read as two and the bones involved are otherwise indistinguishable on screen.
+
+Details worth knowing:
+
+- The colour is keyed on the **from** bone of a segment, which is the same id the capsule picker reports,
+  so what you clicked is what changes.
+- A hand colour beats the role colour, and beats the white selection highlight too — otherwise clicking a
+  bone would hide the colour that click just applied. A white outline on the label says "selected" instead.
+- A tinted bone always shows its label, whatever the **bone names** dropdown says, so a colour is never
+  anonymous.
+- Colours live in `session.boneTints[species]` in `stadium-tuning.json`, per species, and **clear bone
+  colours** wipes only the species on screen. They are a note about one rig, not a display preference.
+- The palette is checked to be a real rainbow: `_check_stadium-walker-v2.html.mjs` converts each hex to a
+  hue and asserts it climbs. A palette that merely calls itself ROYGBIV would pass a name check.
+
 The document is keyed **per bone**, because that is what a click produces:
 
 ```js

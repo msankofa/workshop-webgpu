@@ -271,14 +271,19 @@ html-game-v2's `ownStep` profile (ref 6 m, max 16 m, no rolloff, volumeScale 1.4
 0.4. Settling shuffles below 0.5 m/s and plants while airborne are ignored. When the body is not
 being stepped (hidden in the current view mode) the director falls back to v2's bob cadence: one
 step each time `floor((weaponViewModel.bobPhase - pi/2) / pi)` changes, alternating sides, placed
-0.32 m beside the feet. Remote players have no bob phase on the wire, so they keep
-the distance stride (1.7 m walk / 2.4 m sprint). `jump` fires on grounded→airborne while rising,
-`landing` on airborne→grounded after at least 0.15 s in the air (the grounded flag flickers on slopes, and a landing per flicker sounds like footsteps the toggle cannot silence), volume 0.65 + 0.03·fallSpeed. Every event has a budget of 4–8
+0.32 m beside the feet.
+
+`jump` and `landing` both come off the controller's `grounded` flag, which cannot be trusted alone:
+walking over uneven ground lifts the capsule off the terrain every step, and a landing per bump
+sounds exactly like a footstep while ignoring the footsteps toggle. So a jump needs at least
+`minJumpRise` (2.5 m/s) of upward speed on leaving the ground, and a landing needs both
+`minAirTime` (0.15 s) and a peak fall of `minLandingFall` (2.2 m/s) built up in the air; landing
+volume is 0.65 + 0.03 x that peak fall. Every event has a budget of 4–8
 starts per 100 ms and positional sounds are culled at 70 m.
 
 Fire points in `base-game.html`:
 
-- `audioDirector.updateLocal(dt, { speed, grounded, rising, fallSpeed, feet, bobPhase, position, right })`
+- `audioDirector.updateLocal(dt, { speed, grounded, verticalSpeed, feet, bobPhase, position, right })`
   once per frame from the controller's velocity, `playerBodies.localBody.gait.feet` (only when
   last frame's `playerBodies.updateLocal` returned true), the view-model bob phase, the render-local
   feet position and the camera's right vector.
@@ -774,6 +779,24 @@ writes, never `.visible` (the WebGPU pipeline-hash rule travels with the code). 
 `spawnBlastFx` numbers (`BLAST_FLASH`, distance `min(60, radius * 3.2)`); every muzzle flash borrows
 a slot like v3's `spawnTracer` does. `debrisSim.step` / `debrisRenderer.sync` / `flashLights.update`
 run in the frame's `fx` block. Node-tested: `test-flash-lights.mjs`.
+
+**What a blast throws.** Shrapnel is the warhead coming apart, so every blast throws it. Rubble is
+torn *out of a surface*, so it needs two things, and this page diverges from bot-viewer-v3's
+proximity rule to get them right:
+
+1. **The blast actually touched a surface.** `entity-types/combat-projectile.js` now tags each
+   detonation with a `cause` — `impact` (a body or wall), `ground` (terrain), `rest` (cooked out
+   lying on the ground), `fuse` or `airburst` (both in mid-air) — and exports
+   `isSurfaceDetonation(cause)` for the first three. `bot-projectiles.js` forwards the explosion
+   init to `onDetonate` as a third argument so a caller reads the cause instead of guessing it.
+   The server puts the boolean on the `explosions[]` event as `contact`. v3's old test was
+   "within 0.6 R of the ground", which throws rubble for an airburst over a hillside and none for a
+   rocket that hits a wall two metres up.
+2. **A warhead that breaks surfaces.** `weapons.js` `projectile.rubble: false` opts a weapon out
+   entirely; the frag grenade carries it, so it never digs anything up wherever it goes off. Absent
+   means it throws rubble.
+
+`verticalBoost` on the shrapnel now keys off the same contact flag.
 Projectile trails are v3's `onTrail` smoke puffs emitted **client-side** at the manager's 0.035 s
 cadence from the interpolated flight path — the sim runs on the server, which has no effect list.
 **Solo** runs its own `bot-projectiles.js` manager against the local `worldQuery` (v3's wiring,

@@ -82,25 +82,32 @@ ok(weaponFireEvent(null) === 'pistol_shoot', 'null weapon -> pistol_shoot');
   ok(log.length === 0, 'a settling shuffle while standing still is not a step');
 }
 
-// ---- jump / landing on grounded transitions only ----
+// ---- jump / landing need a real jump and a real fall, not a bump ----
 {
   const { director, log } = harness({ samples: ['jump', 'landing'] });
+  const air = (frames, vy) => { for (let i = 0; i < frames; i++) director.updateLocal(0.016, { grounded: false, verticalSpeed: vy }); };
   director.updateLocal(0.016, { grounded: true });
   director.updateLocal(0.016, { grounded: true });
   ok(log.length === 0, 'resting on the ground plays nothing');
-  director.updateLocal(0.016, { grounded: false, rising: true });
-  ok(log.length === 1 && log[0].id === 'jump', 'leaving the ground while rising plays jump');
-  for (let i = 0; i < 12; i++) director.updateLocal(0.016, { grounded: false });
+  director.updateLocal(0.016, { grounded: false, verticalSpeed: 5 });
+  ok(log.length === 1 && log[0].id === 'jump', 'leaving the ground at jump speed plays jump');
+  air(20, -8);
   ok(log.length === 1, 'staying airborne plays nothing more');
-  director.updateLocal(0.016, { grounded: true, fallSpeed: 6 });
-  ok(log.length === 2 && log[1].id === 'landing', 'touching down after real air time plays landing');
-  log.length = 0;
-  director.updateLocal(0.016, { grounded: false });
   director.updateLocal(0.016, { grounded: true });
-  ok(log.length === 0, 'a one-frame grounded flicker on a slope is not a landing');
+  ok(log.length === 2 && log[1].id === 'landing', 'touching down after a real fall plays landing');
+  ok(log[1].vol > 0.65, 'landing volume scales with the fall');
+
+  // The bug this guards: walking over uneven ground lifts the capsule off the terrain each step.
   log.length = 0;
-  director.updateLocal(0.016, { grounded: false, rising: false });
-  ok(log.length === 0, 'walking off a ledge (not rising) is not a jump');
+  for (let step = 0; step < 6; step++) {
+    air(12, -0.8);                                        // long enough for minAirTime, far too slow to be a fall
+    director.updateLocal(0.016, { grounded: true });
+  }
+  ok(log.length === 0, 'bumps over uneven ground are neither jumps nor landings');
+
+  log.length = 0;
+  director.updateLocal(0.016, { grounded: false, verticalSpeed: 1.2 });
+  ok(log.length === 0, 'drifting off a lip below jump speed is not a jump');
   director.resetLocal();
   director.updateLocal(0.016, { grounded: true });
   ok(log.length === 0, 'after a reset the first frame sets state without a landing');

@@ -35,7 +35,9 @@ export const BASE_GAME_AUDIO_DEFAULTS = Object.freeze({
   jumpVolume: 0.7,
   landingVolume: 0.65,
   cullDistance: 70,         // metres from the listener beyond which a positional sound is skipped
-  minAirTime: 0.15,         // seconds airborne before touching down counts as a landing (grounded flickers on slopes)
+  minAirTime: 0.15,         // seconds airborne before touching down can count as a landing
+  minLandingFall: 2.2,      // m/s of downward speed reached in the air before it counts as a landing
+  minJumpRise: 2.5,         // m/s of upward speed on leaving the ground before it counts as a jump
   budgetWindowMs: 100,
 });
 
@@ -64,7 +66,7 @@ export function createBaseGameAudioDirector({
 } = {}) {
   if (!audio?.play || !audio?.playAt) throw new TypeError('audio director requires an audio controller');
   const cfg = { ...BASE_GAME_AUDIO_DEFAULTS, ...settings };
-  const local = { stepDist: 0, wasGrounded: null, stepIndex: null, airTime: 0, leftStepping: false, rightStepping: false };
+  const local = { stepDist: 0, wasGrounded: null, stepIndex: null, airTime: 0, peakFall: 0, leftStepping: false, rightStepping: false };
   const _stepPos = { x: 0, y: 0, z: 0 };
   const remotes = new Map();
   const windows = new Map();
@@ -109,16 +111,22 @@ export function createBaseGameAudioDirector({
     return true;
   }
 
-  // Jump on leaving the ground while rising; landing only after real air time, because the
-  // controller's grounded flag flickers on slopes and a landing per flicker sounds like footsteps.
-  function groundTransitions(state, dt, grounded, rising, position, profile, landingVolume) {
+  // Walking over uneven ground repeatedly lifts a capsule off the terrain, so neither transition
+  // can be trusted on its own: a jump needs real upward speed, and a landing needs both air time
+  // and a real fall to have built up. Without that, every bump plays a landing that sounds exactly
+  // like a footstep and that the footsteps toggle does not gate.
+  function groundTransitions(state, dt, grounded, verticalSpeed) {
     let landed = false;
     if (state.wasGrounded !== null && state.wasGrounded !== grounded) {
-      if (!grounded && rising) emit('jump', position, profile, cfg.jumpVolume);
-      else if (grounded && state.airTime >= cfg.minAirTime) { emit('landing', position, profile, landingVolume); landed = true; }
+      if (!grounded && verticalSpeed >= cfg.minJumpRise) emit('jump', null, null, cfg.jumpVolume);
+      else if (grounded && state.airTime >= cfg.minAirTime && state.peakFall >= cfg.minLandingFall) {
+        emit('landing', null, null, Math.min(1, cfg.landingVolume + state.peakFall * 0.03));
+        landed = true;
+      }
     }
     state.wasGrounded = grounded;
-    state.airTime = grounded ? 0 : state.airTime + dt;
+    if (grounded) { state.airTime = 0; state.peakFall = 0; }
+    else { state.airTime += dt; state.peakFall = Math.max(state.peakFall, -verticalSpeed); }
     return landed;
   }
 
@@ -130,8 +138,8 @@ export function createBaseGameAudioDirector({
   }
 
   // Footstep cadence + grounded transitions for one walker; `state` is per-player scratch.
-  function stride(state, { dt, distance, grounded, sprint, rising }, position, profile) {
-    groundTransitions(state, dt, grounded, rising, position, profile, cfg.landingVolume);
+  function stride(state, { dt, distance, grounded, sprint, verticalSpeed }, position, profile) {
+    groundTransitions(state, dt, grounded, verticalSpeed);
     if (!cfg.footstepsEnabled || !grounded) { state.stepDist = 0; return; }
     state.stepDist += distance;
     if (state.stepDist >= (sprint ? cfg.sprintStride : cfg.walkStride)) {
@@ -150,11 +158,11 @@ export function createBaseGameAudioDirector({
     // each time floor((phase - pi/2) / pi) changes, alternating sides, placed beside `position` along
     // the camera's horizontal `right`. `fallSpeed` scales the landing.
     updateLocal(dt, {
-      speed = 0, grounded = true, rising = false, feet = null, bobPhase = null,
-      position = null, right = null, fallSpeed = 0,
+      speed = 0, grounded = true, verticalSpeed = 0, feet = null, bobPhase = null,
+      position = null, right = null,
     } = {}) {
       fired.length = 0;
-      groundTransitions(local, dt, grounded, rising, null, null, Math.min(1, cfg.landingVolume + fallSpeed * 0.03));
+      groundTransitions(local, dt, grounded, verticalSpeed);
       const moving = speed >= cfg.minStepSpeed;
       if (feet) {
         const leftNow = !!feet.left?.stepping, rightNow = !!feet.right?.stepping;
@@ -194,18 +202,21 @@ export function createBaseGameAudioDirector({
     explosionAt(position) { fired.length = 0; emit('explosion', position, BASE_GAME_SFX_PROFILES.explosion); return fired; },
     localSlotChange() { fired.length = 0; emit('weapon_draw'); return fired; },
     localFire(weaponId) { fired.length = 0; emit(weaponFireEvent(weaponId)); return fired; },
-    resetLocal() { local.stepDist = 0; local.wasGrounded = null; local.stepIndex = null; local.airTime = 0; local.leftStepping = local.rightStepping = false; },
+    resetLocal() {
+      local.stepDist = 0; local.wasGrounded = null; local.stepIndex = null;
+      local.airTime = 0; local.peakFall = 0; local.leftStepping = local.rightStepping = false;
+    },
 
     // One remote player, once per frame, from its interpolated sample in render-local space.
     updateRemote(id, { position, grounded = true, action = 0, actionTick = null, weapon = null, sprint = false, dt = 1 / 60 } = {}) {
       fired.length = 0;
       if (!cfg.remoteSfxEnabled || !position) return fired;
       let r = remotes.get(id);
-      if (!r) { r = { prev: { ...position }, stepDist: 0, wasGrounded: null, airTime: 0, lastActionTick: actionTick ?? -1 }; remotes.set(id, r); }
+      if (!r) { r = { prev: { ...position }, stepDist: 0, wasGrounded: null, airTime: 0, peakFall: 0, lastActionTick: actionTick ?? -1 }; remotes.set(id, r); }
       const dx = position.x - r.prev.x, dz = position.z - r.prev.z;
-      const rising = position.y - r.prev.y > 0.01;
+      const verticalSpeed = dt > 0 ? (position.y - r.prev.y) / dt : 0;
       r.prev.x = position.x; r.prev.y = position.y; r.prev.z = position.z;
-      stride(r, { dt, distance: Math.sqrt(dx * dx + dz * dz), grounded, sprint, rising }, position, BASE_GAME_SFX_PROFILES.step);
+      stride(r, { dt, distance: Math.sqrt(dx * dx + dz * dz), grounded, sprint, verticalSpeed }, position, BASE_GAME_SFX_PROFILES.step);
       if (actionTick != null && actionTick !== r.lastActionTick) {
         r.lastActionTick = actionTick;
         if (action === 2) emit(weaponFireEvent(weapon), position, weapon === 'rpg' || weapon === 'grenade' ? BASE_GAME_SFX_PROFILES.launch : BASE_GAME_SFX_PROFILES.gunshot);

@@ -130,6 +130,7 @@ import { createEffectRenderer } from './effect-renderer.js';
 import { createFlashLights, BLAST_FLASH } from './flash-lights.js';
 import { createDebrisSim, TIER_DEBRIS_SCALE } from './blast-debris-sim.js';
 import { createProjectileManager } from './bot-projectiles.js';
+import { isSurfaceDetonation } from './entity-types/combat-projectile.js';
 import { createDebrisRenderer } from './blast-debris.js';
 import { createExplosionBudget } from './explosion-tier.js';
 import { normalizeTracerFx, tracerLifetime } from './tracer-visual.js';
@@ -663,28 +664,31 @@ const flashLights = createFlashLights({ THREE, scene, getViewPosition: () => cam
 // Blast debris: the html-game-v2 port bot-viewer-v3 and the flight sim run, on this page's ground.
 // The sim lives in render-local space; a rebase moves the origin under it, so it clears then.
 const _debrisGlobal = [0, 0, 0];
-const debrisSim = createDebrisSim({ groundAt: (x, z) => {
-  const g = worldCoordinates.toGlobal([x, 0, z], _debrisGlobal);
-  return settings.worldMode === 'terrain' ? terrain.groundHeight(g[0], g[2]) - g[1] : -g[1];
-} });
+const debrisSim = createDebrisSim({ groundAt: (x, z) => debrisGroundAtLocal(x, z) });
 const debrisRenderer = createDebrisRenderer({ THREE, scene, sim: debrisSim, lightCount: 2 });
 const debrisTierBudget = createExplosionBudget();
 // bot-viewer-v3's spawnBlastDebris, with its tuning block.
-const blastDebrisSettings = { enabled: true, radiusScale: 0.5, rubbleSize: 2.4, rubbleOnGround: true, tiering: true };
-function spawnBlastDebris(center, shown) {
+const blastDebrisSettings = { enabled: true, radiusScale: 0.5, rubbleSize: 2.4, tiering: true };
+// Shrapnel is the warhead coming apart, so every blast throws it. Rubble is torn OUT of a surface,
+// so it needs the blast to have actually touched one (combat-projectile's impact/ground/rest
+// causes — never a fuse or airburst), and a warhead that breaks surfaces: a frag grenade carries
+// `projectile.rubble: false` in weapons.js and never digs anything up, wherever it goes off.
+const weaponThrowsRubble = weaponId => getWeapon(weaponId)?.projectile?.rubble !== false;
+function spawnBlastDebris(center, shown, { contact = false, weaponId = null } = {}) {
   if (!blastDebrisSettings.enabled) return;
   const tier = blastDebrisSettings.tiering ? debrisTierBudget.reserve('primary') : 'full';
   const scale = TIER_DEBRIS_SCALE[tier] || TIER_DEBRIS_SCALE.full;
   if (scale.shrapnel <= 0 && scale.rubble <= 0) return;
   const blastRadius = shown * blastDebrisSettings.radiusScale;
   const color = [1, 0.62, 0.26];
-  const onGround = center[1] - debrisGroundAtLocal(center[0], center[2]) < shown * 0.6;
-  if (scale.shrapnel > 0) debrisSim.spawnBlastShrapnel(center[0], center[1], center[2], blastRadius, color, { countScale: scale.shrapnel, verticalBoost: onGround ? 0.25 : 0 });
-  if (scale.rubble > 0 && onGround && blastDebrisSettings.rubbleOnGround) {
+  if (scale.shrapnel > 0) debrisSim.spawnBlastShrapnel(center[0], center[1], center[2], blastRadius, color, { countScale: scale.shrapnel, verticalBoost: contact ? 0.25 : 0 });
+  if (scale.rubble > 0 && contact && weaponThrowsRubble(weaponId)) {
     const ang = Math.random() * Math.PI * 2;   // no kill vector for an area blast: pick a heading
     debrisSim.spawnRubble(center[0], center[1], center[2], blastDebrisSettings.rubbleSize, [Math.cos(ang), Math.sin(ang)], { countScale: scale.rubble });
   }
 }
+// Render-local ground for the debris sim: the pieces live in render space, the terrain answers in
+// global space, and a rebase moves one under the other.
 function debrisGroundAtLocal(x, z) {
   const g = worldCoordinates.toGlobal([x, 0, z], _debrisGlobal);
   return settings.worldMode === 'terrain' ? terrain.groundHeight(g[0], g[2]) - g[1] : -g[1];
@@ -792,11 +796,11 @@ function spawnLocalShotEffects(weaponId, tick) {
 
 // bot-viewer-v3's spawnBlastFx: light regardless of effect state, reach scales with the drawn
 // blast, then the explosion effect, debris and the report. `globalPoint` in global coordinates.
-function presentExplosion(globalPoint, radius) {
+function presentExplosion(globalPoint, radius, { contact = false, weaponId = null } = {}) {
   const l = worldCoordinates.toRenderLocal(globalPoint, _fxLocal);
   flashLights.flash({ x: l[0], y: l[1], z: l[2] }, { ...BLAST_FLASH, distance: Math.min(60, radius * 3.2) });
   pushEffect('explosion', l, 1.8, { color: [1, 0.62, 0.26], radius });
-  spawnBlastDebris([l[0], l[1], l[2]], radius);
+  spawnBlastDebris([l[0], l[1], l[2]], radius, { contact, weaponId });
   audioDirector.explosionAt({ x: l[0], y: l[1], z: l[2] });
 }
 
@@ -841,7 +845,7 @@ const soloProjectiles = createProjectileManager({
     if (settings.worldMode === 'terrain' && hit.normal && hit.normal[1] > 0.5) return null;
     return { point: hit.point, kind: 'world', id: null };
   },
-  onDetonate: (point, proj) => presentExplosion(point, proj.state.blastRadius),
+  onDetonate: (point, proj, init) => presentExplosion(point, proj.state.blastRadius, { contact: isSurfaceDetonation(init?.cause), weaponId: proj.weaponId }),
   onTrail: (proj, point) => {
     const l = worldCoordinates.toRenderLocal(point, _soloTrail);
     emitTrailPuff(proj.weaponId, l[0], l[1], l[2]);
@@ -1830,7 +1834,7 @@ function applyPlayerSnapshot(snapshot, session) {
   }
   for (const raw of snapshot.explosions ?? []) {
     const blast = sanitizeBaseGameExplosionEvent(raw);
-    if (blast) presentExplosion(blast.p, blast.radius);
+    if (blast) presentExplosion(blast.p, blast.radius, { contact: blast.contact, weaponId: blast.weapon });
   }
   ingestProjectiles(snapshot);
 }
@@ -2187,7 +2191,6 @@ const remoteAudioPos = { x: 0, y: 0, z: 0 };
 const audioVelocityScratch = [0, 0, 0];
 const audioStepRight = new THREE.Vector3();
 const audioStepFeet = { x: 0, y: 0, z: 0 };
-let audioLastFallSpeed = 0;
 let audioBodyStepped = false;
 let fpsElapsed = 0;
 let fpsFrames = 0;
@@ -2553,14 +2556,12 @@ async function animate() {
       audioDirector.updateLocal(dt, {
         speed: canControl ? Math.hypot(v[0], v[2]) : 0,
         grounded: playerController.grounded,
-        rising: v[1] > 0.5,
-        fallSpeed: audioLastFallSpeed,
+        verticalSpeed: v[1],
         feet: audioBodyStepped ? playerBodies.localBody?.gait?.feet ?? null : null,   // hidden body: feet freeze, use the bob fallback
         bobPhase: weaponViewModel.bobPhase,
         position: audioStepFeet,
         right: audioStepRight,
       });
-      audioLastFallSpeed = Math.max(0, -v[1]);
     }
     playerBodies.setLocalAim(canControl && weaponState.aiming, canControl && weaponState.aiming ? updateLocalAimPoint() : null);
     audioBodyStepped = playerBodies.updateLocal(dt, {

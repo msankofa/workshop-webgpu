@@ -28,6 +28,7 @@ import { createAmmoStore } from '../player-ammo.js';
 import { createTriggerState, stepTrigger, shotDirectionFor } from '../base-game-fire.js';
 import { createProjectileManager } from '../bot-projectiles.js';
 import { blastDamageAt } from '../entity-types/explosion.js';
+import { isSurfaceDetonation } from '../entity-types/combat-projectile.js';
 import { botSeedFromId } from '../bot-activity.js';
 import { BASE_GAME_PLAYER_DEFAULT_CONFIG } from '../base-game-player-controller.js';
 import { getWeapon } from '../weapons.js';
@@ -173,7 +174,7 @@ export function createBaseGameRoomService({
         if (hit.kind === 'world' && terrainHeight && hit.normal && hit.normal[1] > 0.5) return null;   // ground: the entity bounces or detonates itself
         return { point: hit.point, kind: hit.kind, id: hit.id };
       },
-      onDetonate(point, proj) { detonateProjectile(room, point, proj); },
+      onDetonate(point, proj, init) { detonateProjectile(room, point, proj, init); },
     });
   }
 
@@ -185,11 +186,11 @@ export function createBaseGameRoomService({
 
   // environment-viewer's applyExplosionBlast on the room roster: blastDamageAt falloff, friendly
   // fire and self-damage on, every victim gets a hit event so clients flash the same way.
-  function detonateProjectile(room, point, proj) {
+  function detonateProjectile(room, point, proj, init = null) {
     const weapon = proj.weaponId ? getWeapon(proj.weaponId) : null;
     const radius = proj.state.blastRadius, damage = proj.state.damage;
     const owner = proj.ownerId ? room.clients.get(proj.ownerId) ?? null : null;
-    room.events.explosions.push({ p: [...point], radius, owner: proj.ownerId, weapon: proj.weaponId, tick: room.tick });
+    room.events.explosions.push({ p: [...point], radius, owner: proj.ownerId, weapon: proj.weaponId, contact: isSurfaceDetonation(init?.cause), tick: room.tick });
     for (const victim of room.clients.values()) {
       if (!victim.controller) continue;
       const cap = combatCapsule(victim);

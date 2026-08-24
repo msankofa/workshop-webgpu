@@ -9,6 +9,8 @@ import {
 import { createTriggerState, stepTrigger, lookDirection, shotDirectionFor } from './base-game-fire.js';
 import { botSeedFromId } from './bot-activity.js';
 import { createAmmoStore, defaultAmmoFor } from './player-ammo.js';
+import { createProjectileManager } from './bot-projectiles.js';
+import { isSurfaceDetonation } from './entity-types/combat-projectile.js';
 import { createWorldQueryService } from './world-query.js';
 import { createTraversalLabWorldQuery } from './traversal-lab-collider.js';
 import { createBaseGameRoomService } from './server/base-game-rooms.js';
@@ -92,6 +94,25 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   ok(sanitizeBaseGameExplosionEvent({ p: [1, 2, 3], radius: 8.2, owner: 'a', weapon: 'rpg' })?.radius === 8.2 && sanitizeBaseGameExplosionEvent({ p: [1, 2, 3], radius: 0 }) === null, 'explosion event sanitizer');
   const pr = sanitizeBaseGameProjectileState({ id: 'bp1', p: [0, 2, 0], v: [0, 0, -100], weapon: 'rpg', owner: 'a', radius: 0.42 });
   ok(pr && pr.v[2] === -100 && pr.radius === 0.42 && sanitizeBaseGameProjectileState({ id: 3, p: [0, 0, 0] }) === null, 'projectile state sanitizer');
+}
+
+// ---- detonation cause: what decides whether a blast tears anything out of a surface ----
+{
+  ok(isSurfaceDetonation('impact') && isSurfaceDetonation('ground') && isSurfaceDetonation('rest'), 'hitting a body, the terrain, or cooking out on the ground all touch a surface');
+  ok(!isSurfaceDetonation('fuse') && !isSurfaceDetonation('airburst') && !isSurfaceDetonation(undefined), 'a fuse or airburst detonation touches nothing');
+  ok(getWeapon('grenade').projectile.rubble === false, 'a frag grenade is authored to throw no rubble');
+  ok(getWeapon('rpg').projectile.rubble !== false, 'a rocket is not');
+
+  // The manager hands the explosion init (with its cause) to onDetonate as a third argument.
+  const causes = [];
+  const flat = createProjectileManager({ terrainHeight: () => 0, onDetonate: (point, proj, init) => causes.push(init?.cause) });
+  flat.spawn({ origin: [0, 20, 0], dir: [0, -1, 0], speed: 40, life: 8, blastRadius: 5, damage: 50, weaponId: 'rpg' });
+  for (let i = 0; i < 200 && flat.list.length; i++) flat.update(1 / 60);
+  ok(causes[0] === 'ground' && isSurfaceDetonation(causes[0]), 'a rocket flown into the ground detonates on contact');
+  const air = createProjectileManager({ terrainHeight: () => -1000, onDetonate: (point, proj, init) => causes.push(init?.cause) });
+  air.spawn({ origin: [0, 20, 0], dir: [0, 0, -1], speed: 10, life: 8, fuse: 0.5, blastRadius: 5, damage: 50, weaponId: 'grenade' });
+  for (let i = 0; i < 200 && air.list.length; i++) air.update(1 / 60);
+  ok(causes[1] === 'fuse' && !isSurfaceDetonation(causes[1]), 'a grenade fusing in mid-air touches nothing');
 }
 
 // ---- room: one player shoots another ----
@@ -189,13 +210,14 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   service.broadcastSnapshots();
   snap = lastOf(victimWs, 'base:snapshot');
   ok(snap.explosions?.length === 1 && snap.explosions[0].weapon === 'rpg' && snap.explosions[0].radius === getWeapon('rpg').projectile.blastRadius, 'the explosion event reaches the clients');
+  ok(snap.explosions[0].contact === true, 'a rocket that struck something reports surface contact, so the blast can tear rubble out of it');
   ok(snap.hits.some(h => h.victim === victimId && h.shooter === shooterId), 'blast damage is reported as a hit event');
 }
 
 // ---- page wiring markers ----
 {
   const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
-  for (const marker of ['base-game-fire.js', 'stepTrigger(', 'audioDirector.localFire(', 'snapshot.hits', 'snapshot.deaths', 'combatStatus', 'createEffectRenderer(', 'tracerLifetime(', "pushEffect('muzzle_flash'", "pushEffect('explosion'", 'snapshot.projectiles', 'shotDirectionFor(', 'createFlashLights(', "pushEffect('smoke_puff'", 'soloProjectiles.spawn(', 'presentExplosion(', 'createDebrisSim(', 'createDebrisRenderer(', 'spawnBlastDebris(', 'debrisSim.step(']) {
+  for (const marker of ['base-game-fire.js', 'stepTrigger(', 'audioDirector.localFire(', 'snapshot.hits', 'snapshot.deaths', 'combatStatus', 'createEffectRenderer(', 'tracerLifetime(', "pushEffect('muzzle_flash'", "pushEffect('explosion'", 'snapshot.projectiles', 'shotDirectionFor(', 'createFlashLights(', "pushEffect('smoke_puff'", 'soloProjectiles.spawn(', 'presentExplosion(', 'weaponThrowsRubble', 'isSurfaceDetonation(', 'createDebrisSim(', 'createDebrisRenderer(', 'spawnBlastDebris(', 'debrisSim.step(']) {
     ok(html.includes(marker), `base-game.html wires ${marker}`);
   }
 }

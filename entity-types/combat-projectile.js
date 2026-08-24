@@ -80,12 +80,12 @@ export const CombatProjectileEntity = {
     // 1. Fuse timer, checked BEFORE any contact branch. A cook timer that only gets consulted while
     // the grenade is still airborne is no timer at all: a thrown grenade lands and runs out of
     // bounces in under a second, so every fuse longer than the throw used to be unreachable.
-    if (sim.age >= sim.fuse) return detonate(entity, ctx, from);
+    if (sim.age >= sim.fuse) return detonate(entity, ctx, from, 'fuse');
 
     // 2. A cooking grenade that has come to rest is done moving — it just runs its timer out.
     if (sim.resting) {
       if (sim.life > 0) return null;
-      return s.fizzleOnExpire ? { destroy: true, reason: 'expired' } : detonate(entity, ctx, from);
+      return s.fizzleOnExpire ? { destroy: true, reason: 'expired' } : detonate(entity, ctx, from, 'rest');
     }
 
     if (sim.gravity) sim.vy -= sim.gravity * dt;
@@ -96,7 +96,7 @@ export const CombatProjectileEntity = {
     if (typeof ctx.raycast === 'function') {
       const hit = ctx.raycast(from, to, s.radius, entity.ownerId);
       if (hit && Array.isArray(hit.point)) {
-        if (!s.cooks) return detonate(entity, ctx, hit.point);
+        if (!s.cooks) return detonate(entity, ctx, hit.point, 'impact');
         // Cooking: bonking a wall or a body kills the throw, it doesn't set the grenade off. Drop
         // it at the contact and let gravity take it to the floor, where it rests out its fuse.
         entity.transform.p = [hit.point[0], hit.point[1], hit.point[2]];
@@ -118,7 +118,7 @@ export const CombatProjectileEntity = {
         entity.transform.p = to;
         return null;
       }
-      if (!s.cooks) return detonate(entity, ctx, [to[0], th + GROUND_CLEARANCE, to[2]]);
+      if (!s.cooks) return detonate(entity, ctx, [to[0], th + GROUND_CLEARANCE, to[2]], 'ground');
       entity.transform.p = [to[0], th + GROUND_CLEARANCE, to[2]];
       sim.vx = 0; sim.vy = 0; sim.vz = 0;
       sim.resting = true;
@@ -130,7 +130,7 @@ export const CombatProjectileEntity = {
     // 5. Life expiry — grenade airbursts, rocket fizzles with no blast.
     if (sim.life <= 0) {
       if (s.fizzleOnExpire) return { destroy: true, reason: 'expired' };
-      return detonate(entity, ctx, to);
+      return detonate(entity, ctx, to, 'airburst');
     }
 
     return null;
@@ -153,7 +153,14 @@ export const CombatProjectileEntity = {
 };
 
 // Spawn the blast and destroy the projectile.
-function detonate(entity, ctx, at) {
+// `cause` says WHY it went off: 'impact' (hit a body/wall), 'ground' (terrain), 'rest' (cooked out
+// lying on the ground), 'fuse' or 'airburst' (both in mid-air). The first three put the blast in
+// contact with a surface, which is what an FX layer needs to decide whether anything is torn out of
+// it. ExplosionEntity ignores the field, so registry consumers are unaffected.
+export const SURFACE_DETONATIONS = Object.freeze(['impact', 'ground', 'rest']);
+export const isSurfaceDetonation = cause => SURFACE_DETONATIONS.includes(cause);
+
+function detonate(entity, ctx, at, cause = 'impact') {
   const s = entity.state;
   if (typeof ctx.spawn === 'function') {
     ctx.spawn('explosion', {
@@ -162,6 +169,7 @@ function detonate(entity, ctx, at) {
       damage: s.damage,
       color: s.color,
       ownerId: entity.ownerId,
+      cause,
     });
   }
   return { destroy: true, reason: 'impact' };

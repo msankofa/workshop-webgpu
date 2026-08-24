@@ -250,6 +250,86 @@ check('a saved legless species cannot leave the page with an empty stage', () =>
   assert(/if \(!stage\.size\)/.test(code), 'no fallback when the saved species will not spawn');
 });
 
+console.log('\n--- bone colours ---');
+
+check('the hand palette really is the seven colours of the rainbow', () => {
+  const list = code.match(/const ROYGBIV = \[([^\]]*)\]/)?.[1];
+  assert(list, 'no ROYGBIV palette');
+  const hexes = list.match(/0x[0-9a-f]{6}/gi) ?? [];
+  assert(hexes.length === 7, `expected 7 colours, found ${hexes.length}`);
+  const names = code.match(/const TINT_NAMES = \[([^\]]*)\]/)?.[1] ?? '';
+  for (const n of ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet']) {
+    assert(names.includes(`'${n}'`), `${n} is missing from the colour names`);
+  }
+  // Hue must climb across the palette or it is not a rainbow, whatever it is called. Blue through violet
+  // wraps past 0, so the check is on the un-wrapped sequence.
+  const hue = (hex) => {
+    const n = parseInt(hex, 16);
+    const [r, g, b] = [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    if (!d) return 0;
+    const h = max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return h * 60;
+  };
+  const hues = hexes.map(hue);
+  for (let i = 1; i < hues.length; i++) {
+    assert(hues[i] > hues[i - 1], `colour ${i} is not further round the wheel than ${i - 1}`
+      + ` (${hues.map(h => h.toFixed(0)).join(', ')})`);
+  }
+});
+
+check('clicking a bone in the viewport steps its colour on', () => {
+  const handler = code.match(/domElement\.addEventListener\('pointerdown'[\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert(/cycleBoneTint\(/.test(handler), 'a viewport bone click no longer cycles the colour');
+  assert(/selectBone\(/.test(handler), 'a viewport bone click no longer selects the bone');
+});
+
+check('the cycle comes back round to no colour, so a mis-click is undoable', () => {
+  const fn = code.match(/function cycleBoneTint\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/delete tints\[name\]/.test(fn), 'nothing removes a tint — violet would be a dead end');
+  assert(/saveDoc\(\)/.test(fn), 'the colour is not written to the session file');
+});
+
+check('clicking a bone name selects it without repainting it', () => {
+  const labels = code.match(/const labels = objs\.map\([\s\S]*?\n  \}\);/)?.[0] ?? '';
+  assert(/addEventListener\('pointerdown'/.test(labels), 'bone labels are not clickable');
+  assert(/selectBone\(o\.name\)/.test(labels), 'a label click does not select its bone');
+  assert(!/cycleBoneTint/.test(labels), 'a label click repaints the bone, which is what it is meant to avoid');
+});
+
+check('a label can be clicked at all, despite the callout layer swallowing pointers', () => {
+  const css = html.match(/\.bonelabel \{[^}]*\}/)?.[0] ?? '';
+  assert(/pointer-events:\s*auto/.test(css),
+    '#faultlabels sets pointer-events:none and .bonelabel does not opt back in');
+});
+
+check('selection goes through one function, so every route resets the stance sliders alike', () => {
+  const fn = code.match(/function selectBone\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/refreshStanceBoneList\(\)/.test(fn), 'picking a bone does not reach the stance dropdown');
+  assert(/dispatchEvent\(new Event\('change'\)\)/.test(fn),
+    'the dropdown is set without a change event, so stale stance angles would survive');
+  // Three: the declaration, selectBone, and selectCreature dropping it because bone names are per rig.
+  const strays = [...code.matchAll(/selectedBone = /g)].length;
+  assert(strays === 3, `selectedBone is assigned in ${strays} places — a fourth route would skip the reset`);
+});
+
+check('a hand colour beats the role colour, and a selected bone still shows it', () => {
+  assert(/function boneColour\(/.test(code), 'no single place decides a bone colour');
+  const fn = code.match(/function boneColour\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/tintIndex\(/.test(fn) && /colourFor\(role\)/.test(fn), 'boneColour does not fall back to the role');
+  const skel = code.match(/function updateSkeleton\([\s\S]*?\n\}\n/)?.[0] ?? '';
+  assert(!/colourFor\(link\.role\)/.test(skel), 'a bone segment still ignores its hand colour');
+  assert(/const white = lit && !tinted/.test(skel),
+    'the white selection highlight would paint over the colour the click just applied');
+});
+
+check('colours are per species and cleared per species', () => {
+  assert(/session\.boneTints/.test(code), 'colours are not kept in the session document');
+  const clear = code.match(/getElementById\('tintClear'\)[\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert(/delete session\.boneTints\[current\.name\]/.test(clear),
+    'clear wipes every species, not the one on screen');
+});
+
 console.log('\n--- persistence ---');
 
 check('the stance file is a file, and localStorage is only its fallback', () => {

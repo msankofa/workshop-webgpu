@@ -313,7 +313,9 @@ export function sanitizeBaseGameExplosionEvent(event) {
   if (!event || typeof event !== 'object' || !finiteVec3(event.p, MAX_ABS_COORDINATE)) return null;
   const radius = Number(event.radius);
   if (!Number.isFinite(radius) || radius <= 0) return null;
-  return { p: [...event.p], radius, owner: typeof event.owner === 'string' ? event.owner : null, weapon: typeof event.weapon === 'string' ? event.weapon : null, tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
+  // `contact` = the blast touched a surface (combat-projectile's impact/ground/rest causes), which
+  // is what decides whether anything is torn out of that surface.
+  return { p: [...event.p], radius, owner: typeof event.owner === 'string' ? event.owner : null, weapon: typeof event.weapon === 'string' ? event.weapon : null, contact: event.contact === true, tick: nonNegativeInteger(event.tick) ? event.tick : 0 };
 }
 
 // A live server projectile: position and velocity so a client can place it between snapshots.

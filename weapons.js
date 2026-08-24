@@ -264,7 +264,8 @@ export const WEAPONS = {
     // Thrown arc: lobs (arc adds upward velocity), falls under gravity, bounces off terrain,
     // detonates on the fuse timer or first solid contact. speed/damage/blastRadius/life/gravity
     // ported from html-game-v2 fireGrenade. See combat-projectile.js.
-    projectile: { speed: 35, blastRadius: 15, life: 2.15, radius: 0.35, gravity: 24, arc: [0, 4.8, 0], fuse: 2.0, bounces: true },
+    // rubble:false — a frag grenade throws its own casing, it does not break the surface open.
+    projectile: { rubble: false, speed: 35, blastRadius: 15, life: 2.15, radius: 0.35, gravity: 24, arc: [0, 4.8, 0], fuse: 2.0, bounces: true },
   },
   rpg: {
     id: 'rpg',

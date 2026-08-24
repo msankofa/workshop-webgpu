@@ -74,7 +74,9 @@ export function createProjectileManager({
   const ctx = {
     spawn(type, init) {
       if (type !== 'explosion' || !detonating) return null;
-      if (typeof onDetonate === 'function') onDetonate(init && init.p ? init.p : detonating.transform.p, detonating);
+      // Third argument is the raw explosion init, so a caller can read `cause` without this module
+      // re-deriving it. Callers written before it simply ignore the extra argument.
+      if (typeof onDetonate === 'function') onDetonate(init && init.p ? init.p : detonating.transform.p, detonating, init || null);
       return null;
     },
   };

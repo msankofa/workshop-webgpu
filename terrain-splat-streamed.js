@@ -258,10 +258,12 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
     outCol = outCol.mul(macro);
     let rough = mix(float(0.95), float(0.75), w.rock).add(w.snow.mul(-0.1)).add(w.sand.mul(-0.05));
     if (water) {
-      // wet tide band: darker and glossier from the waterline down through the top 0.6 m above it
-      const wet = oneMinus(smoothstep(water.sceneLevel, water.sceneLevel.add(0.6), P.y));
-      outCol = outCol.mul(mix(float(1), float(0.55), wet));
-      rough = mix(rough, float(0.22), wet);
+      // Wet ground: darker below the waterline, and a narrow glossy strip AT it (a sheen band, not
+      // a polished seabed — submerged sand stays rough or the whole floor mirrors the sun).
+      const below = oneMinus(smoothstep(water.sceneLevel, water.sceneLevel.add(0.6), P.y));
+      const strip = below.mul(smoothstep(water.sceneLevel.sub(1.2), water.sceneLevel.sub(0.2), P.y));
+      outCol = outCol.mul(mix(float(1), float(0.72), below));
+      rough = mix(rough, float(0.55), strip);
     }
     roughProp.assign(clamp(rough, 0.3, 1));
     const nmT = nm.mul(2).sub(1);
@@ -291,7 +293,10 @@ export function createStreamedSplatMaterial(textures, overrides = {}, { lod = nu
         const Po = S.add(r0.mul(depth.mul(water.causticSpread).div(tslMax(r0.y.negate(), 0.05))));
         const oldArea = length(dFdx(Po)).mul(length(dFdy(Po)));
         const newArea = length(dFdx(Pn)).mul(length(dFdy(Pn)));
-        out.assign(clamp(oldArea.div(tslMax(newArea, 1e-5)).mul(0.2), 0.0, 1.5).mul(fade).mul(water.causticStrength));
+        // The area ratio is a screen derivative: it aliases into moire once a texel spans more
+        // than a pixel, so it fades out with the same distance ramp the albedo detail uses.
+        const near = oneMinus(smoothstep(60.0, 220.0, length(P.sub(cameraPosition))));
+        out.assign(clamp(oldArea.div(tslMax(newArea, 1e-5)).mul(0.2), 0.0, 1.5).mul(fade).mul(near).mul(water.causticStrength));
       });
       return water.sunColor.mul(out).mul(vec3(0.6, 0.85, 1.0)).mul(saturate(water.sunDir.y.mul(4)));
     })();
