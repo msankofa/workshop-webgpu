@@ -86,7 +86,7 @@ window.addEventListener('unhandledrejection', event => reportBaseGameError(event
 
 <script type="module">
 import * as THREE from 'three';
-import { WebGPURenderer, RenderPipeline } from 'three/webgpu';
+import { WebGPURenderer, RenderPipeline, TimestampQuery } from 'three/webgpu';
 import { pass, renderOutput } from 'three/tsl';
 import { createDepthOfField } from './depth-of-field.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -106,7 +106,10 @@ import { applyWetSurface, createRainBed, playThunder } from './rain.js';
 import { createBaseGameLightning } from './base-game-lightning.js';
 import { materialColor } from 'three/tsl';
 import { createBaseGameWaterSim } from './base-game-water-sim.js';
-import { loadWaterConfig, applyWaterConfig } from './water-hybrid.js';
+import { loadWaterConfig, applyWaterConfig, WATER_PRESETS } from './water-hybrid.js';
+// Gerstner presets only: the `waterjs` ripple model has no CPU displacement, so physics and render
+// would disagree about where the surface is.
+const BASE_GAME_WATER_LOOKS = Object.freeze(Object.keys(WATER_PRESETS).filter(name => name !== 'waterjs'));
 import { connectBaseGameSession } from './base-game-session.mjs';
 import { createBaseGamePauseMenu, showBaseGameStartMenu } from './base-game-menu.mjs';
 import { createTerrainProjectStore, createBaseGameTerrainStudio } from './base-game-terrain-studio.js';
@@ -180,6 +183,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   waterReflection: 'planar',
   waterCaustics: true,
   waterUnderwaterFog: true,
+  waterLook: 'hybrid',            // look preset; the wave spectrum below always wins over its waves
+  waterRefraction: true,
+  waterFoam: 1,
+  waterClarity: 16,               // metres of water the colour law reaches through
   // Plants (plants plan F5). Grass is the first layer; trees and understory follow.
   grassEnabled: true,
   grassDensity: BASE_GAME_FLORA_DEFAULTS.grassDensity,
@@ -289,6 +296,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponSidearm: BASE_GAME_DEFAULT_LOADOUT.sidearm,
   weaponMelee: BASE_GAME_DEFAULT_LOADOUT.melee,
   weaponThrowable: BASE_GAME_DEFAULT_LOADOUT.throwable,
+  unlimitedAmmo: false,
   weaponHoldHeight: 0,
   weaponHoldForward: 0,
   weaponReachSolve: false,
@@ -400,6 +408,7 @@ const NUMBER_LIMITS = Object.freeze({
   todHour: [0, 24], todLatitude: [-90, 90], todDayOfYear: [1, 365],
   todMoonPhase: [0, 24], todSpeed: [0, 600], sunElevation: [-90, 90],
   sunAzimuth: [0, 360], sunIntensity: [0, 4], ambientIntensity: [0, 2],
+  waterFoam: [0, 3], waterClarity: [1, 120],
   terrainSeaLevel: [-120, 120], waveCount: [1, 40], waveBaseLength: [1, 5000], waveLengthMul: [0.05, 1], waveBaseAmp: [0, 50],
   waveAmpMul: [0.05, 1], waveChop: [0, 1], waveWindDeg: [0, 360], waveSpreadDeg: [0, 180], waveSpeed: [0, 100], waveSeed: [0, 1e9],
   playerMoveSpeed: [1, 15], playerSprintMultiplier: [1, 3], playerJumpSpeed: [2, 16],
@@ -456,6 +465,7 @@ const STRING_VALUES = Object.freeze({
   primaryBody: ['sun', 'moon'],
   worldMode: ['empty', 'traversalLab', 'terrain'],
   playerControlMode: ['player', 'orbit'],
+  waterLook: [...BASE_GAME_WATER_LOOKS],
   playerViewMode: ['thirdPerson', 'firstPerson'],
   playerBodyMode: [...BASE_GAME_BODY_MODES],
   bodyDesign: BASE_GAME_BODY_DESIGNS.map((d) => d.key),
@@ -537,15 +547,29 @@ const terrainStore = createTerrainProjectStore({
   },
 });
 // Per frame like the other applies; the wave-options object is only built when a wave key moved.
-const WATER_APPLY_KEYS = ['waterEnabled', 'worldMode', 'waterReflection', 'waterCaustics', 'waterUnderwaterFog', 'waveCount', 'waveBaseLength', 'waveLengthMul',
+const WATER_APPLY_KEYS = ['waterEnabled', 'worldMode', 'waterReflection', 'waterCaustics', 'waterUnderwaterFog',
+  'waterLook', 'waterRefraction', 'waterFoam', 'waterClarity', 'waveCount', 'waveBaseLength', 'waveLengthMul',
   'waveBaseAmp', 'waveAmpMul', 'waveChop', 'waveWindDeg', 'waveSpreadDeg', 'waveDispersion', 'waveSpeed', 'waveSeed'];
 const appliedWater = {};
 let appliedSeaLevel = null;
+let appliedWaterLook = null;
 function applyWaterSettings() {
   let dirty = false;
   for (const key of WATER_APPLY_KEYS) if (appliedWater[key] !== settings[key]) { appliedWater[key] = settings[key]; dirty = true; }
   if (terrain.seaLevel !== appliedSeaLevel) { appliedSeaLevel = terrain.seaLevel; dirty = true; }
   if (!dirty) return;
+  // The preset first: it writes reflection, caustics, foam and the wave table too, and everything
+  // below then puts the panel's own values back on top of it.
+  if (settings.waterLook !== appliedWaterLook) {
+    appliedWaterLook = settings.waterLook;
+    water.applyPreset(settings.waterLook);
+    settings.waterClarity = water.profile.depthScale.value;   // show the preset's own clarity in the slider
+    appliedWater.waterClarity = settings.waterClarity;
+    controlRegistry.get('waterClarity')?.sync();
+  }
+  water.setRefraction(settings.waterRefraction);
+  water.setFoam(settings.waterFoam);
+  water.setClarity(settings.waterClarity);
   water.setEnabled(settings.waterEnabled && settings.worldMode === 'terrain');
   water.setLevel(terrain.seaLevel);
   waterSim.setEnabled(settings.waterEnabled && settings.worldMode === 'terrain');
@@ -746,13 +770,73 @@ roomTerrainConfig = networkSession?.terrain ?? null;
 if (networkSnapshot?.world) Object.assign(settings, sanitizeBaseGameWorldPatch(networkSnapshot.world));
 gameplayPaused = false;
 
-const renderer = new WebGPURenderer({ antialias: true });
+// GPU timestamp queries. Off by default: resolving them awaits across a vsync boundary, so frame
+// totals from the two modes must never be compared. Accepts ?gputime / ?gputime=1 / =true / =on,
+// the same in the hash, any capitalisation, and a sticky localStorage toggle for when the URL is
+// not under your control (window.gpuTime(true) from the console). The exact string a strict check
+// wanted was undiscoverable, and five captures were silently taken with it off.
+const GPU_TIMESTAMP_KEY = 'baseGame:gpuTimestamps';
+// Deliberately loose about the key. This page has no other query parameters, and a diagnostic flag
+// that silently does nothing when mistyped costs a whole capture session to notice -- ?gptutime=1
+// burned five. Anything that starts with g and ends in time counts, as do the exact names.
+const GPU_KEY_EXACT = ['gputime', 'gputimestamps', 'gpu'];
+const looksLikeGpuTime = k => {
+  const n = k.toLowerCase().replace(/[^a-z]/g, '');
+  return GPU_KEY_EXACT.includes(n) || (n.startsWith('g') && n.endsWith('time'));
+};
+let gpuTimestampKeySeen = null;
+function readGpuTimestampFlag() {
+  const truthy = v => v === '' || v === null || ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase());
+  for (const source of [location.search, location.hash.replace(/^#/, '?')]) {
+    const params = new URLSearchParams(source.startsWith('?') ? source : `?${source}`);
+    for (const [k, v] of params) {
+      if (looksLikeGpuTime(k)) { gpuTimestampKeySeen = k; return truthy(v); }
+    }
+  }
+  try { if (localStorage.getItem(GPU_TIMESTAMP_KEY) === '1') { gpuTimestampKeySeen = 'localStorage'; return true; } } catch { /* private mode */ }
+  return false;
+}
+const GPU_TIMESTAMPS = readGpuTimestampFlag();
+// Console escape hatch: window.gpuTime(true) then reload. Sticky, so a capture run keeps it.
+window.gpuTime = (on = true) => {
+  try { on ? localStorage.setItem(GPU_TIMESTAMP_KEY, '1') : localStorage.removeItem(GPU_TIMESTAMP_KEY); } catch { /* ignore */ }
+  return `GPU timestamps ${on ? 'ON' : 'OFF'} on next reload (currently ${GPU_TIMESTAMPS ? 'ON' : 'OFF'})`;
+};
+const renderer = new WebGPURenderer({ antialias: true, trackTimestamp: GPU_TIMESTAMPS });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 await renderer.init();
+// hasFeature throws before init. Asked unconditionally so a capture can say whether the GPU is
+// capable even on runs where the flag was off -- that is the fact that decides whether GPU timing
+// is available at all on this machine.
+let gpuDeviceSupportsTimestamps = null;
+try { gpuDeviceSupportsTimestamps = renderer.hasFeature('timestamp-query'); } catch { /* older backend */ }
+if (GPU_TIMESTAMPS && gpuDeviceSupportsTimestamps === false) {
+  console.warn('[base-game] ?gputime requested but this GPU/browser exposes no timestamp-query. '
+    + 'Chrome gates it behind chrome://flags/#enable-webgpu-developer-features.');
+}
+// A diagnostic mode that silently costs frames is a trap: say so on screen, not just in the log.
+if (GPU_TIMESTAMPS) {
+  const badge = document.createElement('div');
+  badge.textContent = 'GPU TIMESTAMPS ON — frame times are not comparable. Click to turn off.';
+  badge.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:99999;'
+    + 'background:#b8860b;color:#fff;font:12px/1.6 system-ui,sans-serif;padding:2px 10px;'
+    + 'border-radius:0 0 6px 6px;cursor:pointer;opacity:.92';
+  badge.title = `matched "${gpuTimestampKeySeen}" — remove it from the URL, or click here`;
+  badge.onclick = () => {
+    window.gpuTime(false);
+    const url = new URL(location.href);
+    for (const k of [...url.searchParams.keys()]) if (looksLikeGpuTime(k)) url.searchParams.delete(k);
+    location.replace(url);
+  };
+  document.body.appendChild(badge);
+}
+console.info(`[base-game] GPU timestamps: requested=${GPU_TIMESTAMPS}`
+  + ` (matched ${gpuTimestampKeySeen ?? 'nothing'}) deviceSupports=${gpuDeviceSupportsTimestamps}`
+  + ` url=${location.search || '(none)'}`);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b1430);
@@ -963,6 +1047,9 @@ const shotSpreadSyncs = [];
 const syncShotSpreadControls = () => { for (const sync of shotSpreadSyncs) sync(); };
 let shotSpreadSource = 'built-in defaults';
 function applyShotSpread() { setShotSpread(shotSpread); }
+// Solo the local store IS the authority; online it mirrors the room so prediction matches the
+// server's magazines. The snapshot's world carries the room's answer either way.
+function applyUnlimitedAmmo() { localAmmo.setUnlimited(settings.unlimitedAmmo === true); }
 async function loadShotSpread() {
   try {
     const response = await fetch(`./${SHOT_SPREAD_PATH}?t=${Date.now()}`, { cache: 'no-store' });
@@ -1289,12 +1376,13 @@ function renderCombatStatus(now) {
   const weaponId = localWeaponId();
   const ammo = weaponId && (getWeapon(weaponId)?.mode || 'hitscan') !== 'melee' ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, weaponId) : null;
   const hp = `<span class="hp${combatState.dead ? ' dead' : ''}">${combatState.dead ? 'DEAD' : `${Math.round(combatState.health)} HP`}</span>`;
-  const gun = weaponId ? `${weaponId}${ammo ? ` ${ammo.mag} / ${ammo.reserve}` : ''}` : 'unarmed';
+  const round = value => (Number.isFinite(value) ? String(value) : '∞');
+  const gun = weaponId ? `${weaponId}${ammo ? ` ${round(ammo.mag)} / ${round(ammo.reserve)}` : ''}` : 'unarmed';
   const hit = now < combatState.hitFlashUntil ? '<span class="hit">HIT</span> ' : '';
   const killed = combatState.dead && combatState.killedBy ? `<br>killed by ${combatState.killedBy}` : '';
   const throwableId = localThrowableId();
   const pouch = throwableId ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, throwableId) : null;
-  const throwable = pouch ? `<br>[G] ${throwableId} ${pouch.mag + pouch.reserve}` : '';
+  const throwable = pouch ? `<br>[G] ${throwableId} ${round(pouch.mag + pouch.reserve)}` : '';
   // Write only on change. innerHTML reparses, and health, ammo and the hit flag hold still for whole
   // seconds at a time, so the great majority of frames wrote the identical markup back.
   const markup = `${hit}${hp}<br>${gun}${throwable}${killed}`;
@@ -1549,7 +1637,13 @@ const sky = createSky({
 scene.add(sky.group);
 // The sea: one wave surface at the terrain's sea level (base-game-water.js). Its look (colours,
 // fresnel, foam) comes from water-config.json's `ocean` body; the wave spectrum is the room's.
-const water = createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates });
+// Meshes the planar mirror skips. Grass is the first: at half resolution in a reflection it is
+// invisible detail, and including it re-renders the whole blade field on every mirror frame.
+const reflectionExclusions = [];
+const water = createBaseGameWater({
+  scene, terrain, sky, rig, worldCoordinates,
+  excludeFromReflection: () => reflectionExclusions,
+});
 let underwaterAudio = false;
 terrain.setSplatWater(water.groundShade);
 
@@ -1557,6 +1651,7 @@ terrain.setSplatWater(water.groundShade);
 // the lod-0 contact window for the height a blade sits at, and the 8 m placement field's scalar
 // grass cover for where blades belong at all. grass-compute.js is imported only if it is enabled.
 const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, settings });
+flora.onMesh(mesh => { if (mesh && !reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh); });
 const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRadius', 'grassBladeHeight',
   'grassBladeWidth', 'grassWind', 'grassStyle', 'grassVerticalOffset', 'grassCoverGate'];
 const appliedFlora = {};
@@ -1579,7 +1674,16 @@ function applyFloraSettings() {
     grassCoverGate: settings.grassCoverGate,
   });
 }
-loadWaterConfig('').then(cfg => { applyWaterConfig(cfg, { ocean: water.profile }); water.setWaves(waveOptionsFromWorld(settings)); }).catch(() => {});
+// water-config.json (authored in demos/water-demo.html) is the look on load: adopt its foam and
+// clarity into the panel so the sliders show what is live, then let the panel own them from there.
+loadWaterConfig('').then(cfg => {
+  applyWaterConfig(cfg, { ocean: water.profile });
+  water.refreshLookBase();
+  settings.waterClarity = water.profile.depthScale.value;
+  appliedWater.waterClarity = settings.waterClarity;
+  controlRegistry.get('waterClarity')?.sync();
+  water.setWaves(waveOptionsFromWorld(settings));
+}).catch(() => {});
 
 // Two cloud decks (base-game-clouds.js). They follow the camera, take their colour from the same
 // key light the terrain does, and carry the render-origin offset so the noise field survives a rebase.
@@ -1602,6 +1706,102 @@ for (const material of traversalLab.materials) {
 }
 
 const frameProfiler = createFrameProfiler();
+// The slots this page actually times. frame-profiler's default map is the env-viewer's, which does
+// not include terrain or fx, so a snapshot taken with it reports zero for them.
+const BASE_GAME_PASS_PREFIXES = Object.freeze({
+  terrain: 'passTerrainMs', water: 'passWaterMs', fx: 'passFxMs', sky: 'passSkyMs',
+  grassGpu: 'passGrassMs', postRender: 'passPostMs', weather: 'passWeatherMs',
+  // The encode, split by mirror frame. reflect is the mirror's own time; postMirror/postPlain are
+  // the whole encode on frames where it did and did not run. All three are inside postRender.
+  reflect: 'passReflectMs', postMirror: 'passPostMirrorMs', postPlain: 'passPostPlainMs',
+  playerSim: 'passPlayerSimMs', playerView: 'passPlayerViewMs', bodies: 'passBodiesMs',
+  audio: 'passAudioMs',
+  // Terrain, split: system.update vs the unbudgeted changed-frame fold-in vs the field windows,
+  // plus the worker installs that land outside the rAF and so belong to no pass at all.
+  terrainFold: 'passTerrainFoldMs', terrainField: 'passTerrainFieldMs',
+  terrainInstall: 'passTerrainInstallMs',
+  // The fold, split again: which of the three is left after the budget.
+  terrainColorize: 'passTerrainColorizeMs', terrainBatch: 'passTerrainBatchMs',
+  terrainCollider: 'passTerrainColliderMs',
+  // Everything in the frame that no slot above covers.
+  frameOther: 'passOtherMs',
+});
+// Slots that partition the frame. Sub-slots are excluded from the residual: every terrain* one is
+// either inside terrain's own slot (fold, field, and the fold's colorize/batch/collider split) or
+// outside the frame entirely (install), and reflect/postMirror/postPlain are all inside postRender.
+const BASE_GAME_FRAME_SLOTS = ['terrain', 'water', 'fx', 'grassGpu', 'sky', 'weather',
+  'playerSim', 'playerView', 'bodies', 'audio', 'postRender'];
+function profiledMs() {
+  const snap = frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES);
+  let total = 0;
+  for (const name of BASE_GAME_FRAME_SLOTS) total += snap[BASE_GAME_PASS_PREFIXES[name]] || 0;
+  return total;
+}
+// What the encode actually walks. postRender is CPU work proportional to the objects the renderer
+// visits, and the per-subsystem draw counts disagreed with renderer.info: terrain reports draws:1
+// for its batched world, yet hiding terrain removed ~100 draw calls. Rather than trust any
+// subsystem's self-report, walk the graph the way the renderer does -- pruning invisible subtrees,
+// exactly as projectObject does -- and attribute every renderable to the top-level group it hangs
+// under. Runs once per capture, never per frame.
+function sceneCensus() {
+  const owners = new Map();
+  let visited = 0, renderables = 0, unculled = 0, maxDepth = 0;
+  function walk(obj, owner, depth) {
+    if (!obj.visible) return;
+    visited++;
+    if (depth > maxDepth) maxDepth = depth;
+    if (obj.isMesh || obj.isPoints || obj.isLine || obj.isSprite) {
+      renderables++;
+      let e = owners.get(owner);
+      if (!e) { e = { renderables: 0, batched: 0, instanced: 0, unculled: 0, instances: 0 }; owners.set(owner, e); }
+      e.renderables++;
+      if (obj.isBatchedMesh) e.batched++;
+      if (obj.isInstancedMesh) { e.instanced++; e.instances += obj.count | 0; }
+      if (obj.frustumCulled === false) { e.unculled++; unculled++; }
+    }
+    for (const child of obj.children) walk(child, owner ?? (child.name || child.type), depth + 1);
+  }
+  for (const child of scene.children) walk(child, child.name || child.type, 1);
+  // Heaviest owners first; a long tail of one-mesh groups is not what we are looking for.
+  const top = [...owners.entries()].sort((a, b) => b[1].renderables - a[1].renderables).slice(0, 18);
+  return {
+    visitedObjects: visited, renderables, unculled, maxDepth,
+    drawCallsReported: lastRenderInfo.drawCalls,
+    byOwner: Object.fromEntries(top),
+  };
+}
+
+// GPU-side timing, only when ?gputime=1 built the renderer with trackTimestamp. Whether it
+// actually produced numbers is recorded, so a capture can say "asked but the device said no"
+// instead of reporting silent zeros that look like a measurement.
+const gpuTimestampState = {
+  requested: GPU_TIMESTAMPS,
+  // The raw URL the page saw. Five captures said "not requested" with no way to tell whether the
+  // flag was absent or merely spelled differently.
+  url: (location.search || '') + (location.hash || '') || '(none)',
+  matchedKey: gpuTimestampKeySeen,
+  resolved: 0, lastError: null,
+};
+// NOT awaited by the frame. Awaiting these crosses a vsync boundary, which cost a whole extra
+// display interval per frame: p50 went 13.3 -> 26.7 ms at 75 Hz, halving the rate. The numbers are
+// a frame or two stale as a result, which is irrelevant to a p50/p95 over a 10-second window.
+let gpuResolveInFlight = false;
+function resolveFrameTimestamps() {
+  if (typeof renderer.resolveTimestampsAsync !== 'function') return;
+  if (gpuResolveInFlight) return;
+  gpuResolveInFlight = true;
+  const note = err => { gpuTimestampState.lastError = String(err?.message ?? err); };
+  const compute = renderer.resolveTimestampsAsync(TimestampQuery.COMPUTE)
+    .then(ms => { if (Number.isFinite(ms)) frameProfiler.recordGpu('computeTotal', ms); }, note);
+  const render = renderer.resolveTimestampsAsync(TimestampQuery.RENDER)
+    .then(ms => {
+      if (!Number.isFinite(ms)) return;
+      frameProfiler.recordGpu('renderTotal', ms);
+      frameProfiler.recordGpu('postRender', ms);
+      gpuTimestampState.resolved++;
+    }, note);
+  Promise.all([compute, render]).finally(() => { gpuResolveInFlight = false; });
+}
 function applySkyComponentVisibility() {
   sky.group.visible = settings.skyEnabled;
   sky.setDomeVisible(settings.domeEnabled);
@@ -1841,6 +2041,8 @@ function changed(key) {
     // As in v3: picking a model writes its recommended lead into the slider instead of applying it invisibly.
     settings.bodyStepLeadScale = GAIT_MODELS[settings.bodyGaitModel]?.stepLeadScale ?? settings.bodyStepLeadScale;
     syncAllControls();
+  } else if (key === 'unlimitedAmmo') {
+    applyUnlimitedAmmo();
   } else if (key === 'weaponPrimary' || key === 'weaponSidearm' || key === 'weaponMelee' || key === 'weaponThrowable') {
     applyWeaponSelection();
   } else if (key === 'fpPreset') {
@@ -2092,6 +2294,11 @@ addSelect(playerSec, 'weaponPrimary', 'Primary weapon (1)', [...BASE_GAME_WEAPON
 addSelect(playerSec, 'weaponSidearm', 'Sidearm (2)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponMelee', 'Melee (3)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
+addToggle(playerSec, 'unlimitedAmmo', 'Unlimited ammo');
+const unlimitedAmmoNote = document.createElement('div'); unlimitedAmmoNote.className = 'note';
+unlimitedAmmoNote.textContent = 'Bottomless magazines: no reloads, no dry clicks. Ammo is the server’s, so online this is the room owner’s to set and applies to everyone.';
+playerSec.append(unlimitedAmmoNote);
+
 // Weapon spread: bot-viewer-v3's labels and ranges, over shot-spread.js instead of botAimSettings.
 const spreadSec = createSection(playerSec, 'Weapon spread', { collapsed: true });
 function addSpreadRange(label, key, format, title) {
@@ -2299,6 +2506,10 @@ addToggle(waterSec, 'waterEnabled', 'Sea (at the terrain sea level)');
 addSelect(waterSec, 'waterReflection', 'Reflection', ['sky', 'planar', 'ssr'], ['Sky only', 'Planar mirror (half resolution, every 2nd frame)', 'Screen-space']);
 addToggle(waterSec, 'waterCaustics', 'Caustics on the seabed (and the wet tide line)');
 addToggle(waterSec, 'waterUnderwaterFog', 'Underwater tint and fog');
+addSelect(waterSec, 'waterLook', 'Look preset', [...BASE_GAME_WATER_LOOKS], ['Open ocean', 'Hybrid']);
+addToggle(waterSec, 'waterRefraction', 'Refraction (see the ground through the water)');
+addRange(waterSec, 'waterFoam', 'Foam', 0, 3, 0.05, value => value.toFixed(2));
+addRange(waterSec, 'waterClarity', 'Clarity (m of water the colour reaches through)', 1, 120, 1, value => `${value.toFixed(0)} m`);
 addRange(waterSec, 'waveCount', 'Wave count', 1, 40, 1);
 addRange(waterSec, 'waveBaseLength', 'Longest wavelength (m)', 1, 5000, 1, value => `${value.toFixed(0)} m`);
 addRange(waterSec, 'waveLengthMul', 'Wavelength falloff per wave', 0.05, 1, 0.01, value => value.toFixed(2));
@@ -2480,6 +2691,7 @@ const missingControls = Object.keys(DEFAULT_SETTINGS).filter(key => !controlRegi
 if (missingControls.length) throw new Error(`Unsaved/unconfigured settings: ${missingControls.join(', ')}`);
 
 loadShotSpread();   // the committed accuracy numbers; the built-in fallback stands until it lands
+applyUnlimitedAmmo();   // restored from the autosave in Solo, replaced by the room's world online
 
 const multiplayerStatus = document.createElement('div');
 multiplayerStatus.className = 'note';
@@ -2566,6 +2778,7 @@ receiveNetworkSnapshot = (snapshot, session = networkSession) => {
   if (session && loadoutSentFor !== session && snapshot.worldReady) { loadoutSentFor = session; session.setLoadout(currentLoadout()); }
   applyPlayerSnapshot(snapshot, session);
   Object.assign(settings, sanitizeBaseGameWorldPatch(snapshot.world));
+  applyUnlimitedAmmo();   // the room's match rule; a guest's own toggle never wins
   if (networkUiReady) {
     syncAllControls();
     syncNetworkControlPermissions();
@@ -2964,6 +3177,35 @@ function captureContext() {
       },
     },
     userAgent: navigator.userAgent,
+    // The planar mirror re-renders the scene on its own schedule, so draw and triangle counts
+    // alternate. These say how often, and how much of the frame it took.
+    // Two captures with identical settings can differ by 2x on where the camera stands and what
+    // fills the screen. Without this, every comparison between captures is confounded.
+    camera: {
+      global: worldCoordinates.toGlobal(playerRenderPosition).map(v => +v.toFixed(2)),
+      yaw: +playerView.yaw.toFixed(3),
+      pitch: +playerView.pitch.toFixed(3),
+      fov: +camera.fov.toFixed(1),
+      viewMode: settings.playerViewMode,
+    },
+    // deviceSupports asks the adapter directly, so it answers "can this GPU do it" even when we
+    // never asked; backend.trackTimestamp is `requested && supported` and conflates the two.
+    gpuTimestamps: { ...gpuTimestampState, deviceSupports: gpuDeviceSupportsTimestamps },
+    water: {
+      enabled: settings.waterEnabled && settings.worldMode === 'terrain',
+      reflection: settings.waterReflection,
+      reflectPasses: water.reflectStats.passes,
+      reflectSkipped: water.reflectStats.skipped,
+      reflectLastMs: +water.reflectStats.lastMs.toFixed(2),
+    },
+    flora: {
+      grass: { ...flora.stats },
+      placementCoverage: terrain.fields ? +terrain.fields.coverage.toFixed(3) : null,
+      contactCoverage: terrain.contactField ? +terrain.contactField.coverage.toFixed(3) : null,
+      fieldScheduler: { ...terrain.fieldScheduler.stats },
+    },
+    terrainCost: { ...terrain.frameCost },
+    scene: sceneCensus(),
   };
 }
 
@@ -3027,6 +3269,10 @@ function recordPerformanceFrame(frameStart, frameMs) {
   };
   const capture = activePerformanceCapture;
   if (!capture) return;
+  // Only allocated while a capture is running, so the idle frame stays allocation-free.
+  latestPerformanceFrame.passes = frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES);
+  // Not a measurement: frame-profiler defines it as a sum that degenerates to passPostMs here.
+  delete latestPerformanceFrame.passes.passGpuAwaitMs;
 
   // Trim the first draw-to-draw interval at the click boundary instead of attributing
   // pre-capture time to the requested measurement window.
@@ -3166,6 +3412,9 @@ async function animate() {
     const frameMs = Math.max(0, frameStart - lastFrameStart);
     lastFrameStart = frameStart;
     const dt = Math.min(0.1, frameMs / 1000);
+    // Region marks: these blocks declare bindings the rest of the frame reads, so they cannot be
+    // wrapped in closures the way the pass slots below are.
+    const tSim = performance.now();
 
     const online = isOnline();
     const canControl = !gameplayPaused && settings.playerControlMode === 'player';
@@ -3226,6 +3475,8 @@ async function animate() {
     } else {
       playerController.interpolatedPosition(1, playerRenderPosition);
     }
+    frameProfiler.mark('playerSim', performance.now() - tSim);
+    const tView = performance.now();
     if (canControl) {
       worldCoordinates.maybeRebase(playerController.getPosition(playerPositionScratch));
       playerView.syncCapsule(playerRenderPosition, {
@@ -3257,6 +3508,8 @@ async function animate() {
       });
     }
     // Bodies read the same render position the capsule uses; the controller is never touched.
+    frameProfiler.mark('playerView', performance.now() - tView);
+    const tBodies = performance.now();
     // Third-person rigs show only in third-person view, lower-body rigs only in first-person.
     const firstPerson = settings.playerViewMode === 'firstPerson';
     const bodyVisible = settings.playerBodyMode === 'lowerBody' ? firstPerson : true;
@@ -3355,9 +3608,18 @@ async function animate() {
     } else {
       playerBodies.flushWeapons();
     }
+    frameProfiler.mark('bodies', performance.now() - tBodies);
     sky.group.position.copy(camera.position);
-    envAudio.update(frameStart);
+    frameProfiler.time('audio', () => envAudio.update(frameStart));
     frameProfiler.time('terrain', () => terrain.update(playerController.getPosition(playerPositionScratch), dt));
+    // terrain.update's own slot hides three very different costs; split them out.
+    const terrainCost = terrain.frameCost;
+    frameProfiler.mark('terrainFold', terrainCost.foldMs);
+    frameProfiler.mark('terrainField', terrainCost.fieldMs);
+    frameProfiler.mark('terrainInstall', terrainCost.installMs);
+    frameProfiler.mark('terrainColorize', terrainCost.colorizeMs);
+    frameProfiler.mark('terrainBatch', terrainCost.batchMs);
+    frameProfiler.mark('terrainCollider', terrainCost.colliderMs);
     if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
     frameProfiler.time('water', () => {
       water.update(dt, camera.position, playerController.waterTime + playerInterpolationAlpha * playerFixedDt);
@@ -3365,7 +3627,7 @@ async function animate() {
     });
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
     frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); });
-    await frameProfiler.timeAsync('grass', () => flora.update(dt));
+    await frameProfiler.timeAsync('grassGpu', () => flora.update(dt));
     frameProfiler.time('sky', () => updateWorld(dt));
     // After the sky slot: the drop tint reads scene.background, which updateWorld has just written.
     frameProfiler.time('weather', () => {
@@ -3382,14 +3644,29 @@ async function animate() {
       audioDirector.setRainBed(bedLevel, settings.weatherRainBedVolume);
     });
     if (!terrainStudio.open) {
+      // postRender is CPU encode (measured: gpuRenderMs ~1 ms against passPostMs 3-12), and the
+      // planar mirror re-renders the whole scene inside it every reflectRate frames. Split the
+      // encode by whether the mirror ran, so its marginal cost is a measurement, not a subtraction
+      // of two numbers from different captures.
+      const reflectPassesBefore = water.reflectStats.passes;
+      const encodeStart = performance.now();
       if (settings.dofEnabled) {
         depthOfField.setParams({ enabled: true, autoFocus: settings.dofAutoFocus, focusDistance: settings.dofFocusDistance, aperture: settings.dofAperture, maxRadius: settings.dofMaxRadius, farScale: settings.dofFarScale });
         if (settings.dofAutoFocus) depthOfField.updateFocus(dt, measureCentreDistance());
-        frameProfiler.time('postRender', () => postPipeline.render());
+        postPipeline.render();
       } else {
-        frameProfiler.time('postRender', () => renderer.render(scene, camera));
+        renderer.render(scene, camera);
       }
+      const encodeMs = performance.now() - encodeStart;
+      frameProfiler.mark('postRender', encodeMs);
+      const mirrored = water.reflectStats.passes > reflectPassesBefore;
+      frameProfiler.mark('reflect', mirrored ? water.reflectStats.lastMs : 0);
+      frameProfiler.mark(mirrored ? 'postMirror' : 'postPlain', encodeMs);
     }
+    if (GPU_TIMESTAMPS) resolveFrameTimestamps();
+    // Everything in the frame that no slot above covers. snapshot() allocates, so this residual is
+    // only computed while a capture is running.
+    if (activePerformanceCapture) frameProfiler.mark('frameOther', Math.max(0, performance.now() - frameStart - profiledMs()));
     lastRenderInfo = {
       drawCalls: renderer.info.render.drawCalls,
       triangles: renderer.info.render.triangles,

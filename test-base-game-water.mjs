@@ -11,6 +11,7 @@ import { vec3, mix, clamp } from 'three/tsl';
 import { createLightingRig } from './lights.js';
 import { buildMaterial } from './tsl-build-check.mjs';
 import { waveOptionsFromWorld } from './base-game-protocol.mjs';
+import { readFileSync } from 'node:fs';
 
 let failures = 0;
 const ok = (cond, msg) => { console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${msg}`); if (!cond) failures++; };
@@ -73,6 +74,49 @@ console.log('\n[2] visibility gate and CPU surface');
   ok(water.uniforms2.fogDensity.value === 0.2, 'fog density setter');
   water.setLevel(-1000); water.update(0.016, camera.position);
   ok(water.underwater === false && water.fogQuad.visible === false, 'above the surface: no fog');
+}
+
+console.log('\n[4] look controls (W9)');
+{
+  water.setLevel(0);
+  ok(water.look.refraction === true, 'refraction on by default');
+  water.setRefraction(false);
+  ok(water.look.refraction === false, 'refraction toggles');
+  water.setRefraction(true);
+  const shoreBase = water.profile.foamShoreStr.value, crestBase = water.profile.foamCrestStr.value;
+  water.setFoam(0);
+  ok(water.profile.foamShoreStr.value === 0 && water.profile.foamCrestStr.value === 0, 'foam 0 clears every foam term');
+  water.setFoam(2);
+  ok(Math.abs(water.profile.foamShoreStr.value - shoreBase * 2) < 1e-9 && Math.abs(water.profile.foamCrestStr.value - crestBase * 2) < 1e-9,
+    'foam scales all four terms from the authored base, not from the last scaled value');
+  water.setFoam(1);
+  water.setClarity(40);
+  ok(water.profile.depthScale.value === 40, 'clarity sets the colour law depth');
+  const before = { ...water.profile.wave };
+  water.applyPreset('ocean');
+  ok(water.profile.depthScale.value === 22 && water.look.foam === 1, 'a preset replaces the look and re-reads the foam base');
+  water.setWaves(before);
+  ok(water.profile.wave.count === before.count && water.profile.wave.baseAmp === before.baseAmp, 'the room wave keys go back on top of the preset');
+  ok(water.profile.waveModel.value === 1, 'every offered preset stays on the Gerstner model the physics reads');
+}
+
+console.log('\n[5] the page wires the panel to it');
+{
+  const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
+  for (const marker of [
+    "addToggle(waterSec, 'waterRefraction'",
+    "addRange(waterSec, 'waterFoam'",
+    "addRange(waterSec, 'waterClarity'",
+    "addSelect(waterSec, 'waterLook'",
+    'water.setRefraction(settings.waterRefraction)',
+    'water.setFoam(settings.waterFoam)',
+    'water.setClarity(settings.waterClarity)',
+    'water.refreshLookBase()',
+    "name !== 'waterjs'",
+  ]) ok(html.includes(marker), `base-game.html has ${marker}`);
+  for (const key of ['waterEnabled', 'waterReflection', 'waterCaustics', 'waterUnderwaterFog', 'waterLook', 'waterRefraction', 'waterFoam', 'waterClarity']) {
+    ok(new RegExp(`^\\s*${key}:`, 'm').test(html), `${key} is a saved setting (rides the state file)`);
+  }
 }
 
 water.dispose(); terrain.dispose();

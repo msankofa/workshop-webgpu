@@ -39,6 +39,7 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
   const cfg = { ...BASE_GAME_WATER_DEFAULTS, ...opts };
   const uTime = uniform(0), uWind = uniform(new THREE.Vector2(1, 0));
   const uLevel = uniform(terrain.seaLevel ?? 0);
+  const uRefract = uniform(1);        // 0 = flat body colour under the surface, 1 = framebuffer
   const uOffset = uniform(new THREE.Vector2());   // scene xz + offset = global xz
   const uSunDir = uniform(new THREE.Vector3(0, 1, 0)), uSunColor = uniform(new THREE.Color(1, 1, 1));
   const profile = makeWaterProfile({ name: 'sea', uTime, uWind, preset: cfg.preset });
@@ -95,8 +96,8 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     // Refraction: the framebuffer under the surface, shifted by the wave normal and the depth
     // (a dry pixel must not be pulled in from above the shoreline).
     bedColorAt: (viewDir, N, thickness) => {
-      const ripple = N.xz.mul(profile.refrRipple).mul(smoothstep(0.0, 1.5, thickness));
-      return viewportSharedTexture(screenUV.add(ripple)).rgb;
+      const ripple = N.xz.mul(profile.refrRipple).mul(smoothstep(0.0, 1.5, thickness)).mul(uRefract);
+      return mix(profile.shallow, viewportSharedTexture(screenUV.add(ripple)).rgb, uRefract);
     },
     // Reflection by profile.reflMode: 0 sky dome, 1 planar mirror, 2 screen-space march against
     // the opaque depth buffer (the demo's march, sampling the framebuffer instead of a pre-pass).
@@ -173,6 +174,12 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
   };
 
   let enabled = true, time = 0;
+  // Foam strengths are authored (preset or water-config.json); the panel scales all four together,
+  // so the base has to be re-read whenever something else writes them.
+  const foamKeys = ['foamShoreStr', 'foamCrestStr', 'foamFoldStr', 'foamContactStr'];
+  let foamBase = {}, foamScale = 1;
+  function readFoamBase() { for (const k of foamKeys) foamBase[k] = profile[k].value; foamScale = 1; }
+  readFoamBase();
   let wind = 35;
   const state = { visible: false, reason: 'no data' };
   const _s = {};
@@ -219,7 +226,17 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
       if (changed) { rebuildWaveTable(profile); setWindDeg(profile.wave.windDeg); }
       return changed;
     },
-    applyPreset(name) { applyWaterPreset(profile, name); rebuildWaveTable(profile); setWindDeg(profile.wave.windDeg); },
+    applyPreset(name) { applyWaterPreset(profile, name); rebuildWaveTable(profile); setWindDeg(profile.wave.windDeg); readFoamBase(); },
+    // Call after anything else writes the profile (water-config.json) so the panel scales from it.
+    refreshLookBase() { readFoamBase(); },
+    get look() { return { refraction: uRefract.value > 0.5, foam: foamScale, clarity: profile.depthScale.value }; },
+    setRefraction(on) { uRefract.value = on === false ? 0 : 1; },
+    setFoam(scale) {
+      if (!Number.isFinite(scale) || scale < 0) return;
+      foamScale = scale;
+      for (const k of foamKeys) profile[k].value = foamBase[k] * scale;
+    },
+    setClarity(depthScale) { if (Number.isFinite(depthScale) && depthScale > 0) profile.depthScale.value = depthScale; },
     // The displaced surface height (global x, z) at the current clock: camera and bodies, not physics.
     surfaceHeightAt(x, z) {
       if (profile.waveModel.value !== 1 || !profile.table) return uLevel.value;
