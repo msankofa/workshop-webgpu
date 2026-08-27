@@ -1133,6 +1133,21 @@ Still open: no crouch key is bound (the stance stays in the ladder because the f
 it), stance does not yet scale weapon spread even though `stanceSpreadScale` exists, and prone has no
 special weapon hold.
 
+**Aim zoom and the sight picture (2026-08-27).** The ADS *zoom* was already there and always had
+been — `applyFirstPersonOptics` narrows the FOV by the weapon's `magnification`, eased by the aim
+blend, and pushes the eye forward by `aimEyeForward`, the same three lines environment-viewer runs.
+What was missing was the half that makes a scope look like a scope, so **`scope-overlay.js`** ports
+environment-viewer's `updateScopeOverlay`: a hard black surround with a feathered rim, and a masked
+peripheral blur, faded in with the aim. Only `sightType: 'optical'` gets one, which today is the m24
+alone; iron sights zoom without blacking out the world.
+
+Two departures from the original, both about cost. It rebuilds the two gradient strings only when
+the numbers that shape them change rather than every frame, since a CSS gradient reparse per frame
+is real work for a picture that holds still. And `backdrop-filter` is attached only when a weapon
+authors blur, because a full-screen backdrop filter is among the more expensive things a browser can
+be asked to do per frame. The reticle hides while the sight picture is up: a crosshair over a
+telescopic sight is two reticles arguing. `test-scope-overlay.mjs`.
+
 Still open in this phase: the head multiplier. `hits[].head` is always false, and this is deliberate
 rather than forgotten — every other head decision in the repo comes from a rig
 (`bot-body-hit.js` → `bot-limb-map.js`), the server has no rig, and a capsule-top zone would be a
@@ -2188,8 +2203,11 @@ now asserts the call site, since no unit test of the module can see a wrong call
 Base Game raises the blade ceiling with `grassKmax: 256`, so the panel's 0-60 blades/m^2 slider
 works across its whole range instead of saturating at 16. The instance buffer is 28.5 MB
 (891,136 instances) and the per-recull dispatch tracks the live window rather than that ceiling.
-Two known limits remain: the draw-radius slider still clamps at 56.6 m until `contactTilesPerSide`
-grows, and the blade RASTER cost — vertex and overdraw, which is what actually grows with the
+The draw-radius slider reaches its full 200 m as of 2026-08-27: height comes from the contact
+window inside ~60 m and the 2 km placement window beyond it, and `maxRadius` follows the slider
+rather than a window. Two limits it is worth knowing about: at radius AND density both maxed the
+96 MB blade buffer truncates the far edge (the panel's runtime line says when), and the blade RASTER
+cost — vertex and overdraw, which is what actually grows with the
 count — sits inside the main render pass and is not measured by `passGrassMs`, which times only
 the cull dispatch.
 

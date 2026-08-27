@@ -156,6 +156,7 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     get post() { return win.post; },
     get res() { return res; },
     get extent() { return res * win.post; },
+    get tileSize() { return win.tileSize; },
     get lod() { return win.lod; },
     get fields() { return win.fields; },
     get coverage() { return win.coverage; },

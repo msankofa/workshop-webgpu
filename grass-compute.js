@@ -114,6 +114,10 @@ export function createComputeGrass(opts) {
   const injectedDensity = opts.densityNode ?? null;
   if (injectedHeight && typeof injectedHeight !== 'function') throw new TypeError('grass heightNode must be a TSL node function');
   if (injectedDensity && typeof injectedDensity !== 'function') throw new TypeError('grass densityNode must be a TSL node function');
+  // Ground colour under the blade, Fn(([x, z, y]) => vec3). Evaluated once per blade in the cull
+  // and packed into the instance record's three spare floats, not recomputed per vertex.
+  const injectedGround = opts.groundColorNode ?? null;
+  if (injectedGround && typeof injectedGround !== 'function') throw new TypeError('grass groundColorNode must be a TSL node function');
   const hasHeightTex = !injectedHeight && !!(opts.heightTex && opts.heightTexBounds);
   const heightTex = hasHeightTex ? opts.heightTex : null;
   const hasDensityTex = !injectedDensity && !!(opts.densityTex && opts.densityTexBounds);
@@ -145,9 +149,12 @@ export function createComputeGrass(opts) {
   // Worst-case survivor capacity. Procedural mode can fill every window slot; anchor
   // mode is additionally capped by maxBlades (the indirect draw is clamped to it
   // anyway), which keeps the instance buffer far smaller than the anchor pool.
+  // Worst case is every cell in the window full, which no real scene reaches once the cull
+  // gradient thins the edge. A host may cap it; the uHardCap guard turns an overflow into a
+  // truncated field instead of an out-of-bounds write.
   const CAP = anchorMode
     ? (o.maxBlades > 0 ? Math.min(anchorCap, o.maxBlades) : anchorCap)
-    : maxInstances(maxRadius, cellSize, Kmax); // sized for the max radius (slider ceiling)
+    : Math.max(1, Math.floor(Math.min(maxInstances(maxRadius, cellSize, Kmax), opts.maxInstances ?? Infinity)));
   if (anchorMode) {
     console.info(`[grass] anchor mode: ${chunkIndex.chunks.size} surface chunks, `
       + `${numSlots} slots × ${perSlot} anchors `
@@ -192,6 +199,9 @@ export function createComputeGrass(opts) {
   const uBladeHeight = uniform(o.bladeHeight);
   const uBladeWidth = uniform(o.bladeWidth);
   const uVerticalOffset = uniform(o.verticalOffset);
+  // How far a blade reads as the ground it stands on: at the root, and at the draw edge.
+  const uGroundTint = uniform(injectedGround ? (opts.groundTint ?? 0.5) : 0);
+  const uGroundTintFar = uniform(opts.groundTintFar ?? 1);
   // Terrain extent: grass is rejected outside these XZ bounds. Defaults to ±1e9 (effectively
   // infinite) for procedural terrain; set to the map's world bounds for authored maps so blades
   // don't scatter beyond the mesh edge.
@@ -284,8 +294,9 @@ export function createComputeGrass(opts) {
           const base2 = s.mul(uint(2));
           const yaw = anchorRandFn(idx, int(3)).mul(6.2831853);
           const bh = float(0.8).add(anchorRandFn(idx, int(5)).mul(0.6));
+          const g = injectedGround ? injectedGround(wx, wz, wy) : vec3(0);
           inst.element(base2).assign(vec4(wx, wy, wz, bh));
-          inst.element(base2.add(uint(1))).assign(vec4(yaw, 0, 0, 0));
+          inst.element(base2.add(uint(1))).assign(vec4(yaw, g.x, g.y, g.z));
         });
       });
     });
@@ -331,8 +342,9 @@ export function createComputeGrass(opts) {
           const base2 = s.mul(uint(2));
           const yaw = slotRandFn(gx, gz, slot, int(3)).mul(6.2831853);
           const bh = float(0.8).add(slotRandFn(gx, gz, slot, int(5)).mul(0.6));
+          const g = injectedGround ? injectedGround(wx, wz, wy) : vec3(0);
           inst.element(base2).assign(vec4(wx, wy, wz, bh));
-          inst.element(base2.add(uint(1))).assign(vec4(yaw, 0, 0, 0));
+          inst.element(base2.add(uint(1))).assign(vec4(yaw, g.x, g.y, g.z));
         });
       });
     });
@@ -360,6 +372,7 @@ export function createComputeGrass(opts) {
   const rec0 = inst.element(instanceIndex.mul(uint(2)));        // (x,y,z,h)
   const rec1 = inst.element(instanceIndex.mul(uint(2)).add(uint(1))); // (yaw,...)
   const base = rec0.xyz, bladeH = rec0.w, yaw = rec1.x;
+  const groundColor = rec1.yzw;                       // written by the cull; zero when not injected
 
   // rotate local blade (width axis = local X, blade in XY plane, z=0) by yaw, scale height
   const cy = cos(yaw), sy = sin(yaw);
@@ -405,7 +418,13 @@ export function createComputeGrass(opts) {
   const dryColor = vec3(120 / 255, 96 / 255, 40 / 255);
   const grassColorBase = mix(uBaseColor, uTipColor, aWind).mul(fiberMul);
   const grassColor = mix(grassColorBase, dryColor, styleSample.g.mul(0.7));
-  const colorNode = grassColor.mul(uAmbient.add(uKey)).mul(cloud).mul(look.nodes.rootShade(bladeT));
+  // Read as the ground the blade stands on: strongest at the root, and total at the draw edge, so
+  // the field dissolves into the terrain instead of ending on a visible line.
+  const camDist = length(vec2(base.x.sub(uCam.x), base.z.sub(uCam.y)));
+  const edgeT = camDist.sub(uCullStart).div(uRadius.sub(uCullStart).max(float(0.001))).clamp(0, 1);
+  const tintAmt = uGroundTint.mul(mix(float(1).sub(bladeT), float(1), edgeT.mul(uGroundTintFar))).clamp(0, 1);
+  const grounded = mix(grassColor, groundColor, tintAmt);
+  const colorNode = grounded.mul(uAmbient.add(uKey)).mul(cloud).mul(look.nodes.rootShade(bladeT));
 
   const mat = new MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 1, metalness: 0 });
   mat.positionNode = posNode;
@@ -569,6 +588,12 @@ export function createComputeGrass(opts) {
     },
     maxRadius,
     setWind(strength) { uTipDist.value = 0.3 * strength; uCenterDist.value = 0.1 * strength; },
+    // No recull: the tint is already in the instance record, these only reweight it.
+    setGroundTint(amount, far) {
+      if (amount !== undefined && injectedGround) uGroundTint.value = Math.max(0, Math.min(1, Number(amount) || 0));
+      if (far !== undefined) uGroundTintFar.value = Math.max(0, Math.min(1, Number(far) || 0));
+    },
+    get groundTint() { return { amount: uGroundTint.value, far: uGroundTintFar.value, available: !!injectedGround }; },
     // grass-look.js toggles/amounts; live, no recull. setSunDir takes the world direction TOWARD the sun.
     setLook(partial) { look.set(partial); },
     getLook() { return look.get(); },

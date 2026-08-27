@@ -31,6 +31,7 @@ export const CLOUD_DEFAULTS = Object.freeze({
   tint: '#ffffff',      // used when tintFollowsSun is off
   nightDim: 0.85,       // how far the tint falls toward black at full nightness
   overcastTint: 0.55,   // how grey a fully overcast deck goes
+  flashTint: '#e8f0ff', // what a lightning flash pulls the tint toward: blue-white, not warm
 });
 
 const DECK_KEYS = ['visible', 'height', 'extent', 'cover', 'puff', 'softness', 'opacity', 'fade', 'fadeFloor', 'edgeStart', 'speed', 'octaves'];
@@ -49,6 +50,7 @@ export function createBaseGameClouds({ scene, worldCoordinates = null, deckCount
   const decks = [];
   const tint = new THREE.Color();
   const manualTint = new THREE.Color(CLOUD_DEFAULTS.tint);
+  const flashTint = new THREE.Color(CLOUD_DEFAULTS.flashTint);
   let elapsed = 0, overcast = 0, enabled = CLOUD_DEFAULTS.enabled;
 
   function build(deck) {
@@ -118,6 +120,7 @@ export function createBaseGameClouds({ scene, worldCoordinates = null, deckCount
     setShared(patch = {}) {
       Object.assign(shared, patch);
       if (patch.tint !== undefined) manualTint.set(patch.tint);
+      if (patch.flashTint !== undefined) flashTint.set(patch.flashTint);
       for (const deck of decks) {
         deck.mesh.material.depthWrite = shared.depthWrite;
         deck.mesh.material.needsUpdate = true;
@@ -146,13 +149,18 @@ export function createBaseGameClouds({ scene, worldCoordinates = null, deckCount
       return enabled ? far : 0;
     },
 
-    // `sunColor` is the rig's current key-light colour, `nightness` the sky's 0..1 night factor.
-    update(dt, camera, { sunColor = null, nightness = 0 } = {}) {
+    // `sunColor` is the rig's current key-light colour, `nightness` the sky's 0..1 night factor,
+    // `flash` a 0..1 lightning term (the same one the drops brighten on).
+    update(dt, camera, { sunColor = null, nightness = 0, flash = 0 } = {}) {
       if (!enabled) return;
       elapsed += dt;
       if (shared.tintFollowsSun && sunColor) tint.copy(sunColor);
       else tint.copy(manualTint);
       tint.multiplyScalar(1 - shared.nightDim * Math.max(0, Math.min(1, nightness)));
+      // AFTER the night dim, deliberately: a bolt lights the cloud base itself, so it has to punch
+      // through the night rather than be scaled down by 0.85 along with the moonlight.
+      const lit = Math.max(0, Math.min(1, flash));
+      if (lit > 0) tint.lerp(flashTint, lit);
       const o = worldCoordinates ? worldCoordinates.getOrigin() : [0, 0, 0];
       for (const deck of decks) {
         if (!deck.mesh.visible) continue;

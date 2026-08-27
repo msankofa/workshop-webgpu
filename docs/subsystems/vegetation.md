@@ -76,16 +76,33 @@ Two constraints worth knowing before changing this:
   geometry and a material and leaves its storage buffers and compute pipelines to the GC, so a
   live rebuild on a slider would leak them. Buffers are sized at construction from the widest
   supported radius (`maxRadiusHeadroom`), and every panel control maps to a `set*` call.
-- **The radius is clamped to the contact window.** A 160 m square window serves a circle of
-  `80 / sqrt(2)` = 56.6 m; the default radius is 55 m. A wider grass radius needs a wider contact
-  window (`contactTilesPerSide` in `base-game-terrain.js`), not a bigger number.
+- **Height comes from two windows, by distance from the camera.** The contact window (1.25 m posts,
+  160 m, reach 70 m) close in, where a blade must sit on the mesh you can see; the placement window
+  (8 m posts, 2048 m, reach 960 m) past it, where 8 m height resolution is invisible. They cross
+  over a `grassNearFade` band centred on the camera rather than at a window edge, so the handover is
+  a fixed ring and not a moving square. A sentinel (`HEIGHT_MISSING`) keeps the blend from ever
+  reaching toward a sample that is not resident. Until 2026-08-27 grass read the contact window
+  ALONE, which is why its radius stopped at 56.6 m while the env viewer ran to 600.
+- **`safeRadiusFor` is half the extent less half a tile**, because `desiredOrigin` snaps the window
+  to whole tiles and the player can sit that far off centre. It divided by `sqrt(2)` until
+  2026-08-27, on the stated grounds of not "reaching a corner the window does not hold" — but the
+  corners of a square are its FARTHEST points, so a centred circle meets an edge long before a
+  corner. That fudge cost 13 m of radius for nothing.
 - **The density ceiling is `Kmax / cellSize^2`.** Base Game passes `grassKmax: 256` over a 2 m
   cell, so the panel's 0-60 blades/m^2 slider is honest across its whole range. The stock
   `Kmax: 64` used elsewhere caps at 16/m^2, which silently flattened three quarters of that
   slider before 2026-08-26.
+- **The buffer is budgeted, not worst-cased.** `CAP` used to be `maxInstances(maxRadius, ...)` —
+  every cell in the window full — which at radius 200 and 64 blades/m^2 is 331 MB for a field the
+  cull gradient never fills. `opts.maxInstances` caps it instead (`grassBufferMB`, default 96 MB =
+  3M blades). Over budget the field truncates at the far edge rather than clamping the sliders, and
+  `stats.truncating` says so. This is only safe because the procedural write is bounds-checked
+  against `uHardCap`; without that guard, under-sizing `CAP` would be an out-of-bounds write.
 - **`stats` reports what is in force.** `radius`/`density` are the clamped values actually
   running; `requestedRadius`/`requestedDensity` keep what the panel asked for, and `maxDensity`
-  and `dispatch` say where the ceiling is and how much work the last recull did.
+  and `dispatch` say where the ceiling is and how much work the last recull did; `expected` and
+  `truncating` say whether the sliders are asking for more blades than the buffer holds. The Plants
+  panel prints all of it in a runtime line, because both sliders used to clamp in silence.
 
 **TSL, checked against the shipped r184 build.** `grass-compute.js` is a storage-buffer material,
 so `tsl-build-check.mjs` cannot compile it — but every graph Base Game hands it can be compiled, and

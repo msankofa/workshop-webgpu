@@ -56,10 +56,24 @@ section('the radius is clamped to what the window can serve');
   flora.setEnabled(true);
   settle(terrain);
   const safe = safeRadiusFor(terrain.contactField);
-  check('a 160 m window serves a ~56 m circle', Math.abs(safe - 56.57) < 0.5, `safe ${safe.toFixed(2)}`);
+  // Half the extent less the half tile the origin snaps by: 160/2 - 20/2. No sqrt(2) — the corners
+  // of a square are its farthest points, so a centred circle meets an edge long before a corner.
+  check('a 160 m window serves a 70 m circle', Math.abs(safe - 70) < 0.01, `safe ${safe.toFixed(2)}`);
+  check('it is short of the half extent by half a tile',
+    Math.abs(safe - (terrain.contactField.extent / 2 - terrain.contactField.tileSize / 2)) < 1e-9);
   check('the default radius fits inside it', BASE_GAME_FLORA_DEFAULTS.grassRadius <= safe,
     `default ${BASE_GAME_FLORA_DEFAULTS.grassRadius} vs safe ${safe.toFixed(2)}`);
-  check('a square window never promises its corners', safe < terrain.contactField.extent / 2);
+
+  // The placement window is what carries grass past the contact window's reach.
+  const far = safeRadiusFor(terrain.fields);
+  check('the placement window reaches far further', far > 900, `far ${far.toFixed(0)}`);
+  check('and it carries a height field to plant on',
+    terrain.fields.fields.includes('heights') || terrain.fields.fields.includes('surfaceHeights'),
+    terrain.fields.fields.join(','));
+  check('so the radius ceiling is the slider, not a window',
+    BASE_GAME_FLORA_DEFAULTS.grassMaxRadius <= far, `${BASE_GAME_FLORA_DEFAULTS.grassMaxRadius} vs ${far.toFixed(0)}`);
+  check('and nothing derives the ceiling from the current radius setting',
+    !('maxRadiusHeadroom' in BASE_GAME_FLORA_DEFAULTS));
   flora.setEnabled(false);
   terrain.dispose();
 }

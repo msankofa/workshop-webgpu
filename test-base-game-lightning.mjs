@@ -226,7 +226,15 @@ function walk(config, { from = 0, to = 600, dt = 1 / 60 } = {}) {
 // ---- 9. the page wires the sun lift through the rig, not onto the light ------------------------------
 {
   const html = await (await import('fs/promises')).readFile('./base-game.html', 'utf8');
-  ok(/sunIntensity \+= lightning\.sunLift;/.test(html), 'the flash is added to the intensity the rig is then given');
+  // It used to be `sunIntensity += lightning.sunLift`, which was two bugs in one line: the lift
+  // (4 by default) is compared against a moon that caps at 0.35, so every night strike flipped
+  // ownership to the sun and repainted the sky warm, aimed from under the horizon. Now the lift is
+  // added to whichever body already owns the key light, and never decides which. See
+  // test-base-game-light-response.mjs sections 4-6.
+  ok(!/sunIntensity \+= lightning\.sunLift;/.test(html), 'the flash is not folded into sunIntensity before ownership is decided');
+  ok(/const keyLift = lightning\.sunLift;/.test(html), 'it is held separately');
+  ok(/rig\.setSunIntensity\(moonIntensity \+ keyLift\)/.test(html) && /rig\.setSunIntensity\(sunIntensity \+ keyLift\)/.test(html),
+    'and added to the intensity the rig is then given, whichever body that is');
   ok(!/dirLight\.intensity\s*[*+]=/.test(html), 'and no rig-owned light is written directly in the loop');
   ok(/lightning\.update\(dt, playerController\.waterTime/.test(html), 'lightning runs on the lockstep clock, not a local one');
 }

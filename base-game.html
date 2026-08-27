@@ -145,6 +145,7 @@ import { synthVoice } from './weapon-sfx-synth.js';
 import { createBaseGameAudioDirector } from './base-game-audio.js';
 import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor, setShotSpread, getShotSpread, createSwapState, beginSwap, swapPhase, spreadHalfAngleFor, lookDirection } from './base-game-fire.js';
 import { createReticle, reticleGapPx } from './reticle.js';
+import { createScopeOverlay, hasOpticalSight } from './scope-overlay.js';
 import { SHOT_SPREAD_DEFAULTS, SHOT_SPREAD_LIMITS, SHOT_SPREAD_PATH, normalizeShotSpread, shotSpreadFile } from './shot-spread.js';
 import { createAmmoStore } from './player-ammo.js';
 import { createEffectRenderer, bloodIntensityForHealth } from './effect-renderer.js';
@@ -207,6 +208,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassStyle: BASE_GAME_FLORA_DEFAULTS.grassStyle,
   grassVerticalOffset: BASE_GAME_FLORA_DEFAULTS.grassVerticalOffset,
   grassCoverGate: BASE_GAME_FLORA_DEFAULTS.grassCoverGate,
+  grassGroundTint: BASE_GAME_FLORA_DEFAULTS.grassGroundTint,
+  grassGroundTintFar: BASE_GAME_FLORA_DEFAULTS.grassGroundTintFar,
   waveCount: 17, waveBaseLength: 1598, waveLengthMul: 0.51, waveBaseAmp: 0.6, waveAmpMul: 0.59, waveChop: 0.51,
   waveWindDeg: 38, waveSpreadDeg: 79, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
   // Weather, phase C1: cloud decks. The master rain slider is a later phase; `weatherOvercast` is
@@ -217,6 +220,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   cloudTint: '#ffffff',
   cloudNightDim: 0.85,
   cloudOvercastTint: 0.55,
+  // A lightning flash lights the cloud base. Applied after the night dim, so a bolt reads at night.
+  cloudLightningLift: 0.9,
+  cloudFlashTint: '#e8f0ff',
   weatherOvercast: 0,
   // The weather master. Drops, wet ground and lightning are later phases; what it drives today is
   // the overcast lid, the light and the fog, each through its own response slider so a hand-set
@@ -463,7 +469,7 @@ const NUMBER_LIMITS = Object.freeze({
   holdAimDist: [0.2, 1], holdAimSide: [-0.4, 0.4], holdAimUp: [-0.6, 0.4],
   bodyTurnThreshold: [0.1, 1.5], bodyTurnRate: [1, 20], gunYawLimit: [0.2, 1.6],
   // Weather. Ranges are wider than the useful band on purpose: the ends are there to be dragged to.
-  cloudNightDim: [0, 1], cloudOvercastTint: [0, 1], weatherOvercast: [0, 1],
+  cloudNightDim: [0, 1], cloudOvercastTint: [0, 1], cloudLightningLift: [0, 4], weatherOvercast: [0, 1],
   weatherRain: [0, 1], overcastPerRain: [0, 2], sunDimPerRain: [0, 1], ambientLiftPerRain: [0, 1],
   weatherFogBase: [0, 0.02], weatherFogPerRain: [0, 0.02],
   cloudAHeight: [0, 10000], cloudAExtent: [200, 60000], cloudACover: [0, 1], cloudAPuff: [0.05, 12],
@@ -615,7 +621,7 @@ function applyWaterSettings() {
 // Flora follows the same shape: one diff against the last applied values, setters only.
 // Same shape as the water apply: a dirty check, so dragging an unrelated slider does not rebuild a
 // cloud deck (an octave change disposes and rebuilds that deck's material).
-const CLOUD_SHARED_KEYS = ['cloudsEnabled', 'cloudDepthWrite', 'cloudTintFollowsSun', 'cloudTint', 'cloudNightDim', 'cloudOvercastTint'];
+const CLOUD_SHARED_KEYS = ['cloudsEnabled', 'cloudDepthWrite', 'cloudTintFollowsSun', 'cloudTint', 'cloudNightDim', 'cloudOvercastTint', 'cloudFlashTint'];
 const CLOUD_DECK_KEYS = ['Visible', 'Height', 'Extent', 'Cover', 'Puff', 'Softness', 'Opacity', 'Fade', 'FadeFloor', 'EdgeStart', 'Speed', 'Octaves'];
 const appliedClouds = {};
 function applyCloudSettings() {
@@ -628,6 +634,7 @@ function applyCloudSettings() {
       tint: settings.cloudTint,
       nightDim: settings.cloudNightDim,
       overcastTint: settings.cloudOvercastTint,
+      flashTint: settings.cloudFlashTint,
     });
     clouds.setEnabled(settings.cloudsEnabled);
   }
@@ -1151,6 +1158,9 @@ const localCombatPose = createPlayerBodyPose();
 // The reticle marks where the ROUND goes, not where the camera points: in third person those are
 // metres apart. See reticle.js.
 const reticle = createReticle({ document });
+// The optical sight picture. The FOV zoom and eye dolly that go with it are in
+// applyFirstPersonOptics; this is the black surround that makes a scope read as one.
+const scopeOverlay = createScopeOverlay({ document });
 const _reticleRay = [0, 0, 0];
 const _reticlePoint = new THREE.Vector3();
 let reticleTick = 0;   // the tick the spread cone is asked about; the trigger's own clock
@@ -1508,6 +1518,8 @@ function updateReticle(canControl) {
   _reticlePoint.set(local[0], local[1], local[2]).project(camera);
   // Behind the camera the projection mirrors; there is nothing honest to draw, so draw nothing.
   if (!Number.isFinite(_reticlePoint.x) || _reticlePoint.z > 1) { reticle.setVisible(false); return; }
+  // A crosshair over a telescopic sight is two reticles arguing. The scope owns the picture.
+  if (scopeOverlay.visible) { reticle.setVisible(false); return; }
   const half = settings.reticleSpread ? spreadHalfAngleFor(localTrigger, { weaponId, tick: reticleTick, moveSpeed01: localMoveSpeed01() }) : 0;
   const weapon = weaponId ? getWeapon(weaponId) : null;
   const usesAmmo = weapon && (weapon.mode || 'hitscan') !== 'melee';
@@ -1602,6 +1614,9 @@ function applyFirstPersonOptics() {
         camera.getWorldDirection(fpAimFwd);
         camera.position.addScaledVector(fpAimFwd, def.aimEyeForward * fpState.aimAmount);
       }
+      scopeOverlay.update(fpState.aimAmount, def, renderer.domElement.clientHeight);
+    } else {
+      scopeOverlay.update(0, null, 0);   // third person and the menus never show a sight picture
     }
     if (Math.abs(camera.fov - wantFov) > 0.01) { camera.fov = wantFov; camera.updateProjectionMatrix(); }
   }
@@ -1784,7 +1799,6 @@ rig.dirLight.shadow.camera.top = 90;
 rig.dirLight.shadow.camera.bottom = -90;
 
 const TOD_MOON_LIGHT = '#aec6ff';
-let _moonOwnedShadow = false;
 const moonLight = new THREE.DirectionalLight(0xaec6ff, 0);
 moonLight.castShadow = false;   // never flips: see the shadow-ownership note in updateWorld
 moonLight.shadow.mapSize.set(2048, 2048);
@@ -1798,7 +1812,9 @@ scene.add(moonLight, moonLight.target);
 
 const _sunDir = new THREE.Vector3();
 const _moonDir = new THREE.Vector3();
-let _lastSunColorT = -1;
+// The key light's colour is blended from both bodies every frame; these memoise the last hex blend
+// so the string lerp only runs when one of the two inputs has moved by a visible step.
+let _lastSunColorT = -1, _lastMoonShare = -1, _sunWarmth = 1;
 function dirFromAzEl(elevationDeg, azimuthDeg, out) {
   const a = azimuthDeg * Math.PI / 180;
   const e = elevationDeg * Math.PI / 180;
@@ -1839,7 +1855,8 @@ terrain.setSplatWater(water.groundShade);
 const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, settings });
 flora.onMesh(mesh => { if (mesh && !reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh); });
 const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRadius', 'grassBladeHeight',
-  'grassBladeWidth', 'grassWind', 'grassStyle', 'grassVerticalOffset', 'grassCoverGate'];
+  'grassBladeWidth', 'grassWind', 'grassStyle', 'grassVerticalOffset', 'grassCoverGate',
+  'grassGroundTint', 'grassGroundTintFar'];
 const appliedFlora = {};
 let floraLoading = false;
 function applyFloraSettings() {
@@ -1858,6 +1875,8 @@ function applyFloraSettings() {
     grassStyle: settings.grassStyle,
     grassVerticalOffset: settings.grassVerticalOffset,
     grassCoverGate: settings.grassCoverGate,
+    grassGroundTint: settings.grassGroundTint,
+    grassGroundTintFar: settings.grassGroundTintFar,
   });
 }
 // water-config.json (authored in demos/water-demo.html) is the look on load: adopt its foam and
@@ -2127,12 +2146,9 @@ function updateWorld(dt) {
     );
 
     sunIntensity = settings.sunIntensity * smoothstep(-2, 8, sun.elevationDeg);
-    // Only re-blend the hex string when the twilight factor moves by a visible step.
-    const sunColorT = Math.round(smoothstep(0, 12, sun.elevationDeg) * 1000) / 1000;
-    if (sunColorT !== _lastSunColorT && !_moonOwnedShadow) {
-      _lastSunColorT = sunColorT;
-      rig.setSunColor(lerpHex(TOD_SUN_WARM, TOD_SUN_NEUTRAL, sunColorT));
-    }
+    // How warm the sun itself is, 0 at the horizon to 1 high up. The colour is not written here:
+    // it is blended with the moon's below, once both intensities are known.
+    _sunWarmth = Math.round(smoothstep(0, 12, sun.elevationDeg) * 1000) / 1000;
     ambientBase = settings.ambientLightEnabled
       ? TOD_AMBIENT_NIGHT + (settings.ambientIntensity - TOD_AMBIENT_NIGHT) * (1 - sky.nightness)
       : 0;
@@ -2143,8 +2159,7 @@ function updateWorld(dt) {
     moonDir = _moonDir.copy(sunDir);
     rig.setElevation(settings.sunElevation);
     rig.setAzimuth(settings.sunAzimuth);
-    rig.setSunColor(TOD_SUN_NEUTRAL);
-    _lastSunColorT = -1;
+    _sunWarmth = 1;
     ambientBase = settings.ambientLightEnabled ? settings.ambientIntensity : 0;
     rig.setAmbientIntensity(ambientBase);
     sky.setCelestialOpacityMode(false);
@@ -2172,9 +2187,11 @@ function updateWorld(dt) {
   const weatherDim = 1 - settings.sunDimPerRain * settings.weatherRain;
   sunIntensity *= weatherDim;
   moonIntensity *= weatherDim;
-  // A bolt briefly lights the whole sky. Added to the value that then goes THROUGH the rig, for the
-  // same reason the ambient lift is an assignment: never write a rig-owned light from the loop.
-  sunIntensity += lightning.sunLift;
+  // A bolt briefly lights the whole sky. Kept OUT of sunIntensity: it used to be added here, and
+  // since it is 4 by default against a moon that caps at 0.35, every night strike flipped the
+  // ownership test below and repainted the clouds with warm sunlight aimed from under the horizon.
+  // It is added to whichever body owns the key light instead, and never decides which that is.
+  const keyLift = lightning.sunLift;
   rig.ambLight.intensity = ambientBase * (1 + settings.ambientLiftPerRain * settings.weatherRain);
 
   // Only one directional shadow map per frame, and it is ALWAYS rig.dirLight: three r184 disposes
@@ -2183,14 +2200,24 @@ function updateWorld(dt) {
   // runtime; when the moon owns the night, rig.dirLight becomes the moon (direction, colour,
   // intensity) and moonLight, which never casts, goes dark.
   const moonOwnsShadow = moonIntensity > sunIntensity;
-  if (moonOwnsShadow !== _moonOwnedShadow) { _moonOwnedShadow = moonOwnsShadow; _lastSunColorT = -1; }
+  // Direction is a switch because the shadow map is, but COLOUR has no such constraint, and
+  // switching it at the same instant is what made dusk snap from #ffb066 to #aec6ff in one frame.
+  // Blending by each body's share of the light crosses over smoothly instead, and the clouds --
+  // which take this very colour -- cross with it.
+  const keyTotal = sunIntensity + moonIntensity;
+  const moonShareRaw = keyTotal > 0 ? moonIntensity / keyTotal : (moonOwnsShadow ? 1 : 0);
+  const moonShare = Math.round(moonShareRaw * 1000) / 1000;
+  if (moonShare !== _lastMoonShare || _sunWarmth !== _lastSunColorT) {
+    _lastMoonShare = moonShare;
+    _lastSunColorT = _sunWarmth;
+    rig.setSunColor(lerpHex(lerpHex(TOD_SUN_WARM, TOD_SUN_NEUTRAL, _sunWarmth), TOD_MOON_LIGHT, moonShare));
+  }
   if (moonOwnsShadow) {
-    rig.setSunIntensity(moonIntensity);
-    rig.setSunColor(TOD_MOON_LIGHT);
+    rig.setSunIntensity(moonIntensity + keyLift);
     aimLight(rig.dirLight, moonDir);
     moonLight.intensity = 0;
   } else {
-    rig.setSunIntensity(sunIntensity);
+    rig.setSunIntensity(sunIntensity + keyLift);
     aimLight(rig.dirLight, sunDir);
     moonLight.intensity = moonIntensity;
   }
@@ -2200,7 +2227,14 @@ function updateWorld(dt) {
   // colour the player is actually looking at.
   applyAtmosphereSettings();
   // Clouds take the key light's own colour, so dusk reddens them and night leaves them a silhouette.
-  clouds.update(dt, camera, { sunColor: rig.dirLight.color, nightness: sky.nightness });
+  // The same 0..1 flash the drops brighten on, so bolt, drops and cloud base fade together. Before
+  // this the flash reached the clouds only as an accident of the ownership test above: the tint is
+  // a colour and no intensity has ever entered it, so a strike could not brighten a cloud at all.
+  clouds.update(dt, camera, {
+    sunColor: rig.dirLight.color,
+    nightness: sky.nightness,
+    flash: rain.uniforms.uLightning.value * settings.cloudLightningLift,
+  });
 }
 
 // --------------------- controls ---------------------
@@ -2809,6 +2843,24 @@ addSelect(plantsSec, 'grassStyle', 'Blade style', ['streaks', 'dryTip', 'mottle'
   ['Streaks', 'Dry tips', 'Mottled', 'Veined', 'High contrast']);
 addRange(plantsSec, 'grassVerticalOffset', 'Vertical bias (m)', -0.5, 0.5, 0.01, value => `${value.toFixed(2)} m`);
 addRange(plantsSec, 'grassCoverGate', 'Follow biome cover', 0, 1, 0.05, value => value.toFixed(2));
+addRange(plantsSec, 'grassGroundTint', 'Ground tint at the root', 0, 1, 0.05, value => value.toFixed(2));
+addRange(plantsSec, 'grassGroundTintFar', 'Ground tint at the draw edge', 0, 1, 0.05, value => value.toFixed(2));
+// What the sliders actually bought. Both of them used to clamp in silence.
+const grassRuntimeLine = document.createElement('div');
+grassRuntimeLine.className = 'note';
+plantsSec.append(grassRuntimeLine);
+function refreshGrassRuntimeLine() {
+  const g = flora.stats;
+  if (!g.enabled) { grassRuntimeLine.textContent = 'Grass off.'; return; }
+  if (!g.built) { grassRuntimeLine.textContent = 'Grass waiting on the terrain field.'; return; }
+  const clamped = g.requestedRadius > g.radius ? ` (asked ${g.requestedRadius.toFixed(0)})` : '';
+  const over = g.truncating
+    ? ` Buffer holds ${(g.capacity / 1e6).toFixed(1)}M, so the far edge is truncated.`
+    : '';
+  grassRuntimeLine.textContent = `${g.radius.toFixed(0)} m${clamped} at ${g.density} blades/m^2 (max ${g.maxDensity}): `
+    + `~${(g.expected / 1e3).toFixed(0)}k blades, ${(g.dispatch / 1e3).toFixed(0)}k threads a recull, `
+    + `field ${(g.coverage * 100).toFixed(0)}% streamed.${over}`;
+}
 
 // ---- Weather: clouds (phase C1; rain, lightning and the shared master land in later phases) ----
 // The master. It multiplies through the response sliders below rather than writing them, so a
@@ -2908,7 +2960,7 @@ addRange(lightningSec, 'lightningDistMax', 'Farthest strike', 50, 40000, 50,
 addRange(lightningSec, 'lightningFlash', 'Flash strength', 0, 8, 0.05, f2);
 addRange(lightningSec, 'lightningDecay', 'Flash decay', 0.2, 20, 0.1, f2);
 addRange(lightningSec, 'lightningBoltScale', 'Bolt thickness', 0.1, 8, 0.05, f2);
-addRange(lightningSec, 'lightningSunLift', 'Sun lift on a flash', 0, 10, 0.1, f2);
+addRange(lightningSec, 'lightningSunLift', 'Key-light lift on a flash', 0, 10, 0.1, f2);
 // Fires the next scheduled strike now rather than an unscheduled one, so it is the real thing.
 addAction(lightningSec, 'Strike now', () => {
   lightning.strike(lightning.stats.lastIndex + 1, camera.position, {
@@ -2956,6 +3008,9 @@ addToggle(cloudSharedSec, 'cloudTintFollowsSun', 'Tint follows the sun');
 addColor(cloudSharedSec, 'cloudTint', 'Manual tint');
 addRange(cloudSharedSec, 'cloudNightDim', 'Night darkening', 0, 1, 0.01, f2);
 addRange(cloudSharedSec, 'cloudOvercastTint', 'Overcast grey', 0, 1, 0.01, f2);
+addRange(cloudSharedSec, 'cloudLightningLift', 'Lightning lift', 0, 4, 0.01,
+  value => (value > 0 ? value.toFixed(2) : 'bolts do not light the clouds'));
+addColor(cloudSharedSec, 'cloudFlashTint', 'Lightning tint');
 addToggle(cloudSharedSec, 'cloudDepthWrite', 'Cloud depth write');
 addAction(cloudSharedSec, 'Copy deck A to deck B', () => {
   for (const suffix of CLOUD_DECK_KEYS) settings[`cloudB${suffix}`] = settings[`cloudA${suffix}`];
@@ -3940,7 +3995,7 @@ async function animate() {
       water.update(dt, camera.position, playerController.waterTime + playerInterpolationAlpha * playerFixedDt);
       if (water.underwater !== underwaterAudio) { underwaterAudio = water.underwater; envAudio.setUnderwater?.(underwaterAudio); }
     });
-    if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
+    if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) { refreshTerrainRuntimeLine(); refreshGrassRuntimeLine(); }
     frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); });
     // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
     await frameProfiler.timeAsync('grassGpu', () => flora.update(frameStart / 1000));

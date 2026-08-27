@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import { MeshNormalNodeMaterial } from 'three/webgpu';
+import { Fn, float, vec3, mix as tslMix, clamp as tslClamp, select } from 'three/tsl';
 import { createTerrainSystem } from './terrain-system.js';
 import { createSource } from './terrain-source.js';
 import { createHeightfieldWorldQueryProvider } from './world-query-heightfield-provider.js';
@@ -64,6 +65,50 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
     { chunkSize: 480, renderRadius: 2, segments: 24, yBias: 0 },
     { chunkSize: 1920, renderRadius: 2, segments: 24, yBias: 0 },
   ],
+});
+
+// Ground colour. These are LINEAR values: they are written straight into a vertex-colour
+// attribute, which three treats as already in working space.
+export const TERRAIN_TINT = Object.freeze({
+  water: [0.16, 0.32, 0.42], sand: [0.72, 0.66, 0.46], grass: [0.30, 0.48, 0.22],
+  dry: [0.46, 0.44, 0.28], rock: [0.42, 0.40, 0.38], snow: [0.92, 0.93, 0.95],
+});
+
+// Band edges, shared by both forms below so a change cannot land in one and not the other.
+export const TERRAIN_TINT_BANDS = Object.freeze({
+  shoreSpan: 6, sandTop: 2, dryStart: 20, drySpan: 40, snowStart: 60, snowSpan: 40,
+  rockNormalY: 0.82, rockSpan: 0.25,
+});
+
+// CPU form: one vertex's ground colour, written into `out` at `o`. colorizeGeometry is just this
+// over every vertex; the GPU twin below is the same bands in TSL.
+export function terrainTintAt(yAboveSea, normalY, out = [0, 0, 0], o = 0) {
+  const T = TERRAIN_TINT, B = TERRAIN_TINT_BANDS;
+  const cl = v => (v < 0 ? 0 : v > 1 ? 1 : v);
+  const lerp = (a, b, t) => { for (let i = 0; i < 3; i++) out[o + i] = a[i] + (b[i] - a[i]) * t; };
+  const y = yAboveSea;
+  if (y < 0) lerp(T.water, T.sand, cl(1 + y / B.shoreSpan));
+  else if (y < B.sandTop) lerp(T.sand, T.grass, cl(y / B.sandTop));
+  else if (y < B.snowStart) lerp(T.grass, T.dry, cl((y - B.dryStart) / B.drySpan));
+  else lerp(T.dry, T.snow, cl((y - B.snowStart) / B.snowSpan));
+  const rock = cl((B.rockNormalY - normalY) / B.rockSpan);
+  for (let i = 0; i < 3; i++) out[o + i] += (T.rock[i] - out[o + i]) * rock;
+  return out;
+}
+
+// GPU twin of terrainTintAt. Anything planted ON the terrain (grass
+// today) tints toward this so it reads as the same ground. The two must stay in step: they are
+// adjacent on purpose, and test-base-game-terrain checks them against each other.
+export const terrainTintNode = /*@__PURE__*/ Fn(([yAboveSea, normalY]) => {
+  const T = TERRAIN_TINT, B = TERRAIN_TINT_BANDS;
+  const c = v => vec3(v[0], v[1], v[2]);
+  const y = yAboveSea;
+  const band = select(y.lessThan(0), tslMix(c(T.water), c(T.sand), tslClamp(float(1).add(y.div(B.shoreSpan)), 0, 1)),
+    select(y.lessThan(B.sandTop), tslMix(c(T.sand), c(T.grass), tslClamp(y.div(B.sandTop), 0, 1)),
+      select(y.lessThan(B.snowStart), tslMix(c(T.grass), c(T.dry), tslClamp(y.sub(B.dryStart).div(B.drySpan), 0, 1)),
+        tslMix(c(T.dry), c(T.snow), tslClamp(y.sub(B.snowStart).div(B.snowSpan), 0, 1)))));
+  const rock = tslClamp(float(B.rockNormalY).sub(normalY).div(B.rockSpan), 0, 1);
+  return tslMix(band, c(T.rock), rock);
 });
 
 export function createBaseGameTerrain({
@@ -277,7 +322,6 @@ export function createBaseGameTerrain({
   // steep faces, snow up high). Biome/material masks from v5 are not streamed yet.
   system.material.vertexColors = true;
   system.material.color.set(0xffffff);
-  const TINT = { water: [0.16, 0.32, 0.42], sand: [0.72, 0.66, 0.46], grass: [0.30, 0.48, 0.22], dry: [0.46, 0.44, 0.28], rock: [0.42, 0.40, 0.38], snow: [0.92, 0.93, 0.95] };
   const mixInto = (out, o, a, b, t) => { out[o] = a[0] + (b[0] - a[0]) * t; out[o + 1] = a[1] + (b[1] - a[1]) * t; out[o + 2] = a[2] + (b[2] - a[2]) * t; };
   const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
   // Ground height around the player for water (terrain-sea-depth.js): streams only while active.
@@ -294,8 +338,10 @@ export function createBaseGameTerrain({
   // Cover is derived per texel as each tile lands, from the biome, the moisture and the very
   // splat weights the ground is textured with (flora-field.js). One number per layer per texel.
   const tileCover = createTileCover({ seaLevel: system.source?.descriptor?.seaLevel ?? 0, biomeNames: BIOMES });
+  // Height rides along: grass past the contact window's reach plants on this instead, and 8 m
+  // posts over 2 km cost one float per texel against a window that is already streaming.
   function placementFields() {
-    return volumetricMode ? ['surfaceHeights', 'biomeIds', 'moisture'] : ['biomeIds', 'moisture'];
+    return volumetricMode ? ['surfaceHeights', 'biomeIds', 'moisture'] : ['heights', 'biomeIds', 'moisture'];
   }
   function fieldKey() {
     return `placement:${cfg.fieldPost}:${placementFields().join(',')}`;
@@ -414,21 +460,14 @@ export function createBaseGameTerrain({
   let residencyRevision = 0;
   // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
   let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
+  const TINT = TERRAIN_TINT;
   function colorizeGeometry(geo, force = false) {
     if (geo.getAttribute('color') && !force) return;
     const pos = geo.getAttribute('position'), nrm = geo.getAttribute('normal');
     const colors = new Float32Array(pos.count * 3);
     const c = [0, 0, 0];
     for (let i = 0; i < pos.count; i++) {
-      const y = pos.getY(i) - seaLevel, ny = nrm ? nrm.getY(i) : 1;
-      if (y < 0) mixInto(c, 0, TINT.water, TINT.sand, clamp01(1 + y / 6));
-      else if (y < 2) mixInto(c, 0, TINT.sand, TINT.grass, clamp01(y / 2));
-      else if (y < 60) mixInto(c, 0, TINT.grass, TINT.dry, clamp01((y - 20) / 40));
-      else mixInto(c, 0, TINT.dry, TINT.snow, clamp01((y - 60) / 40));
-      const rock = clamp01((0.82 - ny) / 0.25);   // steeper than ~35 degrees fades to rock
-      colors[i * 3] = c[0] + (TINT.rock[0] - c[0]) * rock;
-      colors[i * 3 + 1] = c[1] + (TINT.rock[1] - c[1]) * rock;
-      colors[i * 3 + 2] = c[2] + (TINT.rock[2] - c[2]) * rock;
+      terrainTintAt(pos.getY(i) - seaLevel, nrm ? nrm.getY(i) : 1, colors, i * 3);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   }
