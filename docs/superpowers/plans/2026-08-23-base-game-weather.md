@@ -252,6 +252,19 @@ metres from the drawn rock. Four things fix it, in order of value per unit of wo
 Items 1 and 3 are a few lines each inside `rain.js` and should land with R1. Item 2 is a new streamed
 window and can follow as its own step once there is something on screen to judge it against.
 
+**Item 2 shipped 2026-08-27, and it needed no new window.** The terrain already owns one at exactly
+these numbers — the contact field grass plants on: lod 0, `post: 1.25`, `tileIntervals: 16`,
+`tilesPerSide: 8`, a 160 m window. `gpuSampler(field)` returns its fallback outside, so the handover
+is the one line the plan predicted, `mix(coarse, fine(global, coarse), uUseFine)`.
+
+It also turned out to be the fix for a bug the plan did not anticipate. Item 4 above says a
+heightfield cannot see an overhang and scopes that out; what was missed is that under volumetric
+terrain the sea-depth window is not merely coarse, it is **the wrong surface**. It carries `heights`,
+the base heightfield, while the marching-cubes ground being drawn is `surfaceHeights`. Terrain and
+grass both switch field in volumetric mode; rain did not, so it tracked volumetric ground not
+approximately but not at all. The contact field carries the right one, so reading it fixes both the
+resolution and the surface. See `base-game.md` §The rain ground hook is two windows.
+
 **Shipped 2026-08-24 (R1 and R1b items 1 and 3), with these notes.**
 
 - The conservative sample went into `terrain-sea-depth.js` rather than into rain: `gpuHeightAt(xz,

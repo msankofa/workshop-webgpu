@@ -380,6 +380,13 @@ for (const marker of [
   'stance: stanceIndex(playerStance)',
   'stanceWeights: playerController.stanceWeights,',
   'posture ${playerStance}',
+  // Aim optics: first person zooms by the weapon's own magnification, third person by a capped share
+  // of it (a sniper's 8x in third person would frame the inside of your own shoulder).
+  'function applyAimOptics(',
+  'tpAimMagnification: 1.6,',
+  'settings.tpAimMagnification)',
+  'magnifiedFov(settings.cameraFov, mag)',
+  'magnifiedFov(settings.fpFov, mag)',
   // Per-mode framing: the sliders edit one set, the frame feeds the set the live mode owns.
   "cameraOffsetTarget: 'thirdPerson'",
   'fpCameraSideOffset',

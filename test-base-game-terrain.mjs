@@ -5,7 +5,7 @@ import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createBaseGamePlayerController } from './base-game-player-controller.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
-import { createBaseGameTerrain } from './base-game-terrain.js';
+import { createBaseGameTerrain, terrainTintAt, TERRAIN_TINT, TERRAIN_TINT_BANDS } from './base-game-terrain.js';
 
 let failures = 0;
 const ok = (cond, msg) => { console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${msg}`); if (!cond) failures++; };
@@ -239,6 +239,26 @@ console.log('[8] the fold-in budget');
   ok(t2.stats.batches.chunks === t2.stats.residentTiles, 'unlimited budget reaches the same end state');
   ok(t2.stats.foldPending === false, 'unlimited budget never reports a backlog');
   t.dispose(); t2.dispose();
+}
+
+// Section: ground tint. Grass reads the same bands so it can pass for the ground it stands on,
+// which only works while the CPU form here and the TSL twin beside it agree.
+{
+  console.log('');
+  console.log('ground tint');
+  const T = TERRAIN_TINT;
+  ok(terrainTintAt(10, 1).every((v, i) => near(v, T.grass[i])), 'mid altitude on the flat is the grass tint');
+  ok(terrainTintAt(1000, 1).every((v, i) => near(v, T.snow[i])), 'high ground saturates to snow');
+  ok(terrainTintAt(-100, 1).every((v, i) => near(v, T.water[i])), 'deep water saturates to the water tint');
+  ok(terrainTintAt(10, 0).every((v, i) => near(v, T.rock[i])), 'a vertical face is all rock whatever the height');
+  const flat = terrainTintAt(10, 1), steep = terrainTintAt(10, 0.6);
+  ok(steep.some((v, i) => Math.abs(v - flat[i]) > 0.01), 'slope moves the colour away from the flat one');
+  const buf = [9, 9, 9, 0, 0, 0];
+  terrainTintAt(10, 1, buf, 3);
+  ok(buf[0] === 9 && near(buf[3], T.grass[0]), 'it writes at the offset and leaves the rest alone');
+  ok(TERRAIN_TINT_BANDS.snowStart === 60 && TERRAIN_TINT_BANDS.rockNormalY === 0.82,
+    'band edges are shared constants, not literals in two places');
+  ok(Object.isFrozen(TERRAIN_TINT) && Object.isFrozen(TERRAIN_TINT_BANDS), 'and they are frozen');
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);

@@ -1133,6 +1133,12 @@ profile in uv.
   up-facing surface (`smoothstep(0.6, 0.9, normal.y)`); side faces instead get a darker, glossier
   film with run-off streaks sliding down them (one `mx_noise_float` tap on `x+z` vs `y − t`,
   `streaks: false` removes them), so the same call dresses floors, roofs, walls and cover.
+- **Base Game's ground hook is not rain.js's (2026-08-27).** `groundHeight`/`groundSlope` are
+  injected, and Base Game injects a pair of streamed clipmap windows rather than one: the terrain's
+  1.25 m contact field (carrying `surfaceHeights` under volumetric terrain — the visible
+  marching-cubes surface) with the 16 m sea-depth window as the fallback past its 160 m reach. The
+  donor pages inject an analytic height or nothing at all, which is right for them. See
+  `base-game.md` §The rain ground hook is two windows.
 - **Base Game's storms (2026-08-24)** wrap `createLightningBolt`, `createRainBed` and `playThunder`
   in `base-game-lightning.js` and `base-game-audio.js`. The schedule there is derived from a shared
   seed rather than `Math.random()`, so every client strikes together with nothing sent over the wire

@@ -260,7 +260,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   rainSplashEnabled: true, rainMaxSplashes: 5000,
   rainSplashRadius: 20, rainSplashSize: 0.22, rainSplashRate: 1.6,
   rainSplashSlopeMax: 38, rainSplashSlopeFade: 12, rainSplashOrient: true, rainSplashMaxAgl: 160,
-  rainGroundSource: 'coarse',
+  rainGroundSource: 'fine',
   rainGroundConservative: true,
   rainUnderwaterOff: true,
   // Wet surfaces (phase R2). Wetness lags the master: ground darkens as the rain arrives and dries
@@ -319,6 +319,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponMelee: BASE_GAME_DEFAULT_LOADOUT.melee,
   weaponThrowable: BASE_GAME_DEFAULT_LOADOUT.throwable,
   unlimitedAmmo: false,
+  // How much of a weapon's magnification third-person aiming is allowed to use. 1 disables the
+  // third-person zoom entirely; the full 8x of a sniper would frame the inside of your own shoulder.
+  tpAimMagnification: 1.6,
   reticleEnabled: true,
   reticleSpread: true,
   weaponHoldHeight: 0,
@@ -451,6 +454,7 @@ const NUMBER_LIMITS = Object.freeze({
   cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
   cameraSideOffset: [-1.5, 1.5], cameraHeightOffset: [-1, 1.5], cameraForwardOffset: [-1.5, 1.5], cameraFov: [30, 100], fpFov: [30, 110],
   fpCameraSideOffset: [-1.5, 1.5], fpCameraHeightOffset: [-1, 1.5], fpCameraForwardOffset: [-1.5, 1.5],
+  tpAimMagnification: [1, 8],
   dofFocusDistance: [0.3, 80], dofAperture: [0.05, 3], dofMaxRadius: [2, 40], dofFarScale: [0.5, 4],
   interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
@@ -497,7 +501,7 @@ const NUMBER_LIMITS = Object.freeze({
 });
 const STRING_VALUES = Object.freeze({
   weatherFogSource: ['sky', 'custom'],
-  rainGroundSource: ['coarse', 'off'],
+  rainGroundSource: ['fine', 'coarse', 'off'],
   primaryBody: ['sun', 'moon'],
   worldMode: ['empty', 'traversalLab', 'terrain'],
   rainOccluders: ['off', 'lab', 'on'],
@@ -1159,7 +1163,7 @@ const localCombatPose = createPlayerBodyPose();
 // metres apart. See reticle.js.
 const reticle = createReticle({ document });
 // The optical sight picture. The FOV zoom and eye dolly that go with it are in
-// applyFirstPersonOptics; this is the black surround that makes a scope read as one.
+// applyAimOptics; this is the black surround that makes a scope read as one.
 const scopeOverlay = createScopeOverlay({ document });
 const _reticleRay = [0, 0, 0];
 const _reticlePoint = new THREE.Vector3();
@@ -1600,15 +1604,28 @@ const fpState = { viewBlend: 0, masked: false, eye: [0, 0, 0], hasEye: false, ai
 const fpViewPos = new THREE.Vector3(), fpViewQuat = new THREE.Quaternion(), fpViewEuler = new THREE.Euler(), fpLocalMatrix = new THREE.Matrix4(), fpWorldMatrix = new THREE.Matrix4(), fpScale = new THREE.Vector3();
 const fpViewFrame = { position: fpViewPos, quaternion: fpViewQuat };
 const fpAimFwd = new THREE.Vector3();
-function applyFirstPersonOptics() {
+// The magnified FOV for a base FOV and a magnification, which is what "zoom" means: the same scene
+// through a narrower cone.
+const magnifiedFov = (baseFov, magnification) =>
+  2 * Math.atan(Math.tan(baseFov * Math.PI / 360) / Math.max(1, magnification)) * 180 / Math.PI;
+
+function applyAimOptics() {
   if (settings.playerControlMode === 'player') {
-    // environment-viewer's first-person optics: base FOV 70, ADS zoom by the weapon's magnification,
-    // and the eye pushed forward by aimEyeForward while aiming. Third person keeps its own FOV.
+    // environment-viewer's first-person optics: base FOV, ADS zoom by the weapon's magnification,
+    // and the eye pushed forward by aimEyeForward while aiming.
     let wantFov = settings.cameraFov;
+    if (settings.playerViewMode !== 'firstPerson') {
+      // Third person zooms too, but not by the weapon's full magnification: a sniper's 8x would put
+      // the camera somewhere inside the player's shoulder blades. The cap is what you actually get.
+      const def = getWeapon(localWeaponId());
+      const mag = Math.min(Math.max(1, def?.magnification ?? 1), settings.tpAimMagnification);
+      const zoomFov = magnifiedFov(settings.cameraFov, mag);
+      wantFov = settings.cameraFov + (zoomFov - settings.cameraFov) * fpState.aimAmount;
+    }
     if (settings.playerViewMode === 'firstPerson') {
       const def = getWeapon(localWeaponId());
       const mag = Math.max(1, def?.magnification ?? 1);
-      const zoomFov = 2 * Math.atan(Math.tan(settings.fpFov * Math.PI / 360) / mag) * 180 / Math.PI;
+      const zoomFov = magnifiedFov(settings.fpFov, mag);
       wantFov = settings.fpFov + (zoomFov - settings.fpFov) * fpState.aimAmount;
       if (fpState.aimAmount > 0.001 && (def?.aimEyeForward ?? 0) !== 0) {
         camera.getWorldDirection(fpAimFwd);
@@ -2680,6 +2697,8 @@ addRange(playerSec, 'cameraDistance', 'Third-person distance', 1, 12, 0.25, valu
 addRange(playerSec, 'cameraFollowRate', 'Camera damping rate', 1, 40, 1, value => `${value.toFixed(0)} /s`);
 addRange(playerSec, 'cameraSensitivity', 'Mouse sensitivity', 0.0005, 0.01, 0.0005, value => value.toFixed(4));
 addRange(playerSec, 'cameraObstructionPadding', 'Camera wall padding', 0.05, 0.8, 0.01, value => `${value.toFixed(2)} m`);
+addRange(playerSec, 'tpAimMagnification', 'Third-person aim zoom (max magnification)', 1, 8, 0.05, value => value <= 1.001 ? 'off' : `${value.toFixed(2)}x`).title =
+  "Aiming in third person narrows the FOV by the weapon's own magnification, capped here. 1 turns it off.";
 addSelect(playerSec, 'cameraOffsetTarget', 'Camera offsets apply to', ['thirdPerson', 'firstPerson'], ['Third person', 'First person']);
 const cameraOffsetNote = document.createElement('div'); cameraOffsetNote.className = 'note';
 cameraOffsetNote.textContent = 'Each view keeps its own three offsets; the dropdown picks which set these sliders edit. They used to be one shared set, so an over-the-shoulder third-person framing moved your first-person eye out of your head by the same amount.';
@@ -2924,8 +2943,12 @@ addRange(rainSplashSec, 'rainSplashMaxAgl', 'Hide rings above this height', 0, 2
 // The ground rain lands on is the 16 m sea-depth window, so on a cliff it is band-limited at 16 m.
 // Conservative sampling takes the lowest of the four surrounding posts: the depth buffer hides a
 // height read too low, while one read too high shows as rain cut off in mid air.
-addSelect(rainGroundSec, 'rainGroundSource', 'Ground source', ['coarse', 'off'],
-  ['Sea-depth window (16 m posts)', 'Flat (the lab floor height, no window)']);
+//
+// 'coarse' is kept because it is what shipped, and switching between the two is the fastest way to
+// see the bug it caused: the sea-depth window carries only the base heightfield, so under
+// volumetric terrain it cuts drops on a surface that is not the one being drawn.
+addSelect(rainGroundSec, 'rainGroundSource', 'Ground source', ['fine', 'coarse', 'off'],
+  ['Contact field, sea-depth beyond it', 'Sea-depth window only (16 m posts)', 'Flat (the lab floor height, no window)']);
 addToggle(rainGroundSec, 'rainGroundConservative', 'Conservative (lowest of four posts)');
 
 addToggle(rainWetSec, 'rainWetEnabled', 'Wet surfaces');
@@ -3863,7 +3886,7 @@ async function animate() {
         eyeAnchorY: firstPersonEye ? fpState.eye[1] : null,
         comfortRateY: comfortOn ? comfort.y : 0,
       });
-      applyFirstPersonOptics();   // FOV/zoom/eye push before the gun frame reads the camera
+      applyAimOptics();   // FOV/zoom/eye push before the gun frame reads the camera
     } else {
       if (settings.playerControlMode === 'orbit') controls.update();
       playerView.syncCapsule(playerRenderPosition, {

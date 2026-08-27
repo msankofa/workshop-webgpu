@@ -5,6 +5,7 @@
 // Nothing here needs a GPU. The rain system builds real materials and geometry; only the compile
 // is stubbed (tsl-build-check.mjs).
 import * as THREE from 'three';
+import { Fn, float, ivec2, textureLoad } from 'three/tsl';
 import { createBaseGameRain, rainResponse, BASE_GAME_RAIN_DEFAULTS } from './base-game-rain.js';
 import { slopeCos, createRainSystem, RAIN_DEFAULTS } from './rain.js';
 import { createSeaDepthMap } from './terrain-sea-depth.js';
@@ -509,6 +510,89 @@ const rain = createBaseGameRain({ scene, terrain, worldCoordinates, maxDrops: 20
   ok(/terrain\.residencyRevision !== rainOccResidency/.test(fn),
     'in terrain mode the bake is redone when the resident chunk set changes');
   ok(/rain\.occludersStale/.test(fn), 'and when the player walks out of the middle half of the window');
+}
+
+
+// ---- 17. the ground hook under VOLUMETRIC terrain ----------------------------------------------
+// The reported bug: rain did not track volumetric ground at all. The sea-depth window carries only
+// `heights` -- the base heightfield -- while the marching-cubes surface a player sees and walks on
+// is `surfaceHeights`. Terrain and grass both switch fields in volumetric mode; rain did not, so it
+// cut drops on a surface that is not the one being drawn. The fix is to read the terrain's own
+// contact field (lod 0, 1.25 m posts) first and fall back to the sea-depth window past its reach.
+{
+  const asked = [];
+  let live = 0;
+  function fakeContact(fields, post) {
+    const tex = new THREE.DataTexture(new Float32Array(4 * 4), 4, 4, THREE.RedFormat, THREE.FloatType);
+    live++;
+    return {
+      fields, post, extent: post * 4, coverage: 1,
+      gpuSampler(name) {
+        asked.push(name);
+        // Shaped like the real one: (xz, fallback) -> height, fallback outside the window.
+        return Fn(([xz, fallback = float(-1000)]) => textureLoad(tex, ivec2(0, 0)).x.add(xz.x.mul(0)).add(fallback.mul(0)));
+      },
+      dispose() { live--; tex.dispose(); },
+    };
+  }
+
+  let contact = null, holders = 0;
+  const volTerrain = {
+    seaDepth, seaLevel: 0, setSeaDepthActive: () => {},
+    get contactField() { return contact; },
+    acquireContactField() {
+      holders++;
+      if (!contact) contact = fakeContact(['heights'], 1.25);
+      let released = false;
+      return () => { if (released) return; released = true; holders--; if (holders <= 0) { contact.dispose(); contact = null; } };
+    },
+    // What base-game-terrain does on a volumetric toggle: a different field set is a different
+    // window, served by the registry under a different key.
+    goVolumetric() { if (contact) contact.dispose(); contact = fakeContact(['surfaceHeights'], 1.25); },
+  };
+
+  const volScene = new THREE.Scene();
+  const volRain = createBaseGameRain({ scene: volScene, terrain: volTerrain, worldCoordinates, maxDrops: 64, maxSplashes: 64 });
+  const camera = new THREE.PerspectiveCamera();
+
+  ok(holders === 0, 'rain holds no contact reference until something asks it to read one');
+  ok(volRain.groundStats.fine === false, 'and reports that it is not reading a fine field');
+  ok(volRain.groundStats.slopeStep === seaDepth.spacing, 'the slope step is the coarse window spacing');
+
+  volRain.setGroundSource('fine');
+  ok(holders === 1, "source 'fine' takes a reference, which is what makes the window stream at all");
+  ok(asked.at(-1) === 'heights', 'over a heightfield world it reads the plain heights field');
+  ok(volRain.groundStats.fine === true && volRain.groundStats.finePost === 1.25,
+    'and reports the 1.25 m contact posts rather than the 16 m sea-depth ones');
+  ok(volRain.groundStats.slopeStep === 1.25,
+    'the splash slope is differenced at the fine post: 16 m differences over a 1.25 m field would smooth it away');
+
+  const beforeGeom = volRain.system.streaks.mesh.geometry;
+  volTerrain.goVolumetric();
+  volRain.update(1 / 60, camera);
+  ok(asked.at(-1) === 'surfaceHeights',
+    'THE FIX: in volumetric mode the hook reads surfaceHeights, the visible marching-cubes surface');
+  ok(volRain.groundStats.fineField === 'surfaceHeights', 'and says so, rather than leaving it to be inferred');
+  ok(volRain.system.streaks.mesh.geometry !== beforeGeom,
+    'the materials are rebuilt, because a TSL graph captures the texture object and this is a different window');
+
+  volRain.setGroundSource('coarse');
+  ok(holders === 0 && volRain.groundStats.fine === false,
+    "source 'coarse' lets the reference go, so nothing streams a window nobody reads");
+  ok(volRain.groundStats.slopeStep === seaDepth.spacing, 'and the slope step returns to the coarse spacing');
+  ok(live === 0, 'the released window disposed; the rain graph was rebuilt first, so it never sampled it');
+
+  volRain.setGroundSource('fine');
+  volRain.dispose();
+  ok(holders === 0, 'disposing the rain releases the contact reference');
+}
+
+// ---- 18. the page defaults to the fine hook and still offers the old one ------------------------
+{
+  const html = await (await import('fs/promises')).readFile('./base-game.html', 'utf8');
+  ok(/rainGroundSource: 'fine',/.test(html), "the page defaults to 'fine': the coarse window is wrong under volumetric terrain");
+  ok(/rainGroundSource: \['fine', 'coarse', 'off'\]/.test(html),
+    "and keeps 'coarse', because switching between them is the fastest way to see the bug it caused");
 }
 
 seaDepth.dispose();

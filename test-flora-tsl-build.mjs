@@ -14,6 +14,7 @@ import { createFieldScheduler } from './terrain-field-scheduler.js';
 import { createFieldWindow } from './terrain-field-window.js';
 import { createAnalyticSource, analyticDescriptor } from './terrain-source-analytic.js';
 import { COVER_CHANNELS } from './flora-field.js';
+import { terrainTintNode } from './base-game-terrain.js';
 
 let passed = 0, failed = 0;
 function check(name, cond, detail = '') {
@@ -111,6 +112,16 @@ section('data textures stay data');
   // r8unorm uploads want a row length WebGPU can align; a power-of-two window keeps that true.
   const res = window.res;
   check('the window row length is a multiple of four', res % 4 === 0, `res ${res}`);
+}
+
+section('the ground tint node compiles');
+{
+  // Grass packs this per blade in the cull. A graph that does not build is an empty field and a
+  // shader error in the console, which is what this catches in Node instead.
+  const built = await compiles('tint', terrainTintNode(float(12), float(0.9)));
+  check('terrainTintNode compiles', built.ok, built.error);
+  const nested = await compiles('nested', terrainTintNode(float(3).add(float(1)), float(1)).mul(0.5));
+  check('and composes into a larger graph', nested.ok, nested.error);
 }
 
 window.dispose();

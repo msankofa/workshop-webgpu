@@ -4,10 +4,22 @@
 //
 // Three things this owns that the raw module does not. The render origin moves, so every world-XZ
 // lookup carries a `uOffset` and every height comes back in scene space. There is no analytic
-// terrain height here as there is in the flight sim, so the ground hook is the sea-depth clipmap
-// window (terrain-sea-depth.js) — sampled conservatively low, because a height read too low is
-// hidden by the depth buffer and one read too high shows as rain cut off in mid air. And the world
-// has two grounds: the streamed terrain and the Traversal Lab's flat floor.
+// terrain height here as there is in the flight sim, so the ground hook is a pair of streamed
+// windows. And the world has two grounds: the streamed terrain and the Traversal Lab's flat floor.
+//
+// THE GROUND HOOK IS TWO WINDOWS, and which one answers matters more than it looks:
+//
+//   fine   the terrain's own contact field: lod 0, 1.25 m posts, 160 m across. In volumetric mode
+//          it carries `surfaceHeights`, the VISIBLE marching-cubes surface, which is what grass
+//          plants on and what a player walks on.
+//   coarse the 16 m sea-depth window (terrain-sea-depth.js), which only ever carries `heights`:
+//          the base heightfield. Sampled conservatively low, because a height read too low is
+//          hidden by the depth buffer and one read too high shows as rain cut off in mid air.
+//
+// Rain used the coarse window alone, so under volumetric terrain it cut drops on a surface the
+// player cannot see: the heightfield beneath the caves and overhangs rather than the ground in
+// front of them. The fine window answers inside its 160 m, the coarse one beyond that, and a drop
+// where neither has streamed simply does not cut.
 //
 // Wetness (phase R2) is owned here rather than by the page because it is not the rain slider: it
 // LAGS it, so ground that has been rained on stays wet for a while after the storm passes. The
@@ -50,29 +62,55 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
   const uWaterLevel = uniform(-1e6);              // global; rain lands on the sea, not the sea bed
   const uFlatGround = uniform(cfg.labGroundY);    // scene y of the Traversal Lab floor
   const uUseWindow = uniform(0);                  // 1 in terrain mode, 0 in the lab
+  const uUseFine = uniform(0);                    // 1 prefer the contact field, 0 coarse window only
   const uConservative = uniform(1);               // 1 min-of-four posts, 0 bilinear
+  const uSlopeStep = uniform(1);                  // metres between the slope's central differences
   const uSkyTint = uniform(new THREE.Color(1, 1, 1));
   const uSkyTintAmount = uniform(0);
 
-  // Ground in SCENE space. Both sample modes are built into the graph and mixed by a uniform, so
-  // the conservative toggle is a slider rather than a material rebuild.
+  // The contact field. The terrain recentres and streams it from its own update(); all that is
+  // needed here is a reference, or it never streams at all. Held only while the ground source
+  // actually reads it, and bound only while held: the registry disposes a window when its last
+  // holder lets go, and a TSL graph keeps the texture object it captured, so sampling a disposed
+  // one is a black screen rather than a missing height.
   const noData = float(cfg.noDataHeight);
-  function groundHeight(xz) {
-    const global = xz.add(uOffset);
+  let contactRelease = null, contactWin = null, fineSampler = null;
+  function currentContact() { return contactRelease ? (terrain.contactField ?? null) : null; }
+  // Rebound with the materials, because a volumetric toggle swaps `heights` for `surfaceHeights`,
+  // which the registry serves as a DIFFERENT window with a different texture.
+  function bindContact() {
+    contactWin = currentContact();
+    fineSampler = null;
+    if (!contactWin?.gpuSampler) return;
+    const field = contactWin.fields.includes('surfaceHeights') ? 'surfaceHeights' : 'heights';
+    fineSampler = contactWin.gpuSampler(field);
+  }
+
+  // Ground in SCENE space. Every branch is in the graph and mixed by a uniform, so the source and
+  // conservative toggles are sliders rather than material rebuilds.
+  function rawGround(global, conservative) {
     const lo = seaDepth.gpuHeightAt(global, noData, 'min');
     const blend = seaDepth.gpuHeightAt(global, noData);
-    const ground = max(mix(blend, lo, uConservative), uWaterLevel).sub(uOriginY);
+    const coarse = conservative ? mix(blend, lo, uConservative) : blend;
+    // The fine sampler returns its fallback outside its window, so this IS the handover.
+    return fineSampler ? mix(coarse, fineSampler(global, coarse), uUseFine) : coarse;
+  }
+  function groundHeight(xz) {
+    const ground = max(rawGround(xz.add(uOffset), true), uWaterLevel).sub(uOriginY);
     return mix(uFlatGround, ground, uUseWindow);
   }
   // Slope for the splash rings, central-differenced one post apart. Deliberately the BILINEAR
-  // sample: the min filter is a staircase and its differences are zero across most of a cell.
-  const step = float(seaDepth.spacing);
+  // sample: the min filter is a staircase and its differences are zero across most of a cell. The
+  // step follows whichever window is answering -- 16 m differences over a 1.25 m field would smooth
+  // away the detail the fine window exists to provide, and rings only ever land inside it.
   function groundSlope(xz) {
-    const g = (dx, dz) => seaDepth.gpuHeightAt(vec2(xz.x.add(dx), xz.y.add(dz)).add(uOffset), noData);
+    const step = uSlopeStep;
+    const g = (dx, dz) => rawGround(vec2(xz.x.add(dx), xz.y.add(dz)).add(uOffset), false);
     const dx = g(step, float(0)).sub(g(step.negate(), float(0)));
     const dz = g(float(0), step).sub(g(float(0), step.negate()));
     return vec2(dx, dz).div(step.mul(2)).mul(uUseWindow);
   }
+  uSlopeStep.value = seaDepth.spacing;
 
   let system = null, maxDrops = cfg.maxDrops, maxSplashes = cfg.maxSplashes;
   const group = new THREE.Group();
@@ -141,6 +179,11 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
     system.uniforms.uColor.value.set(look.color);
     group.add(system.group);
     applyLook();
+  }
+  function rebuild() {
+    group.remove(system.group);
+    for (const mesh of [system.streaks.mesh, system.splashes.mesh]) { mesh.geometry.dispose(); mesh.material.dispose(); }
+    build();
   }
   build();
   // The ground hook is the sea-depth window, and the window streams only while something asks for
@@ -236,9 +279,37 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
     setWetEnabled(on) { wetEnabled = !!on; },
     setDryTime(seconds) { dryTime = Math.max(0, seconds); },
     setWetRise(seconds) { wetRise = Math.max(0, seconds); },
-    // 'coarse' samples the 16 m sea-depth window; 'off' drops the ground hook to the flat fallback,
-    // which is the honest way to see how much of what you are looking at is the window.
-    setGroundSource(mode) { uUseWindow.value = mode === 'off' ? 0 : 1; },
+    // 'fine' prefers the 1.25 m contact field and falls back to the 16 m sea-depth window past its
+    // reach; 'coarse' is the sea-depth window alone, which is the old behaviour and is wrong under
+    // volumetric terrain; 'off' drops the hook to the flat fallback, which is the honest way to see
+    // how much of what you are looking at is a window at all.
+    setGroundSource(mode) {
+      uUseWindow.value = mode === 'off' ? 0 : 1;
+      const wantFine = mode === 'fine';
+      uUseFine.value = wantFine ? 1 : 0;
+      if (wantFine && !contactRelease && typeof terrain.acquireContactField === 'function') {
+        contactRelease = terrain.acquireContactField();
+      } else if (!wantFine && contactRelease) {
+        contactRelease(); contactRelease = null;
+      }
+      // Rebound and rebuilt HERE rather than on the next update, because letting go of the last
+      // reference disposes the window's texture while the graph is still holding it.
+      if (currentContact() !== contactWin) { bindContact(); rebuild(); }
+      uSlopeStep.value = wantFine && contactWin ? contactWin.post : seaDepth.spacing;
+    },
+    // What the ground hook is actually reading, for the panel: the fine field's name is the whole
+    // point of the volumetric fix, so it is reported rather than inferred from the world mode.
+    get groundStats() {
+      return {
+        fine: !!fineSampler,
+        finePost: contactWin?.post ?? null,
+        fineExtent: contactWin?.extent ?? null,
+        fineField: contactWin ? (contactWin.fields.includes('surfaceHeights') ? 'surfaceHeights' : 'heights') : null,
+        fineCoverage: contactWin?.coverage ?? 0,
+        coarsePost: seaDepth.spacing,
+        slopeStep: uSlopeStep.value,
+      };
+    },
     setConservative(on) { uConservative.value = on ? 1 : 0; },
     setFlatGround(y) { uFlatGround.value = y; },
     // Global sea level, or null when there is no sea: rain then lands on the ground alone.
@@ -261,15 +332,20 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
       if (drops === maxDrops && splashes === maxSplashes) return false;
       maxDrops = Math.max(1, Math.round(drops));
       maxSplashes = Math.max(1, Math.round(splashes));
-      group.remove(system.group);
-      for (const mesh of [system.streaks.mesh, system.splashes.mesh]) { mesh.geometry.dispose(); mesh.material.dispose(); }
-      build();
+      rebuild();
       return true;
     },
 
     // `underwater` hides everything (there is no rain to see from under the sea) and `skyColor` is
     // the page's current background, which already carries the time of day and the overcast lid.
     update(dt, camera, { underwater = false, skyColor = null } = {}) {
+      // A volumetric toggle swaps `heights` for `surfaceHeights`, which is a different window and
+      // therefore a different texture: the graph has to be rebuilt, not re-pointed.
+      if (currentContact() !== contactWin) {
+        bindContact();
+        uSlopeStep.value = uUseFine.value > 0 && contactWin ? contactWin.post : seaDepth.spacing;
+        rebuild();
+      }
       const o = worldCoordinates ? worldCoordinates.getOrigin() : [0, 0, 0];
       uOffset.value.set(o[0], o[2]);
       uOriginY.value = o[1];
@@ -298,6 +374,7 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
     },
 
     dispose() {
+      contactRelease?.(); contactRelease = null;
       occ?.dispose(); occ = null;
       scene.remove(group);
       for (const mesh of [system.streaks.mesh, system.splashes.mesh]) { mesh.geometry.dispose(); mesh.material.dispose(); }

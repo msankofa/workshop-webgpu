@@ -92,6 +92,17 @@ Two constraints worth knowing before changing this:
   cell, so the panel's 0-60 blades/m^2 slider is honest across its whole range. The stock
   `Kmax: 64` used elsewhere caps at 16/m^2, which silently flattened three quarters of that
   slider before 2026-08-26.
+- **Blades take the colour of the ground they stand on.** `base-game-terrain.js` exports the tint
+  its own vertices use in two forms: `terrainTintAt` (CPU, the only implementation
+  `colorizeGeometry` has) and `terrainTintNode` (the TSL twin), over shared `TERRAIN_TINT` and
+  `TERRAIN_TINT_BANDS` so the palette and the band edges cannot land in one and not the other.
+  Flora builds `groundColorNode` from it — height from the blade, slope from a central difference
+  on the coarse window — and grass-compute evaluates it ONCE PER SURVIVING BLADE in the cull,
+  packing the result into the instance record's three spare floats (`rec1.yzw`, previously zeroes)
+  rather than recomputing per vertex per frame. The material then mixes toward it by
+  `grassGroundTint` at the root and `grassGroundTintFar` at the draw edge, which is what stops the
+  radius ending on a visible line. Both are live setters; neither forces a recull, because the
+  colour is already in the record.
 - **The buffer is budgeted, not worst-cased.** `CAP` used to be `maxInstances(maxRadius, ...)` —
   every cell in the window full — which at radius 200 and 64 blades/m^2 is 331 MB for a field the
   cull gradient never fills. `opts.maxInstances` caps it instead (`grassBufferMB`, default 96 MB =

@@ -1148,6 +1148,18 @@ authors blur, because a full-screen backdrop filter is among the more expensive 
 be asked to do per frame. The reticle hides while the sight picture is up: a crosshair over a
 telescopic sight is two reticles arguing. `test-scope-overlay.mjs`.
 
+**Third-person aim zoom (2026-08-27).** environment-viewer disables optics in third person outright
+(`eligible = !localBodyThird`), so there was nothing to port and this is new. Aiming now narrows the
+third-person FOV by the weapon's own `magnification`, eased by the same aim blend, through the same
+`magnifiedFov` helper first person uses — but **capped** by `tpAimMagnification` (default 1.6, range
+1 to 8, 1 turns it off). The cap is the point: the m24's full 8x in third person would frame the
+inside of the player's own shoulder. At the default the pistols land near 42 degrees and everything
+from the rifle up bottoms out at 32.5 from a 50 degree base.
+
+`applyFirstPersonOptics` is now `applyAimOptics`, since it is no longer first-person only. Optics
+beyond the FOV — the scope picture, a boom pull-in, an aim shoulder shift — stay first-person only
+for now.
+
 Still open in this phase: the head multiplier. `hits[].head` is always false, and this is deliberate
 rather than forgotten — every other head decision in the repo comes from a rig
 (`bot-body-hit.js` → `bot-limb-map.js`), the server has no rig, and a capsule-top zone would be a
@@ -1506,6 +1518,12 @@ the donor pages (`environment-viewer-v2.html`, `demos/flight-sim.html`) never ha
 - **Time of day.** A `Clouds` is white on its own and would glow at midnight. The page passes
   `rig.dirLight.color` and `sky.nightness`; the module tints by the key light and multiplies down by
   `nightDim · nightness`, so dusk reddens the decks and night leaves them a silhouette against the stars.
+- **Lightning (2026-08-27).** The tint is a *colour*, and no intensity has ever entered it, so a bolt
+  could not brighten a cloud. `update()` now also takes `flash` — the same 0..1 term the drops
+  brighten on, `rain.uniforms.uLightning` scaled by `cloudLightningLift` — and lerps the tint toward
+  `cloudFlashTint` (`#e8f0ff`, blue-white). It is applied **after** the night dim, deliberately: a
+  bolt lights the cloud base itself and must punch through the night rather than be scaled down by
+  0.85 along with the moonlight.
 - **The far plane.** `updateWorld`'s `wantFar` now takes `max(terrain far, clouds.farExtent)`, where a
   deck's far extent is `hypot(extent/2, height)` — the distance to its own far corner — counted only
   while it is visible.
@@ -1748,6 +1766,37 @@ Seven keys joined the shared set: `weatherSeed`, `lightningEnabled`, `lightningT
 to the derived schedule. Flash strength, decay, bolt scale, sun lift and the speed of sound stay
 local. Coverage is `test-base-game-lightning.mjs` (61 checks).
 
+### Key-light colour: a blend, not a switch (fixed 2026-08-27)
+
+Two reported symptoms, one line. `updateWorld` decided the key light's **colour** with the same
+boolean that decides which body owns the shadow map:
+
+```js
+const moonOwnsShadow = moonIntensity > sunIntensity;
+```
+
+The shadow has to be a boolean — r184 disposes a light's `ShadowNode` the moment `castShadow` flips
+false while render objects built earlier still update it, which is the null-`depthTexture` crash at
+dusk this page already works around. Colour has no such constraint, and switching it at the same
+instant is what made dusk jump. Measured: `sunIntensity` (`settings.sunIntensity · smoothstep(-2, 8,
+elevation)`, max 4) falls to 0.342 at sun elevation **−0.20°**, where the moon's `TOD_MOON_MAX` of
+0.35 takes over, and the colour went from `#ffb066` — the warm/neutral blend is at 0 that low — to
+`TOD_MOON_LIGHT` `#aec6ff` in a single frame. That is **175 of 255** in one 0.01° step. The clouds
+take this very colour, so they cut with it.
+
+The colour is now blended by each body's share of the light,
+`lerpHex(lerpHex(WARM, NEUTRAL, sunWarmth), MOON, moonIntensity / (sunIntensity + moonIntensity))`,
+memoised on both quantised inputs. The worst step across the same sweep is 1.7 of 255, and both
+endpoints are byte-identical to before: this is a transition, not a recolouring.
+
+**The lightning lift no longer decides who owns the sky.** It used to be `sunIntensity +=
+lightning.sunLift` written *before* the comparison. `sunLift` defaults to 4 against a moon that caps
+at 0.35, so every night strike flipped ownership to the sun — the next frame wrote `TOD_SUN_WARM` and
+aimed `rig.dirLight` down `sunDir`, which at night points up from below the horizon. Clouds went
+orange, lit from underneath, and snapped back when the lift decayed under 0.35. The lift is held in
+`keyLift` and added to whichever body already owns the key light. Coverage is
+`test-base-game-light-response.mjs` sections 4-6 (29 checks).
+
 ### Weather, phase R3: the rain shadow (shipped 2026-08-26)
 
 A top-down height bake, so drops stop under a roof instead of falling through it. The renderer-side
@@ -1779,6 +1828,41 @@ The bake gets its own `rainBake` profiler slot rather than being folded into `we
 a whole extra scene render and would otherwise read as rain randomly costing several milliseconds.
 It runs in the frame loop before the encode, so it is outside the post/DOF pipeline. Coverage is in
 `test-base-game-rain.mjs` (144 checks).
+
+### The rain ground hook is two windows (fixed 2026-08-27, and R1b item 2)
+
+Rain's ground hook was the 16 m sea-depth window alone. That window carries only `heights` — the
+**base heightfield** — while the surface a player sees and walks on under volumetric terrain is
+`surfaceHeights`, the marching-cubes open-sky surface. `base-game-terrain.js` switches field in
+volumetric mode (`contactFields()`, `placementFields()`) and so does grass; rain did not, so it cut
+drops on a surface that is not the one being drawn, and did not track volumetric ground at all.
+
+`base-game-rain.js` now reads the terrain's own **contact field** first: lod 0, 1.25 m posts, 160 m
+across, carrying `surfaceHeights` in volumetric mode. `gpuSampler(field)` returns its fallback
+outside the window, so `mix(coarse, fine(global, coarse), uUseFine)` *is* the handover — fine ground
+inside 160 m, the sea-depth window beyond it, and a drop where neither has streamed simply does not
+cut. This is also weather plan R1b item 2, which specified a new window at exactly these numbers
+before the contact field existed; nothing new needed building.
+
+Three things follow from the window being shared and ref-counted:
+
+- **The handle is held only while the source reads it.** `setGroundSource('fine')` acquires,
+  `'coarse'` and `'off'` release, so nothing streams a window nobody reads. In Traversal Lab mode
+  the page already passes `'off'`.
+- **Binding follows the handle, and the rebuild is synchronous.** The registry disposes a window
+  when its last holder lets go, and a TSL graph keeps the texture object it captured — sampling a
+  disposed one is a black screen, not a missing height. So `setGroundSource` rebinds and rebuilds the
+  rain materials in the same call rather than leaving it to the next `update()`.
+- **A volumetric toggle is a different window.** `heights` and `surfaceHeights` are different
+  registry keys, so the toggle hands back a new window with a new texture; `update()` compares
+  identity and rebuilds.
+
+The splash slope is central-differenced at `uSlopeStep`, which follows whichever window is answering.
+16 m differences over a 1.25 m field would smooth away the detail the fine window exists to provide,
+and rings only ever land within `splashRadius` (20 m) of the camera, always inside it.
+
+`rainGroundSource` gains `fine` and defaults to it. `coarse` is kept — it is what shipped, and
+switching between the two is the fastest way to see the bug it caused.
 
 Next in the plan: R5 (capture, performance log and the remaining docs).
 
@@ -2203,6 +2287,10 @@ now asserts the call site, since no unit test of the module can see a wrong call
 Base Game raises the blade ceiling with `grassKmax: 256`, so the panel's 0-60 blades/m^2 slider
 works across its whole range instead of saturating at 16. The instance buffer is 28.5 MB
 (891,136 instances) and the per-recull dispatch tracks the live window rather than that ceiling.
+Blades tint toward the ground beneath them (`terrainTintNode`, the GPU twin of the bands
+`colorizeGeometry` paints the terrain with), strongest at the root and total at the draw edge, so
+the field dissolves into the terrain instead of ending on a line. Two Plants sliders drive it.
+
 The draw-radius slider reaches its full 200 m as of 2026-08-27: height comes from the contact
 window inside ~60 m and the 2 km placement window beyond it, and `maxRadius` follows the slider
 rather than a window. Two limits it is worth knowing about: at radius AND density both maxed the
