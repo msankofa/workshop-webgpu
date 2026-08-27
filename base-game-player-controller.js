@@ -525,10 +525,14 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       previousPosition.splice(0, 3, ...(state.previousPosition ? vec3(state.previousPosition, 'player state.previousPosition') : nextPosition));
       velocity.splice(0, 3, ...nextVelocity);
       grounded = state.grounded === true;
+      // Only captureState carries the weights. An authoritative wire entry does not, and zeroing
+      // them on every resync would stand a kneeling player up; the replayed inputs re-derive them.
       const w = state.stance;
-      stanceWeights.crouch01 = Number.isFinite(w?.crouch01) ? w.crouch01 : 0;
-      stanceWeights.kneel01 = Number.isFinite(w?.kneel01) ? w.kneel01 : 0;
-      stanceWeights.prone01 = Number.isFinite(w?.prone01) ? w.prone01 : 0;
+      if (w && typeof w === 'object') {
+        stanceWeights.crouch01 = Number.isFinite(w.crouch01) ? w.crouch01 : 0;
+        stanceWeights.kneel01 = Number.isFinite(w.kneel01) ? w.kneel01 : 0;
+        stanceWeights.prone01 = Number.isFinite(w.prone01) ? w.prone01 : 0;
+      }
       pinned.crouch01 = stanceWeights.crouch01; pinned.kneel01 = stanceWeights.kneel01; pinned.prone01 = stanceWeights.prone01;
       standBlocked = false;
       livePose();

@@ -148,7 +148,21 @@ ok(ownerClient.queue.length === queueBefore, 'malformed packets are dropped whol
 
   const c = ownerClient;
   ok(weaponForSlot(c.loadout, c.slot) === 'cz_805_bren', 'a new client holds the default primary');
-  // Phase 4: a slot change is a swap. The slot moves at once, but the weapon in hand is still the
+  // Posture has to survive the round trip: the tick entry the prediction module builds IS the packet
+// the relay receives AND the record the replay re-runs, so a field missing from it is missing from
+// both. It was: only a server that had been fed the stance directly ever changed posture, and a
+// client that kneeled while walking predicted full walk speed against the server's crouch speed.
+{
+  const entry = { tick: 7, moveX: 0, moveZ: 1, yaw: 0, pitch: 0, sprint: false, crouch: false, stance: 2, jump: false };
+  const clean = sanitizeBaseGameTickInput(entry);
+  ok(clean?.stance === 2, 'the wire sanitizer keeps the stance on a tick');
+  ok(sanitizeBaseGameTickInput({ ...entry, stance: 99 })?.stance === 0, 'and refuses a stance that is not in the ladder');
+  const html = readFileSync(new URL('./base-game-prediction.js', import.meta.url), 'utf8');
+  ok(html.includes('stance: Number.isInteger(input.stance)'), 'the predicted tick entry carries the stance');
+  ok((html.match(/stance: (entry|item)\.stance/g) ?? []).length === 2, 'and both the live step and the replay pass it to the controller');
+}
+
+// Phase 4: a slot change is a swap. The slot moves at once, but the weapon in hand is still the
   // outgoing one until the holster finishes, and nothing can reload or fire on the way.
   sendTicks(owner, walk(10, { slot: 1, aim: true }));
   runSteps(10);

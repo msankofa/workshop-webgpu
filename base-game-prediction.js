@@ -75,10 +75,14 @@ export function createBaseGamePrediction({
         pitch: Number.isFinite(input.pitch) ? input.pitch : 0,
         sprint: !!input.sprint,
         crouch: !!input.crouch,
+        // Posture rides the tick like every other input. This entry IS the packet the server gets
+        // and the record the replay re-runs, so a field missing here is missing from both: the
+        // stance would never reach the relay AND never reach local prediction.
+        stance: Number.isInteger(input.stance) ? input.stance : 0,
         jump: !!input.jump,
         position: null,
       };
-      controller.stepOnce({ tick: entry.tick, moveX: entry.moveX, moveZ: entry.moveZ, yaw: entry.yaw, sprint: entry.sprint, crouch: entry.crouch }, entry.jump);
+      controller.stepOnce({ tick: entry.tick, moveX: entry.moveX, moveZ: entry.moveZ, yaw: entry.yaw, sprint: entry.sprint, crouch: entry.crouch, stance: entry.stance }, entry.jump);
       entry.position = controller.getPosition();
       history.push(entry);
       onTick?.(entry);
@@ -148,7 +152,7 @@ export function createBaseGamePrediction({
     installAuthoritative(state);
     let replayed = 0;
     for (const item of history) {
-      controller.stepOnce({ tick: item.tick, moveX: item.moveX, moveZ: item.moveZ, yaw: item.yaw, sprint: item.sprint, crouch: item.crouch }, item.jump);
+      controller.stepOnce({ tick: item.tick, moveX: item.moveX, moveZ: item.moveZ, yaw: item.yaw, sprint: item.sprint, crouch: item.crouch, stance: item.stance }, item.jump);
       item.position = controller.getPosition();
       replayed++;
     }

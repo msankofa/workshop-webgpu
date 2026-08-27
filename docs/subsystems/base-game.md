@@ -1117,6 +1117,18 @@ That split is why the controller reports two stances. `stance` is what the body 
 rig's locomotion, the weapon hold and every remote must agree with; `requestedStance` is what was
 asked for, which is what the key toggles against.
 
+**Posture did not reach the wire at all in the first cut.** The tick entry `base-game-prediction.js`
+builds *is* the packet the relay receives and *is* the record the replay re-runs, and it listed its
+fields explicitly — without `stance`. So the relay never saw a stance, and local prediction never
+saw one either: posture worked only in Solo. Worse, had one side got it alone, kneeling while
+walking would have desynced by 5.9 m in 5 seconds (the client predicting full walk speed against the
+server's crouch speed) — a correction every snapshot. Measured through the real prediction module and
+the real wire sanitizer, both sides now land within 0.0000 m for stand, kneel and prone.
+
+`applyState` also stopped zeroing the pose weights when the state does not carry them. Only
+`captureState` does; an authoritative wire entry does not, so every resync was standing a kneeling
+player up. The replayed inputs re-derive the weights on their own.
+
 Still open: no crouch key is bound (the stance stays in the ladder because the fallback chain reads
 it), stance does not yet scale weapon spread even though `stanceSpreadScale` exists, and prone has no
 special weapon hold.

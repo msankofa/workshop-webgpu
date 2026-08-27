@@ -379,6 +379,7 @@ for (const marker of [
   "event.code === 'KeyZ'",
   'stance: stanceIndex(playerStance)',
   'stanceWeights: playerController.stanceWeights,',
+  'posture ${playerStance}',
   // Per-mode framing: the sliders edit one set, the frame feeds the set the live mode owns.
   "cameraOffsetTarget: 'thirdPerson'",
   'fpCameraSideOffset',

@@ -1538,9 +1538,15 @@ function renderCombatStatus(now) {
   const throwableId = localThrowableId();
   const pouch = throwableId ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, throwableId) : null;
   const throwable = pouch ? `<br>[G] throw ${round(pouch.mag + pouch.reserve)}` : '';
+  // Posture, always visible: what you ASKED for and what the body actually IS, which differ while
+  // you walk out of a kneel. Without this a stance that will not change is indistinguishable from a
+  // key that never arrived.
+  const isStance = playerController.stance;
+  const posture = playerStance === 'stand' && isStance === 'stand' ? ''
+    : `<br>posture ${playerStance}${isStance !== playerStance ? ` (${isStance})` : ''}${playerController.standBlocked ? ' — no headroom' : ''}`;
   // Write only on change. innerHTML reparses, and health, ammo and the hit flag hold still for whole
   // seconds at a time, so the great majority of frames wrote the identical markup back.
-  const markup = `${hit}${hp}<br>${gun}${throwable}${killed}${slots}`;
+  const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${killed}${slots}`;
   if (markup !== shownCombatStatus) { shownCombatStatus = markup; combatStatus.innerHTML = markup; }
   const flash = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
   if (flash !== shownDamageFlash) { shownDamageFlash = flash; damageFlash.style.opacity = flash; }
