@@ -1460,7 +1460,7 @@
   },
   {
    "slug": "hybrid-diamond-on-the-highway-webgpu",
-   "title": "Hybrid WebGPU: Xenolith Diamond on the Highway to Heaven",
+   "title": "Diamond on the Highway (WebGPU)",
    "category": "Hybrids",
    "subcategory": "WebGPU port",
    "source": null,
@@ -1475,7 +1475,7 @@
   },
   {
    "slug": "hybrid-diamond-on-the-highway",
-   "title": "Hybrid: Xenolith Diamond on the Highway to Heaven",
+   "title": "Diamond on the Highway",
    "category": "Hybrids",
    "subcategory": "Combination",
    "source": null,
@@ -1520,7 +1520,7 @@
   },
   {
    "slug": "hybrid-nebula-in-orb",
-   "title": "Hybrid: Colorful Nebula filling an Anunaki Magical Sphere shell",
+   "title": "Nebula in Orb",
    "category": "Hybrids",
    "subcategory": "Combination",
    "source": null,
@@ -1535,7 +1535,7 @@
   },
   {
    "slug": "hybrid-orb-in-nebula-webgpu",
-   "title": "Hybrid WebGPU: Anunaki Magical Sphere in Colorful Nebula Background",
+   "title": "Orb in Nebula (WebGPU)",
    "category": "Hybrids",
    "subcategory": "WebGPU port",
    "source": null,
@@ -1550,7 +1550,7 @@
   },
   {
    "slug": "hybrid-orb-in-nebula",
-   "title": "Hybrid: Anunaki Magical Sphere in Colorful Nebula Background",
+   "title": "Orb in Nebula",
    "category": "Hybrids",
    "subcategory": "Combination",
    "source": null,

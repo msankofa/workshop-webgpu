@@ -9,6 +9,10 @@ node_modules/
 repos/
 versions/
 *.zip
+# ...except the sabosugi pen exports. They are 3 MB across 82 files and each holds a complete
+# self-contained page that serve.py serves straight out of the archive, so without them a clone
+# gets a gallery listing 101 entries that can only run 21.
+!sabosugi-visuals/*.zip
 research/**/*.pdf
 research/stats/
 # Local research scratch (downloaded repos, extracted archives, analysis notes) — not tracked
