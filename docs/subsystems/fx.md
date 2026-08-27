@@ -195,7 +195,10 @@ to the mount each frame, `explosion` per `explosions[]` entry. See `base-game.md
 `flash-lights.js` — the bot-viewer-visuals dynamic-light budget extracted as a module (ring +
 resident `PointLight`s on `flashCurve`/`pickLightSlotsInto`; intensity-only writes, never
 `.visible`). `bot-viewer-visuals.js` still carries its own inline copy of that block — keep the two
-in sync by hand, like the CPU/GPU twins. Note the base game does **not** use v3's
+in sync by hand, like the CPU/GPU twins. The same page's weapon flashlight is
+`weapon-light.js`: a real `SpotLight` on the weapon bore plus a small lens `PointLight`, resident and
+intensity-switched by the same rule, replacing v3's drawn additive cone (`beams`) — see
+`base-game.md` "The weapon flashlight". Note the base game does **not** use v3's
 "rubble when the blast is within 0.6 R of the ground" test: it spawns rubble only for a detonation
 `entity-types/combat-projectile.js` tagged as touching a surface (`isSurfaceDetonation`) by a weapon
 without `projectile.rubble: false`. See `base-game.md` "What a blast throws".

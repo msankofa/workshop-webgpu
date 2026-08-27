@@ -54,7 +54,10 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Tracers, muzzle flash, sparks, explosions | `effect-renderer.js` / `tracer-visual.js` |
 | Blast debris | `blast-debris-sim.js` / `blast-debris.js` / `explosion-tier.js` |
 | Dynamic flash lights | `flash-lights.js` (extracted from `bot-viewer-visuals.js`) |
+| Weapon flashlight | `weapon-light.js` |
 | Procedural weapon handling voices (reload, draw) | `weapon-sfx-synth.js` |
+| Drone autonomy, manual flight, wire state | `base-game-drones.js` on `bot-drones.js` + `flight-model.js` |
+| Drone meshes, pose, chase camera | `base-game-drone-view.js` on `flight-meshes.js` |
 
 `base-game.html` is integration wiring. It does not duplicate any renderer subsystem, sky shader,
 or server room logic.
@@ -705,16 +708,24 @@ One rig, two presentation axes, owner only; remotes always see the third-person 
   `sideOffset` / `heightOffset` / `forwardOffset`. Obstruction still rays from the
   shifted focus.
 - **Depth of field** (`depth-of-field.js`, off by default): `demos/sdf-bug-v2.html`'s gather
-  (golden-angle disc, each tap weighted by whether its own circle of confusion reaches the pixel,
-  HDR colour so highlights become discs) driven by the scene pass depth attachment. Defocus is
-  measured as a fraction of the focus distance so one aperture reads the same near and far.
-  `dofEnabled`, `dofAutoFocus` (centre ray against the world query, eased on the CPU at
-  `focusRate`), `dofFocusDistance`, `dofAperture`, `dofMaxRadius`, `dofFarScale`. While on, the
-  page renders through a `RenderPipeline` (`pass → dof → renderOutput`; `PostProcessing` is the
-  pre-r183 name). Three's own `dof()` addon (`DepthOfFieldNode.js`) is the cheaper fallback if the
-  gather costs too much; off, the plain
-  render path runs and the pass costs nothing. `test-depth-of-field.mjs` builds the node to a
-  shader through `tsl-build-check.mjs` (which gained the r182 `getOutputBufferType` stub).
+  (golden-angle disc scaled by the pixel's own circle of confusion — the collapsing disc is what
+  keeps sharp subjects sharp; the tap weight only stops sharp neighbours polluting blurred pixels;
+  known limit: near blurred objects keep hard silhouettes) on HDR colour, driven by the scene pass
+  depth attachment. Depth linearizes with the factory's own `sceneNear`/`sceneFar` uniforms
+  refreshed from the game camera per render — the global `cameraNear`/`cameraFar` nodes read the
+  post quad's ortho camera inside a `RenderPipeline` and flatten every depth to zero. Defocus is
+  measured as a fraction of the focus distance so one aperture reads the same near and far, and
+  sharp pixels early-out of the gather (`If(rHere > 0.5)`, taps at explicit LOD so the branch is
+  uniformity-legal). `dofEnabled`, `dofAutoFocus` (centre ray against the world query, eased on
+  the CPU at `focusRate`), `dofFocusDistance`, `dofAperture`, `dofMaxRadius`, `dofFarScale`;
+  uniform writes are dirty-checked (`syncDofParams`) and the focus ray reuses hoisted arrays.
+  `taps` is baked into the loop at node build. While on, the page renders through a
+  `RenderPipeline` (`pass(scene, camera, { samples: 4 })` so MSAA survives → dof → `renderOutput`;
+  `PostProcessing` is the pre-r183 name). Three's own `dof()` addon (`DepthOfFieldNode.js`) is the
+  cheaper fallback if the gather costs too much; off, the plain render path runs and the pass
+  costs nothing. `test-depth-of-field.mjs` builds the node to a shader through
+  `tsl-build-check.mjs` (which gained the r182 `getOutputBufferType` stub) and pins the
+  scene-camera planes, the explicit-LOD taps, and the loud missing-camera error.
 - Not done: the late depth-cleared pass for arms + gun (they can clip walls at the 0.1 m near
   plane) and the shoulder pin at mid blend. Both are tuning items once the look is judged.
 
@@ -813,6 +824,35 @@ writes, never `.visible` (the WebGPU pipeline-hash rule travels with the code). 
 `spawnBlastFx` numbers (`BLAST_FLASH`, distance `min(60, radius * 3.2)`); every muzzle flash borrows
 a slot like v3's `spawnTracer` does. `debrisSim.step` / `debrisRenderer.sync` / `flashLights.update`
 run in the frame's `fx` block. Node-tested: `test-flash-lights.mjs`.
+
+**The weapon flashlight (L).** `weapon-light.js` — `createWeaponLight({ THREE, scene, options })`.
+bot-viewer-v3 fakes a flashlight with an instanced additive cone per bot (`beams` in
+`bot-viewer-visuals.js`) because a real light per bot in a 90-bot firefight is a non-starter; there
+is one local player here, so this is an actual `THREE.SpotLight` that lands on terrain, walls and
+bodies, plus a small `PointLight` at the lens (`spillIntensity`) so the gun and the ground at your
+feet are not black while the wall ahead is lit. Nothing is drawn — no cone mesh, no sprite.
+
+The lamp is mounted on the **bore**, not the camera: `weaponLightSource(canControl)` reads
+`weaponSystem.muzzleWorld` and `weaponSystem.barrelDirection` off `playerBodies.localMount`, so the
+beam points where the gun points and swings with a reload or a swap. A weapon with no barrel (knife,
+empty hands) falls back to the capsule-top eye and the look direction rather than blinking out, and
+death or a menu passes `null`, which ramps the beam down instead of cutting it. `placeFlashlight`
+sits the lamp `lensForward` metres past the muzzle so the barrel does not shadow its own beam.
+
+Residency follows `flash-lights.js`'s rule exactly: both lights live in the scene from startup and
+switch through **intensity**, never `.visible`, because on the WebGPU backend the set of visible
+lights keys the render pipeline. `castShadow` is structural in the same way, so `flashlightShadows`
+is a deliberate settings toggle (default off) that costs one recompile when flipped and a second
+shadow pass while on; without it the beam shines through walls.
+
+`rampToward` is an exponential approach (`rampRate`, default 26/s) so the switch is a click with the
+pop taken off and is frame-rate independent. Settings: `flashlightOn` (the L key writes this same
+setting, so key and panel are one source of truth), `flashlightIntensity`, `flashlightRange`,
+`flashlightAngle`, `flashlightSoftness`, `flashlightWarmth` (0 cool LED to 1 warm incandescent),
+`flashlightSpill`, `flashlightShadows`; `applyFlashlight()` pushes them all through `configure`.
+The beam is **local only** — it is not in the protocol, so other players do not see yours and you do
+not see theirs. `weaponLight.update` runs in the frame's `fx` block. Node-tested:
+`test-weapon-light.mjs`.
 
 **What a blast throws.** Shrapnel is the warhead coming apart, so every blast throws it. Rubble is
 torn *out of a surface*, so it needs two things, and this page diverges from bot-viewer-v3's
@@ -1032,6 +1072,45 @@ Verified in `test-base-game-player.mjs`: zero ungrounded steps walking *and* spr
 and an identical input stream replays to an identical `captureState`. Reviewed by a second model
 before implementing, which is where the hit-normal and margin requirements came from.
 
+**Idle capsules no longer creep down mesh slopes (2026-08-27).** The failure was positional, not
+velocity-based: the controller could report `[0, 0, 0]`, `grounded: true` while moving 6.67 m down
+the Traversal Lab ramp in ten seconds. A ray probe snapped the axis-aligned capsule foot directly to
+the triangle hit. That embeds the round lower cap in an inclined triangle; `map-collision.js` then
+pushes the capsule out along the contact normal, including downhill X/Z, and snap-down embedded it
+again on the next tick.
+
+`worldQuery.groundProbe()` now identifies ray-fallback hits as capsule-shaped support (a direct
+ground-probe provider can override this). Snap-down seats the lower cap tangent to that local plane:
+the foot offset is `radius * (1 / normalY - 1)`, and probe reach includes the worst offset at the
+configured slope limit. Analytic heightfields retain their existing point-foot seating model. The
+same ten-second BVH-ramp test now measures exactly zero X/Z drift and zero residual velocity;
+over-limit mesh slopes still slide and fall.
+
+The planar tangent fix was necessary but not sufficient on irregular triangulated ground: changing
+face/edge normals could still create a new positional correction later. Base Game capsule queries now
+opt into `walkableVerticalResolution`. `map-collision.js` resolves a walkable penetration by
+`depth / normalY` on Y only and cancels only downward velocity; it cannot manufacture downhill X/Z
+position or turn a vertical landing into tangential speed. Walls, ceilings and normals over the slope
+limit retain normal push-out and sliding. The option is query-scoped, so older bot/map users keep
+their established collision response.
+
+Snap-down can also reacquire a walkable surface after an airborne tick. The old
+`wasGrounded || alreadyGrounded` prerequisite was circular at exact tangency: a descending capsule
+could be geometrically supported yet remain flagged airborne until it penetrated again. The existing
+rise limit still refuses jumps, lifts and ramp-crest launches.
+
+The Player panel now exposes `Ground braking` (`groundDeceleration`, default 30 m/s2) and
+`Steep-slope friction` (`slopeSlideDeceleration`, default 0 m/s2). Slope limit remains the boundary:
+walkable ground holds without downhill correction; over-limit ground slides, with its tangential
+speed reduced by the configured steep-slope friction. Both controls are ordinary saved settings and
+are therefore included in Base Game state captures and loads. All nine player-physics controls are
+also owner-controlled shared room rules: `sanitizeBaseGameWorldPatch` bounds them, the relay applies
+accepted patches to every authoritative controller, and snapshots return the values so every client
+predicts with the same configuration. Regression coverage holds an idle body
+for 60 simulated seconds on irregular volumetric ground with exactly zero X/Z drift, checks vertical
+BVH separation directly, proves both controls alter motion, preserves crest/jump behavior, and keeps
+client/server replay bit-identical through a real 3D cave-floor endpoint.
+
 **The browser-tuned movement and gait are now the defaults (2026-08-26).** Taken from
 `base-game-states/base-game-state-20260826184842.json`, which diverged from default in 14 settings.
 Walk drops to 2.75 m/s with a 2.25x sprint (was 5.5 and 1.75), first person is the default view,
@@ -1045,7 +1124,7 @@ Setting them turned up two duplicated constants that would have desynced or misd
   `DEFAULT_CONFIG` in `base-game-player-controller.js` and overrides nothing but `fixedHz`, while the
   page fed its own `playerMoveSpeed` into the client's controller. Putting 2.75 only in the page
   would have meant the client predicting 2.75 while the server simulated 5.5 — a correction every
-  step, online only. The seven physics settings in `DEFAULT_SETTINGS` now read from
+  step, online only. The nine physics settings in `DEFAULT_SETTINGS` now read from
   `BASE_GAME_PLAYER_DEFAULT_CONFIG` instead of repeating literals, so they cannot drift again.
 - **The rig kept its own copy of the walk speed.** `movementSpeeds` in `base-game-player-bodies.js`
   was `{ walk: 5.5, sprint: 1.75 }`, and the arm-pose presets blend on absolute m/s. The page calls
@@ -1171,6 +1250,53 @@ Tests: `test-base-game-fire.mjs` (trigger step, seeded spread, protocol, a two-p
 one shoots the other dead and the server respawns them, then an RPG flight that detonates and
 damages, page markers). `test-combat.mjs`, `test-bot-aim.mjs`, `test-bot-projectiles.mjs`,
 `test-tracer-visual.mjs` cover the reused math.
+
+### Drones: thrown quadcopter and UAV (shipped 2026-08-27, unseen in a browser)
+
+Plan: [2026-08-27-base-game-drones.md](../superpowers/plans/2026-08-27-base-game-drones.md); the
+wider picture is [base-game-flight-integration.md](../base-game-flight-integration.md). This is the
+first non-player thing the room replicates, and the first flight code in Base Game.
+
+**What it is.** Two gadget slots, `gadget` (key 5, quad) and `gadget2` (key 6, UAV), each hold a `quad` or a `uav` (protocol 13:
+`BASE_GAME_GADGET_IDS`, `isBaseGameGadget`; gadgets ride the weapon-id vocabulary so `weapon` on the
+wire can name them, but `getWeapon()` knows nothing about them and the bodies and viewmodel are handed
+`null` instead). Key 5 or 6 draws it: both hands go up over the head (`base-game-player-bodies.js` drives the arm
+targets directly from the head joint, bot-viewer's heal-pose way; `heldAnchor(id)` is the point
+between the solved hands) and the drone view puts the craft there, nose along the body's heading
+(`record.heading`, not `motion.visualYaw`, which carries the rig's yaw+PI spin). Click throws it (server `launchGadget`: a fire edge once the draw is
+done, one of each kind aloft per player, from 0.5 m above the eye along the look at 8 m/s). It then
+flies itself: the quad shadows over the owner's shoulder, the UAV orbits the owner at 35 m. `F` takes
+the stick (the body stands still, on the server too; the camera rides the drone from behind), `B`
+sends it to the point under the crosshair (world query, then the terrain field marched out to
+1.5 km), `N` recalls it. At the stick the flight sim's keys: arrows pitch/roll, A/D yaw, W/S throttle; the mouse does
+nothing and the right button does not zoom, so the body's view is where you left it on release.
+
+**One drone, two steppers** (`base-game-drones.js`). `bot-drones.js` steering (`hoverTo`,
+`cruiseTo`, `orbitAround`, `advance`, now exported) flies the autonomy states `launch`, `follow`,
+`goto`, `hold`, `return`; `flight-model.js` `stepFlyer` flies `manual`, so the quad has the flight
+sim's `drone` airframe and tilt physics and the UAV a new registered `uav` airframe (the `bird`
+table's wing and mass, the plane's control rates and damping, authority 1.0 at its 15 m/s cruise, and a 22 N pusher; the bird's own rates put the nose 70 degrees up in one second and stalled it). Position and velocity are shared as-is; the handoff
+converts attitude only (`quatFromHeading` / `headingFromQuat`, round-trip tested). `deadstick` is
+`bot-drones.js`'s own, with v3's deadstick-or-break roll on a kill (`damageBaseGameDrone`). A dead
+owner drops the quad and parks the UAV where it is. `flight-terrain.js`'s `setHeightSource` is bound
+to the room's ground before every manual step, which is how the flight model sees Base Game terrain.
+
+**Server** (`server/base-game-rooms.js`): `room.drones`, stepped after players and projectiles each
+120 Hz tick (`stepDrones`); `applyDroneInput` takes `tick.drone = { id, mode, pitch, roll, yaw,
+throttle, send, recall }` and only for a drone the client owns; the snapshot carries `drones`
+(`droneWireState` → `sanitizeBaseGameDroneState`) and each player's `controlling`. Ground is
+`sim.heightAt` in terrain rooms and the spawn floor in the lab.
+
+**Client**: `base-game-drone-view.js` draws them with `flight-meshes.js` in node materials, in the sim's craft tint (`buildDrone` at 2.2x,
+`buildRecon` at 1.2x, the v3 scales), posed from yaw/pitch/bank the way v3's `poseDroneCraft` does,
+interpolated through `createRemoteTrack`; the chase camera is the flight sim's chase branch. Solo
+runs the same module in `stepSoloDrones` so it works without the relay. No client prediction of the
+drone; it renders at the interpolated server pose like a remote player.
+
+**Not done, in order of how much it will show:** a first-person view for the quad, the drone as a hit volume (nothing can shoot it down yet: `damageBaseGameDrone` exists,
+nobody calls it), crash FX when a deadstick reaches the ground, sounds, the lab's flat floor as its
+only ground, and every number, which has never been seen in a browser. Tests:
+`test-base-game-drones.mjs`, `server/test-base-game-drones-room.mjs`.
 
 ### Pre-terrain server-authoritative player replication
 
@@ -1588,6 +1714,22 @@ they are locals recomputed each frame and handed back through `rig.setSunIntensi
 frame, and keeps the old multiply in the file as the thing being guarded against. The general rule
 this is an instance of: **do not write a rig-owned light directly from the frame loop** — a
 dirty-checked setter makes any read-modify-write on the object it owns compound.
+
+**Fixed 2026-08-27: the lid follows the night** ("why is it so light at night when raining?"). `sky.js`'s
+`overcastColor` uniform is a fixed daytime grey (0.42, 0.44, 0.48) and `applyDome` lerps
+`scene.background` toward it with no nightness term, so at full rain (`overcast` saturates at
+rain 0.8 with the default `overcastPerRain` 1.25) a midnight sky sat at 5.6x the luminance of a
+clear one — and the sky-sourced fog painted the whole distance with the same grey while the
+weather dimmed the actual lights. The page now owns the lid colour: two **local** settings,
+`overcastDayColor` (`#6b707a`, exactly the sky.js default so day is unchanged) and
+`overcastNightColor` (`#232936`, ~2x the clear-night dome bottom, so a lidded night is a little
+brighter than a clear one — trapped light — but still night), blended by `sky.nightness` with
+`lerpHex` in `applyAtmosphereSettings` and pushed through `sky.setOvercastColor` and a new
+`clouds.setOvercastColor` (`base-game-clouds.js` forwards it to both decks and re-applies it on an
+octave rebuild — the deck material's own overcast grey is also a fixed daytime constant). The fog
+inherits the corrected colour through `scene.background`; the water's sky reflection through the
+dome uniform. The colours are look, not weather, so they stay off `BASE_GAME_SHARED_KEYS` like the
+rest of the cloud appearance. Guarded numerically in `test-base-game-light-response.mjs` section 7.
 
 ### Weather, phase C3: shared world keys (shipped 2026-08-24)
 

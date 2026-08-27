@@ -152,6 +152,7 @@ import { createEffectRenderer, bloodIntensityForHealth } from './effect-renderer
 import { evaluateWhizz, createWhizzVoice, pickImpactVoice } from './ballistic-audio.js';
 import { BLOOD_BASE, BLOOD_TUNING, sprayParams, stainParams, splatterParams } from './blood-tuning.js';
 import { createFlashLights, BLAST_FLASH } from './flash-lights.js';
+import { createWeaponLight, WEAPON_LIGHT_DEFAULTS } from './weapon-light.js';
 import { createDebrisSim, TIER_DEBRIS_SCALE } from './blast-debris-sim.js';
 import { createProjectileManager } from './bot-projectiles.js';
 import { isSurfaceDetonation } from './entity-types/combat-projectile.js';
@@ -163,7 +164,10 @@ import { botSeedFromId } from './bot-activity.js';
 import { BASE_GAME_PLAYER_DEFAULT_CONFIG } from './base-game-player-controller.js';
 import { createPlayerBodyPose, playerPoseAnchor, stepPlayerBodyPose } from './player-body-pose.js';
 import { createPlayerHitRigDebug } from './player-hit-rig-debug.js';
-import { createBaseGameRemotePlayers } from './base-game-remote-players.js';
+import { createBaseGameRemotePlayers, remotePlayerColor } from './base-game-remote-players.js';
+import { isBaseGameGadget, BASE_GAME_GADGET_IDS } from './base-game-protocol.mjs';
+import { createBaseGameDroneView, CRAFT_TINT } from './base-game-drone-view.js';
+import { createBaseGameDrone, stepBaseGameDrone, sendDroneTo, recallDrone, takeOverDrone, releaseDrone, droneWireState } from './base-game-drones.js';
 import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS, BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
 import { ARM_POSE_PRESETS, GAIT_MODELS } from './player-procedural-body.js';
 import {
@@ -210,6 +214,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassCoverGate: BASE_GAME_FLORA_DEFAULTS.grassCoverGate,
   grassGroundTint: BASE_GAME_FLORA_DEFAULTS.grassGroundTint,
   grassGroundTintFar: BASE_GAME_FLORA_DEFAULTS.grassGroundTintFar,
+  grassGroundTintReach: BASE_GAME_FLORA_DEFAULTS.grassGroundTintReach,
+  grassGroundTintMip: BASE_GAME_FLORA_DEFAULTS.grassGroundTintMip,
+  grassCullStart: BASE_GAME_FLORA_DEFAULTS.grassCullStart,
+  grassDispatchBudgetM: BASE_GAME_FLORA_DEFAULTS.grassDispatchBudgetM,
   waveCount: 17, waveBaseLength: 1598, waveLengthMul: 0.51, waveBaseAmp: 0.6, waveAmpMul: 0.59, waveChop: 0.51,
   waveWindDeg: 38, waveSpreadDeg: 79, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
   // Weather, phase C1: cloud decks. The master rain slider is a later phase; `weatherOvercast` is
@@ -229,6 +237,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   // value is never overwritten.
   weatherRain: 0,
   overcastPerRain: 1.25,
+  // The lid's day grey is sky.js's stock overcast colour; the night grey keeps a lidded midnight
+  // about twice a clear one (trapped moonlight), not five times (the fixed-grey bug).
+  overcastDayColor: '#6b707a',
+  overcastNightColor: '#232936',
   sunDimPerRain: 0.72,
   ambientLiftPerRain: 0.15,
   weatherFogEnabled: true,
@@ -318,12 +330,25 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponSidearm: BASE_GAME_DEFAULT_LOADOUT.sidearm,
   weaponMelee: BASE_GAME_DEFAULT_LOADOUT.melee,
   weaponThrowable: BASE_GAME_DEFAULT_LOADOUT.throwable,
+  weaponGadget: BASE_GAME_DEFAULT_LOADOUT.gadget,
+  weaponGadget2: BASE_GAME_DEFAULT_LOADOUT.gadget2,
   unlimitedAmmo: false,
   // How much of a weapon's magnification third-person aiming is allowed to use. 1 disables the
   // third-person zoom entirely; the full 8x of a sniper would frame the inside of your own shoulder.
   tpAimMagnification: 1.6,
   reticleEnabled: true,
   reticleSpread: true,
+  // Weapon flashlight (L). A real SpotLight on the bore, not v3's drawn cone: it lights terrain,
+  // walls and bodies, and `flashlightSpill` is the small lamp-at-the-lens point light that keeps
+  // your own gun and feet from staying black while the wall ahead is lit.
+  flashlightOn: false,
+  flashlightIntensity: WEAPON_LIGHT_DEFAULTS.intensity,
+  flashlightRange: WEAPON_LIGHT_DEFAULTS.range,
+  flashlightAngle: WEAPON_LIGHT_DEFAULTS.angleDeg,
+  flashlightSoftness: WEAPON_LIGHT_DEFAULTS.penumbra,
+  flashlightWarmth: WEAPON_LIGHT_DEFAULTS.warmth,
+  flashlightSpill: WEAPON_LIGHT_DEFAULTS.spillIntensity,
+  flashlightShadows: false,
   weaponHoldHeight: 0,
   weaponHoldForward: 0,
   weaponReachSolve: false,
@@ -380,13 +405,15 @@ const DEFAULT_SETTINGS = Object.freeze({
   bodyStepTrigger: BASE_GAME_MOVEMENT_DEFAULTS.triggerDistance,
   bodySpineFalloff: BASE_GAME_MOVEMENT_DEFAULTS.spineFalloff,
   bodyArmAsym: BASE_GAME_MOVEMENT_DEFAULTS.armAsym,
-  // Straight from the controller's own defaults. These seven are the ONLY settings the page feeds
+  // Straight from the controller's own defaults. These nine are the ONLY settings the page feeds
   // into the physics, and the relay builds its controllers from that same block overriding nothing
   // but fixedHz -- so a literal here that drifted from it would desync every online step.
   playerMoveSpeed: BASE_GAME_PLAYER_DEFAULT_CONFIG.moveSpeed,
   playerSprintMultiplier: BASE_GAME_PLAYER_DEFAULT_CONFIG.sprintMultiplier,
   playerJumpSpeed: BASE_GAME_PLAYER_DEFAULT_CONFIG.jumpSpeed,
   playerGravity: BASE_GAME_PLAYER_DEFAULT_CONFIG.gravity,
+  playerGroundDeceleration: BASE_GAME_PLAYER_DEFAULT_CONFIG.groundDeceleration,
+  playerSlopeSlideDeceleration: BASE_GAME_PLAYER_DEFAULT_CONFIG.slopeSlideDeceleration,
   playerSlopeLimit: BASE_GAME_PLAYER_DEFAULT_CONFIG.slopeLimitDegrees,
   playerStepHeight: BASE_GAME_PLAYER_DEFAULT_CONFIG.stepHeight,
   playerSnapDistance: BASE_GAME_PLAYER_DEFAULT_CONFIG.snapDistance,
@@ -450,11 +477,14 @@ const NUMBER_LIMITS = Object.freeze({
   waveAmpMul: [0.05, 1], waveChop: [0, 1], waveWindDeg: [0, 360], waveSpreadDeg: [0, 180], waveSpeed: [0, 100], waveSeed: [0, 1e9],
   playerMoveSpeed: [1, 15], playerSprintMultiplier: [1, 3], playerJumpSpeed: [2, 16],
   playerGravity: [1, 60], playerSlopeLimit: [1, 85], playerStepHeight: [0, 1.2],
+  playerGroundDeceleration: [0, 100], playerSlopeSlideDeceleration: [0, 40],
   playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], cameraFollowRate: [1, 40],
   cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
   cameraSideOffset: [-1.5, 1.5], cameraHeightOffset: [-1, 1.5], cameraForwardOffset: [-1.5, 1.5], cameraFov: [30, 100], fpFov: [30, 110],
   fpCameraSideOffset: [-1.5, 1.5], fpCameraHeightOffset: [-1, 1.5], fpCameraForwardOffset: [-1.5, 1.5],
   tpAimMagnification: [1, 8],
+  flashlightIntensity: [0, 2000], flashlightRange: [1, 300], flashlightAngle: [1, 80],
+  flashlightSoftness: [0, 1], flashlightWarmth: [0, 1], flashlightSpill: [0, 40],
   dofFocusDistance: [0.3, 80], dofAperture: [0.05, 3], dofMaxRadius: [2, 40], dofFarScale: [0.5, 4],
   interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
@@ -511,7 +541,7 @@ const STRING_VALUES = Object.freeze({
   playerBodyMode: [...BASE_GAME_BODY_MODES],
   bodyDesign: BASE_GAME_BODY_DESIGNS.map((d) => d.key),
   weaponPrimary: [...BASE_GAME_WEAPON_IDS], weaponSidearm: [...BASE_GAME_WEAPON_IDS],
-  weaponMelee: [...BASE_GAME_WEAPON_IDS], weaponThrowable: [...BASE_GAME_WEAPON_IDS],
+  weaponMelee: [...BASE_GAME_WEAPON_IDS], weaponThrowable: [...BASE_GAME_WEAPON_IDS], weaponGadget: [...BASE_GAME_GADGET_IDS], weaponGadget2: [...BASE_GAME_GADGET_IDS],
   fpPreset: ['hybrid', 'arcade', 'embodied', 'custom'],
   weaponHoldMode: ['authored', 'body'],
   bodyFacing: ['look', 'travel'],
@@ -756,7 +786,7 @@ function applyRainSettings() {
 function overcastAmount() {
   return Math.min(1, settings.weatherOvercast + settings.weatherRain * settings.overcastPerRain);
 }
-const appliedAtmosphere = { overcast: -1, density: -1, source: null, color: null };
+const appliedAtmosphere = { overcast: -1, density: -1, source: null, color: null, lid: null };
 const _fogColor = new THREE.Color();
 function applyAtmosphereSettings() {
   const overcast = overcastAmount();
@@ -764,6 +794,13 @@ function applyAtmosphereSettings() {
     appliedAtmosphere.overcast = overcast;
     sky.setOvercast(overcast);
     clouds.setOvercast(overcast);
+  }
+  // The lid follows the night: a fixed daytime grey made a rainy midnight 5.6x brighter than clear.
+  const lid = lerpHex(settings.overcastDayColor, settings.overcastNightColor, Math.round(sky.nightness * 1000) / 1000);
+  if (lid !== appliedAtmosphere.lid) {
+    appliedAtmosphere.lid = lid;
+    sky.setOvercastColor(lid);
+    clouds.setOvercastColor(lid);
   }
   // Density is a `reference()` node inside three's fog handling, so writing it costs nothing. What
   // is NOT free is attaching scene.fog for the first time: that changes every material's cache key.
@@ -968,27 +1005,43 @@ const worldCoordinates = createWorldCoordinateSpace();
 const worldQuery = createWorldQueryService();
 // Depth of field (demos/sdf-bug-v2.html's gather, depth-of-field.js): a node post pipeline used only
 // while the toggle is on; otherwise the plain render path runs and the pass costs nothing.
-const scenePass = pass(scene, camera);
-const depthOfField = createDepthOfField({ scenePass });
+const scenePass = pass(scene, camera, { samples: 4 });   // keep MSAA through the DoF path
+const depthOfField = createDepthOfField({ scenePass, camera });   // camera feeds the depth-linearization planes
 const postPipeline = new RenderPipeline(renderer);   // PostProcessing was renamed in r183
 postPipeline.outputNode = renderOutput(depthOfField.node);
-const dofRay = { origin: new THREE.Vector3(), direction: new THREE.Vector3() };
+const dofRay = { origin: new THREE.Vector3(), direction: new THREE.Vector3(), local: [0, 0, 0], global: [0, 0, 0], query: { origin: null, direction: [0, 0, 0], maxDistance: 300 } };
 function measureCentreDistance() {
   camera.getWorldPosition(dofRay.origin);
   camera.getWorldDirection(dofRay.direction);
-  const origin = worldCoordinates.toGlobal([dofRay.origin.x, dofRay.origin.y, dofRay.origin.z]);
+  dofRay.local[0] = dofRay.origin.x; dofRay.local[1] = dofRay.origin.y; dofRay.local[2] = dofRay.origin.z;
+  dofRay.query.origin = worldCoordinates.toGlobal(dofRay.local, dofRay.global);
+  dofRay.query.direction[0] = dofRay.direction.x; dofRay.query.direction[1] = dofRay.direction.y; dofRay.query.direction[2] = dofRay.direction.z;
   let hit = null;
-  try { hit = worldQuery.raycast({ origin, direction: [dofRay.direction.x, dofRay.direction.y, dofRay.direction.z], maxDistance: 300 }); } catch { hit = null; }
+  try { hit = worldQuery.raycast(dofRay.query); } catch { hit = null; }
   return hit ? hit.distance : 80;
+}
+// Uniforms are only rewritten when a dof* setting actually changed (one reused object, no per-frame literal).
+const dofApplied = { enabled: true, autoFocus: null, focusDistance: null, aperture: null, maxRadius: null, farScale: null };
+function syncDofParams() {
+  if (dofApplied.autoFocus === settings.dofAutoFocus && dofApplied.focusDistance === settings.dofFocusDistance
+    && dofApplied.aperture === settings.dofAperture && dofApplied.maxRadius === settings.dofMaxRadius
+    && dofApplied.farScale === settings.dofFarScale) return;
+  dofApplied.autoFocus = settings.dofAutoFocus;
+  dofApplied.focusDistance = settings.dofFocusDistance;
+  dofApplied.aperture = settings.dofAperture;
+  dofApplied.maxRadius = settings.dofMaxRadius;
+  dofApplied.farScale = settings.dofFarScale;
+  depthOfField.setParams(dofApplied);
 }
 const traversalLab = createBaseGameTraversalLab({ scene, worldQuery });
 // Phase 4 slice: the analytic source is the only runtime source until terrain-source-v5.js lands.
 const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
-// ?chunkcull=1 restores BatchedMesh per-chunk frustum culling. Off by default: with it on,
-// onBeforeRender runs a matrix + bounding-sphere + frustum test per resident chunk, per camera,
-// per pass (twice on mirror frames); off, it early-outs, at the cost of drawing off-screen chunks.
-// A reload-scoped A/B rather than a live toggle, because turning culling off at runtime would
-// leave BatchedMesh's draw list holding the last culled subset.
+// ?chunkcull=0 turns BatchedMesh per-chunk frustum culling OFF. On by default: measured both ways
+// 2026-08-26, p50 encode is a wash (postPlain 3.0-6.1 off vs 3.2-6.9 on) but the tail is much worse
+// without it (frame max median 88.8 ms vs 38.8). With it on, onBeforeRender runs a matrix +
+// bounding-sphere + frustum test per resident chunk, per camera, per pass; off, it early-outs and
+// submits every resident chunk. A reload-scoped A/B rather than a live toggle, because turning
+// culling off at runtime would leave BatchedMesh's draw list holding the last culled subset.
 const BATCH_FRUSTUM_CULLED = readFlagDefaultTrue('chunkcull');
 const terrain = createBaseGameTerrain({
   scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR,
@@ -1099,6 +1152,91 @@ const prediction = createBaseGamePrediction({
   onOverflow: () => { networkSession?.requestResync(); },
 });
 const remotePlayers = createBaseGameRemotePlayers({ scene, worldCoordinates });
+const remoteHeadLocal = [0, 0, 0];
+// ---- drones: base-game-drones.js flies them (on the server online, here in Solo), the drone view
+// draws them. Keys: 5 holds the gadget, click throws it, F takes the stick and drops it, B sends it
+// to the point under the crosshair, N recalls it. At the stick: arrows pitch/roll, A/D yaw, W/S throttle.
+const droneView = createBaseGameDroneView({ scene, worldCoordinates, tintFor: () => CRAFT_TINT });   // the flight sim's colours; owner tint can come later
+const droneCtl = { active: false, id: null, toggleEdge: false, sendEdge: false, recallEdge: false, fireHeld: false };
+const soloDrones = new Map();   // Solo only: the same records the server keeps, stepped in animate()
+const localHeadLocal = [0, 0, 0];
+function localDroneOwnerId() { return isOnline() ? (networkSession?.clientId ?? 'local') : 'local'; }
+function ownedDroneId(kind) { return droneView.ownedBy(localDroneOwnerId(), kind)?.id ?? null; }
+function soloGroundY(x, z) { return settings.worldMode === 'terrain' ? terrain.groundHeight(x, z) : worldSpawn()[1] - 1.5; }
+// Where the crosshair meets the world, as a global point: the world query first, then the terrain
+// field beyond the resident chunks, marched in 10 m steps out to 1.5 km.
+const _sendOrigin = new THREE.Vector3(), _sendDir = new THREE.Vector3();
+function droneSendPoint() {
+  camera.getWorldPosition(_sendOrigin);
+  camera.getWorldDirection(_sendDir);
+  const origin = worldCoordinates.toGlobal([_sendOrigin.x, _sendOrigin.y, _sendOrigin.z]);
+  const dir = [_sendDir.x, _sendDir.y, _sendDir.z];
+  let hit = null;
+  try { hit = worldQuery.raycast({ origin, direction: dir, maxDistance: 1500 }); } catch { hit = null; }
+  if (hit?.point) return [...hit.point];
+  if (settings.worldMode !== 'terrain') return null;
+  for (let t = 10; t <= 1500; t += 10) {
+    const x = origin[0] + dir[0] * t, y = origin[1] + dir[1] * t, z = origin[2] + dir[2] * t;
+    const g = terrain.groundHeight(x, z);
+    if (y <= g) return [x, g, z];
+  }
+  return null;
+}
+// The stick and the orders for this frame's ticks, or null with nothing to fly. Consumes the edges.
+function buildDroneInput() {
+  if (droneCtl.toggleEdge) {
+    droneCtl.toggleEdge = false;
+    if (droneCtl.active) droneCtl.active = false;
+    else { const id = ownedDroneId(heldGadgetKind()) ?? ownedDroneId(null); if (id) { droneCtl.active = true; droneCtl.id = id; droneView.resetCamera(); } }
+  }
+  if (droneCtl.active && !droneView.drones.has(droneCtl.id)) droneCtl.active = false;
+  const id = droneCtl.active ? droneCtl.id : (ownedDroneId(heldGadgetKind()) ?? ownedDroneId(null));
+  if (!id) { droneCtl.sendEdge = false; droneCtl.recallEdge = false; return null; }
+  const k = (code) => (playerKeys.has(code) ? 1 : 0);
+  const di = { id, mode: droneCtl.active ? 1 : 0, pitch: 0, roll: 0, yaw: 0, throttle: 0, send: null, recall: false };
+  if (droneCtl.active) {
+    di.pitch = k('ArrowDown') - k('ArrowUp');
+    di.roll = k('ArrowRight') - k('ArrowLeft');
+    di.yaw = k('KeyD') - k('KeyA');
+    di.throttle = k('KeyW') - k('KeyS');
+  }
+  if (droneCtl.sendEdge) { droneCtl.sendEdge = false; const p = droneSendPoint(); if (p) { di.send = p; di.mode = 0; droneCtl.active = false; } }
+  if (droneCtl.recallEdge) { droneCtl.recallEdge = false; di.recall = true; di.mode = 0; droneCtl.active = false; }
+  return di;
+}
+// Solo: the server's launchGadget / applyDroneInput / stepDrones, on this page's ground.
+const _soloWorld = { ownerPos: null, ownerYaw: 0, ownerAlive: true, groundY: soloGroundY, input: null };
+function stepSoloDrones(dt, canControl, di) {
+  const kind = heldGadgetKind();
+  const fireEdge = canControl && weaponState.firing && !droneCtl.fireHeld;
+  droneCtl.fireHeld = canControl && weaponState.firing;
+  if (fireEdge && kind && !droneView.ownedBy('local', kind) && !combatState.dead) {
+    const eye = fpState.hasEye ? worldCoordinates.toGlobal(fpState.eye) : (() => { const g = playerController.getPosition(); return [g[0], g[1] + 1.7, g[2]]; })();
+    const rec = createBaseGameDrone(kind, { ownerId: 'local', from: [eye[0], eye[1] + 0.5, eye[2]], look: lookDirection(playerView.yaw, playerView.pitch), throwSpeed: 8, groundY: soloGroundY(eye[0], eye[2]) });
+    soloDrones.set(rec.id, rec);
+    audioDirector.localSlotChange();
+  }
+  const rec = di ? soloDrones.get(di.id) : null;
+  if (rec && !rec.done) {
+    if (di.send) sendDroneTo(rec, di.send);
+    else if (di.recall) recallDrone(rec);
+    else if (di.mode === 1) { if (rec.mode !== 'manual') takeOverDrone(rec, { groundY: soloGroundY }); if (rec.mode === 'manual') { rec.input.pitch = di.pitch; rec.input.roll = di.roll; rec.input.yaw = di.yaw; rec.input.throttle = di.throttle; } }
+    else if (rec.mode === 'manual') releaseDrone(rec);
+  }
+  for (const r of soloDrones.values()) if (r.mode === 'manual' && (!di || di.id !== r.id || di.mode !== 1)) releaseDrone(r);
+  _soloWorld.ownerPos = playerController.getPosition();
+  _soloWorld.ownerYaw = playerView.yaw;
+  _soloWorld.ownerAlive = !combatState.dead;
+  for (const r of soloDrones.values()) { _soloWorld.input = r.input; stepBaseGameDrone(r, Math.min(dt, 0.05), _soloWorld); if (r.done) soloDrones.delete(r.id); }
+  droneView.ingest([...soloDrones.values()].map(droneWireState), performance.now());
+}
+function droneHudLine() {
+  const owner = localDroneOwnerId();
+  const parts = [];
+  for (const rec of droneView.drones.values()) if (rec.owner === owner) parts.push(`${rec.kind} ${rec.mode === 'manual' ? 'FLYING' : rec.state}${Number.isFinite(rec.hp) ? ` ${Math.round(rec.hp)}hp` : ''}`);
+  if (!parts.length) return heldGadgetKind() ? `<br>[click] throw the ${heldGadgetKind()}` : '';
+  return `<br>drone ${parts.join(' · ')}<br>[F] ${droneCtl.active ? 'release' : 'fly'} · [B] send · [N] recall`;
+}
 // Presentation only: bodies consume predicted/authoritative global state and can never move the capsule.
 // Held weapons: one mount system for every body (instanced GLBs, shared anchors and poses).
 const weaponLoader = attachDracoLoader(new GLTFLoader());
@@ -1207,12 +1345,12 @@ function stepLocalSwap(tick) {
   if (swapPresent && !swapPresent.switched && swapPhase(localSwapState, tick) !== 'holster') {
     swapPresent.switched = true;
     applyHeldWeapon();
-    playerBodies.localSwap(4, swapPresent.to);
+    playerBodies.localSwap(4, isBaseGameGadget(swapPresent.to) ? null : swapPresent.to);
   }
 }
 function applyHeldWeapon() {
-  weaponViewModel.setWeapon(localWeaponId());
-  playerBodies.setWeapon(localWeaponId());
+  weaponViewModel.setWeapon(bodyWeaponId());
+  playerBodies.setWeapon(bodyWeaponId());
   playerBodies.setLocalLoadout(currentLoadout());
 }
 
@@ -1222,6 +1360,41 @@ const effectRenderer = createEffectRenderer({ THREE, scene });
 // Dynamic light budget (extracted from bot-viewer-visuals.js): two resident point lights that
 // muzzle flashes and blasts borrow for a few frames. Intensity-only writes, never .visible.
 const flashLights = createFlashLights({ THREE, scene, getViewPosition: () => camera.position });
+// The weapon flashlight: one resident SpotLight on the bore plus its lens spill. Resident and
+// intensity-driven for the same reason the flash pool is — see the WebGPU note in weapon-light.js.
+const weaponLight = createWeaponLight({ THREE, scene, options: { shadows: false } });
+const _weaponLightMuzzle = [0, 0, 0], _weaponLightDir = [0, 0, 0], _weaponLightVec = new THREE.Vector3();
+const _weaponLightSource = { muzzle: _weaponLightMuzzle, direction: _weaponLightDir };
+function applyFlashlight() {
+  weaponLight.configure({
+    intensity: settings.flashlightIntensity,
+    range: settings.flashlightRange,
+    angleDeg: settings.flashlightAngle,
+    penumbra: settings.flashlightSoftness,
+    warmth: settings.flashlightWarmth,
+    spillIntensity: settings.flashlightSpill,
+    shadows: settings.flashlightShadows === true,
+  });
+  weaponLight.setOn(settings.flashlightOn === true);
+}
+// Where the lamp is bolted: the held weapon's muzzle and bore. A knife or an empty hand has no
+// barrel, so the beam falls back to the eye and the look direction rather than blinking out.
+function weaponLightSource(canControl) {
+  if (!canControl || combatState.dead) return null;
+  const mount = playerBodies.localMount;
+  if (mount && weaponSystem.muzzleWorld(mount, _weaponLightVec)) {
+    _weaponLightMuzzle[0] = _weaponLightVec.x; _weaponLightMuzzle[1] = _weaponLightVec.y; _weaponLightMuzzle[2] = _weaponLightVec.z;
+    if (weaponSystem.barrelDirection(mount, _weaponLightVec)) {
+      _weaponLightDir[0] = _weaponLightVec.x; _weaponLightDir[1] = _weaponLightVec.y; _weaponLightDir[2] = _weaponLightVec.z;
+      return _weaponLightSource;
+    }
+  }
+  const cap = playerController.getCapsule();
+  _weaponLightMuzzle[0] = cap.end[0]; _weaponLightMuzzle[1] = cap.end[1] + cap.radius; _weaponLightMuzzle[2] = cap.end[2];
+  const look = lookDirection(playerView.yaw, playerView.pitch);
+  _weaponLightDir[0] = look[0]; _weaponLightDir[1] = look[1]; _weaponLightDir[2] = look[2];
+  return _weaponLightSource;
+}
 // Blast debris: the html-game-v2 port bot-viewer-v3 and the flight sim run, on this page's ground.
 // The sim lives in render-local space; a rebase moves the origin under it, so it clears then.
 const _debrisGlobal = [0, 0, 0];
@@ -1492,14 +1665,14 @@ function updateProjectiles(now, dt) {
 let shownCombatStatus = null, shownDamageFlash = null;
 // One slot's chip: the key that selects it, the weapon, and its own magazine. Melee has no ammo,
 // and the throwable reads as a single pouch count since it is thrown from the pouch, not a magazine.
-const SLOT_KEY_LABELS = ['1', '2', '3', '4'];
+const SLOT_KEY_LABELS = ['1', '2', '3', '4', '5', '6'];
 function slotChipMarkup(loadout, slot, round) {
   const id = weaponForSlot(loadout, slot);
   const key = `<span class="key">${SLOT_KEY_LABELS[slot]}</span>`;
   if (!id) return `<span class="slot empty">${key}—</span>`;
   const weapon = getWeapon(id);
   const mode = weapon?.mode || 'hitscan';
-  const ammo = mode === 'melee' ? null : localAmmo.ensureAmmo(LOCAL_AMMO_ID, id);
+  const ammo = mode === 'melee' || isBaseGameGadget(id) ? null : localAmmo.ensureAmmo(LOCAL_AMMO_ID, id);
   const count = !ammo ? '' : mode === 'projectile' && slot === BASE_GAME_WEAPON_SLOTS.indexOf('throwable')
     ? ` ${round(ammo.mag + ammo.reserve)}`
     : ` ${round(ammo.mag)}/${round(ammo.reserve)}`;
@@ -1543,7 +1716,7 @@ function updateReticle(canControl) {
 
 function renderCombatStatus(now) {
   const weaponId = localWeaponId();
-  const ammo = weaponId && (getWeapon(weaponId)?.mode || 'hitscan') !== 'melee' ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, weaponId) : null;
+  const ammo = weaponId && !isBaseGameGadget(weaponId) && (getWeapon(weaponId)?.mode || 'hitscan') !== 'melee' ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, weaponId) : null;
   const hp = `<span class="hp${combatState.dead ? ' dead' : ''}">${combatState.dead ? 'DEAD' : `${Math.round(combatState.health)} HP`}</span>`;
   const round = value => (Number.isFinite(value) ? String(value) : '∞');
   const gun = weaponId ? `${weaponId}${ammo ? ` ${round(ammo.mag)} / ${round(ammo.reserve)}` : ''}` : 'unarmed';
@@ -1560,9 +1733,11 @@ function renderCombatStatus(now) {
   const isStance = playerController.stance;
   const posture = playerStance === 'stand' && isStance === 'stand' ? ''
     : `<br>posture ${playerStance}${isStance !== playerStance ? ` (${isStance})` : ''}${playerController.standBlocked ? ' — no headroom' : ''}`;
+  // In daylight a lit beam is invisible, so the only way to know the switch took is to say so.
+  const torch = settings.flashlightOn ? '<br>[L] light on' : '';
   // Write only on change. innerHTML reparses, and health, ammo and the hit flag hold still for whole
   // seconds at a time, so the great majority of frames wrote the identical markup back.
-  const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${killed}${slots}`;
+  const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${torch}${droneHudLine()}${killed}${slots}`;
   if (markup !== shownCombatStatus) { shownCombatStatus = markup; combatStatus.innerHTML = markup; }
   const flash = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
   if (flash !== shownDamageFlash) { shownDamageFlash = flash; damageFlash.style.opacity = flash; }
@@ -1570,9 +1745,12 @@ function renderCombatStatus(now) {
 const aimRayOrigin = new THREE.Vector3(), aimRayDirection = new THREE.Vector3(), aimPointScratchArray = [0, 0, 0];
 const aimPointLocal = new THREE.Vector3();
 function currentLoadout() {
-  return { primary: settings.weaponPrimary, sidearm: settings.weaponSidearm, melee: settings.weaponMelee, throwable: settings.weaponThrowable };
+  return { primary: settings.weaponPrimary, sidearm: settings.weaponSidearm, melee: settings.weaponMelee, throwable: settings.weaponThrowable, gadget: settings.weaponGadget, gadget2: settings.weaponGadget2 };
 }
 function localWeaponId() { return weaponForSlot(currentLoadout(), weaponState.slot); }
+// The bodies and the viewmodel only know weapons.js ids; a gadget in hand shows through the drone view.
+function bodyWeaponId() { const id = localWeaponId(); return isBaseGameGadget(id) ? null : id; }
+function heldGadgetKind() { const id = localWeaponId(); return isBaseGameGadget(id) ? id : null; }
 function localThrowableId() { return weaponForSlot(currentLoadout(), BASE_GAME_WEAPON_SLOTS.indexOf('throwable')); }
 // Where the crosshair lands: the camera ray against the world, or a far point along it.
 function updateLocalAimPoint() {
@@ -1669,8 +1847,8 @@ function cycleSlot(direction) {
 }
 
 function applyWeaponSelection() {
-  weaponViewModel.setWeapon(localWeaponId());
-  playerBodies.setWeapon(localWeaponId());
+  weaponViewModel.setWeapon(bodyWeaponId());
+  playerBodies.setWeapon(bodyWeaponId());
   playerBodies.setLocalLoadout(currentLoadout());   // the slots not in hand hang on the body
   if (isOnline()) networkSession?.setLoadout(currentLoadout());
 }
@@ -1781,7 +1959,8 @@ function applyBodyMovement() {
   playerBodies.setMovementTuning(patch);
 }
 const PLAYER_CONFIG_KEYS = ['playerMoveSpeed', 'playerSprintMultiplier', 'playerJumpSpeed',
-  'playerGravity', 'playerSlopeLimit', 'playerStepHeight', 'playerSnapDistance'];
+  'playerGravity', 'playerGroundDeceleration', 'playerSlopeSlideDeceleration',
+  'playerSlopeLimit', 'playerStepHeight', 'playerSnapDistance'];
 const appliedPlayerConfig = {};
 function applyPlayerConfiguration() {
   // Called every frame; configure() validates and copies, so only run it when a value moved.
@@ -1795,6 +1974,8 @@ function applyPlayerConfiguration() {
       sprintMultiplier: settings.playerSprintMultiplier,
       jumpSpeed: settings.playerJumpSpeed,
       gravity: settings.playerGravity,
+      groundDeceleration: settings.playerGroundDeceleration,
+      slopeSlideDeceleration: settings.playerSlopeSlideDeceleration,
       slopeLimitDegrees: settings.playerSlopeLimit,
       stepHeight: settings.playerStepHeight,
       snapDistance: settings.playerSnapDistance,
@@ -1873,7 +2054,8 @@ const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoord
 flora.onMesh(mesh => { if (mesh && !reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh); });
 const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRadius', 'grassBladeHeight',
   'grassBladeWidth', 'grassWind', 'grassStyle', 'grassVerticalOffset', 'grassCoverGate',
-  'grassGroundTint', 'grassGroundTintFar'];
+  'grassGroundTint', 'grassGroundTintFar', 'grassGroundTintReach', 'grassGroundTintMip',
+  'grassCullStart', 'grassDispatchBudgetM'];
 const appliedFlora = {};
 let floraLoading = false;
 function applyFloraSettings() {
@@ -1894,6 +2076,10 @@ function applyFloraSettings() {
     grassCoverGate: settings.grassCoverGate,
     grassGroundTint: settings.grassGroundTint,
     grassGroundTintFar: settings.grassGroundTintFar,
+    grassGroundTintReach: settings.grassGroundTintReach,
+    grassGroundTintMip: settings.grassGroundTintMip,
+    grassCullStart: settings.grassCullStart,
+    grassDispatchBudgetM: settings.grassDispatchBudgetM,
   });
 }
 // water-config.json (authored in demos/water-demo.html) is the look on load: adopt its foam and
@@ -2119,9 +2305,9 @@ function updateWorld(dt) {
       bodyModelRequested = settings.bodyDesign;
     }
   }
-  if (playerBodies.localWeapon && playerBodies.localWeapon.id !== localWeaponId()) playerBodies.setWeapon(localWeaponId());
+  if (playerBodies.localWeapon && playerBodies.localWeapon.id !== bodyWeaponId()) playerBodies.setWeapon(bodyWeaponId());
   applyWeaponPresentation();
-  if (weaponViewModel.weaponId !== localWeaponId()) weaponViewModel.setWeapon(localWeaponId());
+  if (weaponViewModel.weaponId !== bodyWeaponId()) weaponViewModel.setWeapon(bodyWeaponId());
   applyBodyMovement();
   applyArmTuning();
   applySkyComponentVisibility();
@@ -2328,7 +2514,9 @@ function changed(key) {
     syncAllControls();   // the three offset sliders now show the other mode's numbers
   } else if (key === 'unlimitedAmmo') {
     applyUnlimitedAmmo();
-  } else if (key === 'weaponPrimary' || key === 'weaponSidearm' || key === 'weaponMelee' || key === 'weaponThrowable') {
+  } else if (key?.startsWith('flashlight')) {
+    applyFlashlight();
+  } else if (key === 'weaponPrimary' || key === 'weaponSidearm' || key === 'weaponMelee' || key === 'weaponThrowable' || key === 'weaponGadget' || key === 'weaponGadget2') {
     applyWeaponSelection();
   } else if (key === 'fpPreset') {
     applyFpPreset(settings.fpPreset);
@@ -2610,11 +2798,29 @@ addSelect(playerSec, 'weaponPrimary', 'Primary weapon (1)', [...BASE_GAME_WEAPON
 addSelect(playerSec, 'weaponSidearm', 'Sidearm (2)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponMelee', 'Melee (3)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
+const gadgetLabel = id => ({ none: 'None', quad: 'Quadcopter', uav: 'UAV' })[id] ?? id;
+addSelect(playerSec, 'weaponGadget', 'Gadget (5)', [...BASE_GAME_GADGET_IDS], BASE_GAME_GADGET_IDS.map(gadgetLabel));
+addSelect(playerSec, 'weaponGadget2', 'Gadget (6)', [...BASE_GAME_GADGET_IDS], BASE_GAME_GADGET_IDS.map(gadgetLabel));
 addToggle(playerSec, 'reticleEnabled', 'Reticle');
 addToggle(playerSec, 'reticleSpread', 'Reticle opens with the spread cone');
 const reticleNote = document.createElement('div'); reticleNote.className = 'note';
 reticleNote.textContent = 'The reticle sits where the round would land, not at screen centre — in third person the camera is behind and beside your head, so those are metres apart. Its gap is the live cone through the camera FOV, and it turns amber whenever the trigger would do nothing (reloading, mid-swap, empty).';
 playerSec.append(reticleNote);
+
+// Weapon flashlight. Not v3's drawn cone — a real SpotLight on the bore, so what you see is
+// surfaces being lit. Its own section because it is seven numbers nobody needs open by default.
+const torchSec = createSection(playerSec, 'Weapon flashlight', { collapsed: true });
+addToggle(torchSec, 'flashlightOn', 'Flashlight on (L)');
+addRange(torchSec, 'flashlightIntensity', 'Beam brightness', 0, 2000, 5, value => value.toFixed(0));
+addRange(torchSec, 'flashlightRange', 'Beam range', 1, 300, 1, value => `${value.toFixed(0)} m`);
+addRange(torchSec, 'flashlightAngle', 'Cone angle', 1, 80, 1, value => `${value.toFixed(0)} deg`);
+addRange(torchSec, 'flashlightSoftness', 'Edge softness', 0, 1, 0.01, value => value.toFixed(2));
+addRange(torchSec, 'flashlightWarmth', 'Colour', 0, 1, 0.01, value => value < 0.34 ? 'cool' : value < 0.67 ? 'neutral' : 'warm');
+addRange(torchSec, 'flashlightSpill', 'Lens spill', 0, 40, 0.5, value => value <= 0.01 ? 'off' : value.toFixed(1));
+addToggle(torchSec, 'flashlightShadows', 'Beam casts shadows');
+const torchNote = document.createElement('div'); torchNote.className = 'note';
+torchNote.textContent = 'The lamp sits on the barrel, so the beam points where the gun points, not where the camera does. With no gun in hand it falls back to your eye. Shadows stop the beam shining through walls but add a second shadow pass, and switching them recompiles the scene’s materials once. The beam is yours alone: it is not sent to other players yet.';
+torchSec.append(torchNote);
 
 addToggle(playerSec, 'unlimitedAmmo', 'Unlimited ammo');
 const unlimitedAmmoNote = document.createElement('div'); unlimitedAmmoNote.className = 'note';
@@ -2690,6 +2896,8 @@ addRange(playerSec, 'playerMoveSpeed', 'Walk speed', 1, 15, 0.25, value => `${va
 addRange(playerSec, 'playerSprintMultiplier', 'Sprint multiplier', 1, 3, 0.05, value => `${value.toFixed(2)}x`);
 addRange(playerSec, 'playerJumpSpeed', 'Jump speed', 2, 16, 0.25, value => `${value.toFixed(2)} m/s`);
 addRange(playerSec, 'playerGravity', 'Gravity', 1, 60, 1, value => `${value.toFixed(0)} m/s2`);
+addRange(playerSec, 'playerGroundDeceleration', 'Ground braking', 0, 100, 1, value => `${value.toFixed(0)} m/s2`);
+addRange(playerSec, 'playerSlopeSlideDeceleration', 'Steep-slope friction', 0, 40, 1, value => `${value.toFixed(0)} m/s2`);
 addRange(playerSec, 'playerSlopeLimit', 'Slope limit', 1, 85, 1, value => `${value.toFixed(0)} deg`);
 addRange(playerSec, 'playerStepHeight', 'Step height', 0, 1.2, 0.05, value => `${value.toFixed(2)} m`);
 addRange(playerSec, 'playerSnapDistance', 'Snap down', 0, 1.2, 0.05, value => `${value.toFixed(2)} m`);
@@ -2853,8 +3061,12 @@ addRange(waterSec, 'waveSeed', 'Wave seed', 0, 1000, 1);
 // ---- Plants (plants plan F5): grass first, trees and understory later ----
 const plantsSec = createSection(ctrlBody, 'Plants', { collapsed: true });
 addToggle(plantsSec, 'grassEnabled', 'Grass (needs the terrain world)');
-addRange(plantsSec, 'grassDensity', 'Blades per square metre', 0, 60, 0.5, value => value.toFixed(1));
-addRange(plantsSec, 'grassRadius', 'Draw radius (m)', 5, 200, 1, value => `${value.toFixed(0)} m`);
+addRange(plantsSec, 'grassDensity', 'Blades per square metre', 0, 128, 0.5, value => value.toFixed(1));
+addRange(plantsSec, 'grassRadius', 'Draw radius (m)', 5, 600, 1, value => `${value.toFixed(0)} m`);
+addRange(plantsSec, 'grassCullStart', 'Fade band start (m, 0 = 80% of radius)', 0, 600, 1,
+  value => (value ? `${value.toFixed(0)} m` : 'auto'));
+addRange(plantsSec, 'grassDispatchBudgetM', 'Recull thread budget (millions)', 1, 128, 1,
+  value => `${value.toFixed(0)}M`);
 addRange(plantsSec, 'grassBladeHeight', 'Blade height', 0.05, 4, 0.05, value => value.toFixed(2));
 addRange(plantsSec, 'grassBladeWidth', 'Blade width', 0.05, 4, 0.05, value => value.toFixed(2));
 addRange(plantsSec, 'grassWind', 'Wind', 0, 4, 0.05, value => value.toFixed(2));
@@ -2864,6 +3076,8 @@ addRange(plantsSec, 'grassVerticalOffset', 'Vertical bias (m)', -0.5, 0.5, 0.01,
 addRange(plantsSec, 'grassCoverGate', 'Follow biome cover', 0, 1, 0.05, value => value.toFixed(2));
 addRange(plantsSec, 'grassGroundTint', 'Ground tint at the root', 0, 1, 0.05, value => value.toFixed(2));
 addRange(plantsSec, 'grassGroundTintFar', 'Ground tint at the draw edge', 0, 1, 0.05, value => value.toFixed(2));
+addRange(plantsSec, 'grassGroundTintReach', 'Ground tint reach up the blade', 0.01, 1, 0.01, value => value.toFixed(2));
+addRange(plantsSec, 'grassGroundTintMip', 'Ground texture detail (mip)', 0, 10, 1, value => value.toFixed(0));
 // What the sliders actually bought. Both of them used to clamp in silence.
 const grassRuntimeLine = document.createElement('div');
 grassRuntimeLine.className = 'note';
@@ -2873,12 +3087,16 @@ function refreshGrassRuntimeLine() {
   if (!g.enabled) { grassRuntimeLine.textContent = 'Grass off.'; return; }
   if (!g.built) { grassRuntimeLine.textContent = 'Grass waiting on the terrain field.'; return; }
   const clamped = g.requestedRadius > g.radius ? ` (asked ${g.requestedRadius.toFixed(0)})` : '';
-  const over = g.truncating
-    ? ` Buffer holds ${(g.capacity / 1e6).toFixed(1)}M, so the far edge is truncated.`
+  const thinned = g.dispatchClamped
+    ? ` Thread budget thinned it from ${g.requestedDensity.toFixed(1)}; raise the budget or drop the radius.`
     : '';
-  grassRuntimeLine.textContent = `${g.radius.toFixed(0)} m${clamped} at ${g.density} blades/m^2 (max ${g.maxDensity}): `
-    + `~${(g.expected / 1e3).toFixed(0)}k blades, ${(g.dispatch / 1e3).toFixed(0)}k threads a recull, `
-    + `field ${(g.coverage * 100).toFixed(0)}% streamed.${over}`;
+  const over = g.truncating
+    ? ` Wants ~${(g.expected / 1e6).toFixed(1)}M blades but the buffer holds ${(g.capacity / 1e6).toFixed(1)}M, so the far edge truncates.`
+    : '';
+  grassRuntimeLine.textContent = `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity}): `
+    + `~${(g.expected / 1e3).toFixed(0)}k blades, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull, `
+    + `ground ${g.groundSamplesTextures ? 'textures' : 'tint'}, field ${(g.coverage * 100).toFixed(0)}% streamed.`
+    + `${thinned}${over}`;
 }
 
 // ---- Weather: clouds (phase C1; rain, lightning and the shared master land in later phases) ----
@@ -2999,6 +3217,8 @@ addRange(weatherAudioSec, 'weatherThunderVolume', 'Thunder volume', 0, 1, 0.01, 
 addRange(weatherAudioSec, 'weatherSoundSpeed', 'Speed of sound', 50, 2000, 5, value => `${value.toFixed(0)} m/s`);
 
 addRange(atmosphereSec, 'overcastPerRain', 'Overcast per unit of weather', 0, 2, 0.01, f2);
+addColor(atmosphereSec, 'overcastDayColor', 'Overcast lid, day');
+addColor(atmosphereSec, 'overcastNightColor', 'Overcast lid, night');
 addRange(atmosphereSec, 'sunDimPerRain', 'Sun dimming per unit', 0, 1, 0.01, f2);
 addRange(atmosphereSec, 'ambientLiftPerRain', 'Ambient lift per unit', 0, 1, 0.01, f2);
 addToggle(atmosphereSec, 'weatherFogEnabled', 'Weather fog');
@@ -3056,6 +3276,7 @@ if (missingControls.length) throw new Error(`Unsaved/unconfigured settings: ${mi
 
 loadShotSpread();   // the committed accuracy numbers; the built-in fallback stands until it lands
 applyUnlimitedAmmo();   // restored from the autosave in Solo, replaced by the room's world online
+applyFlashlight();      // purely local: the beam is not replicated, so it is never the room's to set
 playerBodies.setLocalLoadout(currentLoadout());
 
 const multiplayerStatus = document.createElement('div');
@@ -3138,6 +3359,7 @@ function applyPlayerSnapshot(snapshot, session) {
     if (blast) presentExplosion(blast.p, blast.radius, { contact: blast.contact, weaponId: blast.weapon });
   }
   ingestProjectiles(snapshot);
+  droneView.ingest(snapshot.drones, snapshot.serverTime);
 }
 let loadoutSentFor = null;   // session the loadout was last pushed to
 receiveNetworkSnapshot = (snapshot, session = networkSession) => {
@@ -3229,6 +3451,7 @@ function applyAllState(payload) {
   if (typeof data.ui?.panelCollapsed === 'boolean') ctrlRoot.classList.toggle('collapsed', data.ui.panelCollapsed);
   applySectionStates(ctrlBody, data.ui?.sections);
   applyAudioSettings();
+  applyFlashlight();
   applyMusicSetting().catch(reportBaseGameError);
   controls.update();
   syncAllControls();
@@ -3432,7 +3655,7 @@ addEventListener('keydown', event => {
 addEventListener('keydown', event => {
   if (activeMode === 'menu' || gameplayPaused || settings.playerControlMode !== 'player') return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
-  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight', 'Space'].includes(event.code)) {
+  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) {
     event.preventDefault();
     playerKeys.add(event.code);
   }
@@ -3446,11 +3669,21 @@ addEventListener('keydown', event => {
   if (event.code === 'KeyT' && !event.repeat) { resetPlayer(); scheduleAutosave(); }
   if (event.code === 'KeyR' && !event.repeat) weaponState.reloadEdge = true;
   if (event.code === 'KeyG' && !event.repeat) weaponState.throwEdge = true;
+  if (event.code === 'KeyF' && !event.repeat) droneCtl.toggleEdge = true;
+  if (event.code === 'KeyB' && !event.repeat) droneCtl.sendEdge = true;
+  if (event.code === 'KeyN' && !event.repeat) droneCtl.recallEdge = true;
+  if (event.code === 'KeyL' && !event.repeat) {
+    // The key writes the SETTING, so the panel toggle and the key are one switch, not two.
+    settings.flashlightOn = !settings.flashlightOn;
+    syncAllControls();
+    changed('flashlightOn');   // applies it
+    scheduleAutosaveSafe();
+  }
   // Posture toggles, not holds: you do not hold a key to stay lying down. Pressing the key you are
   // already in stands you back up, and either key takes you straight there from the other.
   if (event.code === 'KeyC' && !event.repeat) playerStance = playerStance === 'kneel' ? 'stand' : 'kneel';
   if (event.code === 'KeyZ' && !event.repeat) playerStance = playerStance === 'prone' ? 'stand' : 'prone';
-  const slotKeys = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
+  const slotKeys = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6'];
   const slotIndex = slotKeys.indexOf(event.code);
   if (slotIndex >= 0 && !event.repeat) selectSlot(slotIndex);
   if (event.code === 'KeyQ' && !event.repeat) selectSlot(weaponState.lastSlot);
@@ -3472,6 +3705,7 @@ renderer.domElement.addEventListener('click', () => {
 addEventListener('mousemove', event => {
   if (gameplayPaused || settings.playerControlMode !== 'player'
     || document.pointerLockElement !== renderer.domElement) return;
+  if (droneCtl.active) return;   // at the stick the mouse is not the look: the flight sim's keys fly, the body's view stays put
   playerView.addLook(-event.movementX * settings.cameraSensitivity, -event.movementY * settings.cameraSensitivity);
 });
 function zoomCamera(direction) {
@@ -3801,16 +4035,18 @@ async function animate() {
 
     const online = isOnline();
     const canControl = !gameplayPaused && settings.playerControlMode === 'player';
+    const droneInput = canControl ? buildDroneInput() : null;
+    const atStick = droneCtl.active;   // the movement keys are the drone's; the body stands (the server's rule too)
     const input = canControl ? {
-      moveX: (playerKeys.has('KeyD') ? 1 : 0) - (playerKeys.has('KeyA') ? 1 : 0),
-      moveZ: (playerKeys.has('KeyW') ? 1 : 0) - (playerKeys.has('KeyS') ? 1 : 0),
+      moveX: atStick ? 0 : (playerKeys.has('KeyD') ? 1 : 0) - (playerKeys.has('KeyA') ? 1 : 0),
+      moveZ: atStick ? 0 : (playerKeys.has('KeyW') ? 1 : 0) - (playerKeys.has('KeyS') ? 1 : 0),
       yaw: playerView.yaw,
       pitch: playerView.pitch,
-      sprint: playerKeys.has('ShiftLeft') || playerKeys.has('ShiftRight'),
+      sprint: !atStick && (playerKeys.has('ShiftLeft') || playerKeys.has('ShiftRight')),
       crouch: playerKeys.has('ControlLeft'),   // swim down; posture is its own channel below
       stance: stanceIndex(playerStance),
       slot: weaponState.slot,
-      aim: weaponState.aiming,
+      aim: !atStick && weaponState.aiming,   // the right button is not a zoom while flying
       fire: weaponState.firing,
     } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false, crouch: false, stance: stanceIndex(playerStance), slot: weaponState.slot, aim: false, fire: false };
     if (!canControl) { weaponState.reloadEdge = false; weaponState.throwEdge = false; }
@@ -3830,7 +4066,7 @@ async function animate() {
         weaponState.throwEdge = false;
         stepLocalTrigger(prediction.tick + 1, input.fire, reload, input.aim);   // predicted: the server echoes the same action tick
         stepLocalThrow(prediction.tick + 1, thrown);
-        return { ...input, jump, reload, throw: thrown };
+        return { ...input, jump: atStick ? false : jump, reload, throw: thrown, drone: droneInput };
       });
       playerInterpolationAlpha = stepped.alpha;
       playerController.interpolatedPosition(playerInterpolationAlpha, playerRenderPosition);
@@ -3842,7 +4078,8 @@ async function animate() {
       }
     } else if (canControl) {
       playerController.setInput(input);
-      if (jumpEdgeQueued) { playerController.queueJump(); jumpEdgeQueued = false; }
+      if (jumpEdgeQueued) { if (!atStick) playerController.queueJump(); jumpEdgeQueued = false; }
+      stepSoloDrones(dt, canControl, droneInput);
       const soloReload = weaponState.reloadEdge;
       weaponState.reloadEdge = false;
       const soloThrow = weaponState.throwEdge;
@@ -3887,6 +4124,7 @@ async function animate() {
         comfortRateY: comfortOn ? comfort.y : 0,
       });
       applyAimOptics();   // FOV/zoom/eye push before the gun frame reads the camera
+      if (droneCtl.active) { camera.fov = settings.cameraFov; camera.updateProjectionMatrix(); droneView.placeCamera(camera, droneCtl.id, dt); }   // at the stick, the camera rides the drone; no zoom
     } else {
       if (settings.playerControlMode === 'orbit') controls.update();
       playerView.syncCapsule(playerRenderPosition, {
@@ -3951,6 +4189,7 @@ async function animate() {
       visible: bodyVisible,
       viewFrame,
       viewBlend: viewFrame ? fpState.viewBlend : 0,
+      overhead: combatState.dead ? null : heldGadgetKind(),   // both hands up with the gadget
     });
     fpState.hasEye = !!playerBodies.localEyePoint(fpState.eye);
     stepPlayerBodyPose(localCombatPose, {
@@ -3987,20 +4226,30 @@ async function animate() {
             yaw: record.sample.yaw,
             pitch: record.sample.pitch,
             grounded: record.sample.grounded,
-            weapon: record.sample.weapon,
+            weapon: isBaseGameGadget(record.sample.weapon) ? null : record.sample.weapon,
             aiming: record.sample.aiming,
             action: record.sample.action,
             actionTick: record.sample.actionTick,
             bodyModel: record.sample.bodyModel,
             stance: record.sample.stance,
+            overhead: isBaseGameGadget(record.sample.weapon) ? record.sample.weapon : null,
           });
+          // A gadget in a remote's hands is drawn overhead by the drone view, not the weapon mount.
+          const remoteHands = playerBodies.heldAnchor(id, remoteHeadLocal);
+          if (!remoteHands) { worldCoordinates.toRenderLocal(record.sample.position, remoteHeadLocal); remoteHeadLocal[1] += 2.3; }
+          droneView.showHeld(id, isBaseGameGadget(record.sample.weapon) ? record.sample.weapon : null, remoteHeadLocal, remoteHands ? remoteHands.yaw : record.sample.yaw, !remoteHands);
         }
       }
       playerBodies.endRemoteFrame();
-      for (const id of [...playerBodies.remoteIds]) if (!remotePlayers.players.has(id)) { playerBodies.releaseRemote(id); audioDirector.releaseRemote(id); }
+      for (const id of [...playerBodies.remoteIds]) if (!remotePlayers.players.has(id)) { playerBodies.releaseRemote(id); audioDirector.releaseRemote(id); droneView.hideHeld(id); }
     } else {
       playerBodies.flushWeapons();
     }
+    droneView.update(performance.now(), dt, { interpolationDelayMs: online ? settings.interpolationDelayMs : 0 });
+    // The gadget in the local hands: between the solved hands when the rig is drawn, over the head otherwise.
+    const localHands = playerBodies.heldAnchor('local', localHeadLocal);
+    if (!localHands) { localHeadLocal[0] = playerRenderPosition[0]; localHeadLocal[1] = playerRenderPosition[1] + 2.3; localHeadLocal[2] = playerRenderPosition[2]; }
+    droneView.showHeld('local', combatState.dead ? null : heldGadgetKind(), localHeadLocal, localHands ? localHands.yaw : playerView.yaw, !localHands);
     frameProfiler.mark('bodies', performance.now() - tBodies);
     sky.group.position.copy(camera.position);
     frameProfiler.time('audio', () => envAudio.update(frameStart));
@@ -4019,7 +4268,7 @@ async function animate() {
       if (water.underwater !== underwaterAudio) { underwaterAudio = water.underwater; envAudio.setUnderwater?.(underwaterAudio); }
     });
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) { refreshTerrainRuntimeLine(); refreshGrassRuntimeLine(); }
-    frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); });
+    frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); weaponLight.update(dt, weaponLightSource(canControl)); });
     // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
     await frameProfiler.timeAsync('grassGpu', () => flora.update(frameStart / 1000));
     frameProfiler.time('sky', () => updateWorld(dt));
@@ -4048,7 +4297,7 @@ async function animate() {
       const reflectPassesBefore = water.reflectStats.passes;
       const encodeStart = performance.now();
       if (settings.dofEnabled) {
-        depthOfField.setParams({ enabled: true, autoFocus: settings.dofAutoFocus, focusDistance: settings.dofFocusDistance, aperture: settings.dofAperture, maxRadius: settings.dofMaxRadius, farScale: settings.dofFarScale });
+        syncDofParams();
         if (settings.dofAutoFocus) depthOfField.updateFocus(dt, measureCentreDistance());
         postPipeline.render();
       } else {
