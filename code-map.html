@@ -153,9 +153,21 @@ const GROUPS = {
   stadium:     { label: 'Stadium models',    color: '#ef9a9a' },
   moves:       { label: 'Pokémon moves',     color: '#ffcc80' },
   park:        { label: 'Pokémon Park',      color: '#8bc34a' },
+  sabosugi:    { label: 'Sabosugi ref + hybrids', color: '#b39ddb' },
+  modelstudio: { label: 'Model studio',      color: '#a5d6a7' },
 };
 
 const NODES = [
+  // --- sabosugi reference visuals and our hybrids (reference only; wired into nothing) ---
+  { id: 'sabosugi-visuals/gallery.html', group: 'sabosugi', kind: 'entry', lines: 314,
+    desc: 'One interface over 94 third-party CodePen visuals by sabosugi plus our seven hybrids: search, category filter, and the selected one in an iframe. A frame per pen is the only workable arrangement, because between them they pin nine different Three versions, 92 of 96 build their own lil-gui panel, 80 append a canvas straight to document.body, and almost none dispose anything or stop their render loop — so swapping the frame is the teardown they never implement. Its own chrome hides, since nearly every pen puts its GUI in the top-right corner this would otherwise cover.' },
+  { id: 'sabosugi-visuals/build-manifest.py', group: 'sabosugi', kind: 'tool', lines: 214,
+    desc: 'Regenerates pens-manifest.json from VISUALS_INDEX.md (titles, categories, pen URLs) plus a scan of the pens themselves (pinned Three version, whether they want a file, whether they fetch remote assets). Exits nonzero if any file on disk lacks a catalog row or any row lacks a file, which is what keeps the catalog and the folder in step.' },
+  { id: 'sabosugi-visuals/hybrids/ether-trails.html', group: 'sabosugi', kind: 'entry', lines: 1055,
+    desc: 'A field rendered two ways. 42 pens in the collection expose a float f(vec3), and the ether pen\u2019s marcher never cared what it was marching, so the volume flies through whichever of seven harvested fields you pick while the grid reads two and blends them. FIELD_GLSL is injected into both programs and reads no uniform, since the two supply different ones. Node-tested by test-ether-trails-coupling.mjs.' },
+  { id: 'sabosugi-visuals/hybrids/glass-plankton.html', group: 'sabosugi', kind: 'entry', lines: 699,
+    desc: 'One SVGLoader.parse feeds an extruded transmissive solid and the interpolated line-trail of its own outline, so the trail is an outline of the object it resolves into. The trail lines are additive AND opaque, which puts them in the buffer renderTransmissionPass feeds, so the glass refracts them instead of compositing over them. Node-tested by test-glass-plankton-alignment.mjs.' },
+
   // --- code ordination ---
   { id: 'ordination-steps.html', group: 'ordination', kind: 'entry', lines: 900,
     desc: 'The step viewer: one tab per pipeline stage, each showing that stage&apos;s input and output side by side, so a stage can be checked before the next one is trusted. Step 1 draws the cut points on the source and counts lines inside no piece; step 2 strikes dropped text through in place with a tally by reason; step 3 shows one weight per word with the counts that produced it, plus an all-pieces 3D point field of the sparse matrix (Three.js WebGPU, imported lazily and torn down when the tab is left). Every control has a plain-English hover line, and holding Ctrl swaps it for one explaining each option value. Counterpart to code-ordination.html, which shows only the finished map.',
@@ -185,7 +197,7 @@ const NODES = [
     desc: 'Stages 4-5. Builds the centred Gram matrix straight from sparse dot products via <x-u,y-u> = <x,y> - <x,u> - <y,u> + <u,u>, so mean-centring never densifies a 4000-dimensional tf-idf matrix; every distance, neighbour list and projection then follows from d^2 = Gii + Gjj - 2Gij. eigenCoords reuses stats-math.js powerIteration/deflate on the n-by-n Gram rather than a d-by-d covariance. Offers pca, mds and stress (SMACOF), the last of which reports axesMeaningful false.',
     tests: ['test-ordination.mjs'] },
   { id: 'ordination-score.js', group: 'ordination', lines: 200,
-    desc: 'Stage 6, and the reason the map is evidence rather than decoration. Parses this file's NODES for subsystem labels and desc prose and its EDGES for import links, then scores a configuration by neighbour purity, silhouette and a chance baseline that accounts for label sizes. findUnconnectedSimilar crosses the two: pairs the embedding puts close that the dependency graph says never meet, which is where duplication hides.',
+    desc: 'Stage 6, and the reason the map is evidence rather than decoration. Parses this file&apos;s NODES for subsystem labels and desc prose and its EDGES for import links, then scores a configuration by neighbour purity, silhouette and a chance baseline that accounts for label sizes. findUnconnectedSimilar crosses the two: pairs the embedding puts close that the dependency graph says never meet, which is where duplication hides.',
     tests: ['test-ordination.mjs'] },
 
   // --- entry points ---
@@ -732,7 +744,7 @@ const GROUP_DOCS = {
   shoothouse: 'shoot-house.md', bots: 'bots.md',
   weaponcompress: 'weapon-compression.md', flight: 'flight.md',
   roads: 'roads.md', stadium: 'stadium.md', moves: 'pokemon-moves.md',
-  ordination: 'ordination.md',
+  ordination: 'ordination.md', sabosugi: 'sabosugi.md',
 };
 // representative node selected when a doc deep-links back here via #group
 const GROUP_REPRESENTATIVE = {
@@ -744,10 +756,11 @@ const GROUP_REPRESENTATIVE = {
   shoothouse: 'shoot-house.js', bots: 'bot-entity.js',
   weaponcompress: 'weapon-viewer-v2.html', flight: 'flight-model.js',
   roads: 'roads.js', stadium: 'stadium-rig-map.js', moves: 'moves/move-core.js',
-  park: 'demos/pokemon-park.html',
+  park: 'demos/pokemon-park.html', sabosugi: 'sabosugi-visuals/gallery.html',
 };
 const DOC_LIST = [
   ['ordination.md', 'Code ordination', 'ordination'],
+  ['sabosugi.md', 'Sabosugi reference visuals + hybrids', 'sabosugi'],
   ['entry-point.md', 'Entry point orchestration', 'entry'],
   ['terrain.md', 'Terrain', 'terrain'],
   ['biomes.md', 'Biomes', 'terrain'],
@@ -1402,13 +1415,17 @@ DOC_LIST.forEach(([file, label, group]) => {
   a.href = `docs/subsystems/${file}`;
   a.target = '_blank';
   a.rel = 'noopener';
-  a.innerHTML = `<span class="dot" style="background:${GROUPS[group].color}"></span>${label}`;
+  // An undeclared group used to throw here, and because this is a forEach it took out every doc link
+  // below it and the tool links after, leaving a half-built sidebar with no error in sight.
+  const color = (GROUPS[group] || {}).color || '#666';
+  a.innerHTML = `<span class="dot" style="background:${color}"></span>${label}`;
   docLinksWrap.appendChild(a);
 });
 
 // Repo-root interactive tools (not subsystem docs, so not part of DOC_LIST's
 // docs/subsystems/-relative href template above).
 const TOOL_LINKS = [
+  ['sabosugi-visuals/gallery.html', 'Sabosugi gallery (94 reference visuals + our hybrids)'],
   ['biome-explainer.html', 'Biome explainer (interactive)'],
   ['terrain-generator-v5.html', 'Terrain generator v5 (layer stack, paint, undo, import, export)'],
   ['terrain-generator-v4.html', 'Terrain generator v4 (interactive, incl. Publish to game)'],
