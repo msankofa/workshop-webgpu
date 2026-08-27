@@ -69,9 +69,9 @@ Prior plans already set terms for this step, and they are constraints, not conte
   cannot claim `infinite` capability if it depends on finite paint/import grids, bounded erosion,
   lake discovery or volumetric export **without a regional solution**", and its list of
   "finite/regional only until their own later phase" items is "flow accumulation, lake discovery
-  and hydrology" (:494). This is that later phase, and the world map is that regional solution:
-  a bounded board the bounded algorithms already run on, with the infinite terrain streamed inside
-  it.
+  and hydrology" (:494). This is that later phase, and the block hierarchy is that regional
+  solution: the bounded algorithms run on a bounded board, the board is a block rather than the
+  world, and the parent level is the boundary contract that makes neighbouring blocks agree.
 - The same plan's LOD phase (:529) requires that "height, biome, material, moisture, hydrology and
   hole fields use the same LOD level" in the prefiltered tile pyramid, and that procedural
   evaluation "drops frequencies smaller than the requested sample spacing". H2's band-limit rule
@@ -83,38 +83,49 @@ Prior plans already set terms for this step, and they are constraints, not conte
 
 ## The approach
 
-This is a solved problem in games, and the solution is boring: **compute the drainage once, at world
-creation, on a bounded coarse world map, and stream infinite detail inside it.** Dwarf Fortress,
-Songs of Syx and RimWorld all generate a world grid up front and hand the detailed view a lookup.
-Nothing here needs a new idea.
+Compute the drainage the ordinary way — D8 receivers and accumulated flow on a grid — but do it on
+a **lazy hierarchy of coarse blocks** instead of one board. The world stays infinite, the work per
+query stays bounded, and every caller gets the same answer without talking to any other.
 
-- The map is a square grid centred on the origin: `worldCells` × `worldCells` (default 256) at
-  `cellSize` metres (default 2048), so 512 km across. A player sprinting in a straight line takes
-  about fifteen hours to reach the edge.
-- Cell elevation is `heightAtSpacing(centre, cellSize)` — the band-limited field, so the map sees
-  landforms rather than the noise on them.
-- Drainage is `flowAccumulation(height, resolution)` from `terrain-generator-js.js:252`, unchanged:
-  D8 receivers, a descending-height sweep, log-normalised accumulation. It is already written and
-  already tested. Rivers are the cells whose accumulation clears `riverThreshold`, traced down the
-  receiver chain, so catchments are as large as the map allows and tributaries join the way real
-  ones do.
-- Depressions are filled by a standard priority flood, which gives every basin its true spill
-  level; `detectLakeMask`'s parameters (`lake_flow_threshold`, `lake_max_slope`,
-  `lake_bank_height`) carry over.
-- The map is built once per source, from the seed and the parameters alone, so the client, the
-  server and every terrain worker compute the same arrays without talking. It is immutable
-  afterwards, which keeps `carveAt` and `waterAt` pure functions of position.
+**The levels.** Each level is an infinite lattice of square cells, built in blocks of 64 × 64 cells,
+and each cell of a level covers 8 × 8 cells of the level below:
+
+| Level | Cell | Block | Role |
+|---|---|---|---|
+| 0 | 2 km | 128 km | the channels the player walks along |
+| 1 | 16 km | 1024 km | trunk rivers |
+| 2 | 128 km | 8192 km | drainage basins |
+| 3 | 1024 km | 65,536 km | continental drainage; no parent |
+
+**Building a block.** Sample the 4096 cell elevations with `heightAtSpacing(centre, cellSize)`,
+priority-flood the depressions for basin spill levels, then run `flowAccumulation(height, 64)` from
+`terrain-generator-js.js:252` unchanged — D8 receivers, a descending-height sweep, log-normalised
+accumulation. Discharge entering from the parent is injected at the cell where the parent's channel
+crosses in, so a level-0 stream carries the water its whole catchment justifies, not just the water
+its own 128 km block collects.
+
+**The boundary contract**, which is the only part that has to be got right: a block's trunk channels
+are **pinned to the exits its parent chose**. Two neighbouring blocks read the same parent cell for
+the crossing they share, so they agree about where the river leaves one and enters the other by
+construction, not by luck. Information only ever flows down the hierarchy; nothing at a level
+depends on a sibling. That is the regional boundary contract the terrain execution plan asked for.
+
+**Why it terminates.** Level 3 has no parent: a cell drains to its lowest neighbour on the
+continental field, which is a pure function of ten samples. Steepest descent on a height field
+cannot cycle, because height strictly decreases along the chain, so a chain always ends in a sink —
+which is a lake or an inland sea, and that is a feature. The recursion depth is fixed at four.
+
+**Costs, to be measured in H1 rather than trusted here.** A cold query builds one block per level:
+4 × 4096 = 16,384 height samples, plus four flood-and-accumulate passes on 4096 cells, which are
+milliseconds. Blocks are cached; a level-0 block covers 128 km, so a walking player crosses one
+almost never and a flying one every few minutes. Memory is about 100 KB per block. If the cold cost
+lands badly, blocks are built on the main thread and transferred to the workers through the init
+message they already have.
 
 Between two cell centres a channel is refined by a bounded steepest-descent walk on the actual
 height field, from the cell's entry point to its exit, so a river sits in the gully that is already
 there instead of cutting its own line across a slope. Local pits inside a cell get a bounded step
-toward the exit. This is the only part with any subtlety in it.
-
-Costs, to be measured in H1 rather than trusted here: the accumulation and flood are O(n log n) on
-65,536 cells, which is milliseconds. The real cost is sampling 65,536 coarse heights — cheap on the
-analytic field, an estimated fraction of a second on a v5 stack. If that lands badly, the map is
-built once on the main thread and transferred to the workers as typed arrays through the init
-message they already have.
+toward the exit.
 
 ## Decisions
 
@@ -130,11 +141,12 @@ message they already have.
   channel width, the channel term fades and only the valley remains, so a coarse ring shows a
   broad valley rather than an aliasing notch.
 - **The water surface is a lookup, not a runtime simulation.** `waterAt(x, z)` returns
-  `{ level, kind, depth, flowX, flowZ, speed }` from the world map. Nothing floods while the game
-  runs, so the server, the client and the terrain worker all answer the same thing without talking.
-- **Hydrology is bounded even though terrain is not.** Outside the world map there are no rivers
-  and no lakes; the ground is unchanged and still infinite. The source keeps its `infinite`
-  capability because the height field is still defined everywhere.
+  `{ level, kind, depth, flowX, flowZ, speed }` from the cached blocks. Nothing floods while the
+  game runs, so the server, the client and the terrain worker all answer the same thing without talking.
+- **Hydrology is infinite, like the terrain.** There is no world edge and no distance past which
+  rivers stop, because nothing is precomputed globally: blocks are built on demand and cached, and
+  the hierarchy gives a stream at your feet the discharge of a catchment that may be a thousand
+  kilometres wide. The source keeps its `infinite` capability honestly.
 - **No new streamed field window.** `waterAt` is cheap and pure, so physics, audio and moisture
   call it directly; only the *mesh* is baked, as a new `water` tile field the worker fills while
   it already has the tile — prefiltered at the same LOD levels as height, biome, material and
@@ -151,29 +163,33 @@ message they already have.
 
 ## Phases
 
-### H1 — `terrain-hydrology.js`: the world map, carve and water query
+### H1 — `terrain-hydrology.js`: the hierarchy, carve and water query
 
-- `createHydrology({ heightAtSpacing, seed, params })` → `{ map, carveAt, waterAt, flowAt,
-  nearestChannel, stats }`. Pure, Node-testable, no three.js.
-- Params (finite-validated, defaults in `HYDROLOGY_DEFAULTS`): `enabled`, `worldCells` 256,
-  `cellSize` 2048, `riverThreshold`, `channelWidth` (base and per-accumulation growth),
-  `channelDepth`, `bankWidth`, `lakeEnabled`, `lakeBankHeight`, `fallSlope`, `seed`.
-- Build (once, at source creation): sample the coarse heights, priority-flood the depressions to
-  get basin spill levels, run `flowAccumulation` on the filled surface, keep `receiver`, `accum`,
-  the lake level per cell, and the channel polylines refined by the per-cell steepest-descent walk.
-  Reuses `terrain-generator-js.js` rather than reimplementing it.
+- `createHydrology({ heightAtSpacing, seed, params })` → `{ carveAt, waterAt, flowAt,
+  nearestChannel, blockAt, stats }`. Pure, Node-testable, no three.js.
+- Params (finite-validated, defaults in `HYDROLOGY_DEFAULTS`): `enabled`, `cellSize` 2048,
+  `blockCells` 64, `levels` 4, `levelRatio` 8, `riverThreshold`, `channelWidth` (base and
+  per-discharge growth), `channelDepth`, `bankWidth`, `lakeEnabled`, `lakeBankHeight`, `fallSlope`,
+  `seed`.
+- `blockAt(level, bx, bz)` builds and caches one block: sample its cell elevations, priority-flood
+  the depressions for spill levels, `flowAccumulation` for receivers and accumulation, inject the
+  parent's discharge at its inflow crossings, pin the trunk channels to the parent's exits, then
+  refine each channel cell with the steepest-descent walk. Reuses `terrain-generator-js.js` rather
+  than reimplementing it. An LRU keeps a handful of blocks per level.
 - `carveAt(x, z, baseHeight, spacing)` → carved height: distance to the nearest channel polyline in
   the 3×3 cell neighbourhood, a channel profile pushed down to the segment's interpolated bed
   elevation, banks feathered over `bankWidth`, lake bowls floored at their spill level, all faded
   by the spacing rule and by sea level.
 - `waterAt(x, z)` → level, kind, depth, flow direction and speed. A lake's shoreline is not stored:
   it is where the spill level meets the real ground, so lakes have fine-scale shores for free.
-- Tests (`test-terrain-hydrology.mjs`): the map is identical for the same seed and parameters,
-  and independent of query order; no receiver cycles; every channel is monotone downhill along its
-  whole path including the refined walk; lake levels never exceed their pass; the carve is
-  continuous across cell borders; `carveAt` at spacing much larger than the channel width returns
-  the valley, not the notch; the carve is exactly zero outside the map. Build time and per-sample
-  query cost measured and recorded, not guessed.
+- Tests (`test-terrain-hydrology.mjs`): the same seed and position give identical results whatever
+  order blocks are built in, and building a block from cold matches building it after its
+  neighbours; a channel crossing a block border has one continuous path and one discharge, from
+  either side; no receiver cycles at any level; every channel is monotone downhill including the
+  refined walk; lake levels never exceed their pass; the carve is continuous across cell and block
+  borders; `carveAt` at spacing much larger than the channel width returns the valley, not the
+  notch; discharge at a level-0 cell reflects the parent catchment, not just the local block. Cold
+  build time per level, cache hit rate and per-sample query cost measured and recorded.
 
 ### H2 — The sources carve, and the world identity says so
 
@@ -302,14 +318,16 @@ after H3, H9 after H4, H10 closes. H8 lands only after checking in with the plan
 
 ## Known limits to state, not hide
 
-- Hydrology stops at the edge of the world map (512 km across by default). Terrain past it is
-  unchanged and still infinite, but it has no rivers or lakes. Raising `worldCells` costs build
-  time and memory quadratically.
+- Accumulation is exact within a block and inherited across levels, so a catchment spanning many
+  blocks is the hierarchy's estimate of itself rather than a cell-by-cell sum. Rivers are the right
+  size; their discharge is not a hydrological measurement.
+- The largest catchment the hierarchy can express is a level-3 block, 65,536 km across. This is a
+  number, not a limit anyone reaches.
 - The drainage is real but the ground is not eroded by it. Channels are carved into the existing
   height field, so there are no V-notches, alluvial fans or erosion-graded slopes, and the
   generator's bounded erosion preview will not match the runtime carve.
-- The map is computed from the band-limited height at `cellSize`, so a basin narrower than a cell
-  is invisible to it. Fine-scale ponds are not modelled.
+- Cells are sampled from the band-limited height at their own size, so a basin narrower than a
+  level-0 cell is invisible to the graph. Fine-scale ponds are not modelled.
 - A channel crossing a cave mouth pours into it. The mesh and the physics agree — the water is
   where the surface is — but nothing drains, and the cave does not fill.
 - Lakes have one level each and no seasonal or dynamic change; nothing rises, falls or floods.
