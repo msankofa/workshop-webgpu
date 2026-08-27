@@ -24,6 +24,15 @@
   #combat .hp { font-size: 18px; }
   #combat .hit { color: #ffb347; }
   #combat .dead { color: #ff6b6b; }
+  #combat .slots { margin-top: 4px; display: flex; gap: 4px; justify-content: flex-end; }
+  #combat .slot {
+    padding: 1px 5px; border: 1px solid rgba(255,255,255,.14); border-radius: 4px;
+    background: rgba(255,255,255,.04); color: #97a3b4; font-size: 11px; white-space: nowrap;
+  }
+  #combat .slot.held { border-color: rgba(140,200,255,.6); background: rgba(90,150,220,.22); color: #eaf2ff; }
+  #combat .slot.empty { opacity: .35; }
+  #combat .slot .key { color: #6f7c8d; margin-right: 4px; }
+  #combat .slot.held .key { color: #a9c6e6; }
   #damage-flash {
     position: fixed; inset: 0; z-index: 9; pointer-events: none; opacity: 0;
     background: radial-gradient(ellipse at center, rgba(255,0,0,0) 55%, rgba(200,20,20,.55) 100%);
@@ -128,13 +137,14 @@ import { attachDracoLoader } from './draco-loader.js';
 import { createWeaponMountSystem } from './weapon-mount.js';
 import { createWeaponViewModel } from './weapon-viewmodel.js';
 import { getWeapon, WEAPONS } from './weapons.js';
-import { BASE_GAME_WEAPON_IDS, BASE_GAME_WEAPON_SLOTS, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_RELOADABLE_WEAPONS, weaponForSlot, sanitizeBaseGameShotEvent, sanitizeBaseGameHitEvent, sanitizeBaseGameExplosionEvent, sanitizeBaseGameProjectileState } from './base-game-protocol.mjs';
+import { BASE_GAME_STANCES, stanceName, stanceIndex, BASE_GAME_WEAPON_IDS, BASE_GAME_WEAPON_SLOTS, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_RELOADABLE_WEAPONS, weaponForSlot, sanitizeBaseGameShotEvent, sanitizeBaseGameHitEvent, sanitizeBaseGameExplosionEvent, sanitizeBaseGameProjectileState } from './base-game-protocol.mjs';
 import { createBaseGamePlayerView } from './base-game-player-view.js';
 import { createBaseGamePrediction } from './base-game-prediction.js';
 import { createEnvironmentAudio } from './environment-audio.js';
 import { synthVoice } from './weapon-sfx-synth.js';
 import { createBaseGameAudioDirector } from './base-game-audio.js';
-import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor, setShotSpread, getShotSpread } from './base-game-fire.js';
+import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor, setShotSpread, getShotSpread, createSwapState, beginSwap, swapPhase, spreadHalfAngleFor, lookDirection } from './base-game-fire.js';
+import { createReticle, reticleGapPx } from './reticle.js';
 import { SHOT_SPREAD_DEFAULTS, SHOT_SPREAD_LIMITS, SHOT_SPREAD_PATH, normalizeShotSpread, shotSpreadFile } from './shot-spread.js';
 import { createAmmoStore } from './player-ammo.js';
 import { createEffectRenderer, bloodIntensityForHealth } from './effect-renderer.js';
@@ -186,7 +196,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   waterLook: 'hybrid',            // look preset; the wave spectrum below always wins over its waves
   waterRefraction: true,
   waterFoam: 1,
-  waterClarity: 16,               // metres of water the colour law reaches through
+  waterClarity: 18,               // metres of water the colour law reaches through
   // Plants (plants plan F5). Grass is the first layer; trees and understory follow.
   grassEnabled: true,
   grassDensity: BASE_GAME_FLORA_DEFAULTS.grassDensity,
@@ -255,6 +265,12 @@ const DEFAULT_SETTINGS = Object.freeze({
   rainWetRise: 8,
   rainPuddle: 0.45,
   rainRipple: 1,
+  // Rain shadow (phase R3). 'lab' is the default because the Traversal Lab is static, small and has
+  // real roofs, while open terrain has nothing over it that the ground hook does not already cut.
+  rainOccluders: 'lab',
+  rainOccExtent: 200,
+  rainOccSize: 512,
+  rainOccTop: 220,
   // Lightning (phase R4). The schedule terms are shared, because two clients with different
   // intervals would be standing in different storms; the look is local.
   weatherSeed: 7,
@@ -284,7 +300,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   terrainTileBounds: false,
   terrainCollisionDebug: false,
   playerControlMode: 'player',
-  playerViewMode: 'thirdPerson',
+  playerViewMode: 'firstPerson',
   playerCapsuleVisible: false,
   playerHurtRigVisible: false,
   playerHurtZoneColors: true,
@@ -297,6 +313,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponMelee: BASE_GAME_DEFAULT_LOADOUT.melee,
   weaponThrowable: BASE_GAME_DEFAULT_LOADOUT.throwable,
   unlimitedAmmo: false,
+  reticleEnabled: true,
+  reticleSpread: true,
   weaponHoldHeight: 0,
   weaponHoldForward: 0,
   weaponReachSolve: false,
@@ -353,20 +371,30 @@ const DEFAULT_SETTINGS = Object.freeze({
   bodyStepTrigger: BASE_GAME_MOVEMENT_DEFAULTS.triggerDistance,
   bodySpineFalloff: BASE_GAME_MOVEMENT_DEFAULTS.spineFalloff,
   bodyArmAsym: BASE_GAME_MOVEMENT_DEFAULTS.armAsym,
-  playerMoveSpeed: 5.5,
-  playerSprintMultiplier: 1.75,
-  playerJumpSpeed: 8,
-  playerGravity: 26,
-  playerSlopeLimit: 50,
-  playerStepHeight: 0.6,
-  playerSnapDistance: 0.4,
-  cameraDistance: 5,
+  // Straight from the controller's own defaults. These seven are the ONLY settings the page feeds
+  // into the physics, and the relay builds its controllers from that same block overriding nothing
+  // but fixedHz -- so a literal here that drifted from it would desync every online step.
+  playerMoveSpeed: BASE_GAME_PLAYER_DEFAULT_CONFIG.moveSpeed,
+  playerSprintMultiplier: BASE_GAME_PLAYER_DEFAULT_CONFIG.sprintMultiplier,
+  playerJumpSpeed: BASE_GAME_PLAYER_DEFAULT_CONFIG.jumpSpeed,
+  playerGravity: BASE_GAME_PLAYER_DEFAULT_CONFIG.gravity,
+  playerSlopeLimit: BASE_GAME_PLAYER_DEFAULT_CONFIG.slopeLimitDegrees,
+  playerStepHeight: BASE_GAME_PLAYER_DEFAULT_CONFIG.stepHeight,
+  playerSnapDistance: BASE_GAME_PLAYER_DEFAULT_CONFIG.snapDistance,
+  cameraDistance: 5.83,
   cameraFollowRate: 14,
   cameraSensitivity: 0.002,
   cameraObstructionPadding: 0.22,
+  // Framing offsets are PER VIEW MODE. They used to be one set applied to both, which meant a
+  // decent over-the-shoulder third-person camera put your first-person eye out the side of your
+  // head. `cameraOffsetTarget` picks which set the three sliders are editing.
+  cameraOffsetTarget: 'thirdPerson',
   cameraSideOffset: 0,
   cameraHeightOffset: 0,
   cameraForwardOffset: 0,
+  fpCameraSideOffset: 0,
+  fpCameraHeightOffset: 0,
+  fpCameraForwardOffset: 0,
   cameraFov: 50,
   fpFov: 70,
   dofEnabled: false,
@@ -416,6 +444,7 @@ const NUMBER_LIMITS = Object.freeze({
   playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], cameraFollowRate: [1, 40],
   cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
   cameraSideOffset: [-1.5, 1.5], cameraHeightOffset: [-1, 1.5], cameraForwardOffset: [-1.5, 1.5], cameraFov: [30, 100], fpFov: [30, 110],
+  fpCameraSideOffset: [-1.5, 1.5], fpCameraHeightOffset: [-1, 1.5], fpCameraForwardOffset: [-1.5, 1.5],
   dofFocusDistance: [0.3, 80], dofAperture: [0.05, 3], dofMaxRadius: [2, 40], dofFarScale: [0.5, 4],
   interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
@@ -453,6 +482,7 @@ const NUMBER_LIMITS = Object.freeze({
   rainSplashSlopeMax: [0, 90], rainSplashSlopeFade: [0, 45], rainSplashMaxAgl: [0, 2000],
   rainWetnessPerRain: [0, 2], rainDryTime: [0, 600], rainWetRise: [0, 120],
   rainPuddle: [0, 1], rainRipple: [0, 4],
+  rainOccExtent: [20, 2000], rainOccSize: [64, 2048], rainOccTop: [20, 2000],
   weatherSeed: [0, 1e9],
   lightningThreshold: [0, 1], lightningInterval: [0.5, 300], lightningIntervalSpread: [0, 1],
   lightningDistMin: [20, 20000], lightningDistMax: [50, 40000],
@@ -464,6 +494,7 @@ const STRING_VALUES = Object.freeze({
   rainGroundSource: ['coarse', 'off'],
   primaryBody: ['sun', 'moon'],
   worldMode: ['empty', 'traversalLab', 'terrain'],
+  rainOccluders: ['off', 'lab', 'on'],
   playerControlMode: ['player', 'orbit'],
   waterLook: [...BASE_GAME_WATER_LOOKS],
   playerViewMode: ['thirdPerson', 'firstPerson'],
@@ -653,6 +684,7 @@ const RAIN_APPLY_KEYS = Object.freeze([
   'weatherWindFollowsWaves', 'weatherWindDeg', 'waveWindDeg',
   'rainDropsEnabled', 'rainSplashEnabled', 'rainSplashMaxAgl', 'rainGroundSource',
   'rainGroundConservative', 'rainWetEnabled', 'rainDryTime', 'rainWetRise',
+  'rainOccluders', 'rainOccExtent', 'rainOccSize', 'rainOccTop',
   'rainMaxDrops', 'rainMaxSplashes', 'waterEnabled', 'worldMode',
   'weatherSeed', 'lightningEnabled', 'lightningThreshold', 'lightningInterval',
   'lightningIntervalSpread', 'lightningDistMin', 'lightningDistMax', 'lightningFlash',
@@ -686,6 +718,8 @@ function applyRainSettings() {
   rain.setWetEnabled(settings.rainWetEnabled);
   rain.setDryTime(settings.rainDryTime);
   rain.setWetRise(settings.rainWetRise);
+  rain.setOccludersEnabled(rainOccludersWanted());
+  rainOccDirty = true;   // the window's size, resolution or mode moved; what is baked is stale
   lightning.set({
     enabled: settings.lightningEnabled,
     seed: settings.weatherSeed,
@@ -775,6 +809,25 @@ gameplayPaused = false;
 // the same in the hash, any capitalisation, and a sticky localStorage toggle for when the URL is
 // not under your control (window.gpuTime(true) from the console). The exact string a strict check
 // wanted was undiscoverable, and five captures were silently taken with it off.
+// Shared by every diagnostic flag on this page: bare or =1/true/yes/on, any case, search or hash.
+// A strict check silently swallowed a real ?gptutime=1 for eight captures; never again.
+// Same reader, for a flag whose default is on: only an explicit 0/false/no/off turns it off.
+function readFlagDefaultTrue(name) {
+  const falsy = v => ['0', 'false', 'no', 'off'].includes(String(v).toLowerCase());
+  for (const source of [location.search, location.hash.replace(/^#/, '?')]) {
+    const params = new URLSearchParams(source.startsWith('?') ? source : `?${source}`);
+    for (const [k, v] of params) if (k.toLowerCase().replace(/[^a-z]/g, '') === name) return !falsy(v);
+  }
+  return true;
+}
+function readFlag(name) {
+  const truthy = v => v === '' || v === null || ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase());
+  for (const source of [location.search, location.hash.replace(/^#/, '?')]) {
+    const params = new URLSearchParams(source.startsWith('?') ? source : `?${source}`);
+    for (const [k, v] of params) if (k.toLowerCase().replace(/[^a-z]/g, '') === name) return truthy(v);
+  }
+  return false;
+}
 const GPU_TIMESTAMP_KEY = 'baseGame:gpuTimestamps';
 // Deliberately loose about the key. This page has no other query parameters, and a diagnostic flag
 // that silently does nothing when mistyped costs a whole capture session to notice -- ?gptutime=1
@@ -920,7 +973,16 @@ function measureCentreDistance() {
 const traversalLab = createBaseGameTraversalLab({ scene, worldQuery });
 // Phase 4 slice: the analytic source is the only runtime source until terrain-source-v5.js lands.
 const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
-const terrain = createBaseGameTerrain({ scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR });
+// ?chunkcull=1 restores BatchedMesh per-chunk frustum culling. Off by default: with it on,
+// onBeforeRender runs a matrix + bounding-sphere + frustum test per resident chunk, per camera,
+// per pass (twice on mirror frames); off, it early-outs, at the cost of drawing off-screen chunks.
+// A reload-scoped A/B rather than a live toggle, because turning culling off at runtime would
+// leave BatchedMesh's draw list holding the last culled subset.
+const BATCH_FRUSTUM_CULLED = readFlagDefaultTrue('chunkcull');
+const terrain = createBaseGameTerrain({
+  scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR,
+  params: { batchFrustumCulled: BATCH_FRUSTUM_CULLED },
+});
 // Ground textures load in the background; the vertex tint shows until they arrive.
 loadStreamedSplatTextures().then(tex => {
   terrain.setSplatMaterial(createStreamedSplatMaterial(tex, { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade }), tex);
@@ -1035,9 +1097,17 @@ const playerHitRigDebug = createPlayerHitRigDebug({ THREE, scene, worldCoordinat
 // Local weapon state: the active slot, an aim hold (right mouse), a fire hold (left mouse) and a
 // one-frame reload edge. Ammo and the trigger gate are predicted with the same base-game-fire.js
 // step the server runs; the snapshot's ammo and health overwrite the local copy when they differ.
-const weaponState = { slot: 0, aiming: false, reloadEdge: false, firing: false, throwEdge: false };
+// Posture: 'stand' | 'kneel' | 'prone'. The capsule height, the move speed and the rig pose are all
+// eased from it inside the controller on the fixed clock, so nothing here snaps.
+let playerStance = 'stand';
+const weaponState = { slot: 0, lastSlot: 1, aiming: false, reloadEdge: false, firing: false, throwEdge: false };
 const localTrigger = createTriggerState();
 const localThrowTrigger = createTriggerState();
+// The predicted half of a weapon swap. It runs on the SAME tick numbers the server uses, because
+// the swap is what gates the trigger: predict it differently and you fire shots the server drops.
+const localSwapState = createSwapState();
+let pendingSwap = null;    // { from, to }, applied on the next predicted tick
+let swapPresent = null;    // { to, switched }, the model change at the holster/draw handover
 // Weapon accuracy. Deliberately NOT in `settings`: the autosave writes settings to web storage, and
 // this is tuned once and committed, so shot-spread.json is the default and the file must win over a
 // stale local copy. The relay reads the same file; online the SERVER's copy decides where a round
@@ -1078,13 +1148,21 @@ const localAmmo = createAmmoStore();
 const LOCAL_AMMO_ID = 'local';
 const combatState = { health: 100, dead: false, hitFlashUntil: 0, damageUntil: 0, killedBy: null, lastHitTick: -1, lastDeathTick: -1 };
 const localCombatPose = createPlayerBodyPose();
+// The reticle marks where the ROUND goes, not where the camera points: in third person those are
+// metres apart. See reticle.js.
+const reticle = createReticle({ document });
+const _reticleRay = [0, 0, 0];
+const _reticlePoint = new THREE.Vector3();
+let reticleTick = 0;   // the tick the spread cone is asked about; the trigger's own clock
 const combatStatus = document.getElementById('combat');
 const damageFlash = document.getElementById('damage-flash');
 // One predicted trigger tick: fires the local report, recoil and reload choreography. Hits are
 // never predicted; the server's hit/death events drive feedback.
 function stepLocalTrigger(tick, fire, reload, aim) {
+  reticleTick = tick;   // the reticle asks about the cone on the trigger's own clock
+  stepLocalSwap(tick);
   const weaponId = localWeaponId();
-  const shot = stepTrigger(localTrigger, localAmmo, { playerId: LOCAL_AMMO_ID, weaponId, tick, fire, reload, aim, alive: !combatState.dead });
+  const shot = stepTrigger(localTrigger, localAmmo, { playerId: LOCAL_AMMO_ID, weaponId, tick, fire, reload, aim, alive: !combatState.dead, blocked: swapPhase(localSwapState, tick) !== 'idle' });
   if (shot.reloadStarted && playerBodies.localReload()) { weaponViewModel.reload(playerBodies.localMount?.reloadSequence); audioDirector.localReload(); }
   if (shot.fired) { audioDirector.localFire(weaponId); weaponViewModel.recoil(); spawnLocalShotEffects(weaponId, tick); }
   return shot;
@@ -1096,6 +1174,32 @@ function stepLocalThrow(tick, thrown) {
   const lob = stepThrow(localThrowTrigger, localAmmo, { playerId: LOCAL_AMMO_ID, weaponId, tick, fire: thrown, alive: !combatState.dead });
   if (lob.fired) { audioDirector.localFire(weaponId); spawnLocalShotEffects(weaponId, tick, localThrowTrigger); }
   return lob;
+}
+
+// One tick of the swap: start a queued one, then hand the model over when the holster ends. The
+// weapon in hand does not change on the key press -- it changes when the old one is actually away.
+function stepLocalSwap(tick) {
+  if (pendingSwap) {
+    const { from, to } = pendingSwap;
+    pendingSwap = null;
+    if (beginSwap(localSwapState, { tick, from, to, reloading: localTrigger.reloadUntilTick > tick })) {
+      swapPresent = { to, switched: false };
+      playerBodies.localSwap(3, from);
+    } else {
+      weaponState.slot = weaponState.lastSlot;   // refused mid-reload, exactly as the server refuses it
+      applyHeldWeapon();
+    }
+  }
+  if (swapPresent && !swapPresent.switched && swapPhase(localSwapState, tick) !== 'holster') {
+    swapPresent.switched = true;
+    applyHeldWeapon();
+    playerBodies.localSwap(4, swapPresent.to);
+  }
+}
+function applyHeldWeapon() {
+  weaponViewModel.setWeapon(localWeaponId());
+  playerBodies.setWeapon(localWeaponId());
+  playerBodies.setLocalLoadout(currentLoadout());
 }
 
 // ---- shot effects: effect-renderer.js fed the way bot-viewer-v3 does (a plain list, pushEffect /
@@ -1372,6 +1476,55 @@ function updateProjectiles(now, dt) {
   for (let i = n; i < projectileMeshes.length; i++) projectileMeshes[i].visible = false;
 }
 let shownCombatStatus = null, shownDamageFlash = null;
+// One slot's chip: the key that selects it, the weapon, and its own magazine. Melee has no ammo,
+// and the throwable reads as a single pouch count since it is thrown from the pouch, not a magazine.
+const SLOT_KEY_LABELS = ['1', '2', '3', '4'];
+function slotChipMarkup(loadout, slot, round) {
+  const id = weaponForSlot(loadout, slot);
+  const key = `<span class="key">${SLOT_KEY_LABELS[slot]}</span>`;
+  if (!id) return `<span class="slot empty">${key}—</span>`;
+  const weapon = getWeapon(id);
+  const mode = weapon?.mode || 'hitscan';
+  const ammo = mode === 'melee' ? null : localAmmo.ensureAmmo(LOCAL_AMMO_ID, id);
+  const count = !ammo ? '' : mode === 'projectile' && slot === BASE_GAME_WEAPON_SLOTS.indexOf('throwable')
+    ? ` ${round(ammo.mag + ammo.reserve)}`
+    : ` ${round(ammo.mag)}/${round(ammo.reserve)}`;
+  return `<span class="slot${slot === weaponState.slot ? ' held' : ''}">${key}${weapon?.displayName ?? id}${count}</span>`;
+}
+// Where this round would land, and how wide the cone around it is. The ray is the one the server
+// fires -- capsule top, look direction -- not the camera ray, because in third person the camera is
+// behind and beside the head and a screen-centre reticle is simply wrong by a couple of metres.
+function updateReticle(canControl) {
+  if (!settings.reticleEnabled || !canControl) { reticle.setVisible(false); return; }
+  const weaponId = localWeaponId();
+  const cap = playerController.getCapsule();
+  const origin = worldCoordinates.toGlobal([cap.end[0], cap.end[1] + cap.radius, cap.end[2]], _reticleRay);
+  const dir = lookDirection(playerView.yaw, playerView.pitch);
+  const range = getWeapon(weaponId)?.range ?? 200;
+  let hit = null;
+  try { hit = worldQuery.raycast({ origin, direction: dir, maxDistance: range }); } catch { hit = null; }
+  const point = hit?.point ?? [origin[0] + dir[0] * range, origin[1] + dir[1] * range, origin[2] + dir[2] * range];
+  const local = worldCoordinates.toRenderLocal(point, aimPointScratchArray);
+  _reticlePoint.set(local[0], local[1], local[2]).project(camera);
+  // Behind the camera the projection mirrors; there is nothing honest to draw, so draw nothing.
+  if (!Number.isFinite(_reticlePoint.x) || _reticlePoint.z > 1) { reticle.setVisible(false); return; }
+  const half = settings.reticleSpread ? spreadHalfAngleFor(localTrigger, { weaponId, tick: reticleTick, moveSpeed01: localMoveSpeed01() }) : 0;
+  const weapon = weaponId ? getWeapon(weaponId) : null;
+  const usesAmmo = weapon && (weapon.mode || 'hitscan') !== 'melee';
+  const ammo = usesAmmo ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, weaponId) : null;
+  const blocked = !weapon || swapPhase(localSwapState, reticleTick) !== 'idle'
+    || localTrigger.reloadUntilTick > reticleTick || (ammo ? ammo.mag <= 0 : false);
+  reticle.update({
+    x: (_reticlePoint.x * 0.5 + 0.5) * renderer.domElement.clientWidth,
+    y: (-_reticlePoint.y * 0.5 + 0.5) * renderer.domElement.clientHeight,
+    gapPx: reticleGapPx({ halfAngleRad: half, viewportHeight: renderer.domElement.clientHeight, fovYDeg: camera.fov }),
+    ready: !blocked && !combatState.dead,
+    blocked,
+    dead: combatState.dead,
+  });
+  reticle.setVisible(true);
+}
+
 function renderCombatStatus(now) {
   const weaponId = localWeaponId();
   const ammo = weaponId && (getWeapon(weaponId)?.mode || 'hitscan') !== 'melee' ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, weaponId) : null;
@@ -1380,12 +1533,14 @@ function renderCombatStatus(now) {
   const gun = weaponId ? `${weaponId}${ammo ? ` ${round(ammo.mag)} / ${round(ammo.reserve)}` : ''}` : 'unarmed';
   const hit = now < combatState.hitFlashUntil ? '<span class="hit">HIT</span> ' : '';
   const killed = combatState.dead && combatState.killedBy ? `<br>killed by ${combatState.killedBy}` : '';
+  const loadout = currentLoadout();
+  const slots = `<div class="slots">${BASE_GAME_WEAPON_SLOTS.map((_, slot) => slotChipMarkup(loadout, slot, round)).join('')}</div>`;
   const throwableId = localThrowableId();
   const pouch = throwableId ? localAmmo.ensureAmmo(LOCAL_AMMO_ID, throwableId) : null;
-  const throwable = pouch ? `<br>[G] ${throwableId} ${round(pouch.mag + pouch.reserve)}` : '';
+  const throwable = pouch ? `<br>[G] throw ${round(pouch.mag + pouch.reserve)}` : '';
   // Write only on change. innerHTML reparses, and health, ammo and the hit flag hold still for whole
   // seconds at a time, so the great majority of frames wrote the identical markup back.
-  const markup = `${hit}${hp}<br>${gun}${throwable}${killed}`;
+  const markup = `${hit}${hp}<br>${gun}${throwable}${killed}${slots}`;
   if (markup !== shownCombatStatus) { shownCombatStatus = markup; combatStatus.innerHTML = markup; }
   const flash = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
   if (flash !== shownDamageFlash) { shownDamageFlash = flash; damageFlash.style.opacity = flash; }
@@ -1451,9 +1606,34 @@ function applyFpPreset(name) {
   settings.fpViewBlend = preset.viewBlend;
   settings.fpCameraComfort = preset.cameraComfort;
 }
+// Every way of changing what is in hand goes through here: number keys, Q, the wheel. `lastSlot`
+// is what Q swaps back to, and an empty slot is not a weapon you can hold.
+function selectSlot(index) {
+  const slot = Number.isInteger(index) ? index : 0;
+  if (slot === weaponState.slot || slot < 0 || slot >= BASE_GAME_WEAPON_SLOTS.length) return false;
+  if (!weaponForSlot(currentLoadout(), slot)) return false;
+  const from = localWeaponId();
+  weaponState.lastSlot = weaponState.slot;
+  weaponState.slot = slot;
+  // The model changes half way through, not now: stepLocalSwap owns the handover.
+  pendingSwap = { from, to: localWeaponId() };
+  audioDirector.localSlotChange();
+  return true;
+}
+// The wheel walks the filled slots in order, skipping the empty ones, and wraps.
+function cycleSlot(direction) {
+  const loadout = currentLoadout();
+  const filled = BASE_GAME_WEAPON_SLOTS.map((_, index) => index).filter(index => weaponForSlot(loadout, index));
+  if (filled.length < 2) return false;
+  const at = filled.indexOf(weaponState.slot);
+  const next = filled[((at < 0 ? 0 : at + direction) % filled.length + filled.length) % filled.length];
+  return selectSlot(next);
+}
+
 function applyWeaponSelection() {
   weaponViewModel.setWeapon(localWeaponId());
   playerBodies.setWeapon(localWeaponId());
+  playerBodies.setLocalLoadout(currentLoadout());   // the slots not in hand hang on the body
   if (isOnline()) networkSession?.setLoadout(currentLoadout());
 }
 const playerRenderPosition = [...worldSpawn()];
@@ -1694,6 +1874,51 @@ const rain = createBaseGameRain({ scene, terrain, worldCoordinates });
 // Storms. The schedule is derived from the shared seed and the lockstep clock, so no strike is
 // ever sent over the wire and a late joiner is in phase (base-game-lightning.js).
 const lightning = createBaseGameLightning({ scene, terrain, rain, worldCoordinates });
+
+// ---- Rain shadow (phase R3) ----------------------------------------------------------------
+// A top-down height bake of everything solid, so drops stop under a roof instead of falling through
+// it. Its centre and floor are held in global coordinates inside base-game-rain.js, so a rebase
+// costs two uniform writes rather than a re-bake.
+//
+// Default 'lab': the Traversal Lab is static, small and genuinely roofed, so one bake at the size
+// of the lab lasts the session. Open terrain is the opposite — it streams, and there is nothing
+// over it yet (no trees, no buildings) that the ground hook does not already cut. Turning it to
+// 'on' there buys a sharper cut height inside the window and costs a full extra scene render per
+// bake, which is why it is not the default.
+let rainOccDirty = true, rainOccResidency = -1;
+const _rainOccPos = [0, 0, 0];
+function rainOccludersWanted() {
+  if (settings.rainOccluders === 'off') return false;
+  if (settings.rainOccluders === 'lab') return settings.worldMode === 'traversalLab';
+  return settings.worldMode === 'traversalLab' || settings.worldMode === 'terrain';
+}
+function updateRainOccluders() {
+  // Dry: nothing reads the map, so nothing pays for it. Turning the rain on bakes on that frame.
+  if (!rainOccludersWanted() || !settings.rainEnabled || rain.system.getDensity() <= 0) return;
+  const lab = settings.worldMode === 'traversalLab';
+  if (!lab) {
+    playerController.getPosition(_rainOccPos);
+    if (terrain.residencyRevision !== rainOccResidency) { rainOccDirty = true; rainOccResidency = terrain.residencyRevision; }
+    if (rain.occludersStale(_rainOccPos[0], _rainOccPos[2])) rainOccDirty = true;
+  }
+  if (!rainOccDirty) return;
+  // The lab sizes its own window from its bounds; terrain uses the slider around the player.
+  const done = lab
+    ? rain.bakeOccluders({ renderer, roots: [traversalLab.root], centerGlobal: labOccluderCenter(), extent: labOccluderExtent(), size: settings.rainOccSize, top: settings.rainOccTop })
+    : rain.bakeOccluders({ renderer, roots: [terrain.root], centerGlobal: [_rainOccPos[0], _rainOccPos[2]], extent: settings.rainOccExtent, size: settings.rainOccSize, top: settings.rainOccTop });
+  if (done) rainOccDirty = false;
+}
+const _labOccBox = new THREE.Box3();
+function labOccluderBox() { _labOccBox.makeEmpty(); traversalLab.root.updateMatrixWorld(true); _labOccBox.expandByObject(traversalLab.root); return _labOccBox; }
+function labOccluderCenter() {
+  const b = labOccluderBox();
+  const o = worldCoordinates.getOrigin();
+  return [(b.min.x + b.max.x) / 2 + o[0], (b.min.z + b.max.z) / 2 + o[2]];
+}
+function labOccluderExtent() {
+  const b = labOccluderBox();
+  return Math.max(b.max.x - b.min.x, b.max.z - b.min.z) + 16;
+}
 // Wet ground is bound to the splat ONCE, at startup, not the first time it rains: the graph gates
 // on the wetness uniform, and rebuilding every splat instance mid-session is a visible hitch.
 terrain.setSplatRain(rain.groundShade);
@@ -1711,6 +1936,7 @@ const frameProfiler = createFrameProfiler();
 const BASE_GAME_PASS_PREFIXES = Object.freeze({
   terrain: 'passTerrainMs', water: 'passWaterMs', fx: 'passFxMs', sky: 'passSkyMs',
   grassGpu: 'passGrassMs', postRender: 'passPostMs', weather: 'passWeatherMs',
+  rainBake: 'passRainBakeMs',
   // The encode, split by mirror frame. reflect is the mirror's own time; postMirror/postPlain are
   // the whole encode on frames where it did and did not run. All three are inside postRender.
   reflect: 'passReflectMs', postMirror: 'passPostMirrorMs', postPlain: 'passPostPlainMs',
@@ -1729,7 +1955,7 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
 // Slots that partition the frame. Sub-slots are excluded from the residual: every terrain* one is
 // either inside terrain's own slot (fold, field, and the fold's colorize/batch/collider split) or
 // outside the frame entirely (install), and reflect/postMirror/postPlain are all inside postRender.
-const BASE_GAME_FRAME_SLOTS = ['terrain', 'water', 'fx', 'grassGpu', 'sky', 'weather',
+const BASE_GAME_FRAME_SLOTS = ['terrain', 'water', 'fx', 'grassGpu', 'sky', 'weather', 'rainBake',
   'playerSim', 'playerView', 'bodies', 'audio', 'postRender'];
 function profiledMs() {
   const snap = frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES);
@@ -2041,6 +2267,8 @@ function changed(key) {
     // As in v3: picking a model writes its recommended lead into the slider instead of applying it invisibly.
     settings.bodyStepLeadScale = GAIT_MODELS[settings.bodyGaitModel]?.stepLeadScale ?? settings.bodyStepLeadScale;
     syncAllControls();
+  } else if (key === 'cameraOffsetTarget') {
+    syncAllControls();   // the three offset sliders now show the other mode's numbers
   } else if (key === 'unlimitedAmmo') {
     applyUnlimitedAmmo();
   } else if (key === 'weaponPrimary' || key === 'weaponSidearm' || key === 'weaponMelee' || key === 'weaponThrowable') {
@@ -2055,6 +2283,8 @@ function changed(key) {
     applyMusicSetting().catch(reportBaseGameError);
   } else if (key?.startsWith('audio')) {
     applyAudioSettings();
+  } else if (key === 'rainOccExtent') {
+    controlRegistry.get('rainOccSize')?.sync();
   } else if (key === 'weatherSoundSpeed') {
     controlRegistry.get('lightningDistMax')?.sync();
   } else if (key === 'waveWindDeg' || key === 'weatherWindFollowsWaves') {
@@ -2094,6 +2324,34 @@ function addRange(host, key, label, min, max, step, format = value => String(val
   registerControl(key, () => { input.value = String(settings[key]); output.textContent = format(settings[key]); }, input);
   return wrap;
 }
+// The three framing offsets exist twice, once per view mode. One slider edits whichever set
+// `cameraOffsetTarget` names; both keys register against it so the settings save/load check (which
+// wants every setting to have a control) still passes and both values persist.
+const cameraOffsetKey = (base) => (settings.cameraOffsetTarget === 'firstPerson' ? `fp${base[0].toUpperCase()}${base.slice(1)}` : base);
+function addCameraOffsetRange(base, label, min, max, step = 0.01) {
+  const wrap = document.createElement('div'); wrap.className = 'control';
+  const row = document.createElement('div'); row.className = 'control-line';
+  const text = document.createElement('label');
+  const output = document.createElement('output');
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step);
+  row.append(text, output); wrap.append(row, input); playerSec.append(wrap);
+  const format = value => `${value.toFixed(2)} m`;
+  const sync = () => {
+    const key = cameraOffsetKey(base);
+    text.textContent = `${label} (${settings.cameraOffsetTarget === 'firstPerson' ? '1st' : '3rd'})`;
+    input.value = String(settings[key]);
+    output.textContent = format(settings[key]);
+  };
+  input.addEventListener('input', () => {
+    const key = cameraOffsetKey(base);
+    settings[key] = Number(input.value); output.textContent = format(settings[key]); changed(key);
+  });
+  registerControl(base, sync, input);
+  registerControl(`fp${base[0].toUpperCase()}${base.slice(1)}`, sync, input);
+  sync();
+}
+
 function addSelect(host, key, label, values, labels = null) {
   const row = document.createElement('label'); row.className = 'control-line control';
   const text = document.createElement('span'); text.textContent = label;
@@ -2150,6 +2408,7 @@ const rainDropSec = createSection(rainSec, 'Rain drops', { collapsed: true });
 const rainSplashSec = createSection(rainSec, 'Rain splashes', { collapsed: true });
 const rainGroundSec = createSection(rainSec, 'Rain ground', { collapsed: true });
 const rainWetSec = createSection(rainSec, 'Rain wet surfaces', { collapsed: true });
+const rainOccSec = createSection(rainSec, 'Rain shadow', { collapsed: true });
 const lightningSec = createSection(weatherSec, 'Lightning', { collapsed: true });
 const weatherAudioSec = createSection(weatherSec, 'Weather audio', { collapsed: true });
 const atmosphereSec = createSection(weatherSec, 'Atmosphere response', { collapsed: true });
@@ -2294,6 +2553,12 @@ addSelect(playerSec, 'weaponPrimary', 'Primary weapon (1)', [...BASE_GAME_WEAPON
 addSelect(playerSec, 'weaponSidearm', 'Sidearm (2)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponMelee', 'Melee (3)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
+addToggle(playerSec, 'reticleEnabled', 'Reticle');
+addToggle(playerSec, 'reticleSpread', 'Reticle opens with the spread cone');
+const reticleNote = document.createElement('div'); reticleNote.className = 'note';
+reticleNote.textContent = 'The reticle sits where the round would land, not at screen centre — in third person the camera is behind and beside your head, so those are metres apart. Its gap is the live cone through the camera FOV, and it turns amber whenever the trigger would do nothing (reloading, mid-swap, empty).';
+playerSec.append(reticleNote);
+
 addToggle(playerSec, 'unlimitedAmmo', 'Unlimited ammo');
 const unlimitedAmmoNote = document.createElement('div'); unlimitedAmmoNote.className = 'note';
 unlimitedAmmoNote.textContent = 'Bottomless magazines: no reloads, no dry clicks. Ammo is the server’s, so online this is the room owner’s to set and applies to everyone.';
@@ -2375,9 +2640,13 @@ addRange(playerSec, 'cameraDistance', 'Third-person distance', 1, 12, 0.25, valu
 addRange(playerSec, 'cameraFollowRate', 'Camera damping rate', 1, 40, 1, value => `${value.toFixed(0)} /s`);
 addRange(playerSec, 'cameraSensitivity', 'Mouse sensitivity', 0.0005, 0.01, 0.0005, value => value.toFixed(4));
 addRange(playerSec, 'cameraObstructionPadding', 'Camera wall padding', 0.05, 0.8, 0.01, value => `${value.toFixed(2)} m`);
-addRange(playerSec, 'cameraSideOffset', 'Camera side offset', -1.5, 1.5, 0.01, value => `${value.toFixed(2)} m`);
-addRange(playerSec, 'cameraHeightOffset', 'Camera height offset', -1, 1.5, 0.01, value => `${value.toFixed(2)} m`);
-addRange(playerSec, 'cameraForwardOffset', 'Camera forward offset', -1.5, 1.5, 0.01, value => `${value.toFixed(2)} m`);
+addSelect(playerSec, 'cameraOffsetTarget', 'Camera offsets apply to', ['thirdPerson', 'firstPerson'], ['Third person', 'First person']);
+const cameraOffsetNote = document.createElement('div'); cameraOffsetNote.className = 'note';
+cameraOffsetNote.textContent = 'Each view keeps its own three offsets; the dropdown picks which set these sliders edit. They used to be one shared set, so an over-the-shoulder third-person framing moved your first-person eye out of your head by the same amount.';
+playerSec.append(cameraOffsetNote);
+addCameraOffsetRange('cameraSideOffset', 'Camera side offset', -1.5, 1.5);
+addCameraOffsetRange('cameraHeightOffset', 'Camera height offset', -1, 1.5);
+addCameraOffsetRange('cameraForwardOffset', 'Camera forward offset', -1.5, 1.5);
 addRange(playerSec, 'cameraFov', 'Field of view (third person)', 30, 100, 1, value => `${value.toFixed(0)} deg`);
 addRange(playerSec, 'fpFov', 'Field of view (first person)', 30, 110, 1, value => `${value.toFixed(0)} deg`);
 addToggle(playerSec, 'dofEnabled', 'Depth of field');
@@ -2610,6 +2879,17 @@ addRange(rainWetSec, 'rainDryTime', 'Time to dry out', 0, 600, 1, seconds);
 addRange(rainWetSec, 'rainPuddle', 'Puddle coverage', 0, 1, 0.01, f2);
 addRange(rainWetSec, 'rainRipple', 'Ripple strength', 0, 4, 0.01, f2);
 
+// ---- Rain shadow (phase R3). A top-down height bake: drops stop under whatever is above them. ----
+addSelect(rainOccSec, 'rainOccluders', 'Rain shadow', ['off', 'lab', 'on'],
+  ['Off', 'Traversal Lab only', 'Lab and terrain']);
+// Only terrain mode reads these: the lab sizes its window from the lab's own bounds.
+addRange(rainOccSec, 'rainOccExtent', 'Window size (terrain)', 20, 2000, 10,
+  value => `${value.toFixed(0)} m · rebakes every ${(value / 4).toFixed(0)} m walked`);
+addRange(rainOccSec, 'rainOccSize', 'Window resolution', 64, 2048, 64,
+  value => `${value.toFixed(0)} px · ${(settings.rainOccExtent / value).toFixed(2)} m per texel`);
+addRange(rainOccSec, 'rainOccTop', 'Bake height', 20, 2000, 10, metres);
+addAction(rainOccSec, 'Rebake the rain shadow', () => { rainOccDirty = true; });
+
 // ---- Lightning (phase R4). The schedule terms are shared; the look is local. ----
 addToggle(lightningSec, 'lightningEnabled', 'Lightning');
 addRange(lightningSec, 'lightningThreshold', 'Weather needed before it strikes', 0, 1, 0.01, f2);
@@ -2692,6 +2972,7 @@ if (missingControls.length) throw new Error(`Unsaved/unconfigured settings: ${mi
 
 loadShotSpread();   // the committed accuracy numbers; the built-in fallback stands until it lands
 applyUnlimitedAmmo();   // restored from the autosave in Solo, replaced by the room's world online
+playerBodies.setLocalLoadout(currentLoadout());
 
 const multiplayerStatus = document.createElement('div');
 multiplayerStatus.className = 'note';
@@ -2738,7 +3019,11 @@ function applyPlayerSnapshot(snapshot, session) {
       const hit = sanitizeBaseGameHitEvent(raw);
       if (!hit) continue;
       playerHitRigDebug.setLastHit(hit.point);
-      if (hit.shooter === session.clientId) combatState.hitFlashUntil = now + 180;
+      if (hit.shooter === session.clientId) {
+        combatState.hitFlashUntil = now + 180;
+        const victim = snapshot.players?.find(p => p.id === hit.victim);
+        reticle.hit({ fatal: victim ? victim.dead === true : false });
+      }
       if (hit.victim === session.clientId) { combatState.damageUntil = now + 400; audioDirector.localDamage(); }
       else { const l = worldCoordinates.toRenderLocal(hit.point, remoteAudioLocal); audioDirector.hitAt({ x: l[0], y: l[1], z: l[2] }); }
       const victim = snapshot.players?.find(p => p.id === hit.victim);
@@ -3077,14 +3362,14 @@ addEventListener('keydown', event => {
   if (event.code === 'KeyT' && !event.repeat) { resetPlayer(); scheduleAutosave(); }
   if (event.code === 'KeyR' && !event.repeat) weaponState.reloadEdge = true;
   if (event.code === 'KeyG' && !event.repeat) weaponState.throwEdge = true;
+  // Posture toggles, not holds: you do not hold a key to stay lying down. Pressing the key you are
+  // already in stands you back up, and either key takes you straight there from the other.
+  if (event.code === 'KeyC' && !event.repeat) playerStance = playerStance === 'kneel' ? 'stand' : 'kneel';
+  if (event.code === 'KeyZ' && !event.repeat) playerStance = playerStance === 'prone' ? 'stand' : 'prone';
   const slotKeys = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
   const slotIndex = slotKeys.indexOf(event.code);
-  if (slotIndex >= 0 && !event.repeat && slotIndex !== weaponState.slot) {
-    weaponState.slot = slotIndex;
-    weaponViewModel.setWeapon(localWeaponId());
-    playerBodies.setWeapon(localWeaponId());
-    audioDirector.localSlotChange();
-  }
+  if (slotIndex >= 0 && !event.repeat) selectSlot(slotIndex);
+  if (event.code === 'KeyQ' && !event.repeat) selectSlot(weaponState.lastSlot);
 });
 // Right mouse button aims while held (pointer-locked play only).
 renderer.domElement.addEventListener('mousedown', (event) => {
@@ -3105,11 +3390,23 @@ addEventListener('mousemove', event => {
     || document.pointerLockElement !== renderer.domElement) return;
   playerView.addLook(-event.movementX * settings.cameraSensitivity, -event.movementY * settings.cameraSensitivity);
 });
-renderer.domElement.addEventListener('wheel', event => {
-  if (settings.playerControlMode !== 'player' || settings.playerViewMode !== 'thirdPerson') return;
-  settings.cameraDistance = Math.max(1, Math.min(12, settings.cameraDistance * (1 + Math.sign(event.deltaY) * 0.08)));
+function zoomCamera(direction) {
+  if (settings.playerViewMode !== 'thirdPerson') return false;   // nothing to pull back from in first person
+  settings.cameraDistance = Math.max(1, Math.min(12, settings.cameraDistance * (1 + direction * 0.08)));
   controlRegistry.get('cameraDistance')?.sync();
   scheduleAutosave();
+  return true;
+}
+renderer.domElement.addEventListener('wheel', event => {
+  if (settings.playerControlMode !== 'player') return;
+  const direction = Math.sign(event.deltaY) || 1;
+  // While you are actually playing the wheel is the weapon wheel, as it is in every shooter, and
+  // SHIFT is the boom: pulling the third-person camera in and out mid-fight is worth keeping, and
+  // it was reachable only from the panel once the wheel changed jobs. Pointer free = zoom, since
+  // there is no weapon to change while you are setting the scene up.
+  if (document.pointerLockElement !== renderer.domElement) { zoomCamera(direction); return; }
+  if (event.shiftKey) { zoomCamera(direction); return; }
+  cycleSlot(direction);
 }, { passive: true });
 
 syncAllControls();
@@ -3191,6 +3488,8 @@ function captureContext() {
     // deviceSupports asks the adapter directly, so it answers "can this GPU do it" even when we
     // never asked; backend.trackTimestamp is `requested && supported` and conflates the two.
     gpuTimestamps: { ...gpuTimestampState, deviceSupports: gpuDeviceSupportsTimestamps },
+    // Which arm of the per-chunk-culling A/B this capture is. Without it the two are unreadable.
+    batchFrustumCulled: BATCH_FRUSTUM_CULLED,
     water: {
       enabled: settings.waterEnabled && settings.worldMode === 'terrain',
       reflection: settings.waterReflection,
@@ -3424,11 +3723,12 @@ async function animate() {
       yaw: playerView.yaw,
       pitch: playerView.pitch,
       sprint: playerKeys.has('ShiftLeft') || playerKeys.has('ShiftRight'),
-      crouch: playerKeys.has('ControlLeft') || playerKeys.has('KeyC'),
+      crouch: playerKeys.has('ControlLeft'),   // swim down; posture is its own channel below
+      stance: stanceIndex(playerStance),
       slot: weaponState.slot,
       aim: weaponState.aiming,
       fire: weaponState.firing,
-    } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false, crouch: false, slot: weaponState.slot, aim: false, fire: false };
+    } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false, crouch: false, stance: stanceIndex(playerStance), slot: weaponState.slot, aim: false, fire: false };
     if (!canControl) { weaponState.reloadEdge = false; weaponState.throwEdge = false; }
     // The jump edge is cleared only when a simulation tick actually consumes it: a frame with zero
     // fixed steps (high refresh rates, pacing below 1x) must not swallow the key press.
@@ -3484,17 +3784,20 @@ async function animate() {
         grounded: playerController.grounded,
       });
       const comfort = FP_COMFORT[settings.fpCameraComfort] ?? FP_COMFORT.off;
-      const firstPersonEye = settings.playerViewMode === 'firstPerson' && fpState.hasEye;
+      const firstPerson = settings.playerViewMode === 'firstPerson';
+      const firstPersonEye = firstPerson && fpState.hasEye;
       const comfortOn = firstPersonEye && !weaponState.aiming;
       playerView.updateCamera(dt, playerRenderPosition, {
         mode: settings.playerViewMode,
         distance: settings.cameraDistance,
         followRate: settings.cameraFollowRate,
         obstructionPadding: settings.cameraObstructionPadding,
-        sideOffset: settings.cameraSideOffset,
-        heightOffset: settings.cameraHeightOffset,
+        // Each mode's own framing, never the other's.
+        sideOffset: firstPerson ? settings.fpCameraSideOffset : settings.cameraSideOffset,
+        heightOffset: firstPerson ? settings.fpCameraHeightOffset : settings.cameraHeightOffset,
         // The eyes sit ahead of the head centre; the body's own value, not a guess.
-        forwardOffset: settings.cameraForwardOffset + (firstPersonEye ? playerBodies.localEyeForward() : 0),
+        forwardOffset: (firstPerson ? settings.fpCameraForwardOffset : settings.cameraForwardOffset)
+          + (firstPersonEye ? playerBodies.localEyeForward() : 0),
         // Eye height is the body's live eye height (rig eyes ~1.96 m on a 1.8 m capsule, not 1.62).
         eyeAnchorY: firstPersonEye ? fpState.eye[1] : null,
         comfortRateY: comfortOn ? comfort.y : 0,
@@ -3548,14 +3851,19 @@ async function animate() {
       });
     }
     playerBodies.setLocalAim(canControl && weaponState.aiming, canControl && weaponState.aiming ? updateLocalAimPoint() : null);
+    updateReticle(canControl);
     audioBodyStepped = playerBodies.updateLocal(dt, {
       globalFoot: worldCoordinates.toGlobal(playerRenderPosition),
       velocity: playerController.getVelocity(),
       yaw: playerView.yaw,
       pitch: playerView.pitch,
       grounded: playerController.grounded,
+      // Standing height: the RIG does the crouching, from the weights below. Feeding it the
+      // shrunken capsule height instead would squash the whole body like a scale slider.
       height: playerController.config.height,
       radius: playerController.config.radius,
+      stance: playerController.stance,
+      stanceWeights: playerController.stanceWeights,
       visible: bodyVisible,
       viewFrame,
       viewBlend: viewFrame ? fpState.viewBlend : 0,
@@ -3600,6 +3908,7 @@ async function animate() {
             action: record.sample.action,
             actionTick: record.sample.actionTick,
             bodyModel: record.sample.bodyModel,
+            stance: record.sample.stance,
           });
         }
       }
@@ -3627,7 +3936,8 @@ async function animate() {
     });
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) refreshTerrainRuntimeLine();
     frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); });
-    await frameProfiler.timeAsync('grassGpu', () => flora.update(dt));
+    // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
+    await frameProfiler.timeAsync('grassGpu', () => flora.update(frameStart / 1000));
     frameProfiler.time('sky', () => updateWorld(dt));
     // After the sky slot: the drop tint reads scene.background, which updateWorld has just written.
     frameProfiler.time('weather', () => {
@@ -3643,6 +3953,9 @@ async function animate() {
       const bedLevel = settings.weatherRainBed && !gameplayPaused ? rain.system.getDensity() : 0;
       audioDirector.setRainBed(bedLevel, settings.weatherRainBedVolume);
     });
+    // Its own slot: the bake is a whole extra scene render, and folded into `weather` it would read
+    // as rain randomly costing several milliseconds.
+    frameProfiler.time('rainBake', updateRainOccluders);
     if (!terrainStudio.open) {
       // postRender is CPU encode (measured: gpuRenderMs ~1 ms against passPostMs 3-12), and the
       // planar mirror re-renders the whole scene inside it every reflectRate frames. Split the

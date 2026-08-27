@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hybrid WebGPU: Xenolith Diamond on the Highway to Heaven</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #000;
+      user-select: none;
+      -webkit-user-select: none;
+      font-family: monospace;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: grab;
+    }
+    body.grabbing canvas {
+      cursor: grabbing;
+    }
+    #note {
+      position: fixed;
+      left: 10px;
+      bottom: 10px;
+      color: #9aa;
+      font-size: 11px;
+      opacity: 0.6;
+      pointer-events: none;
+      max-width: 90vw;
+    }
+    #err {
+      position: fixed;
+      left: 10px;
+      top: 10px;
+      color: #ffb3b3;
+      font-size: 12px;
+      white-space: pre-wrap;
+      max-width: 90vw;
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
+
+  <script type="importmap">
+  { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+      "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+      "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js"
+  } }
+  </script>
+
+  <div id="err"></div>
+  <div id="note">WebGPU/TSL port of diamond-on-the-highway.html. This one follows convert-then-merge: "Xenolith Diamond" and "Highway to Heaven" are each ported to their own standalone wgslFn (own uniforms, own helper fns, independently callable), then composed in one line of TSL (select on the diamond's hit flag) instead of hand-fusing one giant WGSL block. Drag/scroll orbits+zooms the diamond; the tunnel keeps flying regardless.</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { WebGPURenderer } from 'three/webgpu';
+    import { uniform, wgslFn, screenCoordinate, screenSize, time, select } from 'three/tsl';
+
+    const errEl = document.getElementById('err');
+    function showError(msg) {
+      errEl.style.display = 'block';
+      errEl.textContent = 'Error: ' + msg;
+    }
+    addEventListener('error', e => showError(e.message || 'script error'));
+    addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+    const renderer = new WebGPURenderer({ antialias: false, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(1.0);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    // --- Config ---
+    const diamondConfig = {
+      dpr: 1.0,
+      autoRotateSpeed: 0.2,
+      fractalSpeed: 1.0,
+      exposure: 54.0,
+      twistFactor: 0.0,
+      glassColor: '#5bc6e1',
+      palR: -2.77,
+      palG: -5.00,
+      palB: 5.00
+    };
+
+    const highwayConfig = {
+      speed: 1.0,
+      grain: 0.04,
+      luminance: 5.1,
+      precision: 0.5,
+      iterations: 28.6,
+      solidity: 1.1,
+      camX: 2.8,
+      camY: -1.0,
+      camPitch: -0.38,
+      camFov: 2.5,
+      camShiftX: 1.0,
+      camShiftY: 1.0
+    };
+
+    // --- TSL uniforms ---
+    const U = {
+      uCamAngle: uniform(0.0),
+      uCamAngleY: uniform(0.0),
+      uZoom: uniform(1.0),
+      uFractalSpeed: uniform(diamondConfig.fractalSpeed),
+      uColorPalette: uniform(new THREE.Vector3(diamondConfig.palR, diamondConfig.palG, diamondConfig.palB)),
+      uGlassColor: uniform(new THREE.Vector3()),
+      uExposure: uniform(diamondConfig.exposure),
+      uTwistFactor: uniform(diamondConfig.twistFactor),
+
+      uSceneTimeScale: uniform(highwayConfig.speed),
+      uGrainIntensity: uniform(highwayConfig.grain),
+      uGlobalLuminance: uniform(highwayConfig.luminance),
+      uStepPrecision: uniform(highwayConfig.precision),
+      uRayIterations: uniform(highwayConfig.iterations),
+      uSurfaceSolidity: uniform(highwayConfig.solidity),
+      uCamPosX: uniform(highwayConfig.camX),
+      uCamPosY: uniform(highwayConfig.camY),
+      uCamPitch: uniform(highwayConfig.camPitch),
+      uCamFov: uniform(highwayConfig.camFov),
+      uCamShiftX: uniform(highwayConfig.camShiftX),
+      uCamShiftY: uniform(highwayConfig.camShiftY)
+    };
+
+    function updateGlassColorUniform() {
+      const c = new THREE.Color(diamondConfig.glassColor);
+      U.uGlassColor.value.set(c.r, c.g, c.b);
+    }
+    updateGlassColorUniform();
+
+    // --- Xenolith Diamond, ported standalone: SDF sphere-trace to the diamond surface, then an
+    // internal fractal-fill volumetric fill + fresnel glass edge. Returns vec4(color, hitFlag) --
+    // hitFlag lets the merge step below pick this color or the tunnel's without a second raymarch.
+    // WGSL notes: swizzle writes narrower than the full vector (.x/.y/.z one at a time) are the
+    // only assignable swizzles in WGSL, so GLSL's `p.xz = ...` becomes two single-component
+    // assigns, and the x/z swap becomes an explicit temp variable.
+    const xenolithDiamond = wgslFn(`
+      fn xenolithDiamond(
+        uv: vec2<f32>,
+        camAngle: f32,
+        camAngleY: f32,
+        zoom: f32,
+        fractalTime: f32,
+        colorPalette: vec3<f32>,
+        glassColor: vec3<f32>,
+        exposure: f32,
+        twistFactor: f32
+      ) -> vec4<f32> {
+        var rayOrigin: vec3<f32> = vec3<f32>(0.0, -0.6, -4.5 * zoom);
+        var rayDir: vec3<f32> = normalize(vec3<f32>(uv, 1.6));
+
+        let rotY = rotate2D(camAngleY);
+        let roYZ = rotY * rayOrigin.yz;
+        rayOrigin.y = roYZ.x; rayOrigin.z = roYZ.y;
+        let rdYZ = rotY * rayDir.yz;
+        rayDir.y = rdYZ.x; rayDir.z = rdYZ.y;
+
+        let rot = rotate2D(camAngle);
+        let roXZ = rot * rayOrigin.xz;
+        rayOrigin.x = roXZ.x; rayOrigin.z = roXZ.y;
+        let rdXZ = rot * rayDir.xz;
+        rayDir.x = rdXZ.x; rayDir.z = rdXZ.y;
+
+        var d0: f32 = 0.0;
+        for (var i: i32 = 0; i < MAX_STEPS_GEOM; i = i + 1) {
+          let p = rayOrigin + rayDir * d0;
+          let d = sdDiamond(p, SCALE);
+          if (d < SURF_DIST || d0 > MAX_DIST) { break; }
+          d0 = d0 + d;
+        }
+
+        if (d0 >= MAX_DIST) {
+          return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        }
+
+        let hitPos = rayOrigin + rayDir * d0;
+        let normal = getNormal(hitPos);
+
+        let rdIn = rayDir;
+        var currentPos: vec3<f32> = hitPos + normal * 0.05;
+        var accumulatedColor: vec3<f32> = vec3<f32>(0.1, 0.1, 0.1);
+
+        for (var i: i32 = 20; i < MAX_ITERATIONS; i = i + 1) {
+          if (sdDiamond(currentPos, SCALE) > 1.6) { break; }
+
+          let distanceToScene = mapFractal(currentPos, twistFactor);
+          currentPos = currentPos + rdIn * max(distanceToScene, 0.53);
+
+          var domainPos: vec3<f32> = currentPos;
+          let rotDom = rotate2D(domainPos.z * twistFactor);
+          let dXY = rotDom * domainPos.xy;
+          domainPos.x = dXY.x; domainPos.y = dXY.y;
+
+          let phaseShift = f32(i) * 2.4 + length(domainPos.xy * 6.20 + vec2<f32>(0.7, 0.7));
+          let randomOffset = f32(i) * 0.1;
+
+          let stepColor = (1.1 + sin(phaseShift + colorPalette + randomOffset)) / (distanceToScene + 0.04);
+          accumulatedColor = accumulatedColor + stepColor;
+        }
+
+        var finalColor = applyTonemap(accumulatedColor / exposure);
+
+        let viewAngle = max(dot(normal, -rayDir), 0.0);
+        let fresnel = pow(1.1 - viewAngle, 3.1);
+        finalColor = finalColor + glassColor * fresnel * 0.5;
+
+        return vec4<f32>(finalColor, 1.0);
+      }
+
+      fn rotate2D(angle: f32) -> mat2x2<f32> {
+        let c = cos(angle);
+        let s = sin(angle);
+        return mat2x2<f32>(c, s, -s, c);
+      }
+
+      fn applyTonemap(colorIn: vec3<f32>) -> vec3<f32> {
+        let whitePoint = 0.8;
+        let lumaWeights = vec3<f32>(1.000, 1.120, 1.000);
+        let luminance = dot(colorIn, lumaWeights);
+        let whiteSq = whitePoint * whitePoint;
+        let tonemappedLuma = luminance * (1.3 + luminance / whiteSq) / (1.5 + luminance);
+        return colorIn * (tonemappedLuma / max(luminance, 0.6901));
+      }
+
+      fn calculateDisturbance(position: vec3<f32>) -> f32 {
+        let goldenRatio = 2.788033988;
+        let basisMatrix = mat3x3<f32>(
+          -0.131464913, -0.048044873, 0.062087367,
+          -0.465078618, -0.016973341, 0.454042493,
+          0.086597072, 1.681518454, 0.009753815
+        );
+        let p = position * basisMatrix;
+        let tri1 = abs(fract(p) * 2.0 - vec3<f32>(1.0, 1.0, 1.0));
+        let tri2 = abs(fract(p * goldenRatio) * 2.1 - vec3<f32>(1.0, 1.0, 1.0));
+        let crystal = max(max(tri1.x, tri1.y), tri1.z) + dot(tri1, tri2) * 0.5;
+        return crystal * 0.6;
+      }
+
+      fn sdDiamond(pIn: vec3<f32>, scale: f32) -> f32 {
+        var p: vec3<f32> = pIn / scale;
+        p.x = abs(p.x);
+        p.z = abs(p.z);
+        if (p.x < p.z) {
+          let tmpX = p.x;
+          p.x = p.z;
+          p.z = tmpX;
+        }
+
+        let c = 1.0338795;
+        let s = 0.3826834;
+        let px = p.x * c + p.z * s;
+
+        let nCrown = normalize(vec2<f32>(1.0, 0.7));
+        let dCrown = dot(vec2<f32>(px, p.y), nCrown) - 0.8371;
+
+        let nPavilion = normalize(vec2<f32>(1.7, -1.1));
+        let dPavilion = dot(vec2<f32>(px, p.y), nPavilion) - 0.7382;
+
+        let dTable = p.y - 0.4;
+
+        let d = max(max(dCrown, dPavilion), dTable);
+        return d * scale * 0.91;
+      }
+
+      fn getNormal(p: vec3<f32>) -> vec3<f32> {
+        let e = vec2<f32>(0.016, 0.0);
+        let center = sdDiamond(p, SCALE);
+        return normalize(vec3<f32>(
+          center - sdDiamond(p - vec3<f32>(e.x, e.y, e.y), SCALE),
+          center - sdDiamond(p - vec3<f32>(e.y, e.x, e.y), SCALE),
+          center - sdDiamond(p - vec3<f32>(e.y, e.y, e.x), SCALE)
+        ));
+      }
+
+      fn mapFractal(pos: vec3<f32>, twistFactor: f32) -> f32 {
+        var domainPos: vec3<f32> = pos;
+        let rotDom = rotate2D(domainPos.z * twistFactor);
+        let dXY = rotDom * domainPos.xy;
+        domainPos.x = dXY.x;
+        domainPos.y = dXY.y;
+        let noiseLowFreq = calculateDisturbance(pos * 7.3) * 0.1;
+        let noiseHighFreq = calculateDisturbance(domainPos * 3.3);
+        return abs(noiseLowFreq - noiseHighFreq);
+      }
+
+      const MAX_ITERATIONS: i32 = 40;
+      const MAX_STEPS_GEOM: i32 = 100;
+      const SURF_DIST: f32 = 0.001;
+      const MAX_DIST: f32 = 20.0;
+      const SCALE: f32 = 1.6;
+    `);
+
+    // --- Highway to Heaven, ported standalone: an endless forward-flying volumetric light
+    // tunnel. Single-sample (the original's 4x4 supersampling loop is dropped, same
+    // simplification as the GLSL hybrid) since it now shares the frame with a second raymarcher.
+    const highwayTunnel = wgslFn(`
+      fn highwayTunnel(
+        fragCoord: vec2<f32>,
+        resolution: vec2<f32>,
+        iTime: f32,
+        sceneTimeScale: f32,
+        grainIntensity: f32,
+        globalLuminance: f32,
+        stepPrecision: f32,
+        rayIterations: f32,
+        surfaceSolidity: f32,
+        camPosX: f32,
+        camPosY: f32,
+        camPitch: f32,
+        camFov: f32,
+        camShiftX: f32,
+        camShiftY: f32
+      ) -> vec3<f32> {
+        let globalTime = iTime * sceneTimeScale;
+
+        var rayOrigin: vec3<f32> = vec3<f32>(camPosX, camPosY, globalTime);
+        var viewDir: vec3<f32> = normalize(vec3<f32>(camFov * fragCoord - resolution * vec2<f32>(camShiftX, camShiftY), resolution.y));
+
+        let rotP = calcRotation(camPitch);
+        let vdYZ = rotP * viewDir.yz;
+        viewDir.y = vdYZ.x;
+        viewDir.z = vdYZ.y;
+
+        var lightAccumulator: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
+
+        for (var iter: i32 = 0; iter < 100; iter = iter + 1) {
+          if (f32(iter) >= rayIterations) { break; }
+
+          let detailNoise = computeStructuralDensity(rayOrigin * 20.0) / 20.0;
+          let baseNoise = computeStructuralDensity(rayOrigin);
+          var stepDistance: f32 = 0.005 + abs(detailNoise - baseNoise) * 0.7;
+
+          let heightMod = sin(rayOrigin.z * 2.0 + abs(rayOrigin.x) * 0.5) * 0.5;
+          stepDistance = stepDistance + abs(rayOrigin.y + heightMod) * 0.4;
+
+          let safeStep = stepDistance * stepPrecision;
+          rayOrigin = rayOrigin + viewDir * safeStep;
+
+          let colorPhase = (f32(iter) * stepPrecision) - 0.4;
+          let wavePhase = colorPhase + length(rayOrigin.xz * 0.1) + 2.0;
+          let spectrumShift = vec3<f32>(3.0, 1.5, 0.5);
+          let spectralGlow = vec3<f32>(1.0, 1.0, 1.0) + 1.5 * sin(wavePhase + spectrumShift);
+
+          let rawDensity = 1.0 / stepDistance;
+          let sharpDensity = pow(rawDensity, surfaceSolidity) * 0.15;
+
+          lightAccumulator = lightAccumulator + (spectralGlow * sharpDensity) * stepPrecision;
+        }
+
+        lightAccumulator = lightAccumulator * globalLuminance;
+        var finalImage: vec3<f32> = applyCinematicGrade(lightAccumulator * lightAccumulator / 1000.0);
+
+        finalImage = (finalImage - vec3<f32>(0.5, 0.5, 0.5)) * 0.5 + vec3<f32>(0.5, 0.5, 0.5);
+        finalImage = finalImage * 0.3;
+
+        let grainValue = getFilmGrain(vec3<f32>(fragCoord, iTime));
+        finalImage = finalImage + (grainValue - 0.5) * grainIntensity;
+
+        return finalImage;
+      }
+
+      fn calcRotation(theta: f32) -> mat2x2<f32> {
+        let sine = sin(theta);
+        let cosine = cos(theta);
+        return mat2x2<f32>(cosine, -sine, sine, cosine);
+      }
+
+      fn applyCinematicGrade(rawColor: vec3<f32>) -> vec3<f32> {
+        let colorSpaceA = mat3x3<f32>(
+          0.59719, 0.07600, 0.02840,
+          0.35458, 0.90834, 0.13383,
+          0.04823, 0.01566, 0.83777
+        );
+        let colorSpaceB = mat3x3<f32>(
+          1.60475, -0.10208, -0.00327,
+          -0.53108, 1.10813, -0.07276,
+          -0.07367, -0.00605, 1.07602
+        );
+        let graded = colorSpaceA * rawColor;
+        let numerator = graded * (graded + 0.0945786) - 0.000090537;
+        let denominator = graded * (0.783729 * graded + 0.4329510) + 0.238081;
+        return colorSpaceB * (numerator / denominator);
+      }
+
+      fn computeStructuralDensity(pos: vec3<f32>) -> f32 {
+        let phaseShift = 0.228033988;
+        let structuralBasis = mat3x3<f32>(
+          0.388535087, 0.054921382, -0.743402928,
+          0.441955127, 4.336973341, 0.258518454,
+          0.272087367, 0.174042493, -0.021246185
+        );
+        return dot(cos(structuralBasis * pos), sin((phaseShift * pos) * structuralBasis));
+      }
+
+      fn getFilmGrain(seed3DIn: vec3<f32>) -> f32 {
+        var seed3D: vec3<f32> = fract(seed3DIn * 0.1031);
+        seed3D = seed3D + dot(seed3D, seed3D.zyx + 31.32);
+        return fract((seed3D.x + seed3D.y) * seed3D.z);
+      }
+    `);
+
+    const uv = screenCoordinate.mul(2.0).sub(screenSize).div(screenSize.y);
+    const fractalTime = time.mul(U.uFractalSpeed);
+
+    const diamondResult = xenolithDiamond(
+      uv, U.uCamAngle, U.uCamAngleY, U.uZoom, fractalTime,
+      U.uColorPalette, U.uGlassColor, U.uExposure, U.uTwistFactor
+    );
+
+    const tunnelColor = highwayTunnel(
+      screenCoordinate, screenSize, time,
+      U.uSceneTimeScale, U.uGrainIntensity, U.uGlobalLuminance, U.uStepPrecision,
+      U.uRayIterations, U.uSurfaceSolidity, U.uCamPosX, U.uCamPosY, U.uCamPitch,
+      U.uCamFov, U.uCamShiftX, U.uCamShiftY
+    );
+
+    // The merge: two independently-ported shaders composed with one select() on the diamond's
+    // hit flag (its alpha channel), rather than hand-fusing them into a single WGSL block.
+    const material = new THREE.MeshBasicNodeMaterial();
+    material.colorNode = select(diamondResult.w.greaterThan(0.5), diamondResult.xyz, tunnelColor);
+    material.depthWrite = false;
+    material.depthTest = false;
+
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+    scene.add(mesh);
+
+    // --- Interaction (Xenolith Diamond's angle-based orbit, unchanged) ---
+    let isDragging = false;
+    let previousMouseX = 0;
+    let previousMouseY = 0;
+
+    let targetDragAngleOffset = 0;
+    let targetDragAngleOffsetY = 0;
+    let targetZoom = 1.0;
+
+    let dragAngleOffset = 0;
+    let dragAngleOffsetY = 0;
+    let currentZoom = 1.0;
+
+    let autoRotateAccumulator = 0;
+
+    let initialPinchDistance = null;
+    let initialZoomOnPinch = 1.0;
+
+    document.body.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.lil-gui')) return;
+      isDragging = true;
+      previousMouseX = e.clientX;
+      previousMouseY = e.clientY;
+      document.body.classList.add('grabbing');
+    });
+
+    document.body.addEventListener('mouseup', () => {
+      isDragging = false;
+      document.body.classList.remove('grabbing');
+    });
+
+    document.body.addEventListener('mouseleave', () => {
+      isDragging = false;
+      document.body.classList.remove('grabbing');
+    });
+
+    document.body.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        const deltaX = e.clientX - previousMouseX;
+        const deltaY = e.clientY - previousMouseY;
+
+        targetDragAngleOffset += deltaX * 0.01;
+        targetDragAngleOffsetY -= deltaY * 0.01;
+
+        const maxVerticalAngle = Math.PI / 2.1;
+        targetDragAngleOffsetY = Math.max(-maxVerticalAngle, Math.min(maxVerticalAngle, targetDragAngleOffsetY));
+
+        previousMouseX = e.clientX;
+        previousMouseY = e.clientY;
+      }
+    });
+
+    document.body.addEventListener('wheel', (e) => {
+      if (e.target.closest('.lil-gui')) return;
+      targetZoom += e.deltaY * 0.002;
+      targetZoom = Math.max(0.3, Math.min(3.0, targetZoom));
+    });
+
+    document.body.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        isDragging = true;
+        previousMouseX = e.touches[0].clientX;
+        previousMouseY = e.touches[0].clientY;
+      } else if (e.touches.length === 2) {
+        isDragging = false;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        initialPinchDistance = Math.hypot(dx, dy);
+        initialZoomOnPinch = targetZoom;
+      }
+    }, { passive: false });
+
+    document.body.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+
+      if (isDragging && e.touches.length === 1) {
+        const deltaX = e.touches[0].clientX - previousMouseX;
+        const deltaY = e.touches[0].clientY - previousMouseY;
+
+        targetDragAngleOffset += deltaX * 0.01;
+        targetDragAngleOffsetY -= deltaY * 0.01;
+
+        const maxVerticalAngle = Math.PI / 2.1;
+        targetDragAngleOffsetY = Math.max(-maxVerticalAngle, Math.min(maxVerticalAngle, targetDragAngleOffsetY));
+
+        previousMouseX = e.touches[0].clientX;
+        previousMouseY = e.touches[0].clientY;
+      } else if (e.touches.length === 2 && initialPinchDistance !== null) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const currentDistance = Math.hypot(dx, dy);
+
+        const scale = initialPinchDistance / currentDistance;
+        targetZoom = initialZoomOnPinch * scale;
+        targetZoom = Math.max(0.3, Math.min(3.0, targetZoom));
+      }
+    }, { passive: false });
+
+    document.body.addEventListener('touchend', (e) => {
+      if (e.touches.length === 0) {
+        isDragging = false;
+        initialPinchDistance = null;
+      } else if (e.touches.length === 1) {
+        isDragging = true;
+        previousMouseX = e.touches[0].clientX;
+        previousMouseY = e.touches[0].clientY;
+        initialPinchDistance = null;
+      }
+    });
+
+    // --- Combined Control Panel ---
+    const gui = new lil.GUI({ title: 'Hybrid Control Panel (WebGPU)' });
+    gui.close();
+
+    const fDiamond = gui.addFolder('Diamond (Xenolith)');
+    fDiamond.add(diamondConfig, 'autoRotateSpeed', 0.0, 2.0, 0.01).name('Orbit Speed');
+    fDiamond.add(diamondConfig, 'fractalSpeed', 0.0, 3.0, 0.01).name('Fractal Speed').onChange(v => U.uFractalSpeed.value = v);
+    fDiamond.add(diamondConfig, 'exposure', 10.0, 100.0, 1.0).name('Exposure').onChange(v => U.uExposure.value = v);
+    fDiamond.add(diamondConfig, 'twistFactor', -2.0, 2.0, 0.01).name('Twist Factor').onChange(v => U.uTwistFactor.value = v);
+    fDiamond.addColor(diamondConfig, 'glassColor').name('Glass Highlight').onChange(updateGlassColorUniform);
+    fDiamond.add(diamondConfig, 'palR', -5.0, 5.0, 0.01).name('Phase X (R)').onChange(v => U.uColorPalette.value.x = v);
+    fDiamond.add(diamondConfig, 'palG', -5.0, 5.0, 0.01).name('Phase Y (G)').onChange(v => U.uColorPalette.value.y = v);
+    fDiamond.add(diamondConfig, 'palB', -5.0, 5.0, 0.01).name('Phase Z (B)').onChange(v => U.uColorPalette.value.z = v);
+
+    const fHighway = gui.addFolder('Tunnel (Highway to Heaven)');
+    fHighway.add(highwayConfig, 'luminance', 0.1, 15.0).name('Global Luminance').onChange(v => U.uGlobalLuminance.value = v);
+    fHighway.add(highwayConfig, 'grain', 0.0, 0.2).name('Cinematic Grain').onChange(v => U.uGrainIntensity.value = v);
+    fHighway.add(highwayConfig, 'solidity', 0.5, 3.0).name('Surface Solidity').onChange(v => U.uSurfaceSolidity.value = v);
+    fHighway.add(highwayConfig, 'precision', 0.1, 1.0).name('Step Precision').onChange(v => U.uStepPrecision.value = v);
+    fHighway.add(highwayConfig, 'iterations', 10, 80).name('Ray Iterations').onChange(v => U.uRayIterations.value = v);
+    fHighway.add(highwayConfig, 'speed', 0.0, 5.0).name('Flight Speed').onChange(v => U.uSceneTimeScale.value = v);
+    fHighway.add(highwayConfig, 'camX', -5.0, 10.0).name('Camera X').onChange(v => U.uCamPosX.value = v);
+    fHighway.add(highwayConfig, 'camY', -5.0, 5.0).name('Camera Y').onChange(v => U.uCamPosY.value = v);
+    fHighway.add(highwayConfig, 'camPitch', -1.5, 1.5).name('Pitch (Tilt)').onChange(v => U.uCamPitch.value = v);
+    fHighway.add(highwayConfig, 'camFov', 0.5, 5.0).name('FOV Factor').onChange(v => U.uCamFov.value = v);
+    fHighway.add(highwayConfig, 'camShiftX', -2.0, 5.0).name('Pan X (Center)').onChange(v => U.uCamShiftX.value = v);
+    fHighway.add(highwayConfig, 'camShiftY', -2.0, 5.0).name('Pan Y (Center)').onChange(v => U.uCamShiftY.value = v);
+
+    const fSystem = gui.addFolder('System');
+    fSystem.add(diamondConfig, 'dpr', 0.25, 3.0, 0.1).name('DPR (Resolution)').onChange(v => renderer.setPixelRatio(v));
+
+    window.addEventListener('resize', () => renderer.setSize(window.innerWidth, window.innerHeight));
+    renderer.setPixelRatio(diamondConfig.dpr);
+
+    const clock = new THREE.Clock();
+
+    renderer.setAnimationLoop(() => {
+      const delta = clock.getDelta();
+      autoRotateAccumulator += delta * diamondConfig.autoRotateSpeed;
+
+      dragAngleOffset += (targetDragAngleOffset - dragAngleOffset) * 0.08;
+      dragAngleOffsetY += (targetDragAngleOffsetY - dragAngleOffsetY) * 0.08;
+      currentZoom += (targetZoom - currentZoom) * 0.1;
+
+      U.uCamAngle.value = autoRotateAccumulator + dragAngleOffset;
+      U.uCamAngleY.value = dragAngleOffsetY;
+      U.uZoom.value = currentZoom;
+
+      renderer.render(scene, camera);
+    });
+  </script>
+</body>
+
+</html>

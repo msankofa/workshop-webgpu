@@ -149,6 +149,8 @@ export function createBaseGameRemotePlayers({ scene, worldCoordinates, radius = 
         yaw: sample.yaw, pitch: sample.pitch, grounded: sample.grounded, mode: sample.mode,
         // Weapon state is not interpolated: the latest authoritative values ride along.
         weapon: latest?.weapon ?? null, slot: latest?.slot ?? 0, aiming: latest?.aiming === true,
+        loadout: latest?.loadout ?? null,   // the slots not in hand hang on the body
+        stance: latest?.stance ?? 0,
         action: latest?.action ?? 0, actionTick: latest?.actionTick ?? 0, health: latest?.health ?? 100,
         bodyModel: latest?.bodyModel ?? 'default', hitProfile: latest?.hitProfile ?? 'humanoid-default',
         poseEpoch: latest?.poseEpoch ?? 0,

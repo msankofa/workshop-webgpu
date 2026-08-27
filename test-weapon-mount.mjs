@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { readFileSync } from 'node:fs';
 import { createProceduralPlayerBody } from './player-procedural-body.js';
-import { createWeaponMountSystem, defaultReloadSequence } from './weapon-mount.js';
+import { createWeaponMountSystem, defaultReloadSequence, buildStowParts, stowPlacementFor, stowedWeaponIds, holsterHoldFor, STOW_PLACEMENTS, STOW_LOD_MAX_PARTS } from './weapon-mount.js';
 import { getWeapon } from './weapons.js';
 
 let pass = 0, fail = 0;
@@ -179,6 +179,46 @@ def.holsterHold = { position: [0, -0.6, -0.2], rotation: [1.2, 0, 0], scale: 1 }
 system.updateMount(mount, 1 / 60, frame({ drawBlend: 0 }));
 ok(Math.abs(mount.weaponAdjust.position.y - (-0.6)) < 1e-6, 'drawBlend 0 resolves to holsterHold');
 delete def.holsterHold;
+// With nothing authored, the holster hold IS the stow point: the weapon blends toward the place it
+// is actually going, so the two can never be authored apart and drift.
+{
+  const derived = holsterHoldFor('cz_805_bren', def);
+  ok(derived.position.every((v, i) => v === STOW_PLACEMENTS.back.position[i]), 'a rifle with no authored holsterHold falls back to its back stow point');
+  ok(holsterHoldFor('m1911', getWeapon('m1911')).position[0] === STOW_PLACEMENTS.hip.position[0], 'a pistol falls back to the hip');
+  ok(holsterHoldFor('cz_805_bren', def) === derived, 'the derived hold is built once and reused');
+  system.updateMount(mount, 1 / 60, frame({ drawBlend: 0 }));
+  ok(Math.abs(mount.weaponAdjust.position.y - STOW_PLACEMENTS.back.position[1]) < 1e-6, 'drawBlend 0 with nothing authored puts the rifle at its back stow point');
+  system.updateMount(mount, 1 / 60, frame({ drawBlend: 1 }));
+}
+
+// ---- stowed weapons (phase 4.1) ----
+{
+  ok(stowPlacementFor('m1911') === STOW_PLACEMENTS.hip && stowPlacementFor('five_seven') === STOW_PLACEMENTS.hip, 'pistols ride the hip');
+  ok(stowPlacementFor('cz_805_bren') === STOW_PLACEMENTS.back && stowPlacementFor('m24') === STOW_PLACEMENTS.back, 'long guns ride the back');
+
+  const part = (verts) => ({ geometry: { attributes: { position: { count: verts } } } });
+  const parts = [part(10), part(400), part(50), part(300)];
+  const kept = buildStowParts(parts);
+  ok(kept.length <= STOW_LOD_MAX_PARTS && kept[0] === parts[1] && kept[1] === parts[3], 'the reduced list keeps the biggest sub-meshes, largest first');
+  ok(buildStowParts([]).length === 0, 'nothing in gives nothing out');
+  ok(buildStowParts(parts, { maxParts: 99, coverage: 1 }).length === parts.length, 'asking for full coverage keeps every part');
+  const tiny = [part(0), part(0)];
+  ok(buildStowParts(tiny).length > 0, 'a weapon whose parts report no vertices still draws something');
+
+  const loadout = { primary: 'cz_805_bren', sidearm: 'five_seven', melee: 'knife', throwable: 'grenade' };
+  ok(stowedWeaponIds(loadout, 'cz_805_bren').join() === 'five_seven', 'holding the rifle stows the pistol');
+  ok(stowedWeaponIds(loadout, 'knife').join() === 'cz_805_bren,five_seven', 'a knife in hand stows both guns');
+  ok(stowedWeaponIds({ primary: 'm1911', sidearm: 'm1911' }, null).join() === 'm1911', 'the same gun in two slots is stowed once');
+  ok(stowedWeaponIds({ primary: 'none', sidearm: null }, null).length === 0, 'empty slots stow nothing');
+
+  const stow = system.createStow();
+  ok(stow.key === '' && stow.mounts.length === 0, 'a new stow set is empty');
+  stow.setWeapons(['cz_805_bren']);
+  ok(stow.key === 'cz_805_bren', 'the set remembers what it was asked for');
+  ok(stow.flush(null, 0) === 0 && stow.flush({ joints: {} }, 0) === 0, 'a body with no torso hangs nothing on itself');
+  stow.dispose();
+  ok(stow.key === '' && stow.mounts.length === 0, 'disposing clears it');
+}
 
 ok(defaultReloadSequence(poses, {}) === null, 'no default reload without magwell + charging handle');
 

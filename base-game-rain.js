@@ -13,11 +13,16 @@
 // LAGS it, so ground that has been rained on stays wet for a while after the storm passes. The
 // terrain splat, the Traversal Lab and the bodies all read the one `uWetness` this advances.
 //
-// The rain shadow map, lightning and the rain bed are later phases.
+// The rain shadow (phase R3) is owned here for the same reason: it is a world-XZ lookup, so its
+// centre and its heights have to be carried in GLOBAL coordinates and converted every frame. Stored
+// that way the bake survives a rebase untouched — the texture holds `globalY - globalFloor`, which
+// no origin shift can change — where a bake stored in scene space would have to be redone.
+//
+// Lightning and the rain bed are base-game-lightning.js and base-game-audio.js.
 
 import * as THREE from 'three';
 import { uniform, float, vec2, max, mix } from 'three/tsl';
-import { createRainSystem, createRainUniforms } from './rain.js';
+import { createRainSystem, createRainUniforms, bakeOccluderMap } from './rain.js';
 
 export const BASE_GAME_RAIN_DEFAULTS = Object.freeze({
   maxDrops: 40000,
@@ -27,6 +32,11 @@ export const BASE_GAME_RAIN_DEFAULTS = Object.freeze({
   splashMaxAgl: 160,      // hide rings above this much height over the ground (flight-sim's rule)
   dryTime: 90,            // seconds for wetness to fall to 1/e of the way to dry after the rain stops
   wetRise: 8,             // seconds to wet up; ground darkens quickly and dries slowly, as it does
+  occLayer: 3,            // enabled on the meshes for the bake only, so nothing else ever sees it
+  occSize: 512,           // texels a side
+  occExtent: 200,         // metres the window spans
+  occTop: 220,            // metres above the window's floor the bake camera sits
+  occMargin: 30,          // metres of headroom under the lowest thing baked, for half-float range
 });
 
 export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ...opts } = {}) {
@@ -82,6 +92,11 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
   };
   let enabled = true, dropsOn = true, splashOn = true, splashMaxAgl = cfg.splashMaxAgl;
   let wetEnabled = true, dryTime = cfg.dryTime, wetRise = cfg.wetRise, wetness = 0;
+  // The rain shadow, all in GLOBAL coordinates (see the header). `occ` is the baked handle.
+  let occ = null, occOn = false;
+  const occCenter = new THREE.Vector2();       // global xz the window is centred on
+  let occFloor = 0, occExtent = 0, occBakes = 0, occLastMs = 0;
+  const _occBox = new THREE.Box3();
 
   function applyLook() {
     const U = system.uniforms;
@@ -112,6 +127,9 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
   // objects when it compiles, so a reallocation must not hand it a fresh set — the ground would be
   // left reading RAIN_DEFAULTS.wetness (0.8) for ever while the drops read the real value.
   const uniformSet = createRainUniforms({ splashRadius: 20 });
+  // rain.js reports "no roof" as 0 by default, which would cut every drop at scene y = 0. This
+  // world's ground goes below that, so the miss value is set once here and never left at zero.
+  uniformSet.uOccMiss.value = cfg.noDataHeight;
   function build() {
     system = createRainSystem({
       maxDrops, maxSplashes, density: look.density,
@@ -138,9 +156,72 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
     puddleScale: 0.09, rippleScale: 3.0,
   };
 
+  // Every frame, in global-to-scene terms. Split out because both update() and a fresh bake need it.
+  function syncOccluderUniforms(offsetX, offsetZ, originY) {
+    const U = uniformSet;
+    const live = occOn && !!occ;
+    U.uOccOn.value = live ? 1 : 0;
+    U.uOccCenter.value.set(occCenter.x - offsetX, occCenter.y - offsetZ);
+    U.uOccExtent.value = occExtent || 1;
+    U.uOccFloor.value = occFloor - originY;
+    // Where there is no map there is no roof, at any height. Without this the drops are cut at
+    // scene y = 0 and a valley below the origin gets no rain at all.
+    U.uOccMiss.value = cfg.noDataHeight;
+  }
+
+  // Renders `roots` from straight above into a height texture. The layer is enabled on the meshes
+  // for the bake and disabled again straight after, so nothing else in the page ever sees it.
+  // `centerGlobal` is [x, z]; the floor comes from the roots' own bounds, so the half-float texture
+  // spends its precision on the relief in the window rather than on the distance down to zero.
+  function bakeOccluders({ renderer, roots = [], centerGlobal = null, extent = cfg.occExtent, size = cfg.occSize, top = cfg.occTop } = {}) {
+    if (!renderer) throw new TypeError('the rain occluder bake needs a renderer');
+    const list = roots.filter(Boolean);
+    if (!list.length) return false;
+    const o = worldCoordinates ? worldCoordinates.getOrigin() : [0, 0, 0];
+    const center = centerGlobal ?? [o[0], o[2]];
+    const t0 = (typeof performance !== 'undefined' ? performance.now() : 0);
+
+    const marked = [];
+    _occBox.makeEmpty();
+    for (const root of list) {
+      root.updateMatrixWorld(true);       // the bake may run outside the frame loop's matrix pass
+      root.traverse(node => { if (node.isMesh && node.visible) { node.layers.enable(cfg.occLayer); marked.push(node); } });
+      if (root.visible) _occBox.expandByObject(root);
+    }
+    if (!marked.length) return false;
+    // Scene space for the bake camera, global for everything we keep.
+    const floorScene = (Number.isFinite(_occBox.min.y) ? _occBox.min.y : 0) - cfg.occMargin;
+    occ?.dispose();
+    occ = bakeOccluderMap(renderer, scene, uniformSet, {
+      center: [center[0] - o[0], center[1] - o[2]],
+      extent, size, layer: cfg.occLayer, top, floor: floorScene,
+    });
+    for (const node of marked) node.layers.disable(cfg.occLayer);
+
+    occCenter.set(center[0], center[1]);
+    occExtent = extent;
+    occFloor = floorScene + o[1];
+    occBakes++;
+    occLastMs = (typeof performance !== 'undefined' ? performance.now() : 0) - t0;
+    syncOccluderUniforms(o[0], o[2], o[1]);
+    return true;
+  }
+
   return {
-    group, groundShade,
+    group, groundShade, bakeOccluders,
     get system() { return system; },
+    // How far the player may drift from the baked centre before the window stops covering them: the
+    // plan's "middle half", so a bake lasts a quarter of the window's width of walking.
+    get occluderDrift() { return occ ? occExtent * 0.25 : 0; },
+    get occluderStats() { return { baked: !!occ, on: occOn && !!occ, bakes: occBakes, lastMs: occLastMs, extent: occExtent, center: [occCenter.x, occCenter.y], floor: occFloor }; },
+    setOccludersEnabled(on) { occOn = !!on; },
+    // True once the player has walked out of the middle half of the baked window.
+    occludersStale(globalX, globalZ) {
+      if (!occ) return true;
+      const d = occExtent * 0.25;
+      return Math.abs(globalX - occCenter.x) > d || Math.abs(globalZ - occCenter.y) > d;
+    },
+    clearOccluders() { occ?.dispose(); occ = null; occExtent = 0; uniformSet.uOccOn.value = 0; },
     get wetness() { return wetness; },
     get uniforms() { return system.uniforms; },
     get maxDrops() { return maxDrops; },
@@ -192,6 +273,8 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
       const o = worldCoordinates ? worldCoordinates.getOrigin() : [0, 0, 0];
       uOffset.value.set(o[0], o[2]);
       uOriginY.value = o[1];
+      // The shadow's centre and floor are global, so a rebase is a uniform write, not a re-bake.
+      syncOccluderUniforms(o[0], o[2], o[1]);
       if (skyColor?.isColor) uSkyTint.value.copy(skyColor);
       // Wetness chases the target with a time constant, rising faster than it falls: ground darkens
       // as the rain arrives and dries over minutes, not in the frame the slider moves. Written even
@@ -215,6 +298,7 @@ export function createBaseGameRain({ scene, terrain, worldCoordinates = null, ..
     },
 
     dispose() {
+      occ?.dispose(); occ = null;
       scene.remove(group);
       for (const mesh of [system.streaks.mesh, system.splashes.mesh]) { mesh.geometry.dispose(); mesh.material.dispose(); }
     },

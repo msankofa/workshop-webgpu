@@ -2,10 +2,10 @@ import * as THREE from 'three';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createTraversalLabWorldQuery } from './traversal-lab-collider.js';
-import { createBaseGamePlayerController } from './base-game-player-controller.js';
+import { createBaseGamePlayerController, BASE_GAME_PLAYER_DEFAULT_CONFIG } from './base-game-player-controller.js';
 import { createBodySupportAdapter } from './base-game-body-support.js';
 import { BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
-import { createBaseGamePlayerBodies } from './base-game-player-bodies.js';
+import { createBaseGamePlayerBodies, BASE_GAME_MOVEMENT_DEFAULTS } from './base-game-player-bodies.js';
 import { readFileSync } from 'node:fs';
 import { createWeaponMountSystem } from './weapon-mount.js';
 import { getWeapon } from './weapons.js';
@@ -333,8 +333,13 @@ const sprinterArms = measureArms(1, true, 110);
 ok(sprinterArms.high >= runArms.high - 0.05 && armRig.armCfg.preset === 'sprinter', 'presets apply live through the owner');
 armBodies.setArmTuning({ preset: 'relaxed', runSwing: 0 });
 ok(measureArms(1, true, 110).arc < runArms.arc * 0.5, 'a slider override beats the preset value');
-ok(armRig.turnCfg.stiffness === 55 && armRig.gait.cfg.stepOverlap === 0.2 && armRig.locomotion.cfg.enabled === true,
-  'rigs start on the saved movement tuning (states/base-game-state-20260822021519.json)');
+ok(armRig.turnCfg.stiffness === BASE_GAME_MOVEMENT_DEFAULTS.turnStiffness
+  && armRig.gait.cfg.stepOverlap === BASE_GAME_MOVEMENT_DEFAULTS.stepOverlap
+  && armRig.locomotion.cfg.enabled === BASE_GAME_MOVEMENT_DEFAULTS.locoEnabled,
+  'rigs start on the shipped movement tuning (base-game-states/base-game-state-20260826184842.json)');
+ok(BASE_GAME_MOVEMENT_DEFAULTS.stepOverlap === 0.02 && BASE_GAME_MOVEMENT_DEFAULTS.cadenceScale === 2
+  && BASE_GAME_MOVEMENT_DEFAULTS.behindStride === 1.5 && BASE_GAME_MOVEMENT_DEFAULTS.swayScale === 1.05,
+  'the shipped gait is the browser-tuned one: double cadence, stride behind the body, barely-overlapping feet');
 armBodies.setMovementTuning({ armAsym: 0.3, stepOverlap: 0.1 });
 ok(armRig.locomotion.cfg.armAsym === 0.3 && armRig.gait.cfg.stepOverlap === 0.1, 'movement tuning patches reach the live rig');
 armBodies.setMovementTuning({ armAsym: 0.8, stepOverlap: 0.22 });
@@ -356,8 +361,10 @@ armController.reset([-19, 10.3, -36]);
 for (let i = 0; i < 20; i++) { armController.advance(1 / 60); armBodies.updateLocal(1 / 60, { globalFoot: armController.getPosition(), velocity: armController.getVelocity(), yaw: 0, grounded: armController.grounded, height: 1.8, radius: 0.35 }); }
 armController.setInput({ moveX: 0, moveZ: -1, yaw: 0 });
 let fallHandEarly = null, fallHandLate = -9;
-for (let i = 0; i < 110; i++) {
-  armController.setInput({ moveX: 0, moveZ: i < 50 ? 1 : 0, yaw: 0 });
+// Walk until the ledge actually runs out rather than for a fixed count: how many frames that takes
+// depends on the configured walk speed.
+for (let i = 0; i < 260; i++) {
+  armController.setInput({ moveX: 0, moveZ: armController.grounded ? 1 : 0, yaw: 0 });
   armController.advance(1 / 60);
   armBodies.updateLocal(1 / 60, { globalFoot: armController.getPosition(), velocity: armController.getVelocity(), yaw: 0, grounded: armController.grounded, height: 1.8, radius: 0.35 });
   const up = armRig.joints.leftHand.position.y - armRig.joints.leftShoulder.position.y;
@@ -383,7 +390,8 @@ for (let i = 0; i < 150; i++) {
   }
   prevPoseSpeed = poseSpeed; prevPhysics = physics;
 }
-ok(poseSpeedJump < physicsSpeedJump * 0.6 && armRig.motion.armPoseSpeed > 9,
+const sprintSpeed = BASE_GAME_PLAYER_DEFAULT_CONFIG.moveSpeed * BASE_GAME_PLAYER_DEFAULT_CONFIG.sprintMultiplier;
+ok(poseSpeedJump < physicsSpeedJump * 0.6 && armRig.motion.armPoseSpeed > sprintSpeed * 0.9,
   `arm pose speed ramps smoothly on a sprint tap (${poseSpeedJump.toFixed(2)} vs physics ${physicsSpeedJump.toFixed(2)} m/s per frame) and still reaches the run`);
 armBodies.dispose();
 

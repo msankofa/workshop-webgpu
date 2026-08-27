@@ -1,0 +1,1055 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ether Trails</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  #gui-container { position: fixed; top: 0; right: 0; z-index: 10; }
+  #status {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    color: #8fa6c8; background: rgba(4, 6, 15, 0.72);
+    padding: 5px 10px; border-radius: 4px; pointer-events: none;
+  }
+  #credit {
+    position: fixed; left: 12px; top: 10px; z-index: 10; max-width: 46ch;
+    font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; color: #5c7191;
+  }
+  #credit a { color: #7fd8ff; text-decoration: none; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../../node_modules/three/build/three.module.js",
+    "three/addons/": "../../node_modules/three/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="gui-container"></div>
+<div id="credit">
+  Ether Trails — a hybrid of two MIT-licensed CodePen visuals by
+  <a href="https://codepen.io/sabosugi" target="_blank" rel="noopener">sabosugi</a>:
+  <a href="https://codepen.io/sabosugi/pen/WbGqrKy" target="_blank" rel="noopener">The Birth of Energy from the Ether</a>
+  and <a href="https://codepen.io/sabosugi/pen/qENqdZm" target="_blank" rel="noopener">Trails Over Different Forms</a>.
+</div>
+<div id="status">loading…</div>
+
+<script type="module">
+/**
+ * Ether Trails — a field, rendered two ways, from any two pens at once.
+ *
+ * It began as one pairing. Trails Over Different Forms displaces a grid of polylines by a 2D height
+ * function and lets you swap which one; The Birth of Energy from the Ether is a raymarch whose core is a
+ * cheap 3D fold. A 3D field works as a height function, so the fold became a form and the grid became a
+ * contour survey of the volume behind it.
+ *
+ * Then the same seam turned out to be everywhere. 42 pens in this collection expose a `float f(vec3)`,
+ * and the ether's march never cared what it was marching — it steps on `abs(structuralVal)` and accumulates
+ * a palette, which any scalar field satisfies. So both halves became generic:
+ *
+ *   - the VOLUME flies through whichever field you pick, using the ether's marcher and tone curve;
+ *   - the GRID reads two fields and blends them, with six operators.
+ *
+ * Seven fields are harvested so far, from seven different pens. That is 7 volumes against 7x7x6 grid
+ * combinations, and the interesting ones are rarely the matched pairs — the grid does not have to read
+ * the volume it sits in front of.
+ *
+ * FIELD_GLSL holds all of it and is injected into both programs. They are separate shaders and cannot
+ * share a function any other way; if the copies drifted, a grid set to match its volume would quietly
+ * stop describing it.
+ *
+ * The two halves genuinely share a space, which took three things and not just a shared function:
+ *
+ *   1. ONE CAMERA. The volume draws on a fullscreen quad under an orthographic camera, so it cannot see
+ *      the perspective camera the grid uses. It is handed that camera's position and inverse
+ *      projection-view each frame and rebuilds its rays from them, so orbiting moves both. Turn
+ *      `Share The Camera` off and the volume reverts to the original pen's baked ray, which is a useful
+ *      thing to see precisely because it shows what the coupling is doing.
+ *   2. ONE DOMAIN. `toFieldSpace` applies the flight offset, the tunnel repetition and the field scale,
+ *      and both programs call it with the same arguments. Before this the grid skipped all three, so it
+ *      ran the same function over unrelated coordinates.
+ *   3. ONE PHASE. The ether's fold twists by distance along the ray. The grid passes distance from the
+ *      eye to that vertex, which is the same quantity.
+ *
+ * With the camera uncoupled, the field scale at 1 and tunnel repeat on, the volume is pixel-identical to
+ * the original pen: `toFieldSpace` reduces to the two lines it replaced, and `totalDist` is still the
+ * twist phase.
+ */
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+import { createDiskStore, describeStatus } from '../../disk-store.js';
+
+const CONFIG = {
+  // Ether volume
+  showEther: true,
+  dpr: 1.0,
+  flightSpeed: 0.2,
+  animSpeed: -1.5,
+  lightIntensity: 25000.0,
+  colorR: 4.2,
+  colorG: -1.6,
+  colorB: 5.4,
+  grainAmount: 0.0,
+  etherBrightness: 1.0,
+  legacyColor: true,
+  volumeField: 0,
+  maxSteps: 99,
+  // Drives the volume's march limit and the camera's far plane together, because they are one thing to
+  // look at. The step heuristic grows with distance, so raising this costs very few extra steps.
+  drawDistance: 400,
+
+  // Trails grid
+  showTrails: true,
+  baseOpacity: 0.16755,
+  shapeOpacity: 0.3,
+  sceneRotationX: 0.0,
+  sceneRotationY: 0.0,
+  shape: 26,              // Field Mix, the form this hybrid adds
+  shapeSize: 4.0,
+  amplitude: 1.0,
+  shapeRotZ: 0.0,
+  shapeScaleX: 1.0,
+  lineSpeed: 0.2,
+  signalDensity: 0.203,
+  trailLength: 0.155688,
+  color1: '#7ae4ff',
+  useColor2: false, color2: '#a5a3ff',
+  useColor3: false, color3: '#c8ff00',
+  useColor4: false, color4: '#ff007b',
+
+  // Where and how the grid reads the fields
+  etherDepth: 0.0,
+  gridScale: 1.0,
+  fieldScale: 1.0,
+  tunnelRepeat: true,
+  coupledCamera: true,
+  etherGain: 1.0,
+  syncToEther: true,
+  fieldA: 0,
+  fieldB: 3,
+  blendOp: 0,
+  fieldMix: 0.0,
+  // 0.05 is where a 1000-segment line resolves these fields: structure roughly 30x larger than the
+  // step between neighbouring vertices. Above about 0.2 they alias into noise.
+  fieldZoom: 0.05,
+  fieldExtent: 60.0,
+};
+
+// Taken here because applySaved overwrites CONFIG at boot: after that the authored values are gone, and
+// a page that autosaves every change has no other way back to them.
+const DEFAULTS = JSON.parse(JSON.stringify(CONFIG));
+
+const actions = {
+  reset: () => resetToDefaults(),
+};
+
+// --- Renderer ------------------------------------------------------------------------------------
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(CONFIG.dpr);
+// The ether pen was written against r128, whose default output was linear. Three has defaulted to sRGB
+// output since r152, which visibly washes out its accumulated-light look, so the original is the default
+// here and the modern pipeline is a toggle rather than a silent change.
+renderer.outputColorSpace = CONFIG.legacyColor ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
+// Two passes share one buffer: the volume first, the grid additively on top.
+renderer.autoClear = false;
+document.body.appendChild(renderer.domElement);
+
+// --- The field both halves read ------------------------------------------------------------------
+
+/**
+ * The field registry: one scalar function per source pen, harvested from its raymarcher.
+ *
+ * Trails Over Different Forms already treats "a form" as a function you can swap, which is what made the
+ * first version of this page possible. Reading more of the collection showed 42 pens exposing a
+ * `float f(vec3)` of their own, so the seam generalises: any of them can drive the grid, and — because
+ * the ether's march never cared what it was marching — any of them can also be flown through.
+ *
+ * Every function below is its source pen's own math, adapted only where it had to be: normalised to
+ * roughly [-1, 1] so the blends behave, and with uniforms folded into constants where a shader that is
+ * not that pen has nothing to supply. This string is injected into both programs, so the volume you fly
+ * through and the grid you read are provably the same field.
+ */
+const FIELD_GLSL = `
+  // The Birth of Energy from the Ether - the fold from its march loop.
+  float etherFold(vec3 pos, float tAnim, float twist) {
+    vec3 rotAxis = normalize(cos(vec3(0.6, 1.3, 0.2) - twist * 1.8));
+    vec3 q = rotAxis * dot(rotAxis, pos) - cross(rotAxis, pos);
+    float scale = 8.3;
+    for (int j = 2; j < 8; j++) {
+      scale += 13.3;
+      q += sin(q * scale + tAnim).yzx / scale;
+    }
+    return q.y;
+  }
+
+  // Inside Nebula - value noise ridged into thin veins.
+  float nebHash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  }
+  float nebNoise(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(nebHash(i + vec3(0.0,0.0,0.0)), nebHash(i + vec3(1.0,0.0,0.0)), f.x),
+                   mix(nebHash(i + vec3(0.0,1.0,0.0)), nebHash(i + vec3(1.0,1.0,0.0)), f.x), f.y),
+               mix(mix(nebHash(i + vec3(0.0,0.0,1.0)), nebHash(i + vec3(1.0,0.0,1.0)), f.x),
+                   mix(nebHash(i + vec3(0.0,1.0,1.0)), nebHash(i + vec3(1.0,1.0,1.0)), f.x), f.y), f.z);
+  }
+  float nebVeins(vec3 p) {
+    float f = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 3; i++) {
+      float n = nebNoise(p);
+      n = 1.0 - abs(n * 2.0 - 1.0);
+      n = pow(n, 5.0);
+      f += amp * n;
+      p *= 2.5;
+      amp *= 0.4;
+    }
+    return f;
+  }
+
+  // Northern Lights - its fractal volume pattern. The octave count was a function argument there and is
+  // a constant here, because GLSL ES 1.0 will not take a uniform as a loop bound.
+  float auroraHash(vec3 v3) {
+    v3 = fract(v3 * vec3(0.1031, 0.1030, 0.0973));
+    v3 += dot(v3, v3.yxz + 33.33);
+    return fract((v3.xxy + v3.yxx) * v3.zyx).x;
+  }
+  float auroraNoise(vec3 coord) {
+    vec3 g = floor(coord);
+    vec3 f = fract(coord);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(auroraHash(g + vec3(0.0,0.0,0.0)), auroraHash(g + vec3(1.0,0.0,0.0)), f.x),
+                   mix(auroraHash(g + vec3(0.0,1.0,0.0)), auroraHash(g + vec3(1.0,1.0,0.0)), f.x), f.y),
+               mix(mix(auroraHash(g + vec3(0.0,0.0,1.0)), auroraHash(g + vec3(1.0,0.0,1.0)), f.x),
+                   mix(auroraHash(g + vec3(0.0,1.0,1.0)), auroraHash(g + vec3(1.0,1.0,1.0)), f.x), f.y), f.z);
+  }
+  float auroraPattern(vec3 p) {
+    float accum = 0.0;
+    float wsum = 0.0;
+    float w = 1.0;
+    float freq = 1.0;
+    for (int i = 0; i < 5; i++) {
+      accum += (1.0 - auroraNoise(p * freq)) * w;
+      wsum += w;
+      w *= 0.5;
+      freq *= 2.0;
+    }
+    return clamp(accum / wsum, 0.0, 1.0);
+  }
+
+  // Xenolith Diamond - triangle waves through a fixed basis, which is what makes it faceted rather than
+  // rounded. mapFractal's two-frequency difference is kept; its twist needed that pen's own uniforms.
+  float crystalDisturb(vec3 position) {
+    const float goldenRatio = 2.788033988;
+    const mat3 basisMatrix = mat3(
+      -0.131464913, -0.048044873, 0.062087367,
+      -0.465078618, -0.016973341, +0.454042493,
+      +0.086597072, +1.681518454, 0.009753815
+    );
+    vec3 p = position * basisMatrix;
+    vec3 tri1 = abs(fract(p) * 2.0 - 1.0);
+    vec3 tri2 = abs(fract(p * goldenRatio) * 2.1 - 1.0);
+    float crystal = max(max(tri1.x, tri1.y), tri1.z) + dot(tri1, tri2) * 0.5;
+    return crystal * 0.6;
+  }
+  float crystalField(vec3 p) {
+    return abs(crystalDisturb(p * 7.3) * 0.1 - crystalDisturb(p * 3.3));
+  }
+
+  // Highway to Heaven - its whole structure is this one dot product.
+  float highwayDensity(vec3 pos) {
+    const float phaseShift = 0.228033988;
+    const mat3 structuralBasis = mat3(
+      0.388535087,  0.054921382, -0.743402928,
+      0.441955127,  4.336973341,  0.258518454,
+      0.272087367,  0.174042493, -0.021246185
+    );
+    return dot(cos(structuralBasis * pos), sin(phaseShift * pos * structuralBasis));
+  }
+
+  // Abnormal Sphere Morphing - value noise. Its contrast uniform is folded in at the pen's default.
+  float morphPrng(vec3 p) {
+    return fract(sin(dot(p, vec3(12.9898, 78.283, 37.919))) * 43758.7053);
+  }
+  float morphNoise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (2.4 - 1.4 * f);
+    float n000 = morphPrng(i + vec3(0.0,0.0,0.0)), n100 = morphPrng(i + vec3(1.0,0.0,0.0));
+    float n010 = morphPrng(i + vec3(0.0,1.0,0.0)), n110 = morphPrng(i + vec3(1.0,1.0,0.0));
+    float n001 = morphPrng(i + vec3(0.0,0.0,1.0)), n101 = morphPrng(i + vec3(1.0,0.0,1.0));
+    float n011 = morphPrng(i + vec3(0.0,1.0,1.0)), n111 = morphPrng(i + vec3(1.0,1.0,1.0));
+    float nxy0 = mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y);
+    float nxy1 = mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y);
+    return mix(nxy0, nxy1, u.z);
+  }
+
+  // Quantum Cube - a true box distance, the one hard-edged field among all this noise.
+  float qBox(vec3 p, vec3 b) {
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+  }
+
+  // World space to field space. Both programs call this with the same arguments, which is what makes a
+  // grid vertex and the marched point at that same place read one value instead of two similar ones.
+  // The repeat argument is a 0/1 float rather than a branch, so the function stays uniform-free.
+  vec3 toFieldSpace(vec3 world, float fieldScale, float tFlight, float repeat) {
+    vec3 p = world * fieldScale;
+    p.z -= tFlight;
+    p.z = mix(p.z, mod(p.z + 2.1, 3.5) - 2.1, repeat);
+    return p;
+  }
+
+  float sampleField(int id, vec3 p, float t, float twist) {
+    if (id == 0) return etherFold(p, t, twist);
+    if (id == 1) return nebVeins(p) * 2.0 - 1.0;
+    if (id == 2) return auroraPattern(p + vec3(0.0, 0.0, t * 0.1)) * 2.0 - 1.0;
+    if (id == 3) return crystalField(p);
+    if (id == 4) return highwayDensity(p);
+    if (id == 5) return morphNoise(p * 3.1 + t * 0.3) * 2.0 - 1.0;
+    if (id == 6) return -qBox(p, vec3(0.6));
+    return 0.0;
+  }
+
+  // Every operator collapses to A when the mix is 0, so turning the second field down always returns you
+  // to the first one rather than to something else.
+  float blendFields(float a, float b, int op, float m) {
+    if (op == 0) return mix(a, b, m);
+    if (op == 1) return a + b * m;
+    if (op == 2) return mix(a, a * b, m);
+    if (op == 3) return mix(a, min(a, b), m);
+    if (op == 4) return mix(a, max(a, b), m);
+    if (op == 5) return mix(a, abs(a - b), m);
+    return a;
+  }
+`;
+
+// --- Pass 1: the ether volume --------------------------------------------------------------------
+
+const etherScene = new THREE.Scene();
+const etherCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+const etherUniforms = {
+  iTime: { value: 0.0 },
+  iResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+  uFlightSpeed: { value: CONFIG.flightSpeed },
+  uAnimSpeed: { value: CONFIG.animSpeed },
+  uLightIntensity: { value: CONFIG.lightIntensity },
+  uColorOffset: { value: new THREE.Vector3(CONFIG.colorR, CONFIG.colorG, CONFIG.colorB) },
+  uGrainAmount: { value: CONFIG.grainAmount },
+  uBrightness: { value: CONFIG.etherBrightness },
+  uVolumeField: { value: CONFIG.volumeField },
+  uMaxSteps: { value: CONFIG.maxSteps },
+  uCameraPos: { value: new THREE.Vector3() },
+  uInvProjView: { value: new THREE.Matrix4() },
+  uFieldScale: { value: CONFIG.fieldScale },
+  uRepeat: { value: CONFIG.tunnelRepeat ? 1 : 0 },
+  uCoupled: { value: CONFIG.coupledCamera ? 1 : 0 },
+  uFarDistance: { value: CONFIG.drawDistance },
+};
+
+const etherMaterial = new THREE.ShaderMaterial({
+  uniforms: etherUniforms,
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    varying vec2 vUv;
+    uniform float iTime;
+    uniform vec2 iResolution;
+    uniform float uFlightSpeed;
+    uniform float uAnimSpeed;
+    uniform float uLightIntensity;
+    uniform vec3 uColorOffset;
+    uniform float uGrainAmount;
+    uniform float uBrightness;
+    uniform int uVolumeField;
+    uniform int uMaxSteps;
+    uniform vec3 uCameraPos;
+    uniform mat4 uInvProjView;
+    uniform float uFieldScale;
+    uniform float uRepeat;
+    uniform float uCoupled;
+    uniform float uFarDistance;
+
+    float hash(vec3 p) {
+      p = fract(p * 0.9631);
+      p += dot(p, p.yzx + 33.33);
+      return fract((p.x + p.y) * p.z);
+    }
+
+    // WebGL1 has no tanh, and the original's fallback is kept so the tone curve matches.
+    vec4 customTanh(vec4 x) {
+      vec4 exp2x = exp(clamp(2.0 * x, -80.0, 80.0));
+      return (exp2x - 1.0) / (exp2x + 1.0);
+    }
+
+    ${FIELD_GLSL}
+
+    void main() {
+      vec2 uv = (2.0 * vUv - 1.0) * vec2(iResolution.x / iResolution.y, 1.0);
+
+      float time = iTime;
+      float tFlight = time * uFlightSpeed;
+      float tAnim = time * uAnimSpeed;
+
+      // Uncoupled is the original pen exactly: eye at the origin, ray baked into the shader, and the
+      // grid's perspective camera irrelevant to it. Coupled rebuilds the ray from that same perspective
+      // camera, so orbiting moves the volume and the grid together and they occupy one space.
+      vec3 rayOrigin = vec3(0.0);
+      vec3 rayDir = normalize(vec3(uv, -1.7));
+      if (uCoupled > 0.5) {
+        vec4 farPoint = uInvProjView * vec4(vUv * 2.0 - 1.0, 1.0, 1.0);
+        rayOrigin = uCameraPos;
+        rayDir = normalize(farPoint.xyz / farPoint.w - uCameraPos);
+      }
+
+      vec4 accumulatedLight = vec4(0.0);
+
+      vec2 fragCoord = vUv * iResolution;
+      float grain = hash(vec3(fragCoord, time * 5.0));
+
+      float totalDist = 1.2 + grain * 0.15;
+      float stepDist = 0.1;
+      float structuralVal = 0.1;
+
+      // The bound stays constant because GLSL ES 1.0 requires it; the budget is a break. Fields heavier
+      // than the ether's own fold are the reason it is adjustable at all.
+      for (int i = 0; i < 99; i++) {
+        if (i >= uMaxSteps) break;
+        vec3 world = rayOrigin + totalDist * rayDir;
+        vec3 pos = toFieldSpace(world, uFieldScale, tFlight, uRepeat);
+
+        structuralVal = sampleField(uVolumeField, pos, tAnim, totalDist);
+
+        stepDist = 0.3 * abs(length(pos) - 0.7) + 0.03 * abs(structuralVal);
+        totalDist += stepDist;
+
+        vec4 palette = cos(structuralVal + vec4(uColorOffset, 0.0)) + 1.2;
+        accumulatedLight += (palette / max(stepDist, 0.01)) * totalDist;
+
+        if (accumulatedLight.x > 90000.0) break;
+        // 25 was measured from the world origin, where the original pen's eye sat. With the camera
+        // coupled the ray starts wherever you are standing, so a fixed 25 stops the march a few units
+        // past the structure instead of around it.
+        if (totalDist > uFarDistance) break;
+      }
+
+      gl_FragColor = customTanh(accumulatedLight / uLightIntensity);
+      gl_FragColor.rgb += (grain - 1.1) * uGrainAmount;
+      gl_FragColor.rgb *= uBrightness;
+      gl_FragColor.a = 1.0;
+    }
+  `,
+});
+
+etherScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), etherMaterial));
+
+// --- Pass 2: the trails grid ---------------------------------------------------------------------
+
+const trailScene = new THREE.Scene();
+trailScene.background = null;          // the ether is the background, so nothing may paint over it
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, CONFIG.drawDistance);
+camera.position.set(-10, 0, 15);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const trailVertex = `
+  uniform int uShapeType;
+  uniform float uSize;
+  uniform float uAmplitude;
+  uniform float uRotZ;
+  uniform float uScaleX;
+  uniform float uTime;
+
+  uniform float uEtherTime;
+  uniform float uEtherGain;
+  uniform float uFieldScale;
+  uniform float uRepeat;
+  uniform float uFlightTime;
+  uniform float uFieldZoom;
+  uniform float uFieldExtent;
+  uniform int uFieldA;
+  uniform int uFieldB;
+  uniform int uBlendOp;
+  uniform float uFieldMix;
+
+  varying vec2 vUv;
+  varying float vZ;
+  varying float vLineIndex;
+  varying float vHeightNorm;
+
+  vec2 rotate(vec2 v, float a) {
+    float s = sin(a);
+    float c = cos(a);
+    return mat2(c, -s, s, c) * v;
+  }
+
+  float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+  float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  }
+
+  float voronoi(vec2 p) {
+    vec2 n = floor(p);
+    vec2 f = fract(p);
+    float m = 8.0;
+    for (int j = -1; j <= 1; j++)
+    for (int i = -1; i <= 1; i++) {
+      vec2 g = vec2(float(i), float(j));
+      vec2 o = hash(n + g) * vec2(0.5) + 0.5;
+      o = 0.5 + 0.5 * sin(uTime * 0.5 + 6.2831 * o);
+      vec2 r = g + o - f;
+      float d = dot(r, r);
+      m = min(m, d);
+    }
+    return sqrt(m);
+  }
+
+  ${FIELD_GLSL}
+
+  // The form this hybrid adds: two harvested fields blended, read at this vertex's own world position
+  // through the same toFieldSpace the volume marches.
+  //
+  // Two things here are deliberately unlike the 26 solid forms beside it.
+  //
+  // A field is not an object, so it covers the grid instead of sitting in the middle of one. The solid
+  // forms all guard on length(p) against uSize, which confined this to a disc holding about 6% of the
+  // vertices; what is left is a soft vignette at the outer edge.
+  //
+  // And uFieldZoom exists because these fields were written to be sampled per pixel by a raymarcher,
+  // while this grid has 0.12 local units between vertices. At zoom 1 the grid reads exactly the point
+  // the volume marches, and every field finer than the vertex spacing aliases into noise. Below 1 it
+  // reads a zoomed-out copy of the same field, which resolves. That is a real trade and it is a control
+  // rather than a hidden constant.
+  float hFieldMix(vec2 p, float s, vec3 world) {
+    vec3 pos = toFieldSpace(world * uFieldZoom, uFieldScale, uFlightTime * uFieldZoom, uRepeat);
+    // Phase from the point, not from the eye. The volume's phase is distance along its ray, which has no
+    // analogue on a surface: eye distance varies across the grid and spun this fold's rotation axis
+    // through 35 radians, which is what turned the whole form into noise.
+    float twist = length(pos);
+    float a = sampleField(uFieldA, pos, uEtherTime, twist);
+    float b = sampleField(uFieldB, pos, uEtherTime, twist);
+    float falloff = 1.0 - smoothstep(uFieldExtent * 0.7, uFieldExtent, length(p));
+    return blendFields(a, b, uBlendOp, uFieldMix) * s * 0.5 * uEtherGain * falloff;
+  }
+
+  float hSphere(vec2 p, float r) { float d = length(p); return (d < r) ? sqrt(r*r - d*d) : 0.0; }
+  float hBox(vec2 p, float s) { float limit = s * 0.7; if(abs(p.x) < limit && abs(p.y) < limit) return s * 0.6; return 0.0; }
+  float hPyramid(vec2 p, float s) { float d = max(abs(p.x), abs(p.y)); return (d < s) ? (s - d) * 1.5 : 0.0; }
+  float hTorus(vec2 p, float s) { float d = abs(length(p) - s * 0.7); float minor = s * 0.25; return (d < minor) ? sqrt(minor*minor - d*d) : 0.0; }
+  float hCity(vec2 p, float s) { if(abs(p.x) > s || abs(p.y) > s * 0.8) return 0.0; vec2 id = floor(p); vec2 g = fract(p) - 0.5; float h = hash(id); if(abs(g.x) < 0.4 && abs(g.y) < 0.4 && h > 0.3) return h * 2.0; return 0.0; }
+  float hRobot(vec2 p, float s) { float d = length(p); if(d > s*0.6) return 0.0; float h = s*0.4; if(abs(p.x) < s*0.25 && abs(p.y - s*0.15) < s*0.1) h = 0.0; return h; }
+  float hHexHive(vec2 p, float s) { if(length(p) > s) return 0.0; vec2 q = p * 1.5; q.x *= 1.1547; bool isOdd = fract(q.y * 0.5) > 0.5; if(isOdd) q.x += 0.5; vec2 hexUv = fract(q) - 0.5; if (max(abs(hexUv.x), abs(hexUv.y)) < 0.45) return hash(floor(q)) * s * 0.5 + 0.2; return 0.0; }
+  float hTurbine(vec2 p, float s) { float d = length(p); if(d > s || d < s*0.2) return 0.0; return s * 0.5 * max(0.0, sin(atan(p.y, p.x) * 8.0 + d * 2.0)); }
+  float hCircuit(vec2 p, float s) { if(max(abs(p.x), abs(p.y)) > s*0.8) return 0.0; float chip = (max(abs(p.x), abs(p.y)) < s*0.3) ? s*0.4 : 0.0; float trace = step(0.9, sin(p.x*10.0)*sin(p.y*10.0)) * s * 0.1; return max(chip, trace); }
+  float hMountain(vec2 p, float s) { if(length(p) > s) return 0.0; return pow(noise(p*1.5)+noise(p*3.5)*0.5, 2.0) * s * 0.8; }
+  float hGalaxy(vec2 p, float s) { float d = length(p); if(d > s) return 0.0; float spiral = sin(atan(p.y,p.x)*3.0 - d*3.0); return max(exp(-d*2.0)*s, smoothstep(0.0,1.0,spiral)*s*0.3*(1.0-d/s)); }
+  float hAcoustic(vec2 p, float s) { if(abs(p.x) > s) return 0.0; float h = abs(sin(floor(p.x*4.0)*132.1)) * s * 0.8 * (1.0-abs(p.x)/s); return (abs(p.y) < h) ? (h - abs(p.y))*0.5 + 0.2 : 0.0; }
+  float hMatrix(vec2 p, float s) { if(max(abs(p.x), abs(p.y)) > s) return 0.0; if(hash(vec2(floor(p.x*4.0), floor(p.y*4.0))) > 0.5) return s * 0.3; return 0.0; }
+  float hShield(vec2 p, float s) { float d = length(p); if(d>s) return 0.0; return sqrt(s*s-d*d)*0.6 + sin(p.x*5.0)*sin(p.y*5.0)*0.1; }
+  float hPortal(vec2 p, float s) { float d = length(p); return (d<s && d>s*0.8) ? s*0.5 : 0.0; }
+  float hData(vec2 p, float s) { float h = hash(floor(p*2.0)); return (h>0.7 && max(abs(p.x), abs(p.y)) < s) ? h*s : 0.0; }
+  float hLiquid(vec2 p, float s) { if(length(p) > s * 1.2) return 0.0; vec2 p1 = vec2(sin(uTime*0.8), cos(uTime*0.7)) * s * 0.4; vec2 p2 = vec2(sin(uTime*0.5+2.0), cos(uTime*0.6)) * s * 0.4; vec2 p3 = vec2(0.0); float d = 0.0; d += 1.0 / length(p - p1); d += 1.0 / length(p - p2); d += 1.0 / length(p - p3); if(d > 4.0/s) return s * 0.5; return max(0.0, (d - 2.0/s) * s * 0.2); }
+  float hVoronoi(vec2 p, float s) { if(length(p) > s) return 0.0; float v = voronoi(p * 1.5); return smoothstep(0.5, 0.0, v) * s * 0.7; }
+  float hPyramidGrid(vec2 p, float s) { if(max(abs(p.x), abs(p.y)) > s) return 0.0; vec2 tile = fract(p * 2.0) - 0.5; float d = max(abs(tile.x), abs(tile.y)); return (0.5 - d) * 2.0 * s * 0.4; }
+  float hVortex(vec2 p, float s) { float d = length(p); if(d > s) return 0.0; return -1.0 * (1.0 - smoothstep(0.0, s, d)) * s * 0.8; }
+  float hCrystal(vec2 p, float s) { if(length(p) > s) return 0.0; float a = abs(p.x) + abs(p.y); float b = abs(p.x * 0.7 + p.y * 0.7); float c = abs(p.x * 0.7 - p.y * 0.7); float h = max(max(a, b), c); return max(0.0, (s - h)) * 1.2; }
+  float hGlitch(vec2 p, float s) { if(max(abs(p.x), abs(p.y)) > s) return 0.0; float n = hash(floor(p * 5.0) + floor(uTime * 5.0)); return n * s * 0.5; }
+  float hRipple(vec2 p, float s) { float d = length(p); if(d > s) return 0.0; float waves = sin(d * 10.0 - uTime * 3.0); return waves * s * 0.1 * (1.0 - d/s) + 0.2; }
+  float hWaffle(vec2 p, float s) { if(max(abs(p.x), abs(p.y)) > s) return 0.0; vec2 grid = step(0.1, fract(p * 2.0)); return grid.x * grid.y * s * 0.3; }
+  float hStadium(vec2 p, float s) { float d = length(vec2(p.x * 0.5, p.y)); if (d > s * 0.8) return 0.0; return floor((s*0.8 - d) * 4.0) * 0.2 * s; }
+  float hBlackHole(vec2 p, float s) { float d = length(p); if(d > s) return 0.0; return -1.0 / (d + 0.5) * s * 0.5; }
+
+  float getHeight(vec2 p, vec3 world) {
+    int t = uShapeType;
+    if(t==0) return hSphere(p, uSize);
+    if(t==1) return hBox(p, uSize);
+    if(t==2) return hPyramid(p, uSize);
+    if(t==3) return hTorus(p, uSize);
+    if(t==4) return hCity(p, uSize);
+    if(t==5) return hRobot(p, uSize);
+    if(t==6) return hHexHive(p, uSize);
+    if(t==7) return hTurbine(p, uSize);
+    if(t==8) return hCircuit(p, uSize);
+    if(t==9) return hMountain(p, uSize);
+    if(t==10) return hGalaxy(p, uSize);
+    if(t==11) return hAcoustic(p, uSize);
+    if(t==12) return hMatrix(p, uSize);
+    if(t==13) return hShield(p, uSize);
+    if(t==14) return hPortal(p, uSize);
+    if(t==15) return hData(p, uSize);
+    if(t==16) return hLiquid(p, uSize);
+    if(t==17) return hVoronoi(p, uSize);
+    if(t==18) return hPyramidGrid(p, uSize);
+    if(t==19) return hVortex(p, uSize);
+    if(t==20) return hCrystal(p, uSize);
+    if(t==21) return hGlitch(p, uSize);
+    if(t==22) return hRipple(p, uSize);
+    if(t==23) return hWaffle(p, uSize);
+    if(t==24) return hStadium(p, uSize);
+    if(t==25) return hBlackHole(p, uSize);
+    if(t==26) return hFieldMix(p, uSize, world);
+    return 0.0;
+  }
+
+  void main() {
+    vUv = uv;
+    vLineIndex = uv.y;
+    vec3 pos = position;
+    vec2 p = pos.xy;
+    p.x /= uScaleX;
+    p = rotate(p, -uRotZ);
+    // Undisplaced world position: where this vertex actually sits in the volume.
+    vec3 world = (modelMatrix * vec4(position, 1.0)).xyz;
+    float h = getHeight(p, world);
+    float transition = smoothstep(0.0, 0.1, abs(h) + 0.01);
+    pos.z += h * transition * uAmplitude;
+    vZ = pos.z;
+    vHeightNorm = smoothstep(0.0, uSize * 0.5 * uAmplitude, abs(h));
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  }
+`;
+
+const trailFragment = `
+  uniform float uTime;
+  uniform float uTrailLength;
+  uniform float uDensity;
+  uniform float uBaseOpacity;
+  uniform float uShapeOpacity;
+  uniform vec3 uColor1;
+  uniform vec3 uColor2;
+  uniform vec3 uColor3;
+  uniform vec3 uColor4;
+  uniform vec4 uActiveColors;
+
+  varying vec2 vUv;
+  varying float vZ;
+  varying float vLineIndex;
+  varying float vHeightNorm;
+
+  float random(vec2 st) { return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123); }
+
+  vec3 getSignalColor(float seed) {
+    float rnd = random(vec2(seed, 55.0));
+    vec3 col = uColor1;
+    if (uActiveColors.y > 0.5 && rnd > 0.25 && rnd < 0.5) col = uColor2;
+    else if (uActiveColors.z > 0.5 && rnd > 0.5 && rnd < 0.75) col = uColor3;
+    else if (uActiveColors.w > 0.5 && rnd > 0.75) col = uColor4;
+    return col;
+  }
+
+  void main() {
+    float seed = floor(vLineIndex * 3000.0);
+    float speed = 0.5 + random(vec2(seed, 10.0));
+    float offset = random(vec2(seed, 20.0)) * 20.0;
+    float rnd = random(vec2(seed, 30.0));
+    float isVisible = step(1.0 - uDensity, rnd);
+
+    float gridAlpha = mix(uBaseOpacity, uShapeOpacity, vHeightNorm);
+    vec3 finalColor = uColor1 * gridAlpha;
+
+    if (isVisible > 0.5) {
+      vec3 signalCol = getSignalColor(seed);
+      float t = vUv.x * 4.0 - uTime * speed + offset;
+      float phase = fract(t);
+      float len = max(uTrailLength, 0.002);
+      float trailStart = 1.0 - len;
+      float trail = smoothstep(trailStart, 1.0, phase);
+      float brightness = pow(trail, 12.0) * 3.0;
+      if (phase < trailStart) brightness = 0.0;
+      finalColor += signalCol * brightness;
+    }
+
+    if (uShapeOpacity > 0.01) {
+      float formGlow = smoothstep(0.1, 1.0, abs(vZ)) * 0.2;
+      finalColor += uColor1 * formGlow * uShapeOpacity;
+    }
+
+    gl_FragColor = vec4(finalColor, 1.0);
+  }
+`;
+
+function createGridGeometry(numLines = 100, segments = 1000, width = 120, height = 18) {
+  const geometry = new THREE.BufferGeometry();
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  for (let i = 0; i < numLines; i++) {
+    const y = (i / (numLines - 1)) * height - height / 2;
+    for (let j = 0; j <= segments; j++) {
+      const x = (j / segments) * width - width / 2;
+      positions.push(x, y, 0);
+      uvs.push(j / segments, i / numLines);
+      if (j < segments) {
+        const idx = i * (segments + 1) + j;
+        indices.push(idx, idx + 1);
+      }
+    }
+  }
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  return geometry;
+}
+
+const trailMaterial = new THREE.ShaderMaterial({
+  vertexShader: trailVertex,
+  fragmentShader: trailFragment,
+  uniforms: {
+    uTime: { value: 0 },
+    uColor1: { value: new THREE.Color(CONFIG.color1) },
+    uColor2: { value: new THREE.Color(CONFIG.color2) },
+    uColor3: { value: new THREE.Color(CONFIG.color3) },
+    uColor4: { value: new THREE.Color(CONFIG.color4) },
+    uActiveColors: { value: new THREE.Vector4(1, 0, 0, 0) },
+    uShapeType: { value: CONFIG.shape },
+    uSize: { value: CONFIG.shapeSize },
+    uAmplitude: { value: CONFIG.amplitude },
+    uRotZ: { value: CONFIG.shapeRotZ },
+    uScaleX: { value: CONFIG.shapeScaleX },
+    uTrailLength: { value: CONFIG.trailLength },
+    uBaseOpacity: { value: CONFIG.baseOpacity },
+    uShapeOpacity: { value: CONFIG.shapeOpacity },
+    uDensity: { value: CONFIG.signalDensity },
+    uEtherTime: { value: 0 },
+    uEtherGain: { value: CONFIG.etherGain },
+    uFieldScale: { value: CONFIG.fieldScale },
+    uRepeat: { value: CONFIG.tunnelRepeat ? 1 : 0 },
+    uFlightTime: { value: 0 },
+    uFieldZoom: { value: CONFIG.fieldZoom },
+    uFieldExtent: { value: CONFIG.fieldExtent },
+    uFieldA: { value: CONFIG.fieldA },
+    uFieldB: { value: CONFIG.fieldB },
+    uBlendOp: { value: CONFIG.blendOp },
+    uFieldMix: { value: CONFIG.fieldMix },
+  },
+  transparent: true,
+  depthTest: false,
+  blending: THREE.AdditiveBlending,
+});
+
+const grid = new THREE.LineSegments(createGridGeometry(), trailMaterial);
+// The displacement happens in the vertex shader, so the geometry's bounding sphere does not describe
+// where this mesh actually is and culling against it can drop the grid while it is still on screen.
+grid.frustumCulled = false;
+trailScene.add(grid);
+
+// --- Loop ----------------------------------------------------------------------------------------
+
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const time = clock.getElapsedTime();
+
+  etherUniforms.iTime.value = time;
+  etherUniforms.uFlightSpeed.value = CONFIG.flightSpeed;
+  etherUniforms.uAnimSpeed.value = CONFIG.animSpeed;
+  etherUniforms.uLightIntensity.value = CONFIG.lightIntensity;
+  etherUniforms.uColorOffset.value.set(CONFIG.colorR, CONFIG.colorG, CONFIG.colorB);
+  etherUniforms.uGrainAmount.value = CONFIG.grainAmount;
+  etherUniforms.uBrightness.value = CONFIG.etherBrightness;
+  etherUniforms.uVolumeField.value = CONFIG.volumeField;
+  etherUniforms.uMaxSteps.value = CONFIG.maxSteps;
+
+  // The volume draws under an orthographic camera, so it cannot read the perspective one itself. Both
+  // halves are handed the same eye position and the same flight clock every frame.
+  camera.updateMatrixWorld();
+  etherUniforms.uCameraPos.value.copy(camera.position);
+  etherUniforms.uInvProjView.value.multiplyMatrices(camera.matrixWorld, camera.projectionMatrixInverse);
+  trailMaterial.uniforms.uFlightTime.value = time * CONFIG.flightSpeed;
+
+  trailMaterial.uniforms.uTime.value += dt * CONFIG.lineSpeed;
+  // Locked to the volume's own animation clock, so the grid ripples with what is behind it rather than
+  // near it. Unlocked, the depth slider becomes a free scrub through the field.
+  trailMaterial.uniforms.uEtherTime.value = CONFIG.syncToEther
+    ? time * CONFIG.animSpeed
+    : trailMaterial.uniforms.uEtherTime.value + dt * CONFIG.animSpeed;
+
+  controls.update();
+
+  renderer.clear();
+  if (CONFIG.showEther) renderer.render(etherScene, etherCamera);
+  if (CONFIG.showTrails) renderer.render(trailScene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  etherUniforms.iResolution.value.set(window.innerWidth, window.innerHeight);
+});
+
+// --- Settings on disk ----------------------------------------------------------------------------
+
+const SAVED_KEYS = Object.keys(CONFIG);
+
+const store = createDiskStore({
+  read: '/sabosugi-visuals/hybrid-tuning/ether-trails.json',
+  write: '/api/save-hybrid?name=ether-trails',
+  storage: typeof localStorage !== 'undefined' ? localStorage : null,
+  key: 'sabosugi:ether-trails',
+});
+
+const statusEl = document.getElementById('status');
+
+// Which form is actually live. Twenty-six of the twenty-seven ignore the Field mix folder entirely, and
+// without this on screen there is no way to tell that from the panel.
+let lastDiskStatus = null;
+// Filled in when the GUI builds. store.onStatus fires its listener immediately, which is before that,
+// and reaching for a const declared later throws rather than reading as undefined.
+let formNames = null;
+function refreshStatus() {
+  const name = formNames
+    ? (Object.keys(formNames).find((k) => formNames[k] === CONFIG.shape) || String(CONFIG.shape))
+    : String(CONFIG.shape);
+  const disk = lastDiskStatus ? describeStatus(lastDiskStatus, { file: 'ether-trails.json' }) : '';
+  statusEl.textContent = `form: ${name}${disk ? '  ·  ' + disk : ''}`;
+}
+store.onStatus((s) => { lastDiskStatus = s; refreshStatus(); });
+
+const snapshot = () => Object.fromEntries(SAVED_KEYS.map((k) => [k, CONFIG[k]]));
+
+function applySaved(saved) {
+  if (!saved) return;
+  for (const k of SAVED_KEYS) {
+    if (saved[k] !== undefined && typeof saved[k] === typeof CONFIG[k]) CONFIG[k] = saved[k];
+  }
+}
+
+function pushAll() {
+  const u = trailMaterial.uniforms;
+  u.uShapeType.value = CONFIG.shape;
+  u.uSize.value = CONFIG.shapeSize;
+  u.uAmplitude.value = CONFIG.amplitude;
+  u.uRotZ.value = CONFIG.shapeRotZ;
+  u.uScaleX.value = CONFIG.shapeScaleX;
+  u.uBaseOpacity.value = CONFIG.baseOpacity;
+  u.uShapeOpacity.value = CONFIG.shapeOpacity;
+  u.uDensity.value = CONFIG.signalDensity;
+  u.uTrailLength.value = CONFIG.trailLength;
+  u.uEtherGain.value = CONFIG.etherGain;
+  u.uFieldScale.value = CONFIG.fieldScale;
+  u.uRepeat.value = CONFIG.tunnelRepeat ? 1 : 0;
+  etherUniforms.uFieldScale.value = CONFIG.fieldScale;
+  etherUniforms.uRepeat.value = CONFIG.tunnelRepeat ? 1 : 0;
+  etherUniforms.uCoupled.value = CONFIG.coupledCamera ? 1 : 0;
+  etherUniforms.uFarDistance.value = CONFIG.drawDistance;
+  camera.far = CONFIG.drawDistance;
+  camera.updateProjectionMatrix();
+  grid.position.z = CONFIG.etherDepth;
+  grid.scale.setScalar(CONFIG.gridScale);
+  u.uFieldA.value = CONFIG.fieldA;
+  u.uFieldB.value = CONFIG.fieldB;
+  u.uBlendOp.value = CONFIG.blendOp;
+  u.uFieldMix.value = CONFIG.fieldMix;
+  u.uFieldZoom.value = CONFIG.fieldZoom;
+  u.uFieldExtent.value = CONFIG.fieldExtent;
+  u.uColor1.value.set(CONFIG.color1);
+  u.uColor2.value.set(CONFIG.color2);
+  u.uColor3.value.set(CONFIG.color3);
+  u.uColor4.value.set(CONFIG.color4);
+  u.uActiveColors.value.set(1, CONFIG.useColor2 ? 1 : 0, CONFIG.useColor3 ? 1 : 0, CONFIG.useColor4 ? 1 : 0);
+  grid.rotation.x = CONFIG.sceneRotationX;
+  grid.rotation.y = CONFIG.sceneRotationY;
+  renderer.setPixelRatio(CONFIG.dpr);
+  renderer.outputColorSpace = CONFIG.legacyColor ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace;
+}
+
+/** Back to the authored look: every value, every uniform, the camera, and the file on disk. */
+function resetToDefaults() {
+  Object.assign(CONFIG, JSON.parse(JSON.stringify(DEFAULTS)));
+  pushAll();
+  updateActiveColors();
+
+  // Neither of these lives in CONFIG, and leaving them is what makes a reset feel like it did nothing.
+  camera.position.set(-10, 0, 15);
+  controls.target.set(0, 0, 0);
+  controls.update();
+  trailMaterial.uniforms.uTime.value = 0;
+  trailMaterial.uniforms.uEtherTime.value = 0;
+
+  for (const c of gui.controllersRecursive()) c.updateDisplay();
+  refreshStatus();
+  store.setJSON(snapshot(), { immediate: true });
+}
+
+// --- GUI -----------------------------------------------------------------------------------------
+
+const gui = new GUI({ container: document.getElementById('gui-container'), title: 'Ether Trails' });
+gui.add(actions, 'reset').name('Reset everything to defaults');
+
+// Seven pens, seven fields. The ids match sampleField's branches.
+const FIELDS = {
+  'Ether (folded filaments)': 0,
+  'Nebula (thin veins)': 1,
+  'Aurora (fractal curtain)': 2,
+  'Crystal (faceted)': 3,
+  'Highway (structural density)': 4,
+  'Morph (value noise)': 5,
+  'Quantum Cube (box distance)': 6,
+};
+const BLEND_OPS = { 'Mix': 0, 'Add': 1, 'Multiply': 2, 'Min': 3, 'Max': 4, 'Difference': 5 };
+
+/**
+ * Every control in this folder is read by exactly one of the 27 height functions, `hFieldMix`, and the
+ * vertex shader only calls it when uShapeType is 26. Any other form ignores all six, silently: the
+ * uniforms update, the slider moves, and nothing on screen changes.
+ *
+ * That is a panel showing controls whose effect depends on a different control elsewhere in the panel,
+ * which is a defect on its own. Worse, the form is persisted, so one earlier visit to the Form Type
+ * dropdown left this folder permanently dead on every later load. Touching anything here now selects
+ * the form that reads it, so these controls cannot be inert.
+ */
+function armFieldMix() {
+  if (CONFIG.shape === 26) return;
+  CONFIG.shape = 26;
+  trailMaterial.uniforms.uShapeType.value = 26;
+  if (shapeController) shapeController.updateDisplay();
+  refreshStatus();
+}
+
+const fMix = gui.addFolder('Field mix (the grid reads these)');
+fMix.add(CONFIG, 'fieldA', FIELDS).name('Field A')
+  .onChange((v) => { trailMaterial.uniforms.uFieldA.value = Number(v); armFieldMix(); });
+fMix.add(CONFIG, 'fieldB', FIELDS).name('Field B')
+  .onChange((v) => { trailMaterial.uniforms.uFieldB.value = Number(v); armFieldMix(); });
+fMix.add(CONFIG, 'blendOp', BLEND_OPS).name('Blend')
+  .onChange((v) => { trailMaterial.uniforms.uBlendOp.value = Number(v); armFieldMix(); });
+fMix.add(CONFIG, 'fieldMix', 0, 1, 0.01).name('B Amount')
+  .onChange((v) => { trailMaterial.uniforms.uFieldMix.value = v; armFieldMix(); });
+fMix.add(CONFIG, 'fieldZoom', 0.005, 1.0, 0.005).name('Field Zoom')
+  .onChange((v) => { trailMaterial.uniforms.uFieldZoom.value = v; armFieldMix(); });
+fMix.add(CONFIG, 'fieldExtent', 4, 80, 1).name('Field Extent')
+  .onChange((v) => { trailMaterial.uniforms.uFieldExtent.value = v; armFieldMix(); });
+fMix.open();
+
+const fLink = gui.addFolder('Coupling (volume <-> grid)');
+fLink.add(CONFIG, 'coupledCamera').name('Share The Camera')
+  .onChange((v) => { etherUniforms.uCoupled.value = v ? 1 : 0; });
+fLink.add(CONFIG, 'fieldScale', 0.05, 4.0, 0.01).name('Field Scale (both)')
+  .onChange((v) => {
+    trailMaterial.uniforms.uFieldScale.value = v;
+    etherUniforms.uFieldScale.value = v;
+  });
+fLink.add(CONFIG, 'tunnelRepeat').name('Tunnel Repeat (both)')
+  .onChange((v) => {
+    trailMaterial.uniforms.uRepeat.value = v ? 1 : 0;
+    etherUniforms.uRepeat.value = v ? 1 : 0;
+  });
+fLink.add(CONFIG, 'etherDepth', -20, 20, 0.01).name('Slide Grid Through Volume')
+  .onChange((v) => { grid.position.z = v; });
+fLink.add(CONFIG, 'gridScale', 0.02, 2.0, 0.01).name('Grid Scale')
+  .onChange((v) => { grid.scale.setScalar(v); });
+fLink.add(CONFIG, 'etherGain', 0, 5, 0.01).name('Displacement Gain')
+  .onChange((v) => { trailMaterial.uniforms.uEtherGain.value = v; });
+fLink.add(CONFIG, 'syncToEther').name('Lock To Volume Clock');
+fLink.open();
+
+const fEther = gui.addFolder('Volume (raymarched behind)');
+fEther.add(CONFIG, 'showEther').name('Show Volume');
+fEther.add(CONFIG, 'volumeField', FIELDS).name('Volume Field')
+  .onChange((v) => { etherUniforms.uVolumeField.value = Number(v); });
+fEther.add(CONFIG, 'maxSteps', 8, 99, 1).name('March Steps')
+  .onChange((v) => { etherUniforms.uMaxSteps.value = v; });
+fEther.add(CONFIG, 'drawDistance', 25, 4000, 5).name('Draw Distance')
+  .onChange((v) => {
+    etherUniforms.uFarDistance.value = v;
+    camera.far = v;
+    camera.updateProjectionMatrix();
+  });
+fEther.add(CONFIG, 'dpr', 0.1, 4.0, 0.1).name('Device Pixel Ratio').onChange((v) => renderer.setPixelRatio(v));
+fEther.add(CONFIG, 'flightSpeed', -1.0, 1.0).name('Flight Speed');
+fEther.add(CONFIG, 'animSpeed', -5.0, 5.0).name('Animation Speed');
+fEther.add(CONFIG, 'lightIntensity', 1000.0, 100000.0).name('Light Intensity');
+fEther.add(CONFIG, 'etherBrightness', 0, 3, 0.01).name('Brightness');
+fEther.add(CONFIG, 'grainAmount', 0.0, 0.5).name('Noise Grain Amount');
+fEther.add(CONFIG, 'colorR', -10.0, 10.0).name('Red Offset');
+fEther.add(CONFIG, 'colorG', -10.0, 10.0).name('Green Offset');
+fEther.add(CONFIG, 'colorB', -10.0, 10.0).name('Blue Offset');
+fEther.add(CONFIG, 'legacyColor').name('Linear Output (r128 look)')
+  .onChange((v) => { renderer.outputColorSpace = v ? THREE.LinearSRGBColorSpace : THREE.SRGBColorSpace; });
+
+const shapes = {
+  'Field Mix (hybridiser)': 26,
+  'Sphere': 0, 'Box': 1, 'Pyramid': 2, 'Torus': 3,
+  'City Blocks': 4, 'Robot Head': 5, 'Hex Hive': 6, 'Turbine': 7, 'Circuit Board': 8,
+  'Mountain Terrain': 9, 'Spiral Galaxy': 10, 'Acoustic Wave': 11, 'Digital Rain': 12,
+  'Shield Dome': 13, 'Portal': 14, 'Abstract Data': 15, 'Liquid Metal': 16,
+  'Voronoi Cells': 17, 'Pyramid Grid': 18, 'Vortex (Sinkhole)': 19, 'Crystalline': 20,
+  'Glitch Noise': 21, 'Ripple Pond': 22, 'Waffle Iron': 23, 'Stadium': 24, 'Black Hole': 25,
+};
+
+const fGeo = gui.addFolder('Trails grid');
+fGeo.add(CONFIG, 'showTrails').name('Show Grid');
+formNames = shapes;
+const shapeController = fGeo.add(CONFIG, 'shape', shapes).name('Form Type')
+  .onChange((v) => { trailMaterial.uniforms.uShapeType.value = Number(v); refreshStatus(); });
+fGeo.add(CONFIG, 'shapeSize', 0.5, 10.0).name('Size').onChange((v) => { trailMaterial.uniforms.uSize.value = v; });
+fGeo.add(CONFIG, 'amplitude', 0.1, 5.0).name('Amplitude (Z)').onChange((v) => { trailMaterial.uniforms.uAmplitude.value = v; });
+fGeo.add(CONFIG, 'shapeRotZ', 0, 6.28).name('Rotate Z').onChange((v) => { trailMaterial.uniforms.uRotZ.value = v; });
+fGeo.add(CONFIG, 'shapeScaleX', 0.2, 3.0).name('Scale X').onChange((v) => { trailMaterial.uniforms.uScaleX.value = v; });
+fGeo.add(CONFIG, 'sceneRotationY', -3.14, 3.14).name('Global Tilt Y').onChange((v) => { grid.rotation.y = v; });
+fGeo.add(CONFIG, 'sceneRotationX', -2, 2).name('Global Tilt X').onChange((v) => { grid.rotation.x = v; });
+fGeo.add(CONFIG, 'baseOpacity', 0.0, 0.5).name('Straight Opacity').onChange((v) => { trailMaterial.uniforms.uBaseOpacity.value = v; });
+fGeo.add(CONFIG, 'shapeOpacity', 0.0, 1.0).name('Form Opacity').onChange((v) => { trailMaterial.uniforms.uShapeOpacity.value = v; });
+
+const fSig = gui.addFolder('Signals');
+fSig.add(CONFIG, 'lineSpeed', 0.0, 1.0).name('Speed');
+fSig.add(CONFIG, 'signalDensity', 0.0, 1.0).name('Density').onChange((v) => { trailMaterial.uniforms.uDensity.value = v; });
+fSig.add(CONFIG, 'trailLength', 0.001, 0.5).name('Trail Length').onChange((v) => { trailMaterial.uniforms.uTrailLength.value = v; });
+
+const fColors = gui.addFolder('Signal colours');
+function updateActiveColors() {
+  trailMaterial.uniforms.uActiveColors.value.set(
+    1.0, CONFIG.useColor2 ? 1.0 : 0.0, CONFIG.useColor3 ? 1.0 : 0.0, CONFIG.useColor4 ? 1.0 : 0.0,
+  );
+}
+fColors.addColor(CONFIG, 'color1').name('Main Colour').onChange((v) => trailMaterial.uniforms.uColor1.value.set(v));
+fColors.add(CONFIG, 'useColor2').name('Use Colour 2').onChange(updateActiveColors);
+fColors.addColor(CONFIG, 'color2').name('Colour 2').onChange((v) => trailMaterial.uniforms.uColor2.value.set(v));
+fColors.add(CONFIG, 'useColor3').name('Use Colour 3').onChange(updateActiveColors);
+fColors.addColor(CONFIG, 'color3').name('Colour 3').onChange((v) => trailMaterial.uniforms.uColor3.value.set(v));
+fColors.add(CONFIG, 'useColor4').name('Use Colour 4').onChange(updateActiveColors);
+fColors.addColor(CONFIG, 'color4').name('Colour 4').onChange((v) => trailMaterial.uniforms.uColor4.value.set(v));
+
+gui.onFinishChange(() => store.setJSON(snapshot()));
+
+// --- Boot ----------------------------------------------------------------------------------------
+
+await store.load();
+applySaved(store.json(null));
+for (const c of gui.controllersRecursive()) c.updateDisplay();
+pushAll();
+updateActiveColors();
+animate();
+</script>
+</body>
+</html>

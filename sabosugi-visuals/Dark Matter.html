@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dark Matter</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        /* Custom UI position if needed */
+        .lil-gui {
+            --background-color: #1a1a1a;
+            --text-color: #eee;
+            --title-background-color: #333;
+            --widget-color: #444;
+            --hover-color: #555;
+            --focus-color: #666;
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="webgl"></canvas>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "lil-gui": "https://unpkg.com/lil-gui@0.19.1/dist/lil-gui.esm.min.js"
+        }
+      }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import GUI from 'lil-gui';
+
+        // State holds all values that UI will tweak
+        const params = {
+            dpr: 1, // Device Pixel Ratio options: 0.5, 0.7, 1, 1.5, 2
+            rotationSpeed: 0.25,
+            animationSpeed: 1.1,
+            densityMultiplier: 2.8,
+            fbmScale: 1.5,
+            colorPink: '#ff941a',   // Outer Color
+            colorCyan: '#4b70b9',   // Mid Color
+            colorPurple: '#cc0000', // Deep Color
+            colorOrange: '#fff957', // Core Bleed
+            camPosX: 0.0,
+            camPosY: 1.9,
+            camPosZ: -4.9,
+            camTargetY: -0.3
+        };
+
+        const canvas = document.getElementById('webgl');
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+        
+        // Setup Fullscreen Orthographic Camera to render a flat plane
+        const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+        camera.position.z = 1;
+        const scene = new THREE.Scene();
+
+        // Replace Shadertoy specific syntax with standard Three.js GLSL
+        const vertexShader = `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = vec4(position, 1.0);
+            }
+        `;
+
+        const fragmentShader = `
+            uniform vec2 uResolution;
+            uniform float uTime;
+            
+            // UI Controls variables
+            uniform float uRotationSpeed;
+            uniform float uAnimationSpeed;
+            uniform float uDensity;
+            uniform float uFbmScale;
+            
+            uniform vec3 uColorPink;
+            uniform vec3 uColorCyan;
+            uniform vec3 uColorPurple;
+            uniform vec3 uColorOrange;
+            
+            uniform vec3 uCamPos;
+            uniform vec3 uCamTarget;
+
+            varying vec2 vUv;
+
+            // 2D Rotation Matrix
+            mat2 rot(float a) {
+                float s = sin(a), c = cos(a);
+                return mat2(c, -s, s, c);
+            }
+
+            // Fast 3D Hash function
+            float hash(vec3 p) {
+                p = fract(p * 0.3183099 + 0.1);
+                p *= 17.0;
+                return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+            }
+
+            // 3D Value Noise
+            float noise3D(vec3 x) {
+                vec3 i = floor(x);
+                vec3 f = fract(x);
+                f = f * f * (3.0 - 2.0 * f);
+                
+                return mix(mix(mix(hash(i + vec3(0,0,0)), hash(i + vec3(1,0,0)), f.x),
+                               mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+                           mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                               mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+            }
+
+            // 3D Fractional Brownian Motion (Main detail - 3 octaves for optimization)
+            float fbm(vec3 p) {
+                float v = 0.0;
+                float a = 0.5;
+                vec3 shift = vec3(100.0);
+                for (int i = 0; i < 3; ++i) {
+                    v += a * noise3D(p);
+                    p = p * 3.5 + shift;
+                    a *= 0.5;
+                }
+                return v;
+            }
+
+            // Faster 3D FBM for domain warping (Only 2 octaves)
+            float fbmFast(vec3 p) {
+                float v = 0.0;
+                float a = 0.4;
+                vec3 shift = vec3(100.0);
+                for (int i = 0; i < 2; ++i) {
+                    v += a * noise3D(p);
+                    p = p * 2.0 + shift;
+                    a *= -0.1;
+                }
+                return v;
+            }
+
+            // Camera Setup
+            mat3 setCamera(vec3 ro, vec3 ta, float cr) {
+                vec3 cw = normalize(ta - ro);
+                vec3 cp = vec3(sin(cr), cos(cr), 0.0);
+                vec3 cu = normalize(cross(cw, cp));
+                vec3 cv = normalize(cross(cu, cw));
+                return mat3(cu, cv, cw);
+            }
+
+            void main() {
+                // Map Three.js UV space back to ShaderToy fragCoord space
+                vec2 fragCoord = vUv * uResolution;
+                vec2 uv = (fragCoord - 0.5 * uResolution.xy) / uResolution.y;
+                
+                // 1. Setup 3D Camera (Variables controlled by UI)
+                vec3 ro = uCamPos; 
+                vec3 ta = uCamTarget;
+                mat3 ca = setCamera(ro, ta, 0.0);
+                vec3 rd = ca * normalize(vec3(uv, 1.5)); // Ray direction
+                
+                // Pure black background
+                vec3 col = vec3(0.0);
+                
+                // 3. True Volumetric Raymarching for the Fluid/Galaxy
+                vec3 volCol = vec3(0.0);
+                float transmittance = 1.0;
+                
+                // OPTIMIZATION: Larger step size and dithering to hide banding
+                float stepSize = 0.12; 
+                float dither = fract(sin(dot(fragCoord, vec2(12.9898, 78.233))) * 43758.5453);
+                float t = 1.0 + dither * stepSize; // Dithered start distance
+                float tMax = 8.0; 
+                
+                // OPTIMIZATION: Reduced iterations from 75 to 50
+                for(int i = 0; i < 50; i++) {
+                    vec3 p = ro + rd * t;
+                    
+                    // AABB Bounds Optimization: Skip heavy noise math if ray is outside the cylinder
+                    if(abs(p.y) > 1.2 || length(p.xz) > 3.0) {
+                        t += stepSize;
+                        if(t > tMax) break;
+                        continue;
+                    }
+                    
+                    float r = length(p.xz);
+                    float a = atan(p.z, p.x);
+                    
+                    // Swirling vortex logic
+                    float swirl = -uTime * uRotationSpeed - 2.5 / (r + 0.5);
+                    a += swirl;
+                    
+                    // Swirled 3D Coordinates
+                    vec3 sp = vec3(cos(a) * r, p.y * 2.0, sin(a) * r); // Stretch Y to compress fluid
+                    
+                    // 3D Domain Warping for fluid dynamics
+                    vec3 q = vec3(0.0);
+                    q.x = fbmFast(sp + uTime * 0.2 * uAnimationSpeed);
+                    q.y = fbmFast(sp + vec3(1.0, -uTime * 0.15 * uAnimationSpeed, 1.0));
+                    q.z = fbmFast(sp + vec3(2.0, 2.0, uTime * 0.1 * uAnimationSpeed));
+                    
+                    // Final noise evaluation
+                    float n = fbm(sp * uFbmScale + q * uFbmScale);
+                    
+                    // Density shaping (forming a thick disk)
+                    float density = smoothstep(0.3, 0.8, n);
+                    float mask = smoothstep(2.5, 0.5, r) * smoothstep(1.0, 0.1, abs(p.y));
+                    density *= mask * uDensity;
+                    
+                    if(density > 0.01) {
+                        // Map colors based on radius and noise warping (Colors injected via Uniforms)
+                        vec3 vCol = mix(uColorPurple, uColorPink, smoothstep(0.2, 0.7, n));
+                        vCol = mix(vCol, uColorCyan, smoothstep(0.5, 1.5, r + q.x * 0.5));
+                        vCol = mix(uColorOrange, vCol, smoothstep(0.1, 0.5, r)); // Core bleeds orange
+                        
+                        // Self-illumination
+                        vCol += vec3(0.5) * smoothstep(0.6, 0.9, n);
+                        
+                        // Volumetric integration (Beer-Lambert law)
+                        float alpha = 1.0 - exp(-density * stepSize * 5.0);
+                        volCol += transmittance * alpha * vCol * 2.0;
+                        transmittance *= (1.0 - alpha);
+                    }
+                    
+                    // Early exit if light is fully blocked
+                    if(transmittance < 0.01) break;
+                    t += stepSize;
+                }
+                
+                // Composite Fluid
+                col = mix(col, volCol, 1.0 - transmittance);
+                
+                // 4. True 3D Spherical Core Glow
+                float tClosest = max(0.0, -dot(ro, rd));
+                vec3 pClosest = ro + rd * tClosest;
+                float coreDist3D = length(pClosest);
+                
+                // Leaving exact value provided (-0.125)
+                float coreGlow3D = -0.125 / (coreDist3D * coreDist3D + 0.01);
+                coreGlow3D *= smoothstep(1.5, 0.0, coreDist3D); // Falloff
+                coreGlow3D *= 1.0 + 0.1 * sin(uTime * 2.5 * uAnimationSpeed);
+                
+                vec3 coreColor3D = vec3(1.0, 0.9, 0.5) * coreGlow3D;
+                vec3 innerWhite3D = vec3(1.0) * smoothstep(0.15, 0.0, coreDist3D) * 1.5;
+                
+                col += coreColor3D;
+                col += innerWhite3D;
+                
+                // Tone mapping
+                col = 1.0 - exp(-col * 1.2);
+                col *= 1.0 - dot(uv, uv) * 0.3; // Vignette
+                
+                gl_FragColor = vec4(col, 1.0);
+            }
+        `;
+
+        // Create uniforms and map them to UI settings initially
+        const uniforms = {
+            uTime: { value: 0 },
+            uResolution: { value: new THREE.Vector2() },
+            
+            uRotationSpeed: { value: params.rotationSpeed },
+            uAnimationSpeed: { value: params.animationSpeed },
+            uDensity: { value: params.densityMultiplier },
+            uFbmScale: { value: params.fbmScale },
+            
+            uColorPink: { value: new THREE.Color(params.colorPink) },
+            uColorCyan: { value: new THREE.Color(params.colorCyan) },
+            uColorPurple: { value: new THREE.Color(params.colorPurple) },
+            uColorOrange: { value: new THREE.Color(params.colorOrange) },
+            
+            uCamPos: { value: new THREE.Vector3(params.camPosX, params.camPosY, params.camPosZ) },
+            uCamTarget: { value: new THREE.Vector3(0.0, params.camTargetY, 0.0) }
+        };
+
+        const material = new THREE.ShaderMaterial({
+            vertexShader,
+            fragmentShader,
+            uniforms
+        });
+
+        // Add a plane covering the entire screen
+        const geometry = new THREE.PlaneGeometry(2, 2);
+        const mesh = new THREE.Mesh(geometry, material);
+        scene.add(mesh);
+
+        const gui = new GUI({ title: 'Scene Settings' });
+
+        // System Settings
+        const sysFolder = gui.addFolder('DPR Settings');
+        sysFolder.add(params, 'dpr', [0.5, 0.7, 1, 1.5, 2]).name('DPR / Resolution').onChange(v => {
+            updateRendererSize();
+        });
+
+        // Speed & Fractal Setting
+        const animFolder = gui.addFolder('Animation & Shape');
+        animFolder.add(params, 'rotationSpeed', -3.0, 3.0, 0.05).name('Swirl Speed').onChange(v => uniforms.uRotationSpeed.value = v);
+        animFolder.add(params, 'animationSpeed', 0.0, 5.0, 0.1).name('Noise Anim Speed').onChange(v => uniforms.uAnimationSpeed.value = v);
+        animFolder.add(params, 'densityMultiplier', 0.1, 5.0, 0.1).name('Cloud Density').onChange(v => uniforms.uDensity.value = v);
+        animFolder.add(params, 'fbmScale', 0.5, 3.0, 0.1).name('Fractal Scale').onChange(v => uniforms.uFbmScale.value = v);
+
+        // Color Settings
+        const colorFolder = gui.addFolder('Color Palette');
+        colorFolder.addColor(params, 'colorPink').name('Outer Color').onChange(v => uniforms.uColorPink.value.set(v));
+        colorFolder.addColor(params, 'colorCyan').name('Mid Color').onChange(v => uniforms.uColorCyan.value.set(v));
+        colorFolder.addColor(params, 'colorPurple').name('Deep Color').onChange(v => uniforms.uColorPurple.value.set(v));
+        colorFolder.addColor(params, 'colorOrange').name('Core Bleed').onChange(v => uniforms.uColorOrange.value.set(v));
+
+        // Camera Settings
+        const camFolder = gui.addFolder('Camera Controls');
+        camFolder.add(params, 'camPosX', -10.0, 10.0, 0.1).name('Cam X').onChange(v => uniforms.uCamPos.value.x = v);
+        camFolder.add(params, 'camPosY', -5.0, 10.0, 0.1).name('Cam Y (Height)').onChange(v => uniforms.uCamPos.value.y = v);
+        camFolder.add(params, 'camPosZ', -15.0, 15.0, 0.1).name('Cam Z (Distance)').onChange(v => uniforms.uCamPos.value.z = v);
+        camFolder.add(params, 'camTargetY', -5.0, 5.0, 0.1).name('Look Target Y').onChange(v => uniforms.uCamTarget.value.y = v);
+
+        // Close GUI by default as requested
+        gui.close();
+
+        function updateRendererSize() {
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            // Update canvas element dimensions
+            renderer.setSize(w, h);
+            // Apply chosen Device Pixel Ratio
+            renderer.setPixelRatio(params.dpr);
+            // Crucial: update shader resolution uniform multiplying by DPR for crisp rendering
+            uniforms.uResolution.value.set(w * params.dpr, h * params.dpr);
+        }
+        
+        window.addEventListener('resize', updateRendererSize);
+        // Initial call
+        updateRendererSize();
+
+        const clock = new THREE.Clock();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            // Update time parameter in shader
+            uniforms.uTime.value = clock.getElapsedTime();
+            // Render scene
+            renderer.render(scene, camera);
+        }
+
+        animate();
+    </script>
+</body>
+</html>

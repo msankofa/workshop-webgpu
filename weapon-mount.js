@@ -14,6 +14,7 @@ import { createWeaponPartBatches, bakeSkinnedGeometry } from './weapon-part-batc
 import { resolveWeaponHold, carryDeltaFor, locomotionFor, isCarryLocomotion, isOneHanded,
   hasCarryVocabulary, stepCarryBlend, snapCarryBlend, LOCOMOTION_AIM } from './weapon-hold-resolver.js';
 import { AIM_BLEND_DEFAULTS, barrelTrimFraction, releaseTrimFraction } from './bot-aim-blend.js';
+import { PISTOL_IDS } from './bot-sidearm.js';
 
 export const MOUNT_HEIGHT = 1.5;              // metres above the body's own feet (Contract 6)
 export const CARRY_MOVING_SPEED = 0.35;       // m/s above which a standing body shows the walk carry
@@ -32,6 +33,61 @@ export const BODY_HOLD_DEFAULTS = Object.freeze({
 });
 
 const STANCE_STAND = 'stand';
+
+// ---- stowed weapons (ported from bot-viewer-v3's stow block) --------------------------------
+// What is NOT in your hands still hangs on you. A stowed copy is a reduced part list riding the
+// torso joint, drawn through the same instanced pool as the held gun, so it costs no draw call of
+// its own. Long guns go across the back, pistols on the right hip.
+export const STOW_LOD_COVERAGE = 0.9;   // keep the largest sub-meshes covering this share of the vertices
+export const STOW_LOD_MAX_PARTS = 2;
+export const STOW_PLACEMENTS = Object.freeze({
+  back: Object.freeze({ position: [0.02, -0.06, -0.20], rotation: [-Math.PI / 2, 0.61, 0], scale: 0.95 }),
+  hip: Object.freeze({ position: [0.22, -0.32, 0.02], rotation: [Math.PI / 2, 0.25, 0], scale: 0.95 }),
+});
+export function stowPlacementFor(weaponId) {
+  return PISTOL_IDS.includes(weaponId) ? STOW_PLACEMENTS.hip : STOW_PLACEMENTS.back;
+}
+// Where a weapon sits when it is put away, as a hold the mount can blend to. A weapon may author
+// its own `holsterHold`; otherwise it is derived from where the weapon would be STOWED, which is
+// the place it is actually travelling to -- the two must not be authored apart and drift.
+const _holsterHolds = new Map();
+export function holsterHoldFor(weaponId, def) {
+  if (def?.holsterHold) return def.holsterHold;
+  let hold = _holsterHolds.get(weaponId);
+  if (!hold) {
+    const placement = stowPlacementFor(weaponId);
+    hold = { position: [...placement.position], rotation: [...placement.rotation], scale: 1 };
+    _holsterHolds.set(weaponId, hold);
+  }
+  return hold;
+}
+
+// Largest sub-meshes first until they cover `coverage` of the vertices or `maxParts` is reached: a
+// gun on someone's back is a silhouette, and its trigger guard is never the thing you can see.
+export function buildStowParts(instanceParts, { maxParts = STOW_LOD_MAX_PARTS, coverage = STOW_LOD_COVERAGE } = {}) {
+  if (!instanceParts?.length) return [];
+  const scored = instanceParts
+    .map((part) => ({ part, verts: part.geometry?.attributes?.position?.count ?? 0 }))
+    .sort((a, b) => b.verts - a.verts);
+  const total = scored.reduce((sum, entry) => sum + entry.verts, 0) || 1;
+  const kept = [];
+  let covered = 0;
+  for (const entry of scored) {
+    if (kept.length >= maxParts || covered / total >= coverage) break;
+    kept.push(entry.part);
+    covered += entry.verts;
+  }
+  return kept.length ? kept : instanceParts;
+}
+// The loadout minus what is in hand, in slot order, deduplicated. A knife in hand stows BOTH guns.
+export function stowedWeaponIds(loadout, heldId, { slots = ['primary', 'sidearm'] } = {}) {
+  const ids = [];
+  for (const slot of slots) {
+    const id = loadout?.[slot];
+    if (id && id !== 'none' && id !== heldId && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
 
 // Shared scratch (consumed fully per call, never held across calls).
 let _S = null;
@@ -58,6 +114,10 @@ function scratch(THREE) {
     bhFwd: new THREE.Vector3(), bhRight: new THREE.Vector3(), bhUp: new THREE.Vector3(), bhTarget: new THREE.Vector3(), bhGrip: new THREE.Vector3(),
     lockOpts: { lockPosePosition: 'lowReady' },
     noOpts: {},
+    stowWorld: new THREE.Matrix4(), stowPart: new THREE.Matrix4(),
+    stowPos: new THREE.Vector3(), stowOffset: new THREE.Vector3(), stowScale: new THREE.Vector3(),
+    stowQuat: new THREE.Quaternion(), stowLocal: new THREE.Quaternion(), stowYaw: new THREE.Quaternion(),
+    stowEuler: new THREE.Euler(),
   };
   return _S;
 }
@@ -131,11 +191,26 @@ export function createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, load
   castShadow = false, anchorsUrl = './weapon-anchors.json', posesUrl = './weapon-poses.json' }) {
   const S = scratch(THREE);
   const templates = new Map();   // weaponId -> Promise<{ bakedAnchors, instanceParts, bounds, reducedParts }>
+  const stowPartsCache = new Map();   // weaponId -> Promise<parts[] | null>, the reduced stow list
   let dataPromise = null;
   let batches = null;
   let frameCounter = 0;
   const stats = { mounts: 0, flushed: 0 };
   const aimCfg = () => (typeof aimBlend === 'function' ? aimBlend() : aimBlend);
+
+  // Shared with the held gun on purpose: a template first loaded from the stow path would bake
+  // empty anchors, and the held path would then find a cached template with no muzzle or grips.
+  function stowParts(weaponId) {
+    if (!stowPartsCache.has(weaponId)) {
+      const def = getWeapon(weaponId);
+      if (!def?.model) return Promise.resolve(null);
+      stowPartsCache.set(weaponId, data()
+        .then(([anchorData]) => templateFor(weaponId, def, anchorData?.[weaponId]?.ikAnchors || {}))
+        .then((template) => (template ? buildStowParts(template.instanceParts) : null))
+        .catch((error) => { console.warn('[weapon-mount] failed to load stowed weapon', weaponId, error); return null; }));
+    }
+    return stowPartsCache.get(weaponId);
+  }
 
   function data() {
     if (!dataPromise) {
@@ -332,8 +407,8 @@ export function createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, load
       : stepCarryBlend(mount.carryBlend, carryTarget, dt);
     let hold = resolveWeaponHold(def, frame.stanceWeights, mount.carryBlend, S.hold);
     const drawBlend = frame.drawBlend ?? 1;
-    if (drawBlend < 1 && def.holsterHold) {
-      const h = def.holsterHold;
+    if (drawBlend < 1) {
+      const h = holsterHoldFor(mount.weaponId, def);
       for (let i = 0; i < 3; i++) {
         hold.position[i] = h.position[i] + (hold.position[i] - h.position[i]) * drawBlend;
         hold.rotation[i] = h.rotation[i] + (hold.rotation[i] - h.rotation[i]) * drawBlend;
@@ -529,6 +604,54 @@ export function createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, load
     createMount, destroyMount, updateMount,
     muzzleWorld, barrelDirection, barrelRay, stepBarrelTrim, drainEvents,
     beginFrame, flushMount, endFrame,
+    // One set of stowed copies per body. Rebuilt only when the stowed ids actually change; the
+    // parts come from the SAME template cache the held gun uses, so both land in one instancing
+    // bucket. `flush` runs inside the batches' begin/end frame, like flushMount.
+    createStow() {
+      let key = '', token = 0;
+      let mounts = [];
+      return {
+        get mounts() { return mounts; },
+        get key() { return key; },
+        setWeapons(ids) {
+          const next = (ids || []).filter(Boolean).join('|');
+          if (next === key) return;
+          key = next;
+          mounts = [];
+          const mine = ++token;
+          for (const weaponId of next ? next.split('|') : []) {
+            void Promise.resolve(stowParts(weaponId)).then((parts) => {
+              if (token !== mine || !parts?.length) return;
+              const placement = stowPlacementFor(weaponId);
+              mounts.push({ weaponId, parts, placement, scale: placement.scale * (getWeapon(weaponId)?.thirdPersonHold?.scale ?? 1) });
+            });
+          }
+        },
+        // Rides the torso joint: a body without one (a capsule) has nothing to hang a gun on.
+        flush(body, yaw = 0) {
+          const torso = body?.joints?.torso;
+          if (!batches || !mounts.length || !torso) return 0;
+          const S = scratch(THREE);
+          S.stowYaw.setFromEuler(S.stowEuler.set(0, yaw, 0, 'YXZ'));
+          let drawn = 0;
+          for (const stow of mounts) {
+            const { position, rotation } = stow.placement;
+            S.stowOffset.set(position[0], position[1], position[2]).applyQuaternion(S.stowYaw);
+            S.stowPos.copy(torso.position).add(S.stowOffset);
+            S.stowLocal.setFromEuler(S.stowEuler.set(rotation[0], rotation[1], rotation[2], 'XYZ'));
+            S.stowQuat.copy(S.stowYaw).multiply(S.stowLocal);
+            S.stowWorld.compose(S.stowPos, S.stowQuat, S.stowScale.setScalar(stow.scale));
+            for (const part of stow.parts) {
+              S.stowPart.multiplyMatrices(S.stowWorld, part.localMatrix);
+              batches.add(part.geometry, part.material, S.stowPart);
+              drawn++;
+            }
+          }
+          return drawn;
+        },
+        dispose() { mounts = []; key = ''; token++; },
+      };
+    },
     templateFor: (weaponId) => templates.get(weaponId) || null,
     // Loads (or returns) the template for a weapon with its real anchors, for stowed copies.
     loadTemplate(weaponId) {
@@ -537,6 +660,6 @@ export function createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, load
       return data().then(([anchorData]) => templateFor(weaponId, def, anchorData?.[weaponId]?.ikAnchors || {}));
     },
     get batches() { return batches; },
-    dispose() { batches?.dispose(); batches = null; templates.clear(); dataPromise = null; },
+    dispose() { batches?.dispose(); batches = null; templates.clear(); stowPartsCache.clear(); dataPromise = null; },
   };
 }

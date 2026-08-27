@@ -28,6 +28,20 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   maxUnloadsPerUpdate: 2,
   killPlaneBelowSurface: 80,   // metres under the local ground before the player is respawned
   collisionRadius: 2,          // volumetric: chunks around the player that get a BVH (5x5 = 150 m square)
+  // Arrived chunks are folded in (colorize + copy into a BatchedMesh) and given colliders. Both
+  // were unbudgeted, and measured as 86% of the terrain pass spike (up to 35 ms) because four
+  // workers deliver at once. A chunk that misses its turn keeps drawing its own mesh for a frame,
+  // which costs one draw call instead of a hitch. 0 = unlimited.
+  maxFoldsPerUpdate: 2,
+  // One, not two: measured 2026-08-25, the collider BVH is 91-96% of what is left of the fold at
+  // ~2.4-3.75 ms per chunk (createMapCollider), and 1/frame at 60 Hz still outruns the ~14/s that
+  // actually arrive.
+  maxColliderRebuildsPerUpdate: 1,
+  // Per-chunk frustum culling in the batches. Measured both ways 2026-08-26: turning it off skips
+  // BatchedMesh's per-instance cull loop but doubles submitted draws, and the A/B said p50 encode
+  // is a wash (postPlain 3.0-6.1 off vs 3.2-6.9 on) while the tail is much worse without it
+  // (frame max median 88.8 ms vs 38.8). Culling stays on; ?chunkcull=0 runs the other arm.
+  batchFrustumCulled: true,
   farLodLevels: 6,             // heightfield mode: clipmap rings (6 → 6.1 km half-extent at post0 2 m)
   // Streamed biome/moisture field around the player (plants plan F2). 8 m posts over 2 km is the
   // canonical placement resolution: candidate identity and species must not change with visual LOD.
@@ -101,22 +115,35 @@ export function createBaseGameTerrain({
     sliced.setIndex(new THREE.BufferAttribute(geo.index.array.subarray(0, cut), 1));
     return sliced;
   }
-  function syncVolumeColliders() {
-    if (!volumetricMode) { if (collidedChunks.size) { volumeProvider.clear(); collidedChunks.clear(); } return; }
+  // Returns true when colliders were left to rebuild. Nearest-first: a budget must never defer the
+  // chunk the player is standing on, so the wanted list is ordered by distance from the focus and
+  // the removals (cheap) always run.
+  function syncVolumeColliders(maxRebuilds = 0) {
+    if (!volumetricMode) { if (collidedChunks.size) { volumeProvider.clear(); collidedChunks.clear(); } return false; }
     const size = system.params.chunkSize, r = cfg.collisionRadius;
     const cx = Math.floor(colliderFocus[0] / size), cz = Math.floor(colliderFocus[1] / size);
     const wanted = new Set();
-    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) wanted.add(`${cx + dx},${cz + dz}`);
-    for (const key of wanted) {
+    const order = [];
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+      const key = `${cx + dx},${cz + dz}`;
+      wanted.add(key);
+      order.push({ key, d2: dx * dx + dz * dz });
+    }
+    order.sort((a, b) => a.d2 - b.d2);
+    let built = 0, deferred = false;
+    for (const { key } of order) {
       const chunk = system.chunks.get(key);
       if (!chunk || !chunk.meta.volumetric || !chunk.mesh) continue;
       if (collidedChunks.get(key) === chunk) continue;
+      if (maxRebuilds > 0 && built >= maxRebuilds) { deferred = true; break; }
       volumeProvider.setChunk(key, collisionGeometry(chunk), { sourceVersion: chunk.meta.sourceVersion });
       collidedChunks.set(key, chunk);
+      built++;
     }
     for (const key of [...collidedChunks.keys()]) {
       if (!wanted.has(key) || !system.chunks.has(key)) { volumeProvider.removeChunk(key); collidedChunks.delete(key); }
     }
+    return deferred;
   }
   if (volumetric) { system.setVolumetric(true); volumetricMode = true; }
 
@@ -196,10 +223,10 @@ export function createBaseGameTerrain({
     });
     if (touched) for (const m of splatInstances.values()) syncStreamedSplatCoverage(m);
   }
-  // Chunks draw through BatchedMesh pools (terrain-chunk-batches.js): one draw per ~256 chunks
-  // instead of one per chunk. A chunk's own mesh is hidden once it is in a batch; it stays the
-  // fallback when a batch cannot take it.
-  const batcher = createChunkBatcher({ material: system.material, name: 'base-game-terrain-batches' });
+  // Chunks draw through BatchedMesh pools (terrain-chunk-batches.js): one scene object per ~256
+  // chunks instead of one each, but still one drawIndexed per visible chunk on WebGPU. A chunk's
+  // own mesh is hidden once it is in a batch; it stays the fallback when a batch cannot take it.
+  const batcher = createChunkBatcher({ material: system.material, name: 'base-game-terrain-batches', perObjectFrustumCulled: cfg.batchFrustumCulled });
   const batchedChunks = new Map();   // key -> chunk object currently copied into the batcher
   const cascadeBatchers = new Map(); // cascade system -> { batcher, batched }
   const cascade = [];   // [{ system, group, level, spec }]
@@ -384,6 +411,7 @@ export function createBaseGameTerrain({
     return { biome, height, normalY, moisture: moistureAt(x, z) ?? 0, weights, treeDensity: treeDensityForBiome(biome) };
   }
   let seaDepthActive = false;
+  let residencyRevision = 0;
   // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
   let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
   function colorizeGeometry(geo, force = false) {
@@ -426,25 +454,53 @@ export function createBaseGameTerrain({
   let collisionDebug = false;
   let lastUpdateMs = 0;
   let lastClipmapMs = 0;
+  let lastFoldMs = 0;          // applyMaterials + syncVolumeColliders, together
+  let lastColorizeMs = 0;      // the UNBUDGETED per-vertex colour pass over newly arrived chunks
+  let lastBatchMs = 0;         // budgeted: copying chunk geometry into the BatchedMesh pools
+  let lastColliderMs = 0;      // budgeted: collisionGeometry + volumeProvider.setChunk (BVH build)
+  let lastFieldMs = 0;         // field windows + coverage
+  let lastInstallMs = 0;       // out-of-frame worker installs, drained from the systems
+  let lastInstallCount = 0;
+  let foldPending = false;     // chunks a budgeted frame left unfolded / uncollided
+  let colliderPending = false;
   let installedTotal = 0;
   let lastResident = 0;
   const perSecond = { installs: 0, window: 0, rate: 0 };
 
-  function syncBatches(sys, b, batched, hideRule) {
+  // `budget` is shared across the near system and every cascade level, so one frame's fold-in is
+  // bounded overall rather than per-system. Returns true when chunks were left unfolded.
+  function syncBatches(sys, b, batched, hideRule, budget = null) {
+    let deferred = false;
+    b.beginFrame();
     for (const [key, chunk] of sys.chunks) {
       if (!chunk.mesh) continue;
       const hidden = hideRule(chunk);
       if (batched.get(key) !== chunk) {
+        if (budget && budget.left <= 0) {
+          // Not folded this frame: the chunk draws its own mesh, which is correct, just cheaper
+          // to leave than to batch right now. Colours are already applied by applyMaterials.
+          // A replaced chunk still has its predecessor's geometry in the batch under this key --
+          // left visible it would draw over the new mesh, so the mesh wins until the fold lands.
+          deferred = true;
+          if (b.has(key)) b.setVisible(key, false);
+          chunk.mesh.visible = !hidden;
+          continue;
+        }
         colorizeGeometry(chunk.mesh.geometry);
         if (b.add(key, chunk.mesh.geometry)) batched.set(key, chunk); else batched.delete(key);
+        if (budget) budget.left--;
       }
       const inBatch = batched.get(key) === chunk;
       chunk.mesh.visible = !inBatch && !hidden;
       if (inBatch) b.setVisible(key, !hidden);
     }
     for (const key of [...batched.keys()]) if (!sys.chunks.has(key)) { b.remove(key); batched.delete(key); }
+    return deferred;
   }
-  function applyMaterials() {
+  function applyMaterials(maxFolds = 0) {
+    const budget = maxFolds > 0 ? { left: maxFolds } : null;
+    let deferred = false;
+    const tColor = performance.now();
     const mat = normals ? normalMaterial : groundMaterial();
     system.material.wireframe = wireframe;
     normalMaterial.wireframe = wireframe;
@@ -457,20 +513,26 @@ export function createBaseGameTerrain({
     }
     // During a restream into volumetric mode the retained heightfield chunks are wrong ground:
     // hide them and let the cascade's 5 m level show through until the exact chunk lands.
+    lastColorizeMs = performance.now() - tColor;
+    const tBatch = performance.now();
     batcher.setMaterial(mat);
-    syncBatches(system, batcher, batchedChunks, chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode);
+    deferred = syncBatches(system, batcher, batchedChunks, chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode, budget) || deferred;
     for (const c of cascade) {
       const lvlMat = cascadeMaterial(c.level);
+      const tLvl = performance.now();
       for (const child of c.system.group.children) {
         if (!child.isMesh || !child.userData.terrainChunk) continue;
         colorizeGeometry(child.geometry);
         child.material = lvlMat;
       }
+      lastColorizeMs += performance.now() - tLvl;
       let cb = cascadeBatchers.get(c.system);
-      if (!cb) { cb = { batcher: createChunkBatcher({ material: lvlMat, name: `base-game-terrain-lod-${c.level}-batches`, slots: 64, vertices: 200_000, indices: 600_000 }), batched: new Map() }; cascadeBatchers.set(c.system, cb); c.group.add(cb.batcher.group); }
+      if (!cb) { cb = { batcher: createChunkBatcher({ material: lvlMat, name: `base-game-terrain-lod-${c.level}-batches`, slots: 64, vertices: 200_000, indices: 600_000, perObjectFrustumCulled: cfg.batchFrustumCulled }), batched: new Map() }; cascadeBatchers.set(c.system, cb); c.group.add(cb.batcher.group); }
       cb.batcher.setMaterial(lvlMat);
-      syncBatches(c.system, cb.batcher, cb.batched, () => false);
+      deferred = syncBatches(c.system, cb.batcher, cb.batched, () => false, budget) || deferred;
     }
+    lastBatchMs = performance.now() - tBatch;
+    return deferred;
   }
 
   function refreshTileBounds() {
@@ -541,6 +603,7 @@ export function createBaseGameTerrain({
   const api = {
     root,
     system,
+    batcher,        // exposed like `system`: the batched-chunk state tests and debug UI read
     provider,
     get source() { return system.source; },
     get active() { return active; },
@@ -609,6 +672,9 @@ export function createBaseGameTerrain({
     },
     get volumeLod() { return cascade.map(c => ({ level: c.level, system: c.system, spec: c.spec })); },
     cascadeMaterialFor(level) { return splatInstances.get(level) ?? null; },
+    // Bumped whenever the resident chunk set changes, so a caller that bakes over the terrain (the
+    // rain shadow) can tell staleness from a mere camera move without watching every chunk itself.
+    get residencyRevision() { return residencyRevision; },
     // True once per completed handoff (read-and-clear), for the caller to re-seat the player.
     takeHandoffCompleted() { const v = handoffDone; handoffDone = false; return v; },
 
@@ -676,14 +742,34 @@ export function createBaseGameTerrain({
       const size = system.params.chunkSize;
       const focusMoved = Math.floor(globalPosition[0] / size) !== Math.floor(colliderFocus[0] / size) || Math.floor(globalPosition[2] / size) !== Math.floor(colliderFocus[1] / size);
       colliderFocus[0] = globalPosition[0]; colliderFocus[1] = globalPosition[2];
-      if (focusMoved && !changed && volumetricMode) syncVolumeColliders();
+      // Crossing a chunk boundary changes which chunks want colliders; the fold block below is the
+      // one place that rebuilds them, so it only has to be told there is work.
+      if (focusMoved && volumetricMode) colliderPending = true;
       lastUpdateMs = performance.now() - t0;
+      const near = system.takeInstallCost();
+      lastInstallMs = near.ms;
+      lastInstallCount = near.count;
+      for (const c of cascade) {
+        const far = c.system.takeInstallCost();
+        lastInstallMs += far.ms;
+        lastInstallCount += far.count;
+      }
       const resident = system.chunks.size;
       if (resident > lastResident) { perSecond.installs += resident - lastResident; installedTotal += resident - lastResident; }
       lastResident = resident;
       perSecond.window += dt;
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
-      if (changed) { applyMaterials(); syncVolumeColliders(); }
+      lastFoldMs = lastColorizeMs = lastBatchMs = lastColliderMs = 0;
+      // Budgeted, and resumed on later frames: a burst of arrivals is spread instead of landing
+      // as one 20-35 ms hitch. Deferred chunks keep drawing their own mesh meanwhile.
+      if (changed || foldPending || colliderPending) {
+        const tFold = performance.now();
+        foldPending = applyMaterials(cfg.maxFoldsPerUpdate);
+        const tColl = performance.now();
+        colliderPending = syncVolumeColliders(cfg.maxColliderRebuildsPerUpdate);
+        lastColliderMs = performance.now() - tColl;
+        lastFoldMs = performance.now() - tFold;
+      }
       if (seaDepthActive) { seaDepth.recentre(globalPosition[0], globalPosition[2]); seaDepth.update(); }
       if (farLodMode && !volumetricMode && clipmap) {
         const t1 = performance.now();
@@ -698,11 +784,14 @@ export function createBaseGameTerrain({
         if (cascadeChanged) applyMaterials();
         lastClipmapMs = performance.now() - t1;
       }
+      const tField = performance.now();
       const fw = fieldWindow(), cw = contactWindow();
       if (fw) fw.update(globalPosition[0], globalPosition[2]);
       if (cw) cw.update(globalPosition[0], globalPosition[2]);
       if (fw || cw) fieldScheduler.pump();
+      if (changed || cascadeChanged) residencyRevision++;   // which chunks exist moved; anything baked over them is stale
       updateCoverage(globalPosition, dt, changed || cascadeChanged);
+      lastFieldMs = performance.now() - tField;
       if (handoffPending && volumeProvider.hasChunk(chunkKeyAt(globalPosition[0], globalPosition[2]))) {
         handoffPending = false;
         handoffDone = true;
@@ -717,7 +806,17 @@ export function createBaseGameTerrain({
       return changed;
     },
 
+    // Per-frame cost split, cheap enough to read every frame (stats is not).
+    get frameCost() {
+      return {
+        installMs: lastInstallMs, foldMs: lastFoldMs, fieldMs: lastFieldMs, installCount: lastInstallCount,
+        colorizeMs: lastColorizeMs, batchMs: lastBatchMs, colliderMs: lastColliderMs,
+      };
+    },
+
     // Performance-record block: identifies the source, residency, queues, draws and timing.
+    // draws = GPU draw calls (one drawIndexed per visible batched chunk on WebGPU, plus fallback
+    // meshes), not batch objects; batches.batches has the object count.
     get stats() {
       let draws = 0, triangles = 0;
       if (system.group.visible) {
@@ -727,7 +826,7 @@ export function createBaseGameTerrain({
           const idx = child.geometry.index;
           triangles += idx ? idx.count / 3 : child.geometry.attributes.position.count / 3;
         }
-        draws += batcher.batchCount;
+        draws += batcher.drawCount;
         for (const chunk of batchedChunks.values()) { const idx = chunk.mesh?.geometry.index; if (idx) triangles += idx.count / 3; }
       }
       const info = system.sourceInfo;
@@ -747,17 +846,29 @@ export function createBaseGameTerrain({
         installedTotal,
         installsPerSecond: perSecond.rate,
         lastUpdateMs,
+        lastFoldMs: +lastFoldMs.toFixed(2),
+        lastColorizeMs: +lastColorizeMs.toFixed(2),
+        lastBatchMs: +lastBatchMs.toFixed(2),
+        lastColliderMs: +lastColliderMs.toFixed(2),
+        foldPending,
+        colliderPending,
+        maxFoldsPerUpdate: cfg.maxFoldsPerUpdate,
+        maxColliderRebuildsPerUpdate: cfg.maxColliderRebuildsPerUpdate,
+        lastFieldMs: +lastFieldMs.toFixed(2),
+        lastInstallMs: +lastInstallMs.toFixed(2),
+        lastInstallCount,
         epoch: system.epoch,
         lastSourceError: system.lastSourceError ?? null,
         collisionProvider: volumetricMode
-          ? { id: volumeProvider.id, enabled: volumeProvider.enabled !== false, chunks: volumeProvider.chunkCount, triangles: volumeProvider.triangleCount }
+          ? { id: volumeProvider.id, enabled: volumeProvider.enabled !== false, chunks: volumeProvider.chunkCount, triangles: volumeProvider.triangleCount,
+              build: volumeProvider.buildStats ? { ...volumeProvider.buildStats } : null }
           : { id: provider.id, enabled: provider.enabled !== false, colliderId: `${info.key}@${info.version}` },
         volumetric: volumetricMode,
         textures: splatMaterial ? (splatEnabled ? 'streamed-splat' : 'off') : 'tint',
         batches: batcher.stats,
         farLod: !farLodMode ? null
           : volumetricMode
-            ? { kind: 'volume-cascade', levels: cascade.map(c => ({ level: c.level, chunkSize: c.spec.chunkSize, spacing: +(c.spec.chunkSize / c.spec.segments).toFixed(2), resident: c.system.chunks.size, target: c.system.targetChunkCount, inFlight: c.system.inFlight.size, lastSourceError: c.system.lastSourceError ?? null })), outerHalfExtent: cascadeExtent(), triangles: cascade.reduce((n, c) => { for (const ch of c.system.group.children) if (ch.isMesh && ch.visible && ch.geometry.index) n += ch.geometry.index.count / 3; return n; }, 0), draws: cascade.reduce((n, c) => n + c.system.group.children.filter(ch => ch.isMesh && ch.visible).length, 0), lastUpdateMs: +lastClipmapMs.toFixed(2) }
+            ? { kind: 'volume-cascade', levels: cascade.map(c => ({ level: c.level, chunkSize: c.spec.chunkSize, spacing: +(c.spec.chunkSize / c.spec.segments).toFixed(2), resident: c.system.chunks.size, target: c.system.targetChunkCount, inFlight: c.system.inFlight.size, lastSourceError: c.system.lastSourceError ?? null })), outerHalfExtent: cascadeExtent(), triangles: cascade.reduce((n, c) => { for (const ch of c.system.group.children) if (ch.isMesh && ch.visible && ch.geometry.index) n += ch.geometry.index.count / 3; const cb = cascadeBatchers.get(c.system); if (cb) for (const chunk of cb.batched.values()) { const idx = chunk.mesh?.geometry.index; if (idx) n += idx.count / 3; } return n; }, 0), draws: cascade.reduce((n, c) => { n += c.system.group.children.filter(ch => ch.isMesh && ch.visible).length; const cb = cascadeBatchers.get(c.system); return n + (cb ? cb.batcher.drawCount : 0); }, 0), lastUpdateMs: +lastClipmapMs.toFixed(2) }
             : clipmap ? { kind: 'clipmap', ...clipmap.stats, lastUpdateMs: +lastClipmapMs.toFixed(2) } : null,
         debug: { wireframe, normals, tileBounds, collisionDebug },
       };

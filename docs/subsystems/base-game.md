@@ -904,6 +904,223 @@ the yaw/pitch computed before the kill, but the respawn puts the victim back on 
 shooter is standing on — sometimes directly overhead — so the stale aim swung at empty ground. It
 now aims at where the victim is.
 
+**Unlimited ammo (2026-08-26).** A room rule, not a client toggle: ammo is server-authoritative, so
+`unlimitedAmmo` is a `BASE_GAME_SHARED_KEYS` boolean the owner sets and everyone obeys, like whether
+there is a sea. The implementation is `Infinity` and almost nothing else — `player-ammo.js` gained
+`setUnlimited()`, which swaps every magazine in the store for a bottomless one and back. `mag -= 1`
+leaves `Infinity` alone, `reloadAmmo`'s `mag >= magazineSize` short-circuits, and the wire already
+carried it (`wireAmmo` sends `null`, `cleanAmmo` reads it back) because JSON has no `Infinity`. The
+one guard added: `stepTrigger` will not open a reload window on a bottomless magazine, which would
+otherwise gate the trigger for 1.5 s for nothing. Turning it off hands everyone a full load. The HUD
+prints `∞`.
+
+### Weapons, phase 4: stowed weapons and transitions (shipped 2026-08-26)
+
+**Stow (4.1).** What is not in your hands hangs on you. v3's stow block moved into `weapon-mount.js`
+(`STOW_PLACEMENTS`, `stowPlacementFor`, `buildStowParts`, `stowedWeaponIds`, and the system's
+`createStow()`), and `bot-viewer-v3.html` now calls it instead of its own copy — the same
+extract-then-switch that phase 1.5 did for the mount. A stowed copy is a reduced part list (largest
+sub-meshes covering 90 % of the vertices, at most two) on a per-frame matrix into the SAME instanced
+pool as the held gun, so it costs no draw call: long guns across the back, pistols on the right hip.
+It rides the torso joint, so a body without one hangs nothing, and it is skipped when the body is
+hidden — in first person the local rig is masked away, and a gun floating where the torso used to be
+is the one thing you would notice.
+
+That needs to know what a player carries, so the player state now replicates the whole `loadout`,
+not just the weapon in hand. Nothing else on the wire said what the other three slots held.
+
+**Transitions (4.2).** `weapons.js` gained `SWAP_MS_BY_CLASS` / `swapMsFor(id)`: the carry class sets
+how long a weapon takes to put away and bring up (pistol 350/300 ms, rifle 600/550, everything else
+250/220), overridable per weapon with `holsterMs`/`drawMs`. `base-game-fire.js` gained the swap
+itself — `createSwapState`, `beginSwap`, `swapPhase` (pure: asking must never change it),
+`drawBlendFor` and `remoteDrawBlend` — and `stepTrigger` gained `blocked`, because a gun halfway to
+your back cannot fire or reload. Both sides run the same state on the same tick numbers; predicting
+it differently means firing shots the server drops.
+
+Three rules fall out, and two of them change earlier behaviour:
+
+1. **A swap during a reload is refused outright** (the plan's rule; both hands are already busy).
+   It used to cancel the reload.
+2. **The weapon in hand is the outgoing one until the holster finishes.** The slot moves on the key
+   press, but `playerEntry` reports `heldWeapon(client)`, so a remote does not swap the model early
+   and play the holster on the wrong gun. The page defers its own model handover the same way
+   (`stepLocalSwap`).
+3. **A trigger held through a swap still needs a fresh press** on a semi-auto: the slot change eats
+   the press edge, as it always has.
+
+`holsterHold` is derived rather than authored: with nothing in `weapons.js`, `holsterHoldFor` returns
+the weapon's own **stow placement**, which is the place the gun is actually travelling to. Authoring
+the two separately is how they drift apart. `base-game-player-bodies.js` runs the blend off a wall
+clock (`swap.phase`/`t`/`duration`) rather than the replicated tick — the action and the tick it
+began are on the wire, the curve between them is not, and stepping it at the 20 Hz snapshot rate
+would stutter a motion lasting half a second. A finished holster stays down until the draw says
+otherwise.
+
+**Input and HUD (4.3).** Every way of changing what is in hand goes through one `selectSlot`: keys
+1–4, `Q` for the last weapon, and the mouse wheel, which `cycleSlot` walks through the filled slots
+only. The wheel is the weapon wheel while the pointer is locked, **shift+wheel** is the third-person boom,
+and with the pointer free the plain wheel is the boom again (there is no weapon to change while you
+are setting the scene up). Camera distance also keeps its own slider. The shift path exists because
+the first cut left the boom reachable only from the panel while playing, which is exactly when you
+want it. The `#combat` HUD grew a row of slot chips — key, weapon, and that
+slot's own magazine, with the held one lit; the throwable shows one pouch count because it is thrown
+from the pouch, not a magazine.
+
+**Reticle (2026-08-26).** `reticle.js` is a DOM overlay ported from bot-viewer-v3's POV crosshair —
+four bars whose gap tracks the live cone, a centre dot that appears only when the shot is legal, and
+the hitmarker X (red when the hit was fatal). Two things had to change for a game with a
+third-person camera:
+
+1. **It is positioned, not pinned to screen centre.** A round leaves the player's head along the
+   look direction; in third person the camera sits behind and beside that head, so screen centre is
+   metres from where the shot lands. `updateReticle` casts the *server's* ray — capsule top,
+   `lookDirection(yaw, pitch)` — against the local world query and projects the hit point. It hides
+   rather than draw a mirrored position when the point is behind the camera. In first person the
+   two agree and it sits where you would expect.
+2. **The gap is a real angle.** `reticleGapPx({ halfAngleRad, viewportHeight, fovYDeg })` projects
+   the cone through the camera's vertical FOV, so the bars enclose the ground the rounds can
+   actually reach — a fixed pixel gap would claim the same accuracy at 50 degrees and while scoped.
+   The cone comes from `base-game-fire.js`'s new `spreadHalfAngleFor(trigger, …)`, the same number
+   `shotDirectionFor` draws inside, so the reticle cannot drift from where the bullets go.
+
+Amber whenever the trigger would do nothing (reloading, mid-swap, empty) and the dot disappears with
+it, so "ready" is never carried by hue alone; red while dead. The hitmarker fires off the
+authoritative `hits[]` event where the shooter is you, which means it is honest online and silent in
+Solo, where there is nobody to hit. Toggles: `reticleEnabled`, `reticleSpread`. `test-reticle.mjs`
+covers the geometry and the overlay against a DOM stub.
+
+**Camera framing offsets are per view mode (2026-08-26).** `cameraSideOffset` / `cameraHeightOffset`
+/ `cameraForwardOffset` were one set fed to `playerView.updateCamera` in both modes, and in first
+person the camera *is* the focus point — so a decent over-the-shoulder third-person framing moved
+the first-person eye the same distance out the side of the head, and the third-person forward offset
+stacked on top of the measured `localEyeForward()`. Nobody hit it because all three default to 0.
+
+There are now two sets (`fpCameraSideOffset` and friends) and a `cameraOffsetTarget` dropdown that
+picks which one the three sliders edit; the slider labels carry `(1st)` / `(3rd)` so the panel never
+lies about what is being changed. Both keys register against the same control, so the page's
+"every setting has a control" check still passes and both values persist. The frame passes the set
+belonging to the live mode, and only first person still adds `localEyeForward()`. Covered in
+`test-base-game-player.mjs`, including that a rig eye height applies the offset exactly once.
+
+**Uphill no longer loses the ground (2026-08-26).** Reported as "going uphill is stuttery". It was
+not microstepping: `moveAndCollide` only subdivides above ~16.8 m/s and a sprint is 9.6 m/s, so it
+never engages in normal play. Measured headlessly by walking the real controller up analytic ramps
+through `createHeightfieldWorldQueryProvider`: at 15 deg the `grounded` flag went false for 12 of
+every 150 fixed steps, periodically, while the position path stayed smooth to under 1e-5 m.
+
+Two things combine. The heightfield's `resolveCapsule` grounds only on positive penetration and
+seats the foot exactly on the surface, so the next step's motion is tangent to the ramp and
+penetration lands on zero plus floating-point residue — every dozen steps it rounds the wrong way
+and the provider reports no ground. `trySnapDown` is the latch meant to catch exactly that near
+miss, but it bailed on `candidateVelocity[1] > EPSILON`, and climbing legitimately rises (5.5 m/s at
+15 deg is +1.47 m/s, the vertical component of walking along the plane). So nothing caught it.
+
+The fix keeps a threshold rather than deleting the guard — without one, players glue to ramp crests
+and ski-jump lips. `climbRiseLimit(horizontalSpeed, normal)` is the fastest a body can rise while
+merely walking up the slope under its foot, and the snap is refused only above that plus a 5 %
+relative and 0.05 m/s absolute margin (resolve and probe normals differ on curved terrain). Two
+constraints made the difference between working and not:
+
+- The normal comes from **the snap probe's own hit**, never from remembered surface state. `surface`
+  is nulled when ungrounded and is not in `captureState`, so a threshold that remembered it would
+  diverge on reconciliation replay — this is a server-authoritative controller.
+- The margin is required. On a planar ramp the rise equals the limit exactly, so without slack the
+  flicker only shrinks.
+
+Verified in `test-base-game-player.mjs`: zero ungrounded steps walking *and* sprinting at 0/5/15/30/
+45/49 deg, a jump taken mid-climb still leaves the ground, running off a ramp crest still launches,
+and an identical input stream replays to an identical `captureState`. Reviewed by a second model
+before implementing, which is where the hit-normal and margin requirements came from.
+
+**The browser-tuned movement and gait are now the defaults (2026-08-26).** Taken from
+`base-game-states/base-game-state-20260826184842.json`, which diverged from default in 14 settings.
+Walk drops to 2.75 m/s with a 2.25x sprint (was 5.5 and 1.75), first person is the default view,
+water clarity 18, camera boom 5.83, and nine gait values change together: double cadence, forward
+stride 1.7 and behind stride 1.5, feet barely overlapping (0.02), a 0.47 m step trigger, twice the
+bob, real sway, a wider foot workspace and half the locomotion amount.
+
+Setting them turned up two duplicated constants that would have desynced or misdriven the rig:
+
+- **Move speed lives in the controller, not the page.** The relay builds its controllers from
+  `DEFAULT_CONFIG` in `base-game-player-controller.js` and overrides nothing but `fixedHz`, while the
+  page fed its own `playerMoveSpeed` into the client's controller. Putting 2.75 only in the page
+  would have meant the client predicting 2.75 while the server simulated 5.5 — a correction every
+  step, online only. The seven physics settings in `DEFAULT_SETTINGS` now read from
+  `BASE_GAME_PLAYER_DEFAULT_CONFIG` instead of repeating literals, so they cannot drift again.
+- **The rig kept its own copy of the walk speed.** `movementSpeeds` in `base-game-player-bodies.js`
+  was `{ walk: 5.5, sprint: 1.75 }`, and the arm-pose presets blend on absolute m/s. The page calls
+  `setMovementSpeeds` so the live game was fine, but any consumer that did not got a rig told it was
+  strolling while the body sprinted — the arms never came up. It reads the controller config now.
+
+Five test assertions encoded the old speed as a fixed distance or a magic number (`armPoseSpeed > 9`,
+"moves 1.5 m in 60 ticks", walking a fixed frame count to reach a ledge or a stair tread). They are
+expressed against the configured speed now. The firing fixture had a sharper version of the same
+problem: it separated the two players by tick count, so at the slower walk they stayed inside a 15 m
+grenade blast and the shooter killed itself before the swap tests ran. It separates by distance now.
+
+### Posture: kneel and prone (shipped 2026-08-26)
+
+`C` kneels, `Z` goes prone, both toggles — you do not hold a key to stay lying down, and pressing the
+key you are already in stands you back up. Nothing new was invented: `bot-stance.js` already owned
+every curve (speed, spread, height, turn rate) and the eased pose weights, and it is pure, so it runs
+on the relay as happily as in the browser. The base game opts kneel and prone in
+(`BASE_GAME_STANCE_SETTINGS`); `bot-stance.js` leaves both off by default so the viewers that predate
+them keep their behaviour.
+
+**Nothing snaps, by construction.** The stance name never switches anything directly. Every
+consequence is blended from `stepStanceWeights`' eased 0..1 weights: the capsule height through
+`blendStanceHeightScale`, the move speed through a matching prone-over-kneel-over-crouch blend, and
+the rig through its own `crouch`/`kneel`/`prone` channels — the same weights, so the pose you see and
+the capsule you get shot in can never disagree. Measured: 1.80 m standing, ~1.35 kneeling, 0.70
+prone, and the biggest single tick moves under 10 % of the travel in every direction.
+
+The easing runs on the **fixed clock inside the controller**, not on render dt, so the relay and the
+client's prediction land on the same height and speed for the same tick. The weights are in
+`captureState` / `applyState` for the same reason the climb threshold could not read remembered
+surface state: they are simulation state, and a hard correction that left them out would stand a
+prone player up.
+
+Three details worth keeping:
+
+- **Standing up is refused with no headroom.** The taller capsule is resolved in place first; if
+  anything pushes it, the pose holds where it is rather than clipping through the ceiling.
+  `standBlocked` says so.
+- **Prone bottoms out at 0.70 m, not the authored 0.35 scale (0.63 m).** A capsule shorter than its
+  own diameter stops being a capsule. A vertical capsule cannot express "lying down is longer than
+  it is tall" at all; this is the honest floor, not a tuning choice.
+- **The rig gets standing height, not the shrunken one.** The rig does the crouching from the
+  weights; feeding it the capsule height as well would squash the whole body like a scale slider.
+
+**Protocol 12**: the tick input carries `stance` as an index into `BASE_GAME_STANCES`
+(`stand`/`crouch`/`kneel`/`prone`) and the player state echoes it. Remotes ease their own weights
+toward the replicated index rather than resampling three floats at 20 Hz. `crouch` stays a separate
+input bit — it is the swim-down key and always was.
+
+**The first cut did not work at all, and the reason is worth keeping.** A stance travels as an index
+because the tick object the page builds *is* the wire packet — but the controller only understood the
+name, so `setInput` stored the raw number `2`, `normalizeStance` read it as `stand`, and posture
+never changed. Only the relay worked, because it converts with `stanceName()` before stepping. Solo
+and client prediction silently stood still. `setInput` now accepts either form against
+`BASE_GAME_STANCES`, the one list that defines the order. The tests missed it because they drove the
+controller with names, the way the server does, and never the way the page does — so the regression
+test drives it both ways and asserts they reach an identical capsule.
+
+**Walking out of a kneel gives you the crouch.** A kneel is a one-knee firing position — the rear
+knee is on the ground and both feet are pinned — so there is no gait that can walk it. Crouch is the
+same lowered pelvis with the normal gait still running, so `C` now means "get low" and the pose
+depends on whether you are moving: still is a kneel, moving is a crouch walk, and stopping puts the
+knee back down. The handover is the same eased blend as everything else (worst tick under 2 cm), and
+it keys off the movement INTENT rather than measured speed — stance changes speed, so reading speed
+back would be a feedback loop. Prone is left alone: crawling is its own pose, not a crouch.
+
+That split is why the controller reports two stances. `stance` is what the body IS, which is what the
+rig's locomotion, the weapon hold and every remote must agree with; `requestedStance` is what was
+asked for, which is what the key toggles against.
+
+Still open: no crouch key is bound (the stance stays in the ladder because the fallback chain reads
+it), stance does not yet scale weapon spread even though `stanceSpreadScale` exists, and prone has no
+special weapon hold.
+
 Still open in this phase: the head multiplier. `hits[].head` is always false, and this is deliberate
 rather than forgotten — every other head decision in the repo comes from a rig
 (`bot-body-hit.js` → `bot-limb-map.js`), the server has no rig, and a capsule-top zone would be a
@@ -1210,7 +1427,9 @@ mesh provider and the real `base-game-player-controller.js` walking/jumping on t
 is the runtime owner: a source-injected `terrain-system.js` streamer (chunk 30 m, draw radius 3,
 2 builds / 2 unloads per update), the heightfield world-query provider (`id: 'terrain'`), a scene
 root translated by `-renderOrigin` (chunk geometry stays global; `worldCoordinates.onRebase` shifts
-the root only), debug views (wireframe, `MeshNormalNodeMaterial` normals view, per-chunk
+the root only), a `residencyRevision` counter bumped whenever the resident chunk set changes (so a
+caller that bakes over the terrain — the rain shadow — can tell staleness from a mere camera move
+without watching every chunk itself), debug views (wireframe, `MeshNormalNodeMaterial` normals view, per-chunk
 `Box3Helper` tile bounds, a magenta contact marker on the probed ground under the player) and a
 `stats` block (source kind/key/version/algorithm/bounds, lod, resident/stale/target/queued/in-flight
 tiles, draws, triangles, installs per second, `lastUpdateMs`, epoch, worker, `lastSourceError`,
@@ -1502,7 +1721,39 @@ Seven keys joined the shared set: `weatherSeed`, `lightningEnabled`, `lightningT
 to the derived schedule. Flash strength, decay, bolt scale, sun lift and the speed of sound stay
 local. Coverage is `test-base-game-lightning.mjs` (61 checks).
 
-Next in the plan: R3 (the rain shadow map) and R5 (capture, performance log and the remaining docs).
+### Weather, phase R3: the rain shadow (shipped 2026-08-26)
+
+A top-down height bake, so drops stop under a roof instead of falling through it. The renderer-side
+work is `rain.js`'s `bakeOccluderMap`; what `base-game-rain.js` adds is **holding the bake in global
+coordinates**. The texture stores `globalY − globalFloor`, which no origin shift can change, and the
+two uniforms that address it (`uOccCenter`, `uOccFloor`) are recomputed from the render origin every
+frame. So a rebase costs two uniform writes, where a bake stored in scene space would have to be
+re-rendered. The floor comes from the bounds of the roots being baked, less a 30 m margin, so the
+half-float texture spends its precision on the relief in the window.
+
+**It also fixes a bug that predates the feature.** `roofAt` reported "no roof" as height 0, and both
+callers do `max(roofAt, groundHeight)` — so every drop in this world was cut at scene y = 0, whatever
+the ground under it was doing. With the sea on at the default sea level of 0 that is invisible,
+because the water level already lifts the ground to 0. Drop the sea level, or turn the water off over
+terrain that dips below zero, and the rain stopped in mid air at y = 0. `uOccMiss` is now set to the
+same `noDataHeight` (−10000) the ground hook uses, once at construction, whether or not anything is
+ever baked.
+
+**`rainOccluders` has three values and defaults to `lab`.** The Traversal Lab is static, small and
+genuinely roofed, so one bake sized from the lab's own bounds lasts the session. Open terrain is the
+opposite: it streams, and there is nothing over it yet — no trees, no buildings — that the ground
+hook does not already cut, so `on` there buys a sharper cut height inside the window and costs a
+whole extra scene render per bake. That is the seam for when vegetation lands, not a feature anyone
+needs today. In terrain mode the bake is player-centred and redone when the player leaves the middle
+half of the window (a quarter of its width of walking) or when `terrain.residencyRevision` moves,
+which is the terrain's own signal that the resident chunk set changed. A dry world never bakes.
+
+The bake gets its own `rainBake` profiler slot rather than being folded into `weather`, because it is
+a whole extra scene render and would otherwise read as rain randomly costing several milliseconds.
+It runs in the frame loop before the encode, so it is outside the post/DOF pipeline. Coverage is in
+`test-base-game-rain.mjs` (144 checks).
+
+Next in the plan: R5 (capture, performance log and the remaining docs).
 
 ### Terrain authoring and Terrain Studio
 
@@ -1917,6 +2168,19 @@ floating one shows daylight. The Plants panel section drives it through setters 
 window's usable circle (56.6 m for a 160 m window). Frame cost lands in the `grass` profiler slot,
 awaited like the env-viewer does it. See `vegetation.md` for the module contract.
 
+`flora.update()` takes ELAPSED SECONDS, not `dt`. It only ever reaches `uTime`, which drives the
+wind phase; a frame delta pins that near 0.016 and the blades hold one fixed bend. Every other
+viewer passes `now / 1000` and this page passed `dt` until 2026-08-26 — `test-grass-compute.mjs`
+now asserts the call site, since no unit test of the module can see a wrong caller.
+
+Base Game raises the blade ceiling with `grassKmax: 256`, so the panel's 0-60 blades/m^2 slider
+works across its whole range instead of saturating at 16. The instance buffer is 28.5 MB
+(891,136 instances) and the per-recull dispatch tracks the live window rather than that ceiling.
+Two known limits remain: the draw-radius slider still clamps at 56.6 m until `contactTilesPerSide`
+grows, and the blade RASTER cost — vertex and overdraw, which is what actually grows with the
+count — sits inside the main render pass and is not measured by `passGrassMs`, which times only
+the cull dispatch.
+
 ### Reading a performance capture
 
 Captures land in `research/stats/base-game-performance-log.json`, newest entry first. Since
@@ -1962,6 +2226,31 @@ attributing every renderable to the top-level scene child it hangs under.
 
 Read it against `drawCallsReported` from the same frame. A large `renderables` count, or an owner
 with far more meshes than its subsystem claims, is the thing to fix -- not the mirror's rate.
+
+**Per-chunk frustum culling stays ON, measured both ways (2026-08-26).** Turning it off makes
+`BatchedMesh.onBeforeRender` early-out instead of running a matrix + bounding-sphere + frustum test
+per resident chunk per camera per pass. `?chunkcull=0` runs that arm; `context.batchFrustumCulled`
+labels each capture.
+
+| | draws | postPlain p50 (best/median/worst) | frame p95 median | frame max median |
+|---|---|---|---|---|
+| culling ON (default, n=5) | 130-304 | 3.2 / 4.9 / 6.9 | **25.7** | **38.8** |
+| culling OFF (n=6) | 290-659 | 3.0 / 4.3 / 6.1 | 35.2 | 88.8 |
+
+Two conclusions, and the second is the important one:
+
+1. **The tail is much worse with culling off** -- frame max median 88.8 ms against 38.8 -- while p50
+   encode is a wash. Culling stays on. Note the arms were taken in that order, so the later (ON) arm
+   winning argues against this being machine drift, which ran the other way.
+2. **Draw calls are cheap here.** Doubling submitted draws (155->321 min, 304->659 max) moved p50
+   encode by ~0.5 ms or less, inside the within-arm drift. So `postPlain`'s 3-6 ms is **not** draw
+   submission, and an earlier reading of this page as "draw-call-bound in the CPU encode loop" was
+   wrong. A merge-to-single-draw rewrite of `terrain-chunk-batches.js` would have bought nothing.
+
+The mirror's cost is cross-validated: `passPostMirrorMs - passPostPlainMs` matches `passReflectMs`
+to within 0.1 ms in every capture (3.1/3.2, 2.6/2.5, 2.8/2.8, 2.1/2.1, 1.5/1.5, 1.4/1.4). It costs
+**1.4-3.2 ms** on the frames it runs. What owns the remaining 3-6 ms of base-scene encode is still
+open, and it is not draws.
 
 **Profiling the encode.** `postRender` is CPU encode, and the planar mirror re-renders the whole
 scene inside it every `reflectRate` frames, so a single number hides the split. Three sub-slots,

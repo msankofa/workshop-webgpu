@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Futuristic Neon Ceramic Corridor</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #000000;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+<script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js";
+    import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.20.0/dist/lil-gui.esm.min.js";
+
+    // -------------------- Main scene parameters --------------------
+
+    const params = {
+        dpr: 1,
+        animationSpeed: 1.0,
+        paused: false,
+        CAMERA_SPEED: 0.34,
+        CAMERA_FOV: 0.29,
+        CORRIDOR_HALF_WIDTH: 3.52,
+        CORRIDOR_HALF_HEIGHT: 0.61,
+        WALL_PATTERN_SCALE: 0.41,
+        DEPTH_PATTERN_SCALE: 1.31,
+        FRACTAL_TIME_SPEED: 0.16,
+        MAX_DISTANCE: 120.0,
+        DISTANCE_FADE: 0.003,
+        REFLECTION_BASE: 0.12,
+        REFLECTION_FRESNEL: 0.24,
+        REFLECTION_SHARPNESS: 3.0,
+        REFLECTION_BIAS: 0.01,
+        FLOW_CURVE_RADIUS_X: 0.1,
+        FLOW_CURVE_RADIUS_Y: 0.035,
+        FLOW_CURVE_FREQ_X: 0.14,
+        FLOW_CURVE_FREQ_Y: 0.1,
+        FLOW_SOFT_ABS: 1.42,
+        FLOW_WARP_AMOUNT_X: 0.026,
+        FLOW_WARP_AMOUNT_Y: 0.018,
+        FLOW_WARP_FREQ_X: 0.18,
+        FLOW_WARP_FREQ_Y: 0.14,
+        FLOW_ROTATION_MIX: 0.08
+    };
+
+    // -------------------- Renderer --------------------
+
+    const renderer = new THREE.WebGLRenderer({
+        antialias: false,
+        alpha: false,
+        powerPreference: "high-performance"
+    });
+
+    renderer.setPixelRatio(params.dpr);
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0x000000, 1);
+    document.body.appendChild(renderer.domElement);
+
+    // -------------------- Fullscreen scene --------------------
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.Camera();
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute([
+            -1, -1, 0,
+             3, -1, 0,
+            -1,  3, 0
+        ], 3)
+    );
+
+    const uniforms = {
+        uResolution: { value: new THREE.Vector2(1, 1) },
+        uTime: { value: 0 },
+        CAMERA_SPEED: { value: params.CAMERA_SPEED },
+        CAMERA_FOV: { value: params.CAMERA_FOV },
+        CORRIDOR_HALF_WIDTH: { value: params.CORRIDOR_HALF_WIDTH },
+        CORRIDOR_HALF_HEIGHT: { value: params.CORRIDOR_HALF_HEIGHT },
+        WALL_PATTERN_SCALE: { value: params.WALL_PATTERN_SCALE },
+        DEPTH_PATTERN_SCALE: { value: params.DEPTH_PATTERN_SCALE },
+        FRACTAL_TIME_SPEED: { value: params.FRACTAL_TIME_SPEED },
+        MAX_DISTANCE: { value: params.MAX_DISTANCE },
+        DISTANCE_FADE: { value: params.DISTANCE_FADE },
+        REFLECTION_BASE: { value: params.REFLECTION_BASE },
+        REFLECTION_FRESNEL: { value: params.REFLECTION_FRESNEL },
+        REFLECTION_SHARPNESS: { value: params.REFLECTION_SHARPNESS },
+        REFLECTION_BIAS: { value: params.REFLECTION_BIAS },
+        FLOW_CURVE_RADIUS_X: { value: params.FLOW_CURVE_RADIUS_X },
+        FLOW_CURVE_RADIUS_Y: { value: params.FLOW_CURVE_RADIUS_Y },
+        FLOW_CURVE_FREQ_X: { value: params.FLOW_CURVE_FREQ_X },
+        FLOW_CURVE_FREQ_Y: { value: params.FLOW_CURVE_FREQ_Y },
+        FLOW_SOFT_ABS: { value: params.FLOW_SOFT_ABS },
+        FLOW_WARP_AMOUNT_X: { value: params.FLOW_WARP_AMOUNT_X },
+        FLOW_WARP_AMOUNT_Y: { value: params.FLOW_WARP_AMOUNT_Y },
+        FLOW_WARP_FREQ_X: { value: params.FLOW_WARP_FREQ_X },
+        FLOW_WARP_FREQ_Y: { value: params.FLOW_WARP_FREQ_Y },
+        FLOW_ROTATION_MIX: { value: params.FLOW_ROTATION_MIX }
+    };
+
+    const material = new THREE.RawShaderMaterial({
+        uniforms,
+        vertexShader: `precision highp float;
+attribute vec3 position;
+
+void main()
+{
+    gl_Position = vec4(position, 1.0);
+}
+`,
+        fragmentShader: `precision highp float;
+
+uniform vec2 uResolution;
+uniform float uTime;
+
+#define iResolution vec3(uResolution, 1.0)
+#define iTime uTime
+
+// ============================================================
+// Iridescent Fractal Corridor With Reflections
+// Optimized reduced-twist version
+// Shadertoy Image shader
+// ============================================================
+
+// -------------------- Main parameters -------------------------
+
+uniform float CAMERA_SPEED;
+uniform float CAMERA_FOV;
+
+uniform float CORRIDOR_HALF_WIDTH;
+uniform float CORRIDOR_HALF_HEIGHT;
+
+uniform float WALL_PATTERN_SCALE;
+uniform float DEPTH_PATTERN_SCALE;
+uniform float FRACTAL_TIME_SPEED;
+
+uniform float MAX_DISTANCE;
+uniform float DISTANCE_FADE;
+
+const int FRACTAL_STEPS           = 70;
+
+// -------------------- Reflection parameters ------------------
+
+uniform float REFLECTION_BASE;
+uniform float REFLECTION_FRESNEL;
+uniform float REFLECTION_SHARPNESS;
+uniform float REFLECTION_BIAS;
+
+// -------------------- Fractal shaping ------------------------
+
+uniform float FLOW_CURVE_RADIUS_X;
+uniform float FLOW_CURVE_RADIUS_Y;
+uniform float FLOW_CURVE_FREQ_X;
+uniform float FLOW_CURVE_FREQ_Y;
+
+uniform float FLOW_SOFT_ABS;
+
+uniform float FLOW_WARP_AMOUNT_X;
+uniform float FLOW_WARP_AMOUNT_Y;
+uniform float FLOW_WARP_FREQ_X;
+uniform float FLOW_WARP_FREQ_Y;
+
+uniform float FLOW_ROTATION_MIX;
+
+// Precomputed originalRotation(2.0 * 0.20)
+const mat2 OCTAVE_ROTATION_0 = mat2(
+     0.92106099, -0.38533819,
+     0.37715533,  0.92106099
+);
+
+// Precomputed originalRotation(4.0 * 0.20)
+const mat2 OCTAVE_ROTATION_1 = mat2(
+     0.69670671, -0.71426565,
+     0.70804286,  0.69670671
+);
+
+// -------------------- Math utilities --------------------------
+
+float saturate(float value)
+{
+    return clamp(value, 0.0, 1.0);
+}
+
+vec3 safeNormalize(vec3 value)
+{
+    return value * inversesqrt(max(dot(value, value), 1e-8));
+}
+
+vec3 safeTanh(vec3 value)
+{
+    vec3 clampedValue = clamp(value, vec3(-20.0), vec3(20.0));
+    vec3 exponentialValue = exp(-2.0 * clampedValue);
+
+    return (vec3(1.0) - exponentialValue) /
+           (vec3(1.0) + exponentialValue);
+}
+
+// -------------------- Corridor geometry ----------------------
+
+bool intersectCorridor(
+    vec3 rayOrigin,
+    vec3 rayDirection,
+    out float hitDistance,
+    out vec3 hitPosition,
+    out float wallIndex,
+    out vec3 wallNormal
+)
+{
+    float distanceX = 1e20;
+    float distanceY = 1e20;
+
+    if (abs(rayDirection.x) > 1e-6)
+    {
+        float wallX = rayDirection.x > 0.0
+            ? CORRIDOR_HALF_WIDTH
+            : -CORRIDOR_HALF_WIDTH;
+
+        distanceX = (wallX - rayOrigin.x) / rayDirection.x;
+    }
+
+    if (abs(rayDirection.y) > 1e-6)
+    {
+        float wallY = rayDirection.y > 0.0
+            ? CORRIDOR_HALF_HEIGHT
+            : -CORRIDOR_HALF_HEIGHT;
+
+        distanceY = (wallY - rayOrigin.y) / rayDirection.y;
+    }
+
+    bool hitSideWall = distanceX < distanceY;
+
+    hitDistance = hitSideWall ? distanceX : distanceY;
+
+    if (hitDistance <= 0.0 || hitDistance > MAX_DISTANCE)
+    {
+        hitPosition = vec3(0.0);
+        wallIndex = -1.0;
+        wallNormal = vec3(0.0);
+
+        return false;
+    }
+
+    hitPosition = rayOrigin + rayDirection * hitDistance;
+
+    if (hitSideWall)
+    {
+        bool hitRightWall = rayDirection.x > 0.0;
+
+        wallIndex = hitRightWall ? 1.0 : 0.0;
+        wallNormal = hitRightWall
+            ? vec3(-1.0, 0.0, 0.0)
+            : vec3( 1.0, 0.0, 0.0);
+    }
+    else
+    {
+        bool hitCeiling = rayDirection.y > 0.0;
+
+        wallIndex = hitCeiling ? 3.0 : 2.0;
+        wallNormal = hitCeiling
+            ? vec3(0.0, -1.0, 0.0)
+            : vec3(0.0,  1.0, 0.0);
+    }
+
+    return true;
+}
+
+// -------------------- Wall coordinate mapping ----------------
+
+vec2 getWallCoordinates(
+    vec3 hitPosition,
+    float wallIndex
+)
+{
+    float transverseCoordinate;
+
+    if (wallIndex < 1.5)
+    {
+        transverseCoordinate =
+            hitPosition.y / CORRIDOR_HALF_HEIGHT;
+
+        if (wallIndex > 0.5)
+        {
+            transverseCoordinate = -transverseCoordinate;
+        }
+    }
+    else
+    {
+        transverseCoordinate =
+            hitPosition.x / CORRIDOR_HALF_WIDTH;
+
+        if (wallIndex > 2.5)
+        {
+            transverseCoordinate = -transverseCoordinate;
+        }
+    }
+
+    float worldDepth = hitPosition.z;
+
+    float depthCoordinate =
+        sin(worldDepth * DEPTH_PATTERN_SCALE) * 0.66 +
+        sin(worldDepth * 0.4847 + 1.7) * 0.22;
+
+    transverseCoordinate +=
+        sin(worldDepth * 0.16) * 0.08;
+
+    return vec2(
+        transverseCoordinate,
+        depthCoordinate
+    ) * WALL_PATTERN_SCALE;
+}
+
+// -------------------- Fractal core ---------------------------
+
+vec3 renderOriginalFractal(
+    vec2 fractalCoordinate,
+    float animatedTime
+)
+{
+    vec3 outputColor = vec3(0.0);
+    vec3 position = vec3(0.0);
+
+    float iterationCount = 0.0;
+    float accumulatedDepth = 0.0;
+    float distanceValue = 1.0;
+
+    float animatedDepth = animatedTime * 2.0;
+
+    for (int step = 0; step < FRACTAL_STEPS; step++)
+    {
+        if (distanceValue <= 1e-4)
+        {
+            break;
+        }
+
+        iterationCount += 1.0;
+
+        float colorPhase =
+            6.0 * length(position.xy) +
+            accumulatedDepth * 2.1;
+
+        outputColor +=
+            (
+                vec3(1.0) +
+                sin(
+                    colorPhase +
+                    vec3(2.0, 1.0, 0.0)
+                )
+            ) * 0.00526315789;
+
+        accumulatedDepth += distanceValue * 0.5;
+
+        position.xy =
+            fractalCoordinate * accumulatedDepth;
+
+        position.z =
+            accumulatedDepth + animatedDepth;
+
+        vec2 flowCenter = vec2(
+            sin(position.z * FLOW_CURVE_FREQ_X) *
+                FLOW_CURVE_RADIUS_X,
+
+            sin(position.z * FLOW_CURVE_FREQ_Y + 1.1) *
+                FLOW_CURVE_RADIUS_Y
+        );
+
+        distanceValue =
+            1.1 - length(position.xy - flowCenter);
+
+        // ----------------------------------------------------
+        // Octave 0
+        // octaveScale = 2.0
+        // alternatingStrength = 1.0
+        // ----------------------------------------------------
+
+        vec3 transformedPosition0 = position * 2.0;
+
+        vec3 rotatedPosition0 = transformedPosition0;
+        rotatedPosition0.xz *= OCTAVE_ROTATION_0;
+
+        transformedPosition0 = mix(
+            transformedPosition0,
+            rotatedPosition0,
+            FLOW_ROTATION_MIX
+        );
+
+        vec3 wavePosition0 =
+            transformedPosition0 - animatedTime;
+
+        wavePosition0.x +=
+            sin(
+                transformedPosition0.z *
+                FLOW_WARP_FREQ_X
+            ) * FLOW_WARP_AMOUNT_X;
+
+        wavePosition0.y +=
+            sin(
+                transformedPosition0.z *
+                FLOW_WARP_FREQ_Y +
+                0.8
+            ) * FLOW_WARP_AMOUNT_Y;
+
+        float wave0 =
+            sin(wavePosition0.x) +
+            sin(wavePosition0.y) +
+            sin(wavePosition0.z);
+
+        distanceValue -=
+            sqrt(wave0 * wave0 + FLOW_SOFT_ABS) /
+            6.0;
+
+        // ----------------------------------------------------
+        // Octave 1
+        // octaveScale = 4.0
+        // alternatingStrength = -0.7
+        // ----------------------------------------------------
+
+        vec3 transformedPosition1 = position * 4.0;
+
+        vec3 rotatedPosition1 = transformedPosition1;
+        rotatedPosition1.xz *= OCTAVE_ROTATION_1;
+
+        transformedPosition1 = mix(
+            transformedPosition1,
+            rotatedPosition1,
+            FLOW_ROTATION_MIX
+        );
+
+        vec3 wavePosition1 =
+            transformedPosition1 - animatedTime;
+
+        wavePosition1.x +=
+            sin(
+                transformedPosition1.z *
+                FLOW_WARP_FREQ_X +
+                0.55
+            ) * FLOW_WARP_AMOUNT_X;
+
+        wavePosition1.y +=
+            sin(
+                transformedPosition1.z *
+                FLOW_WARP_FREQ_Y +
+                1.15
+            ) * FLOW_WARP_AMOUNT_Y;
+
+        float wave1 =
+            sin(wavePosition1.x) +
+            sin(wavePosition1.y) +
+            sin(wavePosition1.z);
+
+        distanceValue +=
+            0.7 *
+            sqrt(wave1 * wave1 + FLOW_SOFT_ABS) /
+            12.0;
+    }
+
+    float safeIterationCount =
+        max(iterationCount, 1.0);
+
+    outputColor +=
+        vec3(19.0 / safeIterationCount);
+
+    vec3 safeHyperbolicValue =
+        max(
+            safeTanh(outputColor * outputColor),
+            vec3(1e-5)
+        );
+
+    outputColor =
+        0.32 /
+        safeHyperbolicValue /
+        vec3(3.0, 2.0, 1.0);
+
+    float radialCoordinate =
+        max(
+            dot(fractalCoordinate, fractalCoordinate),
+            1e-5
+        );
+
+    outputColor *=
+        pow(radialCoordinate, 0.14);
+
+    return max(outputColor, vec3(0.0));
+}
+
+// -------------------- Surface shading ------------------------
+
+vec3 sampleWallColor(
+    vec3 hitPosition,
+    float wallIndex,
+    float animatedTime,
+    float travelDistance
+)
+{
+    vec2 wallCoordinates =
+        getWallCoordinates(hitPosition, wallIndex);
+
+    vec3 color =
+        renderOriginalFractal(
+            wallCoordinates,
+            animatedTime
+        );
+
+    return color *
+        exp(-travelDistance * DISTANCE_FADE);
+}
+
+// -------------------- Main -----------------------------------
+
+void mainImage(
+    out vec4 fragColor,
+    in vec2 fragCoord
+)
+{
+    vec2 resolution =
+        max(iResolution.xy, vec2(1.0));
+
+    vec2 screenPosition =
+        (2.0 * fragCoord - resolution) /
+        resolution.y;
+
+    float cameraDepth =
+        iTime * CAMERA_SPEED;
+
+    float animatedTime =
+        iTime * FRACTAL_TIME_SPEED;
+
+    vec3 cameraPosition =
+        vec3(0.0, 0.0, cameraDepth);
+
+    /*
+    The original camera basis is constant:
+
+    forward = ( 0, 0, 1)
+    right   = (-1, 0, 0)
+    up      = ( 0, 1, 0)
+
+    Therefore it can be applied directly.
+    */
+    vec3 rayDirection =
+        safeNormalize(
+            vec3(
+                -screenPosition.x,
+                 screenPosition.y,
+                 CAMERA_FOV
+            )
+        );
+
+    float hitDistance;
+    vec3 hitPosition;
+    float wallIndex;
+    vec3 wallNormal;
+
+    vec3 color = vec3(0.0);
+
+    bool hasHit =
+        intersectCorridor(
+            cameraPosition,
+            rayDirection,
+            hitDistance,
+            hitPosition,
+            wallIndex,
+            wallNormal
+        );
+
+    if (hasHit)
+    {
+        vec3 baseColor =
+            sampleWallColor(
+                hitPosition,
+                wallIndex,
+                animatedTime,
+                hitDistance
+            );
+
+        vec3 reflectedDirection =
+            reflect(rayDirection, wallNormal);
+
+        vec3 reflectedOrigin =
+            hitPosition +
+            reflectedDirection * REFLECTION_BIAS;
+
+        float reflectedHitDistance;
+        vec3 reflectedHitPosition;
+        float reflectedWallIndex;
+        vec3 reflectedWallNormal;
+
+        vec3 reflectionColor = vec3(0.0);
+
+        bool hasReflectionHit =
+            intersectCorridor(
+                reflectedOrigin,
+                reflectedDirection,
+                reflectedHitDistance,
+                reflectedHitPosition,
+                reflectedWallIndex,
+                reflectedWallNormal
+            );
+
+        if (hasReflectionHit)
+        {
+            reflectionColor =
+                sampleWallColor(
+                    reflectedHitPosition,
+                    reflectedWallIndex,
+                    animatedTime,
+                    hitDistance + reflectedHitDistance
+                );
+        }
+
+        float viewTerm =
+            saturate(
+                dot(-rayDirection, wallNormal)
+            );
+
+        float fresnelBase =
+            1.0 - viewTerm;
+
+        float fresnel =
+            pow(fresnelBase, REFLECTION_SHARPNESS);
+
+        float reflectionAmount =
+            REFLECTION_BASE +
+            REFLECTION_FRESNEL * fresnel;
+
+        color =
+            baseColor *
+            (1.0 - reflectionAmount * 0.45) +
+            reflectionColor *
+            reflectionAmount;
+    }
+
+    fragColor = vec4(color, 1.0);
+}
+
+void main()
+{
+    mainImage(gl_FragColor, gl_FragCoord.xy);
+}
+`,
+        depthTest: false,
+        depthWrite: false
+    });
+
+    const fullscreenTriangle = new THREE.Mesh(geometry, material);
+    fullscreenTriangle.frustumCulled = false;
+    scene.add(fullscreenTriangle);
+
+    // -------------------- GUI --------------------
+
+    const gui = new GUI({ title: "Futuristic Neon Ceramic Corridor" });
+
+    function bindUniform(folder, property, min, max, step, label) {
+        folder
+            .add(params, property, min, max, step)
+            .name(label)
+            .onChange((value) => {
+                uniforms[property].value = value;
+            });
+    }
+
+    const cameraFolder = gui.addFolder("Camera");
+    bindUniform(cameraFolder, "CAMERA_FOV", 0.08, 1.2, 0.001, "FOV");
+
+    const animationFolder = gui.addFolder("Animation");
+    animationFolder.add(params, "animationSpeed", 0.0, 2.0, 0.01).name("Global Speed");
+    animationFolder.add(params, "paused").name("Pause");
+    bindUniform(animationFolder, "CAMERA_SPEED", -1.5, 1.5, 0.001, "Camera Speed");
+    bindUniform(animationFolder, "FRACTAL_TIME_SPEED", 0.0, 1.0, 0.001, "Fractal Speed");
+
+    const geometryFolder = gui.addFolder("Geometry");
+    bindUniform(geometryFolder, "CORRIDOR_HALF_WIDTH", 0.5, 10.0, 0.01, "Half Width");
+    bindUniform(geometryFolder, "CORRIDOR_HALF_HEIGHT", 0.15, 4.0, 0.01, "Half Height");
+    bindUniform(geometryFolder, "MAX_DISTANCE", 10.0, 250.0, 1.0, "Max Distance");
+
+    const patternFolder = gui.addFolder("Pattern");
+    bindUniform(patternFolder, "WALL_PATTERN_SCALE", 0.05, 2.0, 0.001, "Wall Scale");
+    bindUniform(patternFolder, "DEPTH_PATTERN_SCALE", 0.05, 5.0, 0.001, "Depth Scale");
+    bindUniform(patternFolder, "DISTANCE_FADE", 0.0, 0.03, 0.0001, "Distance Fade");
+
+    const flowFolder = gui.addFolder("Fractal Flow");
+    bindUniform(flowFolder, "FLOW_CURVE_RADIUS_X", 0.0, 1.0, 0.001, "Curve Radius X");
+    bindUniform(flowFolder, "FLOW_CURVE_RADIUS_Y", 0.0, 1.0, 0.001, "Curve Radius Y");
+    bindUniform(flowFolder, "FLOW_CURVE_FREQ_X", 0.0, 1.0, 0.001, "Curve Frequency X");
+    bindUniform(flowFolder, "FLOW_CURVE_FREQ_Y", 0.0, 1.0, 0.001, "Curve Frequency Y");
+    bindUniform(flowFolder, "FLOW_SOFT_ABS", 0.01, 5.0, 0.01, "Soft Abs");
+    bindUniform(flowFolder, "FLOW_WARP_AMOUNT_X", 0.0, 0.3, 0.001, "Warp Amount X");
+    bindUniform(flowFolder, "FLOW_WARP_AMOUNT_Y", 0.0, 0.3, 0.001, "Warp Amount Y");
+    bindUniform(flowFolder, "FLOW_WARP_FREQ_X", 0.0, 2.0, 0.001, "Warp Frequency X");
+    bindUniform(flowFolder, "FLOW_WARP_FREQ_Y", 0.0, 2.0, 0.001, "Warp Frequency Y");
+    bindUniform(flowFolder, "FLOW_ROTATION_MIX", 0.0, 1.0, 0.001, "Rotation Mix");
+
+    const reflectionFolder = gui.addFolder("Reflections");
+    bindUniform(reflectionFolder, "REFLECTION_BASE", 0.0, 1.0, 0.001, "Base");
+    bindUniform(reflectionFolder, "REFLECTION_FRESNEL", 0.0, 2.0, 0.001, "Fresnel");
+    bindUniform(reflectionFolder, "REFLECTION_SHARPNESS", 0.25, 10.0, 0.01, "Sharpness");
+    bindUniform(reflectionFolder, "REFLECTION_BIAS", 0.0001, 0.1, 0.0001, "Bias");
+
+    const performanceFolder = gui.addFolder("Performance");
+    performanceFolder
+        .add(params, "dpr", { "0.5": 0.5, "0.7": 0.7, "1": 1, "1.5": 1.5, "2": 2 })
+        .name("DPR")
+        .onChange(resize);
+
+    gui.close();
+
+    // -------------------- Resize --------------------
+
+    function resize() {
+        const width = Math.max(1, window.innerWidth);
+        const height = Math.max(1, window.innerHeight);
+
+        renderer.setPixelRatio(params.dpr);
+        renderer.setSize(width, height, false);
+
+        const drawingBufferSize = renderer.getDrawingBufferSize(
+            uniforms.uResolution.value
+        );
+
+        uniforms.uResolution.value.copy(drawingBufferSize);
+    }
+
+    window.addEventListener("resize", resize, { passive: true });
+    resize();
+
+    // -------------------- Animation --------------------
+
+    const clock = new THREE.Clock();
+    let elapsedTime = 0;
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        const deltaTime = Math.min(clock.getDelta(), 0.1);
+
+        if (!params.paused) {
+            elapsedTime += deltaTime * params.animationSpeed;
+        }
+
+        uniforms.uTime.value = elapsedTime;
+        renderer.render(scene, camera);
+    }
+
+    animate();
+
+    // -------------------- Cleanup --------------------
+
+    window.addEventListener("beforeunload", () => {
+        geometry.dispose();
+        material.dispose();
+        renderer.dispose();
+        gui.destroy();
+    });
+</script>
+</body>
+</html>

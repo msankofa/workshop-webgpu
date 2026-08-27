@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createWorldQueryService } from './world-query.js';
 import { createBaseGameTraversalLab } from './base-game-traversal-lab.js';
-import { createBaseGamePlayerController } from './base-game-player-controller.js';
+import { createBaseGamePlayerController, BASE_GAME_PLAYER_DEFAULT_CONFIG } from './base-game-player-controller.js';
+import { BASE_GAME_STANCES } from './base-game-protocol.mjs';
 import { createBaseGameWaterSim } from './base-game-water-sim.js';
 import { createBaseGamePlayerView } from './base-game-player-view.js';
+import { createHeightfieldWorldQueryProvider } from './world-query-heightfield-provider.js';
 import { readFileSync } from 'node:fs';
 
 let pass = 0, fail = 0;
@@ -33,8 +35,11 @@ ok(controller.grounded && near(controller.getPosition()[1], 0), 'player settles 
 ok(controller.surface?.providerId === 'traversal-lab-static', 'grounded controller exposes a terrain-agnostic surface identity hook');
 
 const startZ = controller.getPosition()[2];
-simulate(controller, 0.75, { moveX: 0, moveZ: 1, yaw: 0, sprint: false });
-ok(controller.getPosition()[2] < startZ - 2, 'camera-relative forward input advances the global 3D capsule');
+// Expressed against the configured walk speed, not a magic distance: retuning the walk must not
+// silently turn this into a test of nothing.
+const walkSeconds = 0.75, walkSpeed = BASE_GAME_PLAYER_DEFAULT_CONFIG.moveSpeed;
+simulate(controller, walkSeconds, { moveX: 0, moveZ: 1, yaw: 0, sprint: false });
+ok(controller.getPosition()[2] < startZ - walkSpeed * walkSeconds * 0.5, 'camera-relative forward input advances the global 3D capsule');
 
 controller.setInput({ moveX: 0, moveZ: 0, yaw: 0, sprint: false });
 controller.queueJump();
@@ -67,7 +72,8 @@ ok(controller.getPosition()[0] < 31.7, 'distance microsteps stop a sprinting cap
 
 controller.reset([8, 0.02, 17]);
 let standardStepTop = 0;
-simulate(controller, 0.8, { moveX: 0, moveZ: -1, yaw: 0, sprint: false }, current => {
+// Long enough to reach the tread at the configured walk speed, whatever that is tuned to.
+simulate(controller, Math.max(0.8, 4 / BASE_GAME_PLAYER_DEFAULT_CONFIG.moveSpeed), { moveX: 0, moveZ: -1, yaw: 0, sprint: false }, current => {
   standardStepTop = Math.max(standardStepTop, current.getPosition()[1]);
 });
 ok(standardStepTop > 0.52, 'step-up climbs the Traversal Lab standard-height tread');
@@ -99,6 +105,192 @@ const cameraResult = view.updateCamera(1 / 60, [30.8, 0, 27], {
 ok(cameraResult.obstructed && cameraResult.boomDistance < 2, 'camera-only obstruction query shortens the boom at a wall');
 view.updateCamera(1 / 60, [30.8, 0, 27], { mode: 'firstPerson' });
 ok(!view.capsuleMesh.visible, 'first-person mode hides the diagnostic capsule from the camera');
+
+// --- posture: kneel and prone, and above all NO SNAPS ------------------------------------
+// The capsule height, the move speed and the rig weights are all blended from bot-stance.js's eased
+// weights rather than switched on the stance name, so every transition is a ramp. The test that
+// matters is the per-tick delta: a snap is a single frame doing most of the travel.
+{
+  const poseQuery = createWorldQueryService();
+  const poseLab = createBaseGameTraversalLab({ scene, worldQuery: poseQuery });
+  const pose = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+  const settle = (stance, ticks = 240) => {
+    const heights = [];
+    for (let i = 0; i < ticks; i++) {
+      pose.stepOnce({ moveX: 0, moveZ: 0, yaw: 0, sprint: false, stance }, false);
+      heights.push(pose.getCapsule().end[1] - pose.getCapsule().start[1] + pose.getCapsule().radius * 2);
+    }
+    return heights;
+  };
+  const standing = settle('stand')[239];
+  ok(Math.abs(standing - 1.8) < 1e-6, 'standing is the full configured height');
+
+  const toKneel = settle('kneel');
+  const kneeling = toKneel[toKneel.length - 1];
+  ok(kneeling < standing - 0.3, `kneeling lowers the capsule (${standing.toFixed(2)} -> ${kneeling.toFixed(2)} m)`);
+  const kneelSteps = toKneel.map((h, i) => Math.abs(h - (i ? toKneel[i - 1] : standing)));
+  const kneelTravel = standing - kneeling;
+  ok(Math.max(...kneelSteps) < kneelTravel * 0.1, `going to a knee is a ramp, not a snap (biggest single tick moves ${(Math.max(...kneelSteps) / kneelTravel * 100).toFixed(1)}% of the way)`);
+  ok(kneelSteps.filter(d => d > 1e-5).length > 20, 'and it takes many ticks, not two');
+
+  const toProne = settle('prone');
+  const prone = toProne[toProne.length - 1];
+  ok(prone < kneeling, `prone is lower still (${prone.toFixed(2)} m)`);
+  ok(prone >= 0.7 - 1e-6, 'but never shorter than the capsule is wide, which would stop being a capsule');
+  const proneSteps = toProne.map((h, i) => Math.abs(h - (i ? toProne[i - 1] : kneeling)));
+  ok(Math.max(...proneSteps) < Math.abs(kneeling - prone) * 0.1, 'kneel to prone is a ramp too');
+
+  const backUp = settle('stand');
+  ok(Math.abs(backUp[backUp.length - 1] - standing) < 1e-3, 'standing back up returns to full height');
+  const upSteps = backUp.map((h, i) => Math.abs(h - (i ? backUp[i - 1] : prone)));
+  ok(Math.max(...upSteps) < (standing - prone) * 0.1, 'and getting up is a ramp, not a pop');
+
+  // Speed follows the same eased weights, so it cannot step either.
+  const speedAt = (stance, ticks) => {
+    const c = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+    for (let i = 0; i < 60; i++) c.stepOnce({ moveX: 0, moveZ: 1, yaw: 0, sprint: false }, false);
+    for (let i = 0; i < ticks; i++) c.stepOnce({ moveX: 0, moveZ: 1, yaw: 0, sprint: false, stance }, false);
+    const v = c.getVelocity();
+    return Math.hypot(v[0], v[2]);
+  };
+  const walkSpeed = speedAt('stand', 240);
+  ok(speedAt('kneel', 240) < walkSpeed * 0.6, 'a kneeling player shuffles');
+  ok(speedAt('prone', 240) < walkSpeed * 0.6, 'a prone player crawls');
+  ok(speedAt('kneel', 6) > speedAt('kneel', 240) + 0.05, 'the slowdown ramps in with the pose instead of dropping on the key press');
+
+  // The tick object the page builds IS the wire packet, so its `stance` is an INDEX, not a name.
+  // Shipping a controller that only understood names meant only the SERVER ever changed posture:
+  // solo and client prediction silently stood still. Both forms are accepted, against one list.
+  {
+    const byIndex = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+    const byName = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+    for (let i = 0; i < 240; i++) {
+      byIndex.stepOnce({ moveX: 0, moveZ: 0, yaw: 0, sprint: false, stance: BASE_GAME_STANCES.indexOf('kneel') }, false);
+      byName.stepOnce({ moveX: 0, moveZ: 0, yaw: 0, sprint: false, stance: 'kneel' }, false);
+    }
+    ok(byIndex.stance === 'kneel' && byName.stance === 'kneel', 'the controller takes a stance as the wire index or as a name');
+    ok(Math.abs(byIndex.getCapsule().end[1] - byName.getCapsule().end[1]) < 1e-9, 'and both reach the identical capsule');
+    const prone = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+    for (let i = 0; i < 240; i++) prone.stepOnce({ moveX: 0, moveZ: 0, yaw: 0, sprint: false, stance: BASE_GAME_STANCES.indexOf('prone') }, false);
+    ok(prone.stance === 'prone', 'and prone arrives by index too');
+  }
+
+  // Walking out of a kneel gives you the crouch: a kneel pins both feet (rear knee on the ground,
+  // front foot planted), so there is no gait that can walk it. Crouch is the same lowered pelvis
+  // with the normal gait still running, so it can.
+  {
+    const c = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+    const hold = (stance, moveZ, ticks = 220) => {
+      for (let i = 0; i < ticks; i++) c.stepOnce({ moveX: 0, moveZ, yaw: 0, sprint: false, stance }, false);
+      return c.stanceWeights;
+    };
+    const still = hold('kneel', 0);
+    ok(still.kneel01 > 0.9 && still.crouch01 < 0.1 && c.stance === 'kneel', 'kneeling still is a kneel');
+    const moving = hold('kneel', 1);
+    ok(moving.crouch01 > 0.9 && moving.kneel01 < 0.1, 'walking out of it hands over to the crouch');
+    ok(c.stance === 'crouch' && c.requestedStance === 'kneel', 'the controller reports what the body IS, while remembering what was asked for');
+    const stopped = hold('kneel', 0);
+    ok(stopped.kneel01 > 0.9 && c.stance === 'kneel', 'stopping puts the knee back down');
+    // Both directions are the same eased blend, so the handover cannot pop.
+    const c2 = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+    for (let i = 0; i < 220; i++) c2.stepOnce({ moveX: 0, moveZ: 0, yaw: 0, sprint: false, stance: 'kneel' }, false);
+    let worst = 0, last = c2.getCapsule().end[1];
+    for (let i = 0; i < 220; i++) {
+      c2.stepOnce({ moveX: 0, moveZ: 1, yaw: 0, sprint: false, stance: 'kneel' }, false);
+      const now = c2.getCapsule().end[1];
+      worst = Math.max(worst, Math.abs(now - last));
+      last = now;
+    }
+    ok(worst < 0.02, `the kneel-to-crouch handover is a ramp (worst tick ${(worst * 100).toFixed(2)} cm)`);
+    // Prone is left alone: crawling is its own pose, not a crouch.
+    const c3 = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+    for (let i = 0; i < 220; i++) c3.stepOnce({ moveX: 0, moveZ: 1, yaw: 0, sprint: false, stance: 'prone' }, false);
+    ok(c3.stance === 'prone' && c3.stanceWeights.prone01 > 0.9, 'moving while prone stays prone');
+  }
+
+  // Reconciliation carries the pose: a hard correction must not stand a prone player up.
+  {
+    const a = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+    for (let i = 0; i < 200; i++) a.stepOnce({ moveX: 0, moveZ: 0, yaw: 0, sprint: false, stance: 'prone' }, false);
+    const b = createBaseGamePlayerController({ worldQuery: poseQuery, spawn: poseLab.layout.spawn });
+    b.applyState(a.captureState());
+    ok(Math.abs(b.getCapsule().end[1] - a.getCapsule().end[1]) < 1e-9, 'captureState carries the pose, so a correction lands the same capsule');
+  }
+  poseLab.dispose();
+}
+
+// --- climbing keeps its feet on the ground -------------------------------------------------
+// Walking up a slope legitimately rises: 5.5 m/s at 15 deg is +1.47 m/s of vertical velocity. That
+// used to read as "jumping" and cancelled the snap-to-ground, so the heightfield's exact seating
+// left the capsule a hair off the surface every dozen steps and `grounded` flickered false. The gait,
+// the footstep audio and the first-person camera height all read that flag, so a climb strobed.
+function rampWorld(degrees, flattenAtX = Infinity) {
+  const k = Math.tan(degrees * Math.PI / 180), n = Math.hypot(k, 1);
+  const source = {
+    heightAt: (x) => (x <= 0 ? 0 : x < flattenAtX ? x * k : flattenAtX * k),
+    normalAt: (x, z, out = [0, 1, 0]) => {
+      const onRamp = x > 0 && x < flattenAtX;
+      out[0] = onRamp ? -k / n : 0; out[1] = onRamp ? 1 / n : 1; out[2] = 0;
+      return out;
+    },
+  };
+  const service = createWorldQueryService();
+  service.registerProvider(createHeightfieldWorldQueryProvider(source));
+  return service;
+}
+const climbInput = (sprint) => ({ moveX: 0, moveZ: 1, yaw: -Math.PI / 2, sprint });   // forward is +X at this yaw
+function climb(degrees, { sprint = false, steps = 400, from = 250, flattenAtX = Infinity, jumpAt = -1 } = {}) {
+  const controller = createBaseGamePlayerController({ worldQuery: rampWorld(degrees, flattenAtX), spawn: [-2, 0, 0] });
+  let ungrounded = 0, sampled = 0, airPastCrest = 0;
+  for (let step = 0; step < steps; step++) {
+    controller.stepOnce(climbInput(sprint), step === jumpAt);
+    if (step < from) continue;
+    sampled++;
+    if (!controller.grounded) {
+      ungrounded++;
+      if (controller.getPosition()[0] > flattenAtX - 0.5) airPastCrest++;
+    }
+  }
+  return { ungrounded, sampled, airPastCrest, controller };
+}
+for (const degrees of [0, 5, 15, 30, 45, 49]) {
+  ok(climb(degrees).ungrounded === 0, `walking up a ${degrees} deg slope never loses the ground`);
+  ok(climb(degrees, { sprint: true }).ungrounded === 0, `sprinting up a ${degrees} deg slope never loses the ground`);
+}
+{
+  // The threshold has to keep the cases it was guarding. A jump still leaves the ground...
+  const jumped = climb(15, { steps: 380, from: 260, jumpAt: 260 });
+  ok(jumped.ungrounded > 20, 'a jump taken while climbing still puts the player in the air');
+  // ...and running off the top of a ramp still launches, instead of gluing you to the flat.
+  const crest = climb(25, { sprint: true, steps: 400, from: 0, flattenAtX: 5 });
+  ok(crest.airPastCrest > 10, 'running off the crest of a ramp still throws the player into the air');
+}
+{
+  // Server-authoritative: the threshold reads this step's velocity and the probe's own hit normal,
+  // never remembered surface state (which captureState does not carry), so a replay cannot diverge.
+  const run = () => {
+    const controller = createBaseGamePlayerController({ worldQuery: rampWorld(22), spawn: [-2, 0, 0] });
+    for (let step = 0; step < 300; step++) controller.stepOnce(climbInput(step % 3 === 0), step === 150);
+    return JSON.stringify(controller.captureState());
+  };
+  ok(run() === run(), 'a climb replays identically, so prediction and the relay cannot drift apart');
+}
+
+// Framing offsets move the eye in first person too -- which is exactly why the page keeps a
+// separate set per mode instead of feeding one set to both (a shoulder camera would otherwise put
+// the first-person eye out the side of the head).
+{
+  const settle = (opts) => { for (let i = 0; i < 200; i++) view.updateCamera(1 / 60, [0, 0, 0], opts); return camera.position.clone(); };
+  const base = settle({ mode: 'firstPerson' });
+  const sideways = settle({ mode: 'firstPerson', sideOffset: 0.6 });
+  ok(Math.abs(sideways.x - base.x) > 0.3 || Math.abs(sideways.z - base.z) > 0.3, 'a side offset moves the first-person eye sideways');
+  settle({ mode: 'firstPerson' });
+  const raised = settle({ mode: 'firstPerson', heightOffset: 0.5 });
+  ok(Math.abs(raised.y - base.y - 0.5) < 1e-3, 'a height offset raises the first-person eye by exactly that much');
+  settle({ mode: 'firstPerson' });
+  const anchored = settle({ mode: 'firstPerson', eyeAnchorY: 1.96, heightOffset: 0.25 });
+  ok(Math.abs(anchored.y - (1.96 + 0.25)) < 1e-6, 'with a rig eye height the offset is applied once, on top of it');
+}
 
 
 // --- swimming (W8): the capsule floats on the shared water sim, on the tick clock ---
@@ -177,11 +369,21 @@ const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
 for (const marker of [
   'createBaseGamePlayerController',
   "playerControlMode: 'player'",
-  "playerViewMode: 'thirdPerson'",
+  "playerViewMode: 'firstPerson'",
   'worldCoordinates.maybeRebase(playerController.getPosition(playerPositionScratch))',
   'playerController.captureState()',
   'playerController.applyState(data.player)',
   'playerView.updateCamera',
+  // Posture: the keys, and the stance actually reaching the local controller (not just the wire).
+  "event.code === 'KeyC'",
+  "event.code === 'KeyZ'",
+  'stance: stanceIndex(playerStance)',
+  'stanceWeights: playerController.stanceWeights,',
+  // Per-mode framing: the sliders edit one set, the frame feeds the set the live mode owns.
+  "cameraOffsetTarget: 'thirdPerson'",
+  'fpCameraSideOffset',
+  'addCameraOffsetRange(',
+  'firstPerson ? settings.fpCameraSideOffset : settings.cameraSideOffset,',
   'createBaseGameWaterSim',
   'waterSurfaceAt: (x, z, t) => waterSim.heightAt(x, z, t)',
 ]) ok(html.includes(marker), `base-game.html integrates ${marker}`);

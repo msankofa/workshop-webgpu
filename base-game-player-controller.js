@@ -1,13 +1,30 @@
 // Renderer-independent fixed-step kinematic capsule controller for Base Game.
 // Positions are global [x, y, z] coordinates where y is the capsule's foot plane.
+//
+// Posture (stand / crouch / kneel / prone) is bot-stance.js's, unchanged: it already owns the speed,
+// spread, height and turn-rate curves and the eased pose weights, and it is pure, so it runs here on
+// the relay as happily as in the browser.
+import { STANCE_DEFAULTS, stepStanceWeights, blendStanceHeightScale, stanceSpeedFactor } from './bot-stance.js';
+// The wire form of a stance is an index, and the tick object the page builds IS the packet, so it
+// carries the index rather than the name. Accept either here, against the one list that defines the
+// order, instead of asking every caller to remember which form it holds.
+import { BASE_GAME_STANCES } from './base-game-protocol.mjs';
 
 const EPSILON = 1e-8;
+
+// bot-stance.js leaves kneel and prone opt-in so the viewers that predate them keep their behaviour.
+// The base game wires both, so both are on here.
+export const BASE_GAME_STANCE_SETTINGS = Object.freeze({ ...STANCE_DEFAULTS, kneelEnabled: true, proneEnabled: true });
 
 const DEFAULT_CONFIG = Object.freeze({
   radius: 0.35,
   height: 1.8,
-  moveSpeed: 5.5,
-  sprintMultiplier: 1.75,
+  // Tuned in the browser 2026-08-26 (base-game-states/base-game-state-20260826184842.json). These
+  // live HERE, not in the page: the relay builds its controllers from this block and only overrides
+  // fixedHz, so a page-side default that differed would mean the client predicted one speed while
+  // the server simulated another, and every step would be corrected.
+  moveSpeed: 2.75,
+  sprintMultiplier: 2.25,
   groundAcceleration: 38,
   airAcceleration: 10,
   groundDeceleration: 30,
@@ -53,6 +70,13 @@ function capsuleAt(position, config) {
     end: [position[0], position[1] + config.height - config.radius, position[2]],
     radius: config.radius,
   };
+}
+
+// A capsule cannot be shorter than it is wide -- below 2r it stops being a capsule. Prone's authored
+// 0.35 scale is under that on a 1.8 m body, so the pose bottoms out at the diameter. A vertical
+// capsule cannot express "lying down is LONGER than it is tall" at all; this is the honest floor.
+function stanceCapsuleHeight(config, scale) {
+  return Math.max(config.radius * 2 + 1e-3, config.height * scale);
 }
 
 function cloneCapsule(capsule) {
@@ -102,7 +126,58 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
   const position = vec3(spawn, 'spawn');
   const previousPosition = [...position];
   const velocity = [0, 0, 0];
-  const input = { moveX: 0, moveZ: 0, yaw: 0, sprint: false, crouch: false };
+  const input = { moveX: 0, moveZ: 0, yaw: 0, sprint: false, crouch: false, stance: 'stand' };
+  // Posture. bot-stance.js owns every number and the easing; this only steps it on the FIXED clock,
+  // so the server and the client's prediction land on the same height and speed for the same tick.
+  // Nothing here ever snaps: the weights ease, and the capsule height and move speed are blended
+  // FROM the weights rather than switched on the stance name.
+  const stanceWeights = { crouch01: 0, kneel01: 0, prone01: 0 };
+  let standBlocked = false;   // no headroom to grow back into; reported so the page can say so
+  let effective = 'stand';    // the posture you ARE, which is not always the one you asked for
+  const poseCfg = { radius: 0, height: 0 };   // the capsule as it is RIGHT NOW, rebuilt each step
+  const pinned = { crouch01: 0, kneel01: 0, prone01: 0 };   // last pose that had headroom
+  // Everything the pose scales is blended FROM the eased weights, never switched on the stance name,
+  // which is the whole difference between a smooth crouch and a snap.
+  function poseHeightScale() {
+    return blendStanceHeightScale(
+      BASE_GAME_STANCE_SETTINGS.crouchHeightScale, BASE_GAME_STANCE_SETTINGS.proneHeightScale,
+      stanceWeights.crouch01, stanceWeights.prone01,
+      BASE_GAME_STANCE_SETTINGS.kneelHeightScale, stanceWeights.kneel01);
+  }
+  function poseSpeedScale() {
+    const p = stanceWeights.prone01, k = stanceWeights.kneel01 * (1 - p);
+    const c = stanceWeights.crouch01 * (1 - p) * (1 - k);
+    return 1 + (stanceSpeedFactor('prone', BASE_GAME_STANCE_SETTINGS) - 1) * p
+      + (stanceSpeedFactor('kneel', BASE_GAME_STANCE_SETTINGS) - 1) * k
+      + (stanceSpeedFactor('crouch', BASE_GAME_STANCE_SETTINGS) - 1) * c;
+  }
+  // A kneel is a ONE-KNEE firing position: the rear knee is on the ground and both feet are pinned,
+  // so there is no gait to walk it with. Asking to move out of a kneel gives you the crouch instead,
+  // which is just a lowered pelvis with the normal gait still running -- and going back to a knee
+  // when you stop is free, because both are the same eased blend. Keyed off the movement INTENT
+  // rather than measured speed: stance changes speed, so reading speed back would be a feedback loop.
+  function effectiveStance(stance, intent) {
+    if (stance === 'kneel' && intent > EPSILON) return 'crouch';
+    return stance;
+  }
+
+  function livePose() {
+    poseCfg.radius = cfg.radius;
+    poseCfg.height = stanceCapsuleHeight(cfg, poseHeightScale());
+    return poseCfg;
+  }
+  // Growing back up has to fit. The taller capsule is resolved in place; if anything pushes it, the
+  // ceiling is too low and the pose holds where it is instead of clipping through it.
+  function headroomFor(height) {
+    if (height <= poseCfg.height + 1e-6) return true;
+    const taller = capsuleAt(position, { radius: cfg.radius, height });
+    const probe = worldQuery.resolveCapsule({
+      capsule: taller, velocity: [0, 0, 0],
+      slopeLimitCos: Math.cos(cfg.slopeLimitDegrees * Math.PI / 180),
+      iterations: cfg.collisionIterations,
+    });
+    return Math.abs(probe.capsule.start[1] - taller.start[1]) < 1e-4 && !probe.ceiling;
+  }
   let grounded = false;
   let ceiling = false;
   let accumulator = 0;
@@ -126,7 +201,7 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     if (!Number.isFinite(y)) return;
     waterLevel = y;
     waterDepth = y - position[1];
-    submersion = y - (position[1] + cfg.height * cfg.floatHeightFraction);
+    submersion = y - (position[1] + poseCfg.height * cfg.floatHeightFraction);
   }
 
   function surfaceIdentity(hit) {
@@ -156,8 +231,22 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     });
   }
 
+  // Fastest a body can be rising while still merely WALKING UP the slope it is standing on: the
+  // vertical component of its own horizontal speed carried along that plane. Climbing a 15 deg ramp
+  // at 5.5 m/s is +1.47 m/s, which is not a jump, and treating it as one is what used to drop the
+  // ground out from under anyone going uphill. The threshold comes from the probe's OWN hit normal
+  // and this step's velocity -- never from remembered surface state, which is not carried in
+  // captureState and would therefore diverge on reconciliation replay.
+  function climbRiseLimit(velocityXZ, normal) {
+    const ny = normal ? normal[1] : 1;
+    if (!(ny > EPSILON)) return 0;
+    return velocityXZ * Math.sqrt(Math.max(0, 1 - ny * ny)) / ny;
+  }
+  const CLIMB_RISE_SLACK = 1.05;      // relative: resolve and probe normals differ on curved ground
+  const CLIMB_RISE_FLOOR = 0.05;      // absolute (m/s): floating-point noise on a flat surface
+
   function trySnapDown(capsule, wasGrounded, candidateVelocity, alreadyGrounded) {
-    if (swimming || (!wasGrounded && !alreadyGrounded) || candidateVelocity[1] > EPSILON || cfg.snapDistance <= 0) {
+    if (swimming || (!wasGrounded && !alreadyGrounded) || cfg.snapDistance <= 0) {
       return { capsule, grounded: alreadyGrounded, surface: null };
     }
     const foot = capsuleFoot(capsule);
@@ -168,6 +257,12 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       slopeLimitCos: Math.cos(cfg.slopeLimitDegrees * Math.PI / 180),
     });
     if (!hit) return { capsule, grounded: alreadyGrounded, surface: null };
+    // Rising faster than the slope under the foot can explain: a jump, a launch off a crest, a
+    // lift. Leave it alone -- snapping here would glue people to ramps and ski-jump lips.
+    const rising = climbRiseLimit(Math.hypot(candidateVelocity[0], candidateVelocity[2]), hit.normal);
+    if (candidateVelocity[1] > rising * CLIMB_RISE_SLACK + CLIMB_RISE_FLOOR) {
+      return { capsule, grounded: alreadyGrounded, surface: null };
+    }
     const drop = foot[1] - hit.point[1];
     if (drop < -skin || drop > cfg.snapDistance + EPSILON) return { capsule, grounded: alreadyGrounded, surface: null };
     translateCapsule(capsule, [0, -drop, 0]);
@@ -214,7 +309,7 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     const distance = Math.hypot(displacement[0], displacement[1], displacement[2]);
     const microsteps = Math.max(1, Math.ceil(distance / cfg.maxMicrostepDistance));
     const delta = displacement.map(component => component / microsteps);
-    let capsule = capsuleAt(position, cfg);
+    let capsule = capsuleAt(position, livePose());
     let anyGrounded = false;
     let anyCeiling = false;
     const allContacts = [];
@@ -259,12 +354,29 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     const sy = Math.sin(input.yaw), cy = Math.cos(input.yaw);
     const worldX = localX * cy - localZ * sy;
     const worldZ = -localX * sy - localZ * cy;
+    // Posture eases on the FIXED clock, so the server and the client's prediction agree tick for
+    // tick. Standing up is refused while something is over your head -- the pose simply holds.
+    {
+      const wanted = swimming ? 'stand' : effectiveStance(input.stance, inputLength);
+      effective = wanted;
+      const before = poseHeightScale();
+      stepStanceWeights(stanceWeights, wanted, dt, BASE_GAME_STANCE_SETTINGS);
+      const after = poseHeightScale();
+      if (after > before && !headroomFor(stanceCapsuleHeight(cfg, after))) {
+        stanceWeights.crouch01 = pinned.crouch01; stanceWeights.kneel01 = pinned.kneel01; stanceWeights.prone01 = pinned.prone01;
+        standBlocked = true;
+      } else {
+        pinned.crouch01 = stanceWeights.crouch01; pinned.kneel01 = stanceWeights.kneel01; pinned.prone01 = stanceWeights.prone01;
+        standBlocked = false;
+      }
+      livePose();
+    }
     sampleWater();
     swimming = submersion > 0;
     // Wading slows you down before it floats you: the drag ramps with how deep the body is.
-    const wade = waterLevel === null ? 0 : Math.max(0, Math.min(1, waterDepth / cfg.height));
+    const wade = waterLevel === null ? 0 : Math.max(0, Math.min(1, waterDepth / Math.max(EPSILON, poseCfg.height)));
     const waterSlow = 1 + (cfg.swimSpeedMultiplier - 1) * wade;
-    const speed = cfg.moveSpeed * (input.sprint ? cfg.sprintMultiplier : 1) * waterSlow;
+    const speed = cfg.moveSpeed * (input.sprint ? cfg.sprintMultiplier : 1) * waterSlow * poseSpeedScale();
     const acceleration = swimming ? cfg.swimAcceleration : (grounded ? cfg.groundAcceleration : cfg.airAcceleration);
 
     if (inputLength > EPSILON) {
@@ -349,6 +461,11 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       input.yaw = Number.isFinite(next.yaw) ? next.yaw : input.yaw;
       input.sprint = !!next.sprint;
       input.crouch = !!next.crouch;
+      if (next.stance !== undefined) {
+        input.stance = typeof next.stance === 'number'
+          ? (BASE_GAME_STANCES[next.stance] ?? 'stand')
+          : (next.stance || 'stand');
+      }
     },
     queueJump() { jumpQueued = true; },
     // One fixed step from an explicit input, bypassing the frame accumulator. Client prediction
@@ -372,12 +489,19 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     getVelocity(out = [0, 0, 0]) {
       out[0] = velocity[0]; out[1] = velocity[1]; out[2] = velocity[2]; return out;
     },
-    getCapsule() { return capsuleAt(position, cfg); },
+    getCapsule() { return capsuleAt(position, livePose()); },
     get grounded() { return grounded; },
     get ceiling() { return ceiling; },
     get tick() { return clockTick; },
     get waterTime() { return clockTick / cfg.fixedHz; },
     get swimming() { return swimming; },
+    // What the body IS doing, not what was asked for: a kneel walked out of is a crouch, and the
+    // rig's locomotion, the weapon hold and every remote have to agree with the weights.
+    get stance() { return effective; },
+    get requestedStance() { return input.stance; },
+    get stanceWeights() { return { ...stanceWeights }; },
+    get standBlocked() { return standBlocked; },
+    get poseHeight() { return poseCfg.height; },
     get inWater() { return waterLevel !== null && waterDepth > 0; },
     get submersion() { return submersion; },
     get waterSurface() { return waterLevel; },
@@ -388,7 +512,10 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       return { simulatedSteps, droppedCatchUpSeconds, accumulator, grounded, ceiling, contactCount: contacts.length, tick: clockTick, swimming, submersion };
     },
     captureState() {
-      return { position: [...position], previousPosition: [...previousPosition], velocity: [...velocity], grounded, tick: clockTick };
+      // The pose weights are simulation state, not decoration: they set the capsule height and the
+      // move speed. Leaving them out of the snapshot would let a hard correction land a standing
+      // capsule on a client that is still prone.
+      return { position: [...position], previousPosition: [...previousPosition], velocity: [...velocity], grounded, tick: clockTick, stance: { ...stanceWeights } };
     },
     applyState(state) {
       if (!state || typeof state !== 'object') return false;
@@ -398,6 +525,13 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       previousPosition.splice(0, 3, ...(state.previousPosition ? vec3(state.previousPosition, 'player state.previousPosition') : nextPosition));
       velocity.splice(0, 3, ...nextVelocity);
       grounded = state.grounded === true;
+      const w = state.stance;
+      stanceWeights.crouch01 = Number.isFinite(w?.crouch01) ? w.crouch01 : 0;
+      stanceWeights.kneel01 = Number.isFinite(w?.kneel01) ? w.kneel01 : 0;
+      stanceWeights.prone01 = Number.isFinite(w?.prone01) ? w.prone01 : 0;
+      pinned.crouch01 = stanceWeights.crouch01; pinned.kneel01 = stanceWeights.kneel01; pinned.prone01 = stanceWeights.prone01;
+      standBlocked = false;
+      livePose();
       if (Number.isSafeInteger(state.tick)) clockTick = state.tick;
       swimming = false;
       ceiling = false;

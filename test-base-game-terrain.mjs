@@ -28,7 +28,7 @@ console.log('\n[1] construction and mode switch');
   ok(terrain.provider.enabled === true && terrain.system.group.visible === true, 'active: collision + visuals on');
   settle([0, 0, 0]);
   ok(terrain.system.chunks.size === 25, `resident ${terrain.system.chunks.size}/25 chunks at radius 2`);
-  ok(terrain.stats.source.key === 'base-game-analytic' && terrain.stats.source.version === '1' && terrain.stats.draws === 1 && terrain.stats.batches.chunks === 25 && terrain.stats.triangles > 0, `stats identify the source and count draws/triangles (25 chunks in ${terrain.stats.draws} batched draw)`);
+  ok(terrain.stats.source.key === 'base-game-analytic' && terrain.stats.source.version === '1' && terrain.stats.draws === 25 && terrain.stats.batches.batches === 1 && terrain.stats.batches.chunks === 25 && terrain.stats.triangles > 0, `stats identify the source and count GPU draws (${terrain.stats.draws} draws from ${terrain.stats.batches.batches} batch object)`);
 }
 
 console.log('\n[2] the player walks, jumps and crosses chunk boundaries on terrain');
@@ -136,6 +136,109 @@ console.log('\n[6] source swap and removal without rebuilding the player');
   ok(stats.active === false && stats.source.key === 'base-game-analytic' && 'queuedTiles' in stats && 'inFlightTiles' in stats && 'lastUpdateMs' in stats, 'performance record fields present');
   terrain.dispose();
   ok(!scene.children.includes(terrain.root) && !worldQuery.providerIds().includes('terrain'), 'dispose removes root and provider');
+}
+
+console.log('');
+console.log('[7] the per-frame cost split (instrumentation pass)');
+{
+  // terrain.update's single profiler slot hid three unrelated costs. These are what the capture
+  // now reports separately, so they have to exist, move, and reset.
+  const t = createBaseGameTerrain({
+    scene: new THREE.Scene(), worldQuery: createWorldQueryService(),
+    worldCoordinates: createWorldCoordinateSpace(), source: descA, useWorker: false,
+  });
+  t.setActive(true);
+  let foldFrames = 0, maxFold = 0, shapeOk = true;
+  for (let i = 0; i < 200; i++) {
+    t.update([i * 0.5, 0, 0], 1 / 60);
+    const c = t.frameCost;
+    for (const k of ['installMs', 'foldMs', 'fieldMs', 'installCount']) {
+      if (typeof c[k] !== 'number' || !Number.isFinite(c[k])) shapeOk = false;
+    }
+    if (c.foldMs > 0) { foldFrames++; maxFold = Math.max(maxFold, c.foldMs); }
+  }
+  ok(shapeOk, 'frameCost reports four finite numbers every frame');
+  ok(foldFrames > 0, `the changed-frame fold-in is measured (${foldFrames} frames, max ${maxFold.toFixed(2)} ms)`);
+  const st = t.stats;
+  ok(['lastFoldMs', 'lastFieldMs', 'lastInstallMs', 'lastInstallCount'].every(k => k in st), 'the split reaches the performance record');
+  ok(typeof t.system.takeInstallCost === 'function', 'the out-of-frame install timer is drainable');
+  const drained = t.system.takeInstallCost();
+  ok(drained.ms === 0 && drained.count === 0, 'draining twice yields zero, so no frame double-counts it');
+  t.dispose();
+}
+
+console.log('');
+console.log('[8] the fold-in budget');
+{
+  // The fold (colorize + batch copy + collider rebuild) was 86% of the terrain pass spike because
+  // four workers deliver at once and nothing capped the work. Budgeting is only correct if the
+  // deferred chunks still arrive and still render meanwhile.
+  const q = createWorldQueryService();
+  const t = createBaseGameTerrain({
+    scene: new THREE.Scene(), worldQuery: q, worldCoordinates: createWorldCoordinateSpace(),
+    source: descA, useWorker: false, params: { maxFoldsPerUpdate: 1 },
+  });
+  t.setActive(true);
+  // Walk far enough to force a steady stream of arrivals, then let it settle in place.
+  // Timing is too noisy headless to prove anything, but the count is exact: how many chunks were
+  // copied into a batch in the worst single update.
+  let everPending = false, peakFolds = 0, prevAdds = t.stats.batches.adds;
+  for (let i = 0; i < 300; i++) {
+    t.update([i * 2, 0, i * 2], 1 / 60);
+    const adds = t.stats.batches.adds;
+    peakFolds = Math.max(peakFolds, adds - prevAdds);
+    prevAdds = adds;
+    if (t.stats.foldPending) everPending = true;
+  }
+  ok(everPending, 'a burst of arrivals defers work rather than folding it all at once');
+  ok(peakFolds <= 1, `never more than the budget folded in one update (peak ${peakFolds}, budget 1)`);
+  for (let i = 0; i < 400; i++) t.update([598, 0, 598], 1 / 60);
+  const st = t.stats;
+  ok(st.foldPending === false, 'standing still, the backlog drains to nothing');
+  ok(st.colliderPending === false, 'and so does the collider backlog');
+  const batched = st.batches.chunks;
+  ok(batched === st.residentTiles, `every resident chunk ends up batched (${batched}/${st.residentTiles})`);
+  ok(st.batches.fallbacks === 0, 'no chunk was dropped on the floor by the budget');
+
+  // The unbudgeted default must still behave, and a bigger budget must not batch fewer chunks.
+  const t2 = createBaseGameTerrain({
+    scene: new THREE.Scene(), worldQuery: createWorldQueryService(),
+    worldCoordinates: createWorldCoordinateSpace(), source: descA, useWorker: false,
+    params: { maxFoldsPerUpdate: 0 },
+  });
+  t2.setActive(true);
+  let peakUnbudgeted = 0, prev2 = t2.stats.batches.adds;
+  for (let i = 0; i < 300; i++) {
+    t2.update([i * 2, 0, i * 2], 1 / 60);
+    const adds = t2.stats.batches.adds;
+    peakUnbudgeted = Math.max(peakUnbudgeted, adds - prev2);
+    prev2 = adds;
+  }
+  for (let i = 0; i < 100; i++) t2.update([598, 0, 598], 1 / 60);
+  ok(peakUnbudgeted > 1, `unbudgeted, one update folds many at once (peak ${peakUnbudgeted}) — this is what the budget spreads`);
+
+  // A source swap replaces every chunk under the same keys. If the budget defers one while its
+  // predecessor is still in the batch, both would draw: the old ground over the new.
+  const t3 = createBaseGameTerrain({
+    scene: new THREE.Scene(), worldQuery: createWorldQueryService(),
+    worldCoordinates: createWorldCoordinateSpace(), source: descA, useWorker: false,
+    params: { maxFoldsPerUpdate: 1 },
+  });
+  t3.setActive(true);
+  for (let i = 0; i < 400; i++) t3.update([0, 0, 0], 1 / 60);
+  t3.setSource(descB);
+  let doubleDrawn = 0;
+  for (let i = 0; i < 60; i++) {
+    t3.update([0, 0, 0], 1 / 60);
+    for (const [key, chunk] of t3.system.chunks) {
+      if (chunk.mesh?.visible && t3.batcher.has(key) && t3.batcher.isVisible(key)) doubleDrawn++;
+    }
+  }
+  ok(doubleDrawn === 0, `no chunk draws twice while the swap folds in (${doubleDrawn} double-draws)`);
+  t3.dispose();
+  ok(t2.stats.batches.chunks === t2.stats.residentTiles, 'unlimited budget reaches the same end state');
+  ok(t2.stats.foldPending === false, 'unlimited budget never reports a backlog');
+  t.dispose(); t2.dispose();
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);

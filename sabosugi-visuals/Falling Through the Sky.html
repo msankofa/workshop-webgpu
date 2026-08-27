@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0"
+    />
+    <title>Falling Through the Sky</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #000209;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .lil-gui.root {
+            --width: 290px;
+        }
+    </style>
+</head>
+
+<body>
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js";
+import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm";
+
+const params = {
+    dpr: 0.5,
+
+    cameraSpeed: 1.35,
+    focalLength: 1.35,
+
+    maxDistance: 20.17,
+    tunnelRadius: 1.28,
+    tunnelRoughness: 2.10,
+    volumeDensity: 2.07,
+
+    glowStrength: 1.13,
+    exposure: 3.60,
+
+    pause: false,
+
+    resetTime() {
+        elapsedTime = 0;
+        previousTimestamp = performance.now();
+    }
+};
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.OrthographicCamera(
+    -1,
+    1,
+    1,
+    -1,
+    0,
+    1
+);
+
+const renderer = new THREE.WebGLRenderer({
+    antialias: false,
+    alpha: false,
+    depth: false,
+    stencil: false,
+    powerPreference: "high-performance"
+});
+
+renderer.setPixelRatio(params.dpr);
+renderer.setSize(
+    window.innerWidth,
+    window.innerHeight,
+    false
+);
+
+renderer.setClearColor(0x000000, 1);
+
+document.body.appendChild(renderer.domElement);
+
+const vertexShader = /* glsl */ `
+    precision highp float;
+
+    void main() {
+        gl_Position = vec4(position, 1.0);
+    }
+`;
+
+const fragmentShader = /* glsl */ `
+    precision highp float;
+
+    uniform vec2 uResolution;
+    uniform float uTime;
+
+    uniform float uCameraSpeed;
+    uniform float uFocalLength;
+
+    uniform float uMaxDistance;
+    uniform float uTunnelRadius;
+    uniform float uTunnelRoughness;
+    uniform float uVolumeDensity;
+
+    uniform float uGlowStrength;
+    uniform float uExposure;
+
+    const int VOLUME_STEPS = 106;
+
+    const float INV_LN2 = 1.44269504089;
+
+    // Exact linear colors from the original shader.
+    const vec3 COLOR_BACKGROUND_OUTER = vec3(
+        0.002,
+        0.008,
+        0.035
+    );
+
+    const vec3 COLOR_BACKGROUND_INNER = vec3(
+        0.012,
+        0.075,
+        0.240
+    );
+
+    const vec3 COLOR_DEEP_BLUE = vec3(
+        0.010,
+        0.045,
+        0.170
+    );
+
+    const vec3 COLOR_BLUE = vec3(
+        0.025,
+        0.240,
+        0.780
+    );
+
+    const vec3 COLOR_CYAN = vec3(
+        0.120,
+        0.760,
+        1.300
+    );
+
+    const vec3 COLOR_PALE = vec3(
+        0.650,
+        1.100,
+        1.550
+    );
+
+    const vec3 COLOR_WARM = vec3(
+        1.150,
+        0.420,
+        0.260
+    );
+
+    float saturate(float value) {
+        return clamp(value, 0.0, 1.0);
+    }
+
+    mat2 rotation2(float angle) {
+        float sineValue = sin(angle);
+        float cosineValue = cos(angle);
+
+        return mat2(
+            cosineValue,
+            -sineValue,
+            sineValue,
+            cosineValue
+        );
+    }
+
+    float hash31(vec3 position) {
+        position = fract(position * 0.1031);
+
+        position += dot(
+            position,
+            position.yzx + 33.33
+        );
+
+        return fract(
+            (position.x + position.y) *
+            position.z
+        );
+    }
+
+    float noise3(vec3 position) {
+        vec3 cell = floor(position);
+        vec3 localPosition = fract(position);
+
+        localPosition =
+            localPosition *
+            localPosition *
+            (3.0 - 2.0 * localPosition);
+
+        float value000 = hash31(
+            cell + vec3(0.0, 0.0, 0.0)
+        );
+
+        float value100 = hash31(
+            cell + vec3(1.0, 0.0, 0.0)
+        );
+
+        float value010 = hash31(
+            cell + vec3(0.0, 1.0, 0.0)
+        );
+
+        float value110 = hash31(
+            cell + vec3(1.0, 1.0, 0.0)
+        );
+
+        float value001 = hash31(
+            cell + vec3(0.0, 0.0, 1.0)
+        );
+
+        float value101 = hash31(
+            cell + vec3(1.0, 0.0, 1.0)
+        );
+
+        float value011 = hash31(
+            cell + vec3(0.0, 1.0, 1.0)
+        );
+
+        float value111 = hash31(
+            cell + vec3(1.0, 1.0, 1.0)
+        );
+
+        float valueX00 = mix(
+            value000,
+            value100,
+            localPosition.x
+        );
+
+        float valueX10 = mix(
+            value010,
+            value110,
+            localPosition.x
+        );
+
+        float valueX01 = mix(
+            value001,
+            value101,
+            localPosition.x
+        );
+
+        float valueX11 = mix(
+            value011,
+            value111,
+            localPosition.x
+        );
+
+        float valueXY0 = mix(
+            valueX00,
+            valueX10,
+            localPosition.y
+        );
+
+        float valueXY1 = mix(
+            valueX01,
+            valueX11,
+            localPosition.y
+        );
+
+        return mix(
+            valueXY0,
+            valueXY1,
+            localPosition.z
+        );
+    }
+
+    float layeredNoise(
+        vec3 position,
+        out float detail
+    ) {
+        const mat3 noiseRotation = mat3(
+             0.00,  0.80,  0.60,
+            -0.80,  0.36, -0.48,
+            -0.60, -0.48,  0.64
+        );
+
+        float octave0 = noise3(position);
+
+        position =
+            noiseRotation *
+            position *
+            2.03 +
+            vec3(1.71, -2.13, 0.83);
+
+        float octave1 = noise3(position);
+
+        position =
+            noiseRotation *
+            position *
+            2.01 +
+            vec3(-1.17, 2.41, -0.91);
+
+        float octave2 = noise3(position);
+
+        position =
+            noiseRotation *
+            position *
+            2.04 +
+            vec3(2.03, 0.37, 1.53);
+
+        float octave3 = noise3(position);
+
+        detail = saturate(
+            octave2 * 0.64 +
+            octave3 * 0.36
+        );
+
+        return
+            octave0 * 0.52 +
+            octave1 * 0.27 +
+            octave2 * 0.14 +
+            octave3 * 0.07;
+    }
+
+    vec2 tunnelPath(float depth) {
+        return vec2(
+            0.16 * sin(depth * 0.190) +
+            0.07 * sin(depth * 0.071 + 1.20),
+
+            0.13 * cos(depth * 0.160 + 0.30) +
+            0.06 * sin(depth * 0.093 - 0.80)
+        );
+    }
+
+    float evaluateNebula(
+        vec3 position,
+        vec3 flowOffset,
+        out float macroField,
+        out float detailField,
+        out float warmField
+    ) {
+        vec2 tunnelCenter = tunnelPath(position.z);
+        vec2 localPosition = position.xy - tunnelCenter;
+
+        float radius = length(localPosition);
+
+        float angle = atan(
+            localPosition.y,
+            localPosition.x
+        );
+
+        float tunnelTwist =
+            position.z * 0.180 +
+            0.12 * sin(position.z * 0.070);
+
+        vec2 rotatedPosition =
+            rotation2(tunnelTwist) *
+            localPosition;
+
+        vec3 noisePosition =
+            vec3(
+                rotatedPosition * 0.94,
+                position.z * 0.285
+            ) +
+            flowOffset;
+
+        macroField = layeredNoise(
+            noisePosition,
+            detailField
+        );
+
+        float angularShape =
+            0.110 * sin(
+                angle * 3.0 +
+                position.z * 0.52
+            ) +
+            0.055 * sin(
+                angle * 7.0 -
+                position.z * 0.29
+            ) +
+            0.030 * sin(
+                angle * 13.0 +
+                position.z * 0.17
+            );
+
+        float localTunnelRadius =
+            uTunnelRadius +
+            uTunnelRoughness *
+            (macroField - 0.5) +
+            angularShape;
+
+        float shellDistance = abs(
+            radius -
+            localTunnelRadius
+        );
+
+        float broadShell = exp2(
+            -7.0 *
+            shellDistance *
+            shellDistance
+        );
+
+        float denseShell = exp2(
+            -38.0 *
+            shellDistance *
+            shellDistance
+        );
+
+        float innerShellDistance =
+            radius -
+            (localTunnelRadius - 0.30);
+
+        float innerShell = exp2(
+            -54.0 *
+            innerShellDistance *
+            innerShellDistance
+        );
+
+        float ridgeField =
+            1.0 -
+            abs(detailField * 2.0 - 1.0);
+
+        float cloudMask = smoothstep(
+            0.34,
+            0.73,
+            macroField +
+            ridgeField * 0.15
+        );
+
+        float filamentMask = smoothstep(
+            0.47,
+            0.88,
+            detailField +
+            macroField * 0.16
+        );
+
+        float density =
+            broadShell *
+            (0.09 + cloudMask * 1.05) +
+
+            denseShell *
+            (0.16 + filamentMask * 1.24) +
+
+            innerShell *
+            cloudMask *
+            0.42;
+
+        density *= smoothstep(
+            0.22,
+            0.54,
+            radius
+        );
+
+        warmField = smoothstep(
+            0.74,
+            0.97,
+            detailField +
+            0.17 * sin(
+                angle * 2.0 -
+                position.z * 0.31
+            ) +
+            macroField * 0.10
+        );
+
+        return max(density, 0.0);
+    }
+
+    vec3 getNebulaColor(
+        float macroField,
+        float detailField,
+        float warmField
+    ) {
+        float cloudBrightness = smoothstep(
+            0.24,
+            0.78,
+            macroField
+        );
+
+        float cyanAmount = smoothstep(
+            0.54,
+            0.91,
+            detailField
+        );
+
+        float filamentAmount = pow(
+            smoothstep(
+                0.58,
+                0.96,
+                detailField +
+                macroField * 0.11
+            ),
+            2.2
+        );
+
+        vec3 color = mix(
+            COLOR_DEEP_BLUE,
+            COLOR_BLUE,
+            cloudBrightness
+        );
+
+        color = mix(
+            color,
+            COLOR_CYAN,
+            cyanAmount * 0.72
+        );
+
+        color +=
+            COLOR_PALE *
+            filamentAmount *
+            uGlowStrength;
+
+        color = mix(
+            color,
+            COLOR_WARM,
+            warmField * 0.24
+        );
+
+        return color;
+    }
+
+    vec4 renderVolume(
+        vec3 rayOrigin,
+        vec3 rayDirection,
+        vec2 fragmentCoordinate,
+        float animationTime,
+        float centerIllumination
+    ) {
+        float baseStep =
+            uMaxDistance /
+            float(VOLUME_STEPS);
+
+        float extinction =
+            uVolumeDensity *
+            baseStep *
+            INV_LN2;
+
+        float jitter = hash31(
+            vec3(
+                fragmentCoordinate,
+                17.0
+            )
+        );
+
+        float travel =
+            0.16 +
+            jitter * baseStep;
+
+        float transmittance = 1.0;
+
+        vec3 accumulatedColor = vec3(0.0);
+
+        vec3 flowOffset = vec3(
+            0.07 * sin(animationTime * 0.11),
+            0.06 * cos(animationTime * 0.09),
+            animationTime * 0.035
+        );
+
+        float farFadeStart =
+            uMaxDistance * 0.82;
+
+        const float MIN_TRANSMITTANCE = 0.025;
+
+        for (
+            int index = 0;
+            index < VOLUME_STEPS;
+            index++
+        ) {
+            if (
+                travel > uMaxDistance ||
+                transmittance < MIN_TRANSMITTANCE
+            ) {
+                break;
+            }
+
+            vec3 samplePosition =
+                rayOrigin +
+                rayDirection * travel;
+
+            float macroField;
+            float detailField;
+            float warmField;
+
+            float density = evaluateNebula(
+                samplePosition,
+                flowOffset,
+                macroField,
+                detailField,
+                warmField
+            );
+
+            float nearFade = smoothstep(
+                0.20,
+                0.82,
+                travel
+            );
+
+            float farFade =
+                1.0 -
+                smoothstep(
+                    farFadeStart,
+                    uMaxDistance,
+                    travel
+                );
+
+            density *= nearFade * farFade;
+
+            if (density > 0.002) {
+                vec3 sampleColor = getNebulaColor(
+                    macroField,
+                    detailField,
+                    warmField
+                );
+
+                float distanceBrightness =
+                    1.20 -
+                    0.34 *
+                    smoothstep(
+                        0.0,
+                        uMaxDistance,
+                        travel
+                    );
+
+                sampleColor *=
+                    distanceBrightness *
+                    centerIllumination;
+
+                float alpha =
+                    1.0 -
+                    exp2(
+                        -density *
+                        extinction
+                    );
+
+                alpha = saturate(alpha);
+
+                accumulatedColor +=
+                    transmittance *
+                    sampleColor *
+                    alpha;
+
+                transmittance *=
+                    1.0 - alpha;
+
+                travel += baseStep;
+            } else {
+                travel += baseStep * 1.22;
+            }
+        }
+
+        return vec4(
+            accumulatedColor,
+            transmittance
+        );
+    }
+
+    void createCamera(
+        vec2 screenPosition,
+        float animationTime,
+        out vec3 rayOrigin,
+        out vec3 rayDirection
+    ) {
+        float cameraDepth =
+            animationTime *
+            uCameraSpeed;
+
+        rayOrigin = vec3(
+            tunnelPath(cameraDepth),
+            cameraDepth
+        );
+
+        float lookAhead = 3.60;
+
+        vec3 cameraTarget = vec3(
+            tunnelPath(cameraDepth + lookAhead),
+            cameraDepth + lookAhead
+        );
+
+        vec3 forward = normalize(
+            cameraTarget -
+            rayOrigin
+        );
+
+        vec3 right = normalize(
+            cross(
+                vec3(0.0, 1.0, 0.0),
+                forward
+            )
+        );
+
+        vec3 up = normalize(
+            cross(
+                forward,
+                right
+            )
+        );
+
+        float cameraRoll =
+            0.060 *
+            sin(cameraDepth * 0.095);
+
+        float rollSine =
+            sin(cameraRoll);
+
+        float rollCosine =
+            cos(cameraRoll);
+
+        vec3 originalRight = right;
+
+        right =
+            originalRight * rollCosine +
+            up * rollSine;
+
+        up =
+            up * rollCosine -
+            originalRight * rollSine;
+
+        rayDirection = normalize(
+            forward * uFocalLength +
+            right * screenPosition.x +
+            up * screenPosition.y
+        );
+    }
+
+    void main() {
+        vec2 fragmentCoordinate =
+            gl_FragCoord.xy;
+
+        vec2 screenPosition =
+            (
+                fragmentCoordinate * 2.0 -
+                uResolution.xy
+            ) /
+            max(uResolution.y, 1.0);
+
+        vec3 rayOrigin;
+        vec3 rayDirection;
+
+        createCamera(
+            screenPosition,
+            uTime,
+            rayOrigin,
+            rayDirection
+        );
+
+        float screenRadius =
+            length(screenPosition);
+
+        float backgroundAmount =
+            exp(-screenRadius * 0.95);
+
+        vec3 background = mix(
+            COLOR_BACKGROUND_OUTER,
+            COLOR_BACKGROUND_INNER,
+            backgroundAmount
+        );
+
+        float centerIllumination =
+            1.0 +
+            0.32 *
+            (
+                1.0 -
+                smoothstep(
+                    0.10,
+                    0.78,
+                    screenRadius
+                )
+            );
+
+        vec4 volume = renderVolume(
+            rayOrigin,
+            rayDirection,
+            fragmentCoordinate,
+            uTime,
+            centerIllumination
+        );
+
+        vec3 color =
+            volume.rgb +
+            background *
+            volume.a;
+
+        float depthHaze =
+            exp(-screenRadius * 3.8);
+
+        color +=
+            vec3(0.010, 0.075, 0.240) *
+            depthHaze *
+            0.18;
+
+        float vignette =
+            1.0 -
+            0.28 *
+            smoothstep(
+                0.48,
+                1.46,
+                screenRadius
+            );
+
+        color *= vignette;
+
+        color =
+            vec3(1.0) -
+            exp(-color * uExposure);
+
+        color = pow(
+            max(color, vec3(0.0)),
+            vec3(1.0 / 2.2)
+        );
+
+        gl_FragColor = vec4(color, 1.0);
+    }
+`;
+
+const uniforms = {
+    uResolution: {
+        value: new THREE.Vector2()
+    },
+
+    uTime: {
+        value: 0
+    },
+
+    uCameraSpeed: {
+        value: params.cameraSpeed
+    },
+
+    uFocalLength: {
+        value: params.focalLength
+    },
+
+    uMaxDistance: {
+        value: params.maxDistance
+    },
+
+    uTunnelRadius: {
+        value: params.tunnelRadius
+    },
+
+    uTunnelRoughness: {
+        value: params.tunnelRoughness
+    },
+
+    uVolumeDensity: {
+        value: params.volumeDensity
+    },
+
+    uGlowStrength: {
+        value: params.glowStrength
+    },
+
+    uExposure: {
+        value: params.exposure
+    }
+};
+
+const material = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader,
+    fragmentShader,
+    depthTest: false,
+    depthWrite: false,
+    transparent: false
+});
+
+const geometry = new THREE.BufferGeometry();
+
+geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+        [
+            -1, -1, 0,
+             3, -1, 0,
+            -1,  3, 0
+        ],
+        3
+    )
+);
+
+const fullscreenTriangle = new THREE.Mesh(
+    geometry,
+    material
+);
+
+fullscreenTriangle.frustumCulled = false;
+
+scene.add(fullscreenTriangle);
+
+const drawingBufferSize = new THREE.Vector2();
+
+function updateResolution() {
+    renderer.getDrawingBufferSize(
+        drawingBufferSize
+    );
+
+    uniforms.uResolution.value.copy(
+        drawingBufferSize
+    );
+}
+
+function updateRendererSize() {
+    renderer.setPixelRatio(params.dpr);
+
+    renderer.setSize(
+        window.innerWidth,
+        window.innerHeight,
+        false
+    );
+
+    updateResolution();
+}
+
+function addUniformControl(
+    folder,
+    parameterName,
+    uniformName,
+    min,
+    max,
+    step
+) {
+    folder
+        .add(
+            params,
+            parameterName,
+            min,
+            max,
+            step
+        )
+        .onChange((value) => {
+            uniforms[uniformName].value = value;
+        });
+}
+
+const gui = new GUI({
+    title: "Scene Settings"
+});
+
+const cameraFolder = gui.addFolder("Camera");
+
+addUniformControl(
+    cameraFolder,
+    "cameraSpeed",
+    "uCameraSpeed",
+    0.0,
+    4.0,
+    0.01
+);
+
+addUniformControl(
+    cameraFolder,
+    "focalLength",
+    "uFocalLength",
+    0.6,
+    2.5,
+    0.01
+);
+
+const geometryFolder = gui.addFolder("Geometry");
+
+addUniformControl(
+    geometryFolder,
+    "maxDistance",
+    "uMaxDistance",
+    8.0,
+    35.0,
+    0.01
+);
+
+addUniformControl(
+    geometryFolder,
+    "tunnelRadius",
+    "uTunnelRadius",
+    0.3,
+    3.0,
+    0.01
+);
+
+addUniformControl(
+    geometryFolder,
+    "tunnelRoughness",
+    "uTunnelRoughness",
+    0.0,
+    4.0,
+    0.01
+);
+
+const materialFolder = gui.addFolder("Material");
+
+addUniformControl(
+    materialFolder,
+    "volumeDensity",
+    "uVolumeDensity",
+    0.1,
+    5.0,
+    0.01
+);
+
+addUniformControl(
+    materialFolder,
+    "glowStrength",
+    "uGlowStrength",
+    0.0,
+    3.0,
+    0.01
+);
+
+addUniformControl(
+    materialFolder,
+    "exposure",
+    "uExposure",
+    0.1,
+    8.0,
+    0.01
+);
+
+const animationFolder = gui.addFolder("Animation");
+
+animationFolder.add(
+    params,
+    "pause"
+);
+
+animationFolder
+    .add(
+        params,
+        "resetTime"
+    )
+    .name("Reset Time");
+
+const performanceFolder = gui.addFolder("Performance");
+
+performanceFolder
+    .add(
+        params,
+        "dpr",
+        {
+            "0.5": 0.5,
+            "0.7": 0.7,
+            "1.0": 1.0,
+            "1.5": 1.5
+        }
+    )
+    .name("DPR")
+    .onChange(updateRendererSize);
+
+gui.close();
+
+let elapsedTime = 0;
+let previousTimestamp = performance.now();
+let pageVisible = !document.hidden;
+
+function animate(timestamp) {
+    requestAnimationFrame(animate);
+
+    const deltaTime = Math.min(
+        Math.max(
+            (timestamp - previousTimestamp) * 0.001,
+            0
+        ),
+        0.05
+    );
+
+    previousTimestamp = timestamp;
+
+    if (
+        !params.pause &&
+        pageVisible
+    ) {
+        elapsedTime += deltaTime;
+    }
+
+    uniforms.uTime.value = elapsedTime;
+
+    renderer.render(
+        scene,
+        camera
+    );
+}
+
+function handleResize() {
+    updateRendererSize();
+}
+
+function handleVisibilityChange() {
+    pageVisible = !document.hidden;
+    previousTimestamp = performance.now();
+}
+
+window.addEventListener(
+    "resize",
+    handleResize,
+    { passive: true }
+);
+
+document.addEventListener(
+    "visibilitychange",
+    handleVisibilityChange
+);
+
+updateRendererSize();
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>

@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    >
+
+    <title>Neon Kaleidoscope</title>
+
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #000000;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.module.js",
+            "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20.0/+esm"
+        }
+    }
+    </script>
+</head>
+
+<body>
+
+<script type="module">
+import * as THREE from "three";
+import GUI from "lil-gui";
+
+
+// ============================================================
+// Presets
+// ============================================================
+
+const presets = {
+
+    "Preset 1": {
+        iterationCount: 10,
+
+        cellScale: 1.16,
+        formRadius: 0.69,
+        formAngularity: 1.00,
+        cornerWeight: 0.45,
+
+        colorRate: 0.50,
+        phaseRate: 1.00,
+        layerShift: 0.50,
+
+        bandFrequency: 36.10,
+        bandDivisor: 3.41,
+
+        lightWidth: 0.020,
+        lightPower: 1.50,
+
+        dpr: 2
+    },
+
+    "Preset 2": {
+        iterationCount: 6,
+
+        cellScale: 1.30,
+        formRadius: 1.10,
+        formAngularity: 0.87,
+        cornerWeight: 0.52,
+
+        colorRate: 0.50,
+        phaseRate: 1.00,
+        layerShift: 0.50,
+
+        bandFrequency: 20.00,
+        bandDivisor: 5.20,
+
+        lightWidth: 0.020,
+        lightPower: 1.50,
+
+        dpr: 2
+    }
+};
+
+
+// ============================================================
+// Main scene parameters
+// ============================================================
+
+const params = {
+
+    preset: "Preset 1",
+
+    // Performance
+    dpr: 2,
+
+    // Geometry
+    iterationCount: 10,
+    cellScale: 1.16,
+    formRadius: 0.69,
+    formAngularity: 1.00,
+    cornerWeight: 0.45,
+
+    // Animation
+    colorRate: 0.50,
+    phaseRate: 1.00,
+    layerShift: 0.50,
+
+    // Material
+    bandFrequency: 36.10,
+    bandDivisor: 3.41,
+    lightWidth: 0.020,
+    lightPower: 1.50
+};
+
+
+// ============================================================
+// Renderer
+// ============================================================
+
+const renderer = new THREE.WebGLRenderer({
+    antialias: false,
+    alpha: false,
+    powerPreference: "high-performance"
+});
+
+renderer.setPixelRatio(params.dpr);
+
+renderer.setSize(
+    window.innerWidth,
+    window.innerHeight,
+    false
+);
+
+renderer.setClearColor(0x000000, 1);
+
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+document.body.appendChild(
+    renderer.domElement
+);
+
+
+// ============================================================
+// Scene
+// ============================================================
+
+const scene = new THREE.Scene();
+
+scene.name =
+    "Geometric Luminous Recursion";
+
+
+// ============================================================
+// Camera
+// ============================================================
+
+const camera =
+    new THREE.Camera();
+
+
+// ============================================================
+// Resolution
+// ============================================================
+
+const resolution =
+    new THREE.Vector2();
+
+
+// ============================================================
+// Uniforms
+// ============================================================
+
+const uniforms = {
+
+    uTime: {
+        value: 0
+    },
+
+    uResolution: {
+        value: resolution
+    },
+
+    uIterationCount: {
+        value: params.iterationCount
+    },
+
+    uCellScale: {
+        value: params.cellScale
+    },
+
+    uFormRadius: {
+        value: params.formRadius
+    },
+
+    uFormAngularity: {
+        value: params.formAngularity
+    },
+
+    uCornerWeight: {
+        value: params.cornerWeight
+    },
+
+    uBandFrequency: {
+        value: params.bandFrequency
+    },
+
+    uBandDivisor: {
+        value: params.bandDivisor
+    },
+
+    uColorRate: {
+        value: params.colorRate
+    },
+
+    uPhaseRate: {
+        value: params.phaseRate
+    },
+
+    uLayerShift: {
+        value: params.layerShift
+    },
+
+    uLightWidth: {
+        value: params.lightWidth
+    },
+
+    uLightPower: {
+        value: params.lightPower
+    }
+};
+
+
+// ============================================================
+// Fullscreen triangle
+// ============================================================
+
+const geometry =
+    new THREE.BufferGeometry();
+
+geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+        [
+            -1, -1, 0,
+             3, -1, 0,
+            -1,  3, 0
+        ],
+        3
+    )
+);
+
+
+// ============================================================
+// Vertex shader
+// ============================================================
+
+const vertexShader = /* glsl */`
+precision highp float;
+
+attribute vec3 position;
+
+void main()
+{
+    gl_Position =
+        vec4(position, 1.0);
+}
+`;
+
+
+// ============================================================
+// Fragment shader
+// ============================================================
+
+const fragmentShader = /* glsl */`
+precision highp float;
+precision highp int;
+
+uniform float uTime;
+uniform vec2 uResolution;
+
+uniform int uIterationCount;
+
+uniform float uCellScale;
+uniform float uFormRadius;
+uniform float uFormAngularity;
+uniform float uCornerWeight;
+
+uniform float uBandFrequency;
+uniform float uBandDivisor;
+
+uniform float uColorRate;
+uniform float uPhaseRate;
+uniform float uLayerShift;
+
+uniform float uLightWidth;
+uniform float uLightPower;
+
+
+#define MAX_ITERATIONS 12
+
+const float MIN_DISTANCE = 0.0001;
+
+
+// ============================================================
+// Color field
+// ============================================================
+
+vec3 colorField(float phase)
+{
+    vec3 base =
+        vec3(
+            0.020,
+            0.020,
+            0.761
+        );
+
+    vec3 range =
+        vec3(
+            0.090,
+            0.129,
+            0.910
+        );
+
+    vec3 rate =
+        vec3(
+            0.259,
+            0.580,
+            1.000
+        );
+
+    vec3 offset =
+        vec3(
+            0.957,
+            0.341,
+            1.000
+        );
+
+    return
+        base +
+        range *
+        cos(
+            5.24 *
+            (
+                rate * phase +
+                offset
+            )
+        );
+}
+
+
+// ============================================================
+// Geometric metric
+// ============================================================
+
+float angularMetric(vec2 p)
+{
+    vec2 a =
+        abs(p);
+
+    float rounded =
+        length(a);
+
+    float faceted =
+        (a.x + a.y) *
+        uCornerWeight;
+
+    return mix(
+        rounded,
+        faceted,
+        uFormAngularity
+    );
+}
+
+
+float shapeField(vec2 p)
+{
+    return
+        angularMetric(p) -
+        uFormRadius;
+}
+
+
+// ============================================================
+// Recursive domain
+// ============================================================
+
+vec2 nextCell(vec2 p)
+{
+    return
+        fract(
+            p *
+            uCellScale
+        ) -
+        0.5;
+}
+
+
+// ============================================================
+// Light response
+// ============================================================
+
+float luminousBand(
+    float fieldValue,
+    float timePhase
+)
+{
+    float wave =
+        sin(
+            fieldValue *
+            uBandFrequency -
+            timePhase
+        ) /
+        uBandDivisor;
+
+    float distanceToBand =
+        max(
+            abs(wave),
+            MIN_DISTANCE
+        );
+
+    return pow(
+        uLightWidth /
+        distanceToBand,
+        uLightPower
+    );
+}
+
+
+// ============================================================
+// Main
+// ============================================================
+
+void main()
+{
+    vec2 fragCoord =
+        gl_FragCoord.xy;
+
+    vec2 screen =
+        (
+            2.0 *
+            fragCoord -
+            uResolution.xy
+        ) /
+        uResolution.y;
+
+    vec2 domain =
+        screen;
+
+    float radialDistance =
+        length(screen);
+
+    float radialFalloff =
+        exp(
+            -radialDistance
+        );
+
+    vec3 radiance =
+        vec3(0.0);
+
+
+    for (
+        int layer = 0;
+        layer < MAX_ITERATIONS;
+        ++layer
+    )
+    {
+        if (
+            layer >=
+            uIterationCount
+        )
+        {
+            break;
+        }
+
+        float index =
+            float(layer);
+
+        domain =
+            nextCell(domain);
+
+        float geometryField =
+            shapeField(domain) *
+            radialFalloff;
+
+        float colorPhase =
+            radialDistance +
+            index *
+            uLayerShift +
+            uTime *
+            uColorRate;
+
+        vec3 tint =
+            colorField(
+                colorPhase
+            );
+
+        float intensity =
+            luminousBand(
+                geometryField,
+                uTime *
+                uPhaseRate
+            );
+
+        radiance +=
+            tint *
+            intensity;
+    }
+
+
+    gl_FragColor =
+        vec4(
+            radiance,
+            1.0
+        );
+}
+`;
+
+
+// ============================================================
+// Material
+// ============================================================
+
+const material =
+    new THREE.RawShaderMaterial({
+        uniforms,
+        vertexShader,
+        fragmentShader,
+
+        depthTest: false,
+        depthWrite: false,
+
+        transparent: false
+    });
+
+
+// ============================================================
+// Mesh
+// ============================================================
+
+const fullscreenTriangle =
+    new THREE.Mesh(
+        geometry,
+        material
+    );
+
+fullscreenTriangle.frustumCulled =
+    false;
+
+scene.add(
+    fullscreenTriangle
+);
+
+
+// ============================================================
+// Renderer utilities
+// ============================================================
+
+function updateResolution()
+{
+    renderer.getDrawingBufferSize(
+        resolution
+    );
+}
+
+
+function updateRendererSize()
+{
+    renderer.setPixelRatio(
+        params.dpr
+    );
+
+    renderer.setSize(
+        window.innerWidth,
+        window.innerHeight,
+        false
+    );
+
+    updateResolution();
+}
+
+
+// ============================================================
+// Uniform synchronization
+// ============================================================
+
+function updateUniforms()
+{
+    uniforms.uIterationCount.value =
+        Math.round(
+            params.iterationCount
+        );
+
+    uniforms.uCellScale.value =
+        params.cellScale;
+
+    uniforms.uFormRadius.value =
+        params.formRadius;
+
+    uniforms.uFormAngularity.value =
+        params.formAngularity;
+
+    uniforms.uCornerWeight.value =
+        params.cornerWeight;
+
+    uniforms.uBandFrequency.value =
+        params.bandFrequency;
+
+    uniforms.uBandDivisor.value =
+        params.bandDivisor;
+
+    uniforms.uColorRate.value =
+        params.colorRate;
+
+    uniforms.uPhaseRate.value =
+        params.phaseRate;
+
+    uniforms.uLayerShift.value =
+        params.layerShift;
+
+    uniforms.uLightWidth.value =
+        params.lightWidth;
+
+    uniforms.uLightPower.value =
+        params.lightPower;
+}
+
+
+// ============================================================
+// GUI
+// ============================================================
+
+const gui =
+    new GUI({
+        title: "Settings"
+    });
+
+const controllers = [];
+
+
+// ============================================================
+// Preset
+// ============================================================
+
+const presetController =
+    gui
+        .add(
+            params,
+            "preset",
+            [
+                "Preset 1",
+                "Preset 2"
+            ]
+        )
+        .name("Preset");
+
+controllers.push(
+    presetController
+);
+
+
+// ============================================================
+// Geometry
+// ============================================================
+
+const geometryFolder =
+    gui.addFolder(
+        "Geometry"
+    );
+
+
+controllers.push(
+
+    geometryFolder
+        .add(
+            params,
+            "iterationCount",
+            1,
+            12,
+            1
+        )
+        .name("Iterations")
+        .onChange(value => {
+            uniforms
+                .uIterationCount
+                .value =
+                Math.round(value);
+        }),
+
+    geometryFolder
+        .add(
+            params,
+            "cellScale",
+            0.5,
+            3.0,
+            0.01
+        )
+        .name("Cell Scale")
+        .onChange(value => {
+            uniforms
+                .uCellScale
+                .value =
+                value;
+        }),
+
+    geometryFolder
+        .add(
+            params,
+            "formRadius",
+            0.1,
+            2.0,
+            0.01
+        )
+        .name("Form Radius")
+        .onChange(value => {
+            uniforms
+                .uFormRadius
+                .value =
+                value;
+        }),
+
+    geometryFolder
+        .add(
+            params,
+            "formAngularity",
+            0.0,
+            1.0,
+            0.01
+        )
+        .name("Form Angularity")
+        .onChange(value => {
+            uniforms
+                .uFormAngularity
+                .value =
+                value;
+        }),
+
+    geometryFolder
+        .add(
+            params,
+            "cornerWeight",
+            0.1,
+            1.0,
+            0.01
+        )
+        .name("Corner Weight")
+        .onChange(value => {
+            uniforms
+                .uCornerWeight
+                .value =
+                value;
+        })
+);
+
+
+// ============================================================
+// Animation
+// ============================================================
+
+const animationFolder =
+    gui.addFolder(
+        "Animation"
+    );
+
+
+controllers.push(
+
+    animationFolder
+        .add(
+            params,
+            "colorRate",
+            0.0,
+            2.0,
+            0.01
+        )
+        .name("Color Rate")
+        .onChange(value => {
+            uniforms
+                .uColorRate
+                .value =
+                value;
+        }),
+
+    animationFolder
+        .add(
+            params,
+            "phaseRate",
+            0.0,
+            3.0,
+            0.01
+        )
+        .name("Phase Rate")
+        .onChange(value => {
+            uniforms
+                .uPhaseRate
+                .value =
+                value;
+        }),
+
+    animationFolder
+        .add(
+            params,
+            "layerShift",
+            0.0,
+            2.0,
+            0.01
+        )
+        .name("Layer Shift")
+        .onChange(value => {
+            uniforms
+                .uLayerShift
+                .value =
+                value;
+        })
+);
+
+
+// ============================================================
+// Material
+// ============================================================
+
+const materialFolder =
+    gui.addFolder(
+        "Material"
+    );
+
+
+controllers.push(
+
+    materialFolder
+        .add(
+            params,
+            "bandFrequency",
+            1.0,
+            60.0,
+            0.1
+        )
+        .name("Band Frequency")
+        .onChange(value => {
+            uniforms
+                .uBandFrequency
+                .value =
+                value;
+        }),
+
+    materialFolder
+        .add(
+            params,
+            "bandDivisor",
+            0.5,
+            15.0,
+            0.01
+        )
+        .name("Band Divisor")
+        .onChange(value => {
+            uniforms
+                .uBandDivisor
+                .value =
+                value;
+        }),
+
+    materialFolder
+        .add(
+            params,
+            "lightWidth",
+            0.001,
+            0.1,
+            0.001
+        )
+        .name("Light Width")
+        .onChange(value => {
+            uniforms
+                .uLightWidth
+                .value =
+                value;
+        }),
+
+    materialFolder
+        .add(
+            params,
+            "lightPower",
+            0.1,
+            4.0,
+            0.01
+        )
+        .name("Light Power")
+        .onChange(value => {
+            uniforms
+                .uLightPower
+                .value =
+                value;
+        })
+);
+
+
+// ============================================================
+// Performance
+// ============================================================
+
+const performanceFolder =
+    gui.addFolder(
+        "Performance"
+    );
+
+
+const dprController =
+    performanceFolder
+        .add(
+            params,
+            "dpr",
+            {
+                "0.5": 0.5,
+                "0.75": 0.75,
+                "1": 1,
+                "1.5": 1.5,
+                "2": 2,
+                "2.5": 2.5
+            }
+        )
+        .name("DPR")
+        .onChange(() => {
+            updateRendererSize();
+        });
+
+controllers.push(
+    dprController
+);
+
+
+// ============================================================
+// Preset management
+// ============================================================
+
+function refreshControllers()
+{
+    for (
+        let i = 0;
+        i < controllers.length;
+        i++
+    )
+    {
+        controllers[i]
+            .updateDisplay();
+    }
+}
+
+
+function applyPreset(
+    presetName
+)
+{
+    const preset =
+        presets[presetName];
+
+    if (!preset)
+    {
+        return;
+    }
+
+
+    params.iterationCount =
+        preset.iterationCount;
+
+    params.cellScale =
+        preset.cellScale;
+
+    params.formRadius =
+        preset.formRadius;
+
+    params.formAngularity =
+        preset.formAngularity;
+
+    params.cornerWeight =
+        preset.cornerWeight;
+
+
+    params.colorRate =
+        preset.colorRate;
+
+    params.phaseRate =
+        preset.phaseRate;
+
+    params.layerShift =
+        preset.layerShift;
+
+
+    params.bandFrequency =
+        preset.bandFrequency;
+
+    params.bandDivisor =
+        preset.bandDivisor;
+
+    params.lightWidth =
+        preset.lightWidth;
+
+    params.lightPower =
+        preset.lightPower;
+
+
+    params.dpr =
+        preset.dpr;
+
+
+    updateUniforms();
+
+    updateRendererSize();
+
+    refreshControllers();
+}
+
+
+presetController.onChange(
+    value => {
+        applyPreset(value);
+    }
+);
+
+
+// ============================================================
+// Initial preset
+// ============================================================
+
+applyPreset(
+    "Preset 1"
+);
+
+
+// ============================================================
+// GUI initial state
+// ============================================================
+
+gui.close();
+
+
+// ============================================================
+// Resize
+// ============================================================
+
+function handleResize()
+{
+    updateRendererSize();
+}
+
+
+window.addEventListener(
+    "resize",
+    handleResize
+);
+
+
+// ============================================================
+// Animation
+// ============================================================
+
+const clock =
+    new THREE.Clock();
+
+
+function animate()
+{
+    uniforms.uTime.value =
+        clock.getElapsedTime();
+
+    renderer.render(
+        scene,
+        camera
+    );
+}
+
+
+renderer.setAnimationLoop(
+    animate
+);
+
+</script>
+
+</body>
+</html>

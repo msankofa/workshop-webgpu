@@ -331,7 +331,7 @@ window and can follow as its own step once there is something on screen to judge
   conflict for a cosmetic gain. The three sheen settings were dropped rather than shipped as dead
   sliders; they land when that file settles.
 
-### R3 — Rain shadow where there are roofs
+### R3 — Rain shadow where there are roofs — SHIPPED 2026-08-26
 
 - Open terrain does not need an occluder map, and baking one every time the player walks costs an extra
   full-scene render per bake. So: **off by default in terrain mode**, on in the Traversal Lab (static,
@@ -341,6 +341,32 @@ window and can follow as its own step once there is something on screen to judge
   `bot-viewer-v3.html:869`, driven by the terrain's own residency signal rather than a timer.
 - The bake renders the scene with an override material, so it must run outside the DOF pipeline and get
   its own `rainBake` profiler slot; folded into `weather` it would show up as rain costing 5 ms at random.
+
+**Shipped 2026-08-26, as planned, plus a bug the phase uncovered.**
+
+`roofAt` reported "no roof" as height 0, and both callers do `max(roofAt, groundHeight)` — so every
+drop in the Base Game was cut at scene y = 0 regardless of the ground under it. The sea hides it at
+the default sea level of 0, because the water level already lifts the ground to zero; drop the sea
+level or turn the water off over terrain that dips below zero and the rain stopped in mid air. This
+was live before R3 and independent of it, since `roofAt` returns 0 even with the map switched off.
+`rain.js` now separates two ideas that were one uniform: `uOccFloor`, the height the texture stores
+relative to (the clear colour cannot be negative, and a tight floor keeps half-float precision on the
+relief), and `uOccMiss`, what is reported where there is no map. Both default to 0, so the other
+three pages are byte-identical; Base Game sets `uOccMiss` to the ground hook's own −10000 once at
+construction.
+
+The bake is held in GLOBAL coordinates in `base-game-rain.js`. The texture stores
+`globalY − globalFloor`, which no origin shift can change, so a rebase is two uniform writes rather
+than a re-render — worth having because the alternative is a full extra scene render at an arbitrary
+moment. The floor is taken from the bounds of the roots being baked, less a 30 m margin.
+
+One honest note on scope. `rainOccluders` defaults to `lab`, and the terrain half is a seam rather
+than a feature: **there is nothing over the terrain yet that the ground hook does not already cut** —
+no trees, no buildings — so turning it `on` buys a sharper cut height inside the window and costs a
+whole extra scene render per bake. It is built, tested and off, ready for when vegetation lands.
+The dirty triggers are the plan's: the player leaving the middle half of the window (a quarter of its
+width of walking) and a new `terrain.residencyRevision`, which is the terrain's own signal that the
+resident chunk set changed rather than a timer. A dry world never bakes at all.
 
 ### R4 — Lightning, thunder, and the rain bed — SHIPPED 2026-08-24
 

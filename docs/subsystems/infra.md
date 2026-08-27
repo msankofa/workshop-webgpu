@@ -67,9 +67,10 @@ Returns:
 - `beginFrame()` â€” zeroes the current-frame CPU/GPU pass values (called once at the top of `animate()`). Since 2026-08-04 it zeroes **every name recorded so far** (each key already in the internal `latest` / `gpuLatest` maps) *plus* `DEFAULT_NAMES` / `DEFAULT_GPU_NAMES`, not just the defaults. That matters for any app whose pass names aren't the environment viewer's: `bot-viewer-v2.html` records `sim`, `bodyFlush`, `weaponFlush`, `botFx`, `visuals`, `fx`, `audio`, `panelFx`, `ui*`, `render`, and before this change `beginFrame()` was a no-op for them, so a conditionally-executed phase reported the *previous* frame's value instead of 0. The environment viewers are unaffected: they record every default name every frame, so iterating the recorded keys is a superset of the old loop. The smoothed (`{ smooth: true }`) maps are deliberately **not** zeroed â€” the HUD's EMA is supposed to decay across a skipped frame, not snap to zero.
 - `time(name, fn)` â€” runs `fn()` synchronously, records elapsed `now() - t0` under `name`, returns `fn()`'s result.
 - `async timeAsync(name, fn)` â€” same as `time` but awaits `fn()`.
+- `mark(name, ms)` records a duration the caller measured itself, for regions that cannot be wrapped in a closure because they declare bindings the rest of the frame reads. `base-game.html` uses it for its `playerSim` / `playerView` / `bodies` marks and for the terrain cost split. Added 2026-08-24.
 - `recordGpu(name, ms)` â€” records a GPU timestamp/duration directly (used for `resolveTimestampsAsync` results and for tagging `postRender`'s GPU cost).
 - `markDropped(count = 1)` â€” increments a dropped-frame counter (called when `animate()` re-enters while the previous frame is still in flight).
-- `snapshot(prefixMap = DEFAULT_PREFIXES, opts = {})` â€” flattens latest (or, with `{ smooth: true }`, EMA-smoothed) values into an object keyed by the prefix map's mapped names (e.g. `passCreaturesMs`, `gpuGrassMs`), plus a derived `passGpuAwaitMs` (sum of the awaited GPU-bound passes: grass/forest/cdlod/lights/particles/post) and `droppedFrames`.
+- `snapshot(prefixMap = DEFAULT_PREFIXES, opts = {})` â€” flattens latest (or, with `{ smooth: true }`, EMA-smoothed) values into an object keyed by the prefix map's mapped names (e.g. `passCreaturesMs`, `gpuGrassMs`), plus a derived `passGpuAwaitMs` (sum of the awaited GPU-bound passes: grass/forest/cdlod/lights/particles/post) and `droppedFrames`. **`passGpuAwaitMs` is a sum, not a measurement of GPU wait**: on a page with no compute passes it degenerates to exactly `passPostMs`, which reads like independent corroboration and is not. `base-game.html` deletes it from its captures for that reason.
 - `reset()` â€” clears all maps and the dropped-frame counter.
 
 Pass names tracked: `sky, terrainWindow, creatures, water, hud, grassGpu, forestGpu, plantsGpu, dressingGpu, cdlodGpu, lightsGpu, particlesGpu, postRender, timestampResolve` (`DEFAULT_NAMES`). GPU-only counters add `computeTotal` and `renderTotal`. `dressingGpu` (snapshot key `passDressingMs`) is the CPU await for the shared rocks/deadfall `dressing-gpu.js` host and folds into `passGpuAwaitMs`; it has a CPU-await prefix only (no GPU-timestamp bucket).
@@ -630,3 +631,36 @@ that had to parse a page's panel state to find out how a species stands would be
 This route exists because the page previously kept hours of gait tuning in `localStorage`, where a cleared
 browser or a different port lost it silently — see the standing rule in `CLAUDE.md` and
 `docs/subsystems/stadium.md`.
+
+### `POST /api/save-glass-plankton`
+
+`sabosugi-visuals/hybrids/glass-plankton.html` autosaves its whole GUI to `glass-plankton.json` at the
+repo root through `disk-store.js`, and reads it back on open. Overwritten in place, one current look
+rather than a set of takes, the same arrangement as `/api/save-water-config`. The body must parse as
+JSON before anything is written.
+
+The page is a reference hybrid rather than a wired subsystem, but it is still a thing a person tunes by
+eye over many passes, which is exactly what the standing `CLAUDE.md` rule covers — web storage would
+lose the look to a cleared origin or a different port.
+
+### `GET /sabosugi/<slug>/<file>`
+
+`sabosugi-visuals/gallery.html` loads each of the 80 zipped reference pens through this route, which
+reads the file straight out of the pen's `.zip` rather than an unpacked copy. Every zip already holds a
+complete `dist/index.html` alongside the `script.js` and `style.css` it references, so nothing needs
+extracting, and the folder keeps its 80 archives instead of gaining 80 directories that would drift from
+them.
+
+`<slug>` is matched against `^[a-z0-9-]+$` and then looked up in `sabosugi-visuals/pens-manifest.json`,
+so only a pen the manifest names can be reached; the requested member is resolved against the archive's
+own listing, so a path cannot traverse out of it. The slug map is cached and reloaded whenever
+`build-manifest.py` rewrites the manifest, so adding a pen needs no server restart.
+
+### `POST /api/save-hybrid?name=<slug>`
+
+Every sabosugi hybrid page autosaves its GUI here through `disk-store.js`, landing in
+`sabosugi-visuals/hybrid-tuning/<slug>.json`. One route for all of them, so a new hybrid needs a name
+rather than another endpoint; `/api/save-glass-plankton` predates it and still writes its own file.
+
+`name` is client input and is matched against `^[a-z0-9-]{1,64}$` before it is used as a filename, and
+the body must parse as JSON before anything is written.

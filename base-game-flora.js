@@ -32,6 +32,7 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   grassVerticalOffset: -0.05,  // bias low, never high
   grassCoverGate: 1,           // how hard scalar cover thins the field (0 = ignore cover)
   maxRadiusHeadroom: 1.6,      // buffers are sized for radius x this, so the slider has room
+  grassKmax: 256,              // blades per 2 m cell; the density ceiling is this / cellSize^2
 });
 
 // The contact window is a square; its safe half-extent is what a circular radius can use without
@@ -46,11 +47,12 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   if (!terrain?.acquireFields) throw new TypeError('flora needs the Base Game terrain facade');
   const cfg = { ...BASE_GAME_FLORA_DEFAULTS, ...settings };
 
-  let grass = null, grassModule = null;
+  let grass = null, grassModule = null, onMeshCb = null, uCoverGate = null;
   let releaseFields = null, releaseContact = null;
   let enabled = false, active = false, built = false;
   let maxRadius = 0;
-  const stats = { enabled: false, built: false, radius: 0, maxRadius: 0, density: 0, blades: 0, coverage: 0, lastError: null };
+  const stats = { enabled: false, built: false, radius: 0, requestedRadius: 0, maxRadius: 0, density: 0,
+    requestedDensity: 0, maxDensity: 0, capacity: 0, dispatch: 0, reculls: 0, skippedReculls: 0, coverage: 0, lastError: null };
 
   // Global = render-local + origin. One vec3 uniform, mutated on rebase; the graph never rebuilds.
   const uRenderOrigin = uniform(new injectedTHREE.Vector3());
@@ -77,14 +79,14 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // Scalar grass cover, 0..255 from the r8unorm channel, gated to 0..1. No cover field yet (the
     // placement window is optional) means an unthinned field, which is the previous look.
     const coverSampler = field?.fields.includes('coverGrass') ? field.gpuSampler('coverGrass') : null;
-    const uCoverGate = uniform(cfg.grassCoverGate);
+    uCoverGate = uniform(cfg.grassCoverGate);
     const densityNode = coverSampler
       ? Fn(([x, z]) => {
           const cover = coverSampler(vec2(x, z).add(originXZ), float(0)).div(255).clamp(0, 1);
           return float(1).sub(uCoverGate).add(cover.mul(uCoverGate)).clamp(0, 1);
         })
       : null;
-    return { heightNode, densityNode, uCoverGate };
+    return { heightNode, densityNode };
   }
 
   // One construction, at the widest radius the sliders can reach: grass-compute cannot free its
@@ -100,6 +102,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     grass = grassModule.createComputeGrass({
       renderer, camera,
       radius, maxRadius,
+      Kmax: cfg.grassKmax,
       density: cfg.grassDensity,
       cullStart: cfg.grassCullStart || null,
       bladeHeight: cfg.grassBladeHeight,
@@ -111,6 +114,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     });
     grass.mesh.frustumCulled = false;
     scene.add(grass.mesh);
+    onMeshCb?.(grass.mesh);
     grass.setWind?.(cfg.grassWind);
     grass.setBladeStyle?.(cfg.grassStyle);
     built = true;
@@ -152,6 +156,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       }
     },
     setEnabled,
+    // The host hears about the mesh once it exists, so it can keep it out of the water mirror.
+    onMesh(fn) { onMeshCb = fn; if (grass) fn(grass.mesh); },
     async update(seconds) {
       if (!enabled) return false;
       syncOrigin();
@@ -159,10 +165,19 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       // Sea level and the origin both move; the water gate is in render-local Y like the blades.
       grass.setWaterLevel(terrain.seaLevel - uRenderOrigin.value.y);
       await grass.update(seconds);
-      stats.blades = grass.stats?.lastCount ?? stats.blades;
+      // The surviving blade count is written by the GPU into the indirect buffer, so the CPU can
+      // only report capacity and whether the cull actually ran.
+      stats.capacity = grass.stats.capacity;
+      stats.reculls = grass.stats.reculls;
+      stats.skippedReculls = grass.stats.skippedReculls;
       stats.coverage = terrain.contactField?.coverage ?? 0;
-      stats.radius = grass ? cfg.grassRadius : 0;
-      stats.density = cfg.grassDensity;
+      // Both sliders clamp; report the value in force and keep the request beside it.
+      stats.radius = grass ? Math.min(cfg.grassRadius, maxRadius || cfg.grassRadius) : 0;
+      stats.requestedRadius = cfg.grassRadius;
+      stats.density = Math.min(cfg.grassDensity, grass.stats.maxDensity);
+      stats.requestedDensity = cfg.grassDensity;
+      stats.maxDensity = grass.stats.maxDensity;
+      stats.dispatch = grass.stats.dispatch;
       return true;
     },
     // Every knob is a setter on the one instance. Radius is clamped to what the window can serve
@@ -179,6 +194,10 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       grass.setVerticalOffset(cfg.grassVerticalOffset);
       grass.setWind(cfg.grassWind);
       grass.setBladeStyle?.(cfg.grassStyle);
+      if (uCoverGate && uCoverGate.value !== cfg.grassCoverGate) {
+        uCoverGate.value = cfg.grassCoverGate;
+        grass.forceRecull();
+      }
     },
     setLook(partial) { grass?.setLook?.(partial); },
     setSunDir(v) { grass?.setSunDir?.(v); },

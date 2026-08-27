@@ -30,7 +30,7 @@ collision meshes (BVH-accelerated).
 | `terrain-splat-streamed.js` | Ground textures for the STREAMED terrain (Base Game chunks + volume cascade). Per-fragment layer weights from world height and slope — sand/grass/dirt/rock/snow (`splatWeights(h, ny)` CPU twin; rock triplanar, the rest planar xz) — over ordinary mipmapped textures from `textures/ground/<layer>/{color,normal}.jpg` (`loadStreamedSplatTextures`; `placeholderStreamedSplatTextures` for Node). Built so it cannot turn to static at range: a 7× far tiling takes over from 40–220 m, and from `fadeNear`–`fadeFar` (250–1400 m) the albedo settles on each layer's average colour (its 1×1 mip, measured from the image) while normal strength and the sampler-free macro hash fade to zero (`detailFade(d)` twin). `createStreamedSplatMaterial(textures, overrides)` → `MeshStandardNodeMaterial`. Reads are the cost, so each layer is sampled only where its weight > 0.004 (`If` per layer): the uv derivatives are hoisted to vars in uniform flow (an anchor pins their declaration before the branches) and every sample uses `.grad()`, which is what WGSL requires inside non-uniform control flow — flat grass costs one layer. One `Fn` on `colorNode` does all sampling (three evaluates colour → roughness → normal) and passes roughness and the object-space tilted normal to the other two nodes through `property()`s; the normal goes through `transformNormalToView`; `updateStreamedSplat(mat, { tileMeters, fadeFar, … })` live; `{ lod: { self, finer } }` binds two `terrain-lod-coverage.js` maps for the LOD dissolve (`syncStreamedSplatCoverage(mat)` after a recentre); `{ water }` binds the Base Game water's `groundShade` uniforms for the wet tide band and the Snell caustic emissive. Tests: `test-terrain-splat-streamed.mjs` (headless build via `tsl-build-check.mjs`). An optional `rain` bundle `{ uniforms, offset, puddleScale, rippleScale }` beside `water`, behind `If(uWetness > 0)` so a dry world skips its 315 lines of noise, wets the whole ground (albedo down, roughness down, puddles on the flats, ripple normals) using the fields imported from `rain.js` — one copy of that maths, not a twin — gated to what is out of the water by the same `submerged` term the tide band uses. |
 | `terrain-sea-depth.js` | Ground height around the player for water: `createSeaDepthMap({ source, useWorker, spacing 16, tileIntervals 16, tilesPerSide 20 })` wraps one `terrain-clipmap-window.js` window (320 posts = 5120 m, past the far cascade) filled by `sourceTile` jobs at lod 1 on its own worker (band-limited `heightAtSpacing`, so shorelines match the far ground), uploaded as a float `DataTexture`. `recentre(x,z)`, `update()` (requests missing tiles nearest-first within `maxInFlight`, uploads on change, returns true when full), `heightAt(x,z)` CPU bilinear or null, `minHeight()` (interior posts, for the "any water in view" gate), `gpuHeightAt(xz, fallback, mode)` TSL sampler — `'bilinear'` (the default) or `'min'`, which returns the lowest of the four surrounding posts so a caller that must never over-estimate the ground (Base Game's rain, see `base-game.md` §Weather R1) can ask for a conservative height; same idea as `terrain-lod-coverage.js`'s `erode()`, `setSource`, `clear`, `dispose`. Tests: `test-terrain-sea-depth.mjs`. |
 | `terrain-lod-coverage.js` | Per-chunk presence for LOD dissolves: `createLodCoverage({ chunkSize, texels 96, fadeSeconds 0.6 })` owns a `texels²` R8 `DataTexture` centred on the player's chunk (`recentre(x, z)`), `update(presentKeys, dt)` ramps each tracked chunk up when present (snaps to 0 when absent), re-uploads, and maintains `erodedTexture` (3×3 min) — what a coarser level dissolves against, keeping one chunk of overlap, `coverageAt(x, z)`, `clear()`. Pure apart from the texture. |
-| `terrain-chunk-batches.js` | Resident chunks as a few `BatchedMesh` draws: `createChunkBatcher({ material, slots 256, vertices 600k, indices 3.6M, maxBatches 64, compactWhenUnusedFraction 0.35 })` → `add(key, geometry)` (copies into the first batch with room, opening batches on demand; `false` = caller keeps its own mesh), `remove(key)` (frees on `optimize()` — run when dead space exceeds the fraction or would satisfy a pending add), `setVisible`, `setMaterial`, `stats`. Per-geometry frustum culling is BatchedMesh's; batch meshes are `frustumCulled = false`. Volume chunks get planar world-xz uvs in `terrain-system.js` so both chunk kinds share one attribute set. `test-terrain-chunk-batches.mjs`. |
+| `terrain-chunk-batches.js` | Resident chunks pooled into `BatchedMesh` — one scene object, one pipeline + bind-group set per ~256 chunks, but on the WebGPU backend still **one `drawIndexed` per visible chunk** (`WebGPUBackend._draw` loops the multi-draw ranges in JS; WebGPU has no multi-draw). `createChunkBatcher({ material, slots 256, vertices 600k, indices 3.6M, maxBatches 64, compactWhenUnusedFraction 0.35, perObjectFrustumCulled false })` → `add(key, geometry)` (copies into the first batch with room, opening batches on demand; `false` = caller keeps its own mesh), `remove(key)` (frees on `optimize()` — run when dead space exceeds the fraction or would satisfy a pending add), `setVisible`, `setMaterial`, `drawCount` (GPU draws submitted; pre-cull upper bound if culling is on), `stats` (includes `draws`). Per-chunk frustum culling is off by default so `BatchedMesh.onBeforeRender` early-outs (see "Per-chunk frustum culling" below); batch meshes are `frustumCulled = false`. Volume chunks get planar world-xz uvs in `terrain-system.js` so both chunk kinds share one attribute set. `test-terrain-chunk-batches.mjs`. |
 | `terrain-volume-collision.js` | Headless volumetric collision for a source with `densityAt`/`buildTile` (the server side of volumetric rooms): `createVolumeCollision(source, { worldQuery, chunkSize 30, coverRadius 1, keepRadius 3, maxBuildsPerCall 4 })` builds lod-0 `volume` tiles with the same chunk size / `volumeChunkIntervals` / apron as `terrain-system.js` (so the meshes match the clients' bit for bit) into a chunk-mesh provider; `ensure(positions)` builds nearest-first within the budget and prunes far chunks, `covers(x, z)` says whether the chunk under a point is collidable. Synchronous, ~40 ms per tile. |
 | `terrain-loader.js` | Loads an authored GLTF map + its `-data.json` sidecar, derives/queries height, biome, grass/tree density via bilinear sampling, exposes the read-only `surfaceField(x,z)` unified sampler (merged plan §1 F1), builds chunk-window helpers for decorations. |
 | `terrain-textures.js` | Loads ground PBR texture layers (grass/dirt/sand/gravel), classifies authored map mesh vertices into a dominant layer per triangle (mask-driven or biome/slope/sea-level fallback), splits geometry into material groups. Now also exports `FALLBACK_COLORS`/`MASK_ALIASES`/`BIOME_MATERIAL` for `surfaceField` to reuse. |
@@ -276,6 +276,150 @@ Inter-file dependencies:
 `?terrainTexture=splat|legacy|flat` (2026-07-08, perf-recovery Wave 0, terrain-dressing-performance-design.md Milestone 0) selects the authored-map ground material build path — see `terrain-loader.js`'s Public API entry above and `terrain-textures.js`'s `applyFlatTerrain` doc entry. Default `splat` is behavior-identical to before this flag existed; `legacy` and `flat` remain diagnostic URL-flag-only modes, not swappable via Perf A/B.
 
 **Milestones 3B/3C landed** (2026-07-09, terrain-dressing-performance-design.md): unlike `terrainTexture`, the reduced/full **material-quality** swap now DOES have a live Perf A/B control — `applySplatTerrain` prebuilds both the "reduced" (top-`maxShaderLayers`, default 4) and "full" (all active layers) splat materials whenever a map's active-layer count exceeds the cap, and registers `window.perfAB?.addSelect('Terrain shader', 'reduced'|'full', ['reduced','full'], swapFn)` (instant `mesh.material` reassignment, no recompile) plus `window.perfAB?.addSlider('Triplanar slope cutoff', 0.3, 0, 1, 0.01, setUniformFn)` for the 3B steep-gate threshold. Both registrations happen from `terrain-loader.js`'s static import chain (`terrain-textures.js`'s `applySplatTerrain`), not from `environment-viewer.html`, per the frozen `window.perfAB?.addX(...)` contract (`infra.md`) — no viewer edit was needed or made. There is still no `?terrainTextureQuality=` URL flag; `loadTerrainMap`'s `maxShaderLayers`/`slopeCutoff`/`shaderQuality`/`prebuildVariants` options exist as a pass-through material-build surface only (see `terrain-loader.js`'s Public API entry above) — URL flag wiring is left for a later wave, same as `terrainTexture` was in Wave 0.
+
+## Per-frame cost accounting
+
+`terrain.update()` used to sit behind a single profiler slot that hid three unrelated costs, which
+made a 28-57 ms spike unattributable. Since 2026-08-24 the split is:
+
+| Where | What | Reported as |
+|---|---|---|
+| `system.update` | queue maintenance and dispatch, budgeted by `maxChunksPerUpdate` | `stats.lastUpdateMs` |
+| after `system.update`, when `changed` | `applyMaterials()` + `syncVolumeColliders()`, **unbudgeted** | `frameCost.foldMs` |
+| after that | field-window recentre, scheduler pump, coverage | `frameCost.fieldMs` |
+| `w.onmessage`, outside the rAF entirely | `installChunk` for each arriving worker result | `frameCost.installMs` |
+
+`TerrainSystem.onWorkerChunk` wraps the real handler (`onWorkerChunkInner`) and accumulates elapsed
+time into `installMsPending`; `takeInstallCost()` drains it and is called once per frame from
+`base-game-terrain.js`, summing the near system and every cascade level. This matters because that
+work runs on a worker message, not inside `animate()`, so **no profiler slot can ever see it** and it
+surfaces only as a frame-time tail. `terrain.frameCost` returns all four numbers cheaply enough to
+read every frame; `terrain.stats` carries the same values as `lastFoldMs` / `lastFieldMs` /
+`lastInstallMs` / `lastInstallCount` for the performance record.
+
+Note that `maxChunksPerUpdate` budgets *dispatch* only. Up to four workers deliver concurrently, so
+several results can land on one frame regardless of that setting.
+
+### Collider build: why it is on the main thread, and what it costs
+
+`createMapCollider` (`map-collision.js`) was written for **authored maps**: hand it a loaded scene
+root and it walks the graph, bakes every mesh and `InstancedMesh` into de-indexed world-space
+triangles, and builds one `MeshBVH`. That API shape is inherently main-thread, since a scene graph
+cannot cross a worker boundary.
+
+`world-query-chunk-mesh-provider.setChunk` reuses it per streamed chunk, wrapping a single geometry
+in `new THREE.Mesh(geometry)` purely to satisfy `traverse`. So a walk-the-whole-scene function runs
+once per chunk, at streaming rate, on the main thread.
+
+Measured on a 3200-triangle chunk (warm, median of 5):
+
+| path | bake | BVH | total |
+|---|---|---|---|
+| general (bake de-indexed world triangles) | 1.690 ms | 0.575 ms | 2.265 ms |
+| direct (share positions, copy the index) | **0.024 ms** | 0.723 ms | **0.747 ms** |
+
+So the de-index was ~75% of the build, not a rounding error. `createMapCollider` now takes a direct
+path when given exactly one indexed mesh at an identity transform, which is precisely the streamed
+chunk case. It **shares** the position attribute (MeshBVH never writes positions) and **copies** the
+index, because MeshBVH reorders indices in place and a sliced chunk's index is a `subarray` view
+onto the buffer being rendered. `dispose()` skips `geometry.dispose()` on that path for the same
+reason. Anything else -- a transform, several meshes, an `InstancedMesh`, non-indexed geometry --
+falls back to baking, and `collider.buildMs` reports `{ bake, bvh, direct }` so a capture says which
+ran. `test-map-collision.mjs` pins both paths.
+
+Beware measuring this cold: the first `createMapCollider` call in a process reports the BVH at
+~7.8 ms against a warm 0.72 ms, purely JIT warmup. A single cold call reverses the conclusion.
+
+Measured in the browser afterwards, over 1068 chunk builds across five captures, the split is
+steady: **bake 0.046-0.051 ms/chunk, BVH 0.978-1.045 ms/chunk, `direct: true`** -- the de-index is
+gone and the BVH is 95% of what is left. `passTerrainColliderMs` max fell from 4.8-6.6 ms to
+2.4-3.9 ms, and a single rebuild (`lastBvhMs`) from ~6.6 ms to ~1.6 ms.
+
+Moving the BVH into `terrain-worker.js` is still possible -- `three-mesh-bvh` has
+`MeshBVH.serialize()`/`deserialize()` for exactly that -- but at ~1 ms per chunk under a budget of
+one per update it is no longer what a frame is waiting on. Terrain's worst pass across those
+captures is 8.4 ms against a pre-budget 40.1 ms; `postRender` (p50 3.9-6.0 ms, max 14-28 ms) is now
+the largest contributor by a clear margin.
+
+### Per-chunk frustum culling: off by default (2026-08-26)
+
+Verified against the shipped r184 build: `WebGPUBackend._draw` (`three.webgpu.js` ~81451) draws a
+`BatchedMesh` as one `drawIndexed` per visible geometry in a JS loop, passing the slot as
+`firstInstance` so the shader's `instanceIndex` indexes the batch's indirect texture. There is no
+multi-draw path on WebGPU (the `WEBGL_multi_draw` fast path at ~70302 is the WebGL backend), no
+optional device feature three could request, and `geometry.indirect` is ignored for BatchedMesh.
+So batching here never reduced draw calls; what it buys is one scene object / RenderObject /
+pipeline / bind-group set per batch and no per-mesh matrix uploads — still worth having.
+
+Given that, per-chunk frustum culling paid a per-instance matrix + bounding-sphere + frustum loop
+(`three.core.js` `onBeforeRender`, ~169 near + ~75 cascade chunks, per camera per pass, doubled on
+mirror frames) to save ~70 tiny draws against a measured ~1 ms GPU load. It is now off by default:
+with `perObjectFrustumCulled: false` and `sortObjects: false`, `onBeforeRender` early-outs unless
+visibility changed (`three.core.js` ~27218), and every visible chunk is submitted. A/B without
+editing the modules: `params.batchFrustumCulled: true` on `createBaseGameTerrain` restores the old
+behaviour (it feeds `perObjectFrustumCulled` to the near and cascade batchers).
+
+`stats.draws` was fixed at the same time: it used to report batch *objects* (and omitted the
+cascade batchers), which read as "1 draw" against ~100 real ones in a capture. It now reports GPU
+draw calls — visible fallback meshes plus `drawCount` across batches — and `farLod.draws`/
+`farLod.triangles` include the cascade batchers.
+
+**Unmeasured:** the CPU saved by the early-out has not been captured in a browser, and the cull
+loop's share of `passPostMs` is unknown. The profiler already splits `passPostMirrorMs` /
+`passPostPlainMs`; a capture of those with `batchFrustumCulled` true vs false is what settles it.
+
+### The fold-in budget
+
+Measured in the 2026-08-25 captures, the fold was **86% of the terrain pass spike** (up to 35 ms of a
+40 ms pass), so it is now rationed:
+
+- `maxFoldsPerUpdate` (default 2) caps how many chunks are colorized and copied into a
+  `BatchedMesh` per update, shared across the near system and every cascade level.
+- `maxColliderRebuildsPerUpdate` (default 2) caps `volumeProvider.setChunk` calls. The wanted list
+  is sorted by squared distance from the focus, so **the chunk under the player is always rebuilt
+  first** and a budget can never defer the ground someone is standing on.
+- `maxCompactionsPerFrame` (default 1, opt-in) in `terrain-chunk-batches.js` rations
+  `BatchedMesh.optimize()`, which rewrites and re-uploads the batch's entire vertex and index
+  buffer. More than one of those in a frame is a hitch on its own. A batcher using it must call
+  `beginFrame()` each frame or the ration never refills; the default of 0 (unlimited) keeps any
+  other caller unaffected.
+
+Deferring is safe because an unbatched chunk keeps drawing its own mesh (`syncBatches` sets
+`chunk.mesh.visible = !inBatch`), so the cost of missing a turn is one extra draw call for a frame,
+not a hole in the ground. `stats.foldPending` / `stats.colliderPending` report a backlog, and the
+update runs the fold whenever `changed || foldPending || colliderPending` so the backlog always
+drains.
+
+**The budget alone was not enough, and the fold is timed three ways because of it.** The first
+post-budget captures put the worst fold at 18.4 ms against a pre-budget worst of 35.0 ms — but
+18.4 ms under `maxFoldsPerUpdate: 2` cannot be per-chunk batching, so the fold was split rather than
+guessed at a second time:
+
+| Reported as | What | Budgeted? | Measured max |
+|---|---|---|---|
+| `passTerrainColliderMs` | `collisionGeometry` + `volumeProvider.setChunk` (`createMapCollider`) | yes | **4.8-7.5 ms** |
+| `passTerrainBatchMs` | `syncBatches`: colorize + copy into the `BatchedMesh` | yes | 1.0-1.4 ms |
+| `passTerrainColorizeMs` | `colorizeGeometry` over `group.children`, near and every cascade | no | 0.6 ms |
+
+The 2026-08-25 14:21-14:22 captures settled it: **the collider BVH is 91-96% of the fold**
+(7.8 ms fold = 7.5 collider + 1.4 batch + 0.6 colorize). The colorize loop was the prime suspect on
+the reasoning that it runs unbudgeted over every chunk — it is 0.6 ms and does not matter, so
+moving colours to chunk build time would have been wasted work. `maxColliderRebuildsPerUpdate` is
+therefore 1, not 2: `createMapCollider` costs ~2.4-3.75 ms per chunk and 1/frame at 60 Hz still
+outruns the ~14 chunks/s that actually arrive.
+
+Measured effect on the whole pipeline, stable captures only:
+
+| | fps med | frame p95 med | frame p95 worst | fold max med | fold max worst |
+|---|---|---|---|---|---|
+| pre-budget (n=27) | 69.3 | 20.2 | 64.1 | 11.3 | 35.0 |
+| post-budget (n=2, 14:21-14:22) | 71.3 | **18.7** | **19.0** | **6.5** | **7.8** |
+
+`test-base-game-terrain.mjs` section 8 proves it by counting: unbudgeted, one update folds 4 chunks;
+with a budget of 1 it never exceeds 1, and both reach the same 49/49 batched end state with zero
+fallbacks. Timing is deliberately not asserted — headless the analytic chunks are cheap plane
+geometry with no GPU upload, and the measured max moves non-monotonically with the budget, i.e. it is
+noise. The real effect is read from `passTerrainFoldMs` in a browser capture.
 
 ## Tests
 

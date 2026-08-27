@@ -396,6 +396,121 @@ const rain = createBaseGameRain({ scene, terrain, worldCoordinates, maxDrops: 20
   ok(/if \(flash !== shownDamageFlash\)/.test(html), 'and the damage flash only when its opacity changes');
 }
 
+
+// ---- 14. the rain shadow (phase R3) ----------------------------------------------------------
+// Two things are being asserted here. The first is a bug fix: rain.js reports "no roof" as height 0,
+// so before this every drop in the Base Game was cut at scene y = 0 and a valley below the origin
+// got no rain at all. The second is that the bake is held in GLOBAL coordinates, which is what lets
+// a rebase cost two uniform writes instead of a whole re-render.
+{
+  const U = rain.uniforms;
+  ok(U.uOccMiss !== undefined, 'rain.js exposes a separate "no map here" height from the storage floor');
+  ok(U.uOccMiss.value === BASE_GAME_RAIN_DEFAULTS.noDataHeight,
+    'and Base Game sets it below everything at construction, so drops are not cut at y = 0');
+  ok(U.uOccOn.value === 0, 'the shadow starts off, because nothing has been baked');
+
+  // A stub renderer: the bake's bookkeeping is the subject, not the pixels.
+  let renders = 0;
+  const clear = new THREE.Color(0x123456);
+  const renderer = {
+    getRenderTarget: () => null, setRenderTarget: () => {},
+    getClearColor: (out) => out.copy(clear), getClearAlpha: () => 1, setClearColor: () => {},
+    render: () => { renders++; },
+  };
+
+  // A roof: a 20 x 20 slab whose underside is at y = 12, standing over global (300, -150).
+  const roofRoot = new THREE.Group();
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(20, 1, 20), new THREE.MeshBasicMaterial());
+  roof.position.set(300, 12.5, -150);
+  roofRoot.add(roof);
+  scene.add(roofRoot);
+
+  ok(rain.occludersStale(0, 0), 'with nothing baked the shadow is stale by definition');
+  scene.background = new THREE.Color(0x88aaff);   // the page sets one; it must not fill the height map
+  let bgDuringBake = 'unset';
+  renderer.render = () => { renders++; bgDuringBake = scene.background; };
+  const baked = rain.bakeOccluders({ renderer, roots: [roofRoot], centerGlobal: [300, -150], extent: 200, size: 128, top: 200 });
+  ok(baked === true && renders === 1, 'the bake renders the marked roots exactly once');
+  ok(bgDuringBake === null, 'with the scene background off, so the sky colour is not baked in as a height');
+  ok(scene.background !== null, 'and restored afterwards');
+  scene.background = null;
+  ok(roof.layers.mask === new THREE.Layers().mask,
+    'and the occluder layer is disabled again afterwards, so nothing else in the page ever sees it');
+
+  const st = rain.occluderStats;
+  ok(st.baked && st.extent === 200, 'the handle records the window it baked');
+  ok(near(st.center[0], 300) && near(st.center[1], -150), 'the centre is kept in GLOBAL coordinates');
+  // The slab spans y 12..13, so the bounds floor is 12 and the margin drops it to 12 - occMargin.
+  ok(near(st.floor, 12 - BASE_GAME_RAIN_DEFAULTS.occMargin),
+    'the storage floor comes from the roots own bounds, so half-float precision is spent on the relief');
+
+  rain.setOccludersEnabled(true);
+  const camera = new THREE.PerspectiveCamera();
+  rain.update(1 / 60, camera);
+  ok(U.uOccOn.value === 1, 'enabling it with a bake in hand turns the lookup on');
+  ok(near(U.uOccCenter.value.x, 300) && near(U.uOccCenter.value.y, -150),
+    'at origin zero the scene-space centre is the global one');
+  ok(near(U.uOccFloor.value, st.floor), 'and so is the floor');
+
+  // The rebase. Nothing is re-baked; the same texture is re-addressed.
+  const before = renders;
+  origin[0] = 1024; origin[1] = 64; origin[2] = -2048;
+  rain.update(1 / 60, camera);
+  ok(renders === before, 'a rebase does not re-render the bake');
+  ok(near(U.uOccCenter.value.x, 300 - 1024) && near(U.uOccCenter.value.y, -150 + 2048),
+    'the centre follows the render origin in XZ');
+  ok(near(U.uOccFloor.value, st.floor - 64), 'and the floor follows it in Y');
+  // The texture holds globalY - globalFloor, which no origin shift changes; so sample + uOccFloor is
+  // the roof in SCENE space, which is the space the drops are cut in.
+  const storedRoofTop = 13 - st.floor;
+  ok(near(storedRoofTop + U.uOccFloor.value, 13 - 64),
+    'so a stored height reconstructs to the roof in the current scene space');
+
+  origin[0] = 0; origin[1] = 0; origin[2] = 0;
+  rain.update(1 / 60, camera);
+
+  // The plan's middle-half rule: a bake lasts a quarter of the window's width of walking.
+  ok(rain.occludersStale(300, -150) === false, 'standing at the centre, the shadow is fresh');
+  ok(rain.occludersStale(300 + 49, -150) === false, 'and still fresh just inside the middle half');
+  ok(rain.occludersStale(300 + 51, -150) === true, 'walking out of the middle half makes it stale');
+  ok(rain.occludersStale(300, -150 - 51) === true, 'in either axis');
+  ok(rain.occluderDrift === 50, 'which is a quarter of the 200 m window');
+
+  rain.setOccludersEnabled(false);
+  rain.update(1 / 60, camera);
+  ok(U.uOccOn.value === 0, 'turning it off returns roofAt to the miss height everywhere');
+  ok(U.uOccMiss.value === BASE_GAME_RAIN_DEFAULTS.noDataHeight, 'which is still below every ground');
+
+  rain.clearOccluders();
+  ok(rain.occluderStats.baked === false && U.uOccOn.value === 0, 'and the map can be dropped entirely');
+  scene.remove(roofRoot);
+}
+
+// ---- 15. rain.js default behaviour is unchanged for its other two pages -------------------------
+// bot-viewer-v3 and the flight sim bake with no floor and grounds at or above y = 0. Their maps must
+// keep storing absolute heights and reporting 0 where nothing was baked.
+{
+  const U = createRainSystem({ maxDrops: 8, maxSplashes: 8 }).uniforms;
+  ok(U.uOccFloor.value === 0, 'the storage floor defaults to 0, so an existing bake stores absolute heights');
+  ok(U.uOccMiss.value === 0, 'and the miss height defaults to 0, which is what those pages already assumed');
+}
+
+// ---- 16. the page wires the bake as its own cost, not as rain's ---------------------------------
+{
+  const html = await (await import('fs/promises')).readFile('./base-game.html', 'utf8');
+  ok(/frameProfiler\.time\('rainBake'/.test(html),
+    'the bake gets its own profiler slot, so a whole extra scene render is not read as rain costing 5 ms');
+  ok(/'rainBake'/.test(html.slice(html.indexOf('BASE_GAME_FRAME_SLOTS'), html.indexOf('BASE_GAME_FRAME_SLOTS') + 300)),
+    'and is counted in the accounted-for frame total');
+  ok(/rainOccluders: 'lab'/.test(html), "the default is the Traversal Lab only: open terrain has nothing over it yet");
+  const fn = html.slice(html.indexOf('function updateRainOccluders()'));
+  const gate = fn.slice(0, fn.indexOf('const lab ='));
+  ok(/rain\.system\.getDensity\(\) <= 0/.test(gate), 'and a dry world never bakes at all');
+  ok(/terrain\.residencyRevision !== rainOccResidency/.test(fn),
+    'in terrain mode the bake is redone when the resident chunk set changes');
+  ok(/rain\.occludersStale/.test(fn), 'and when the player walks out of the middle half of the window');
+}
+
 seaDepth.dispose();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

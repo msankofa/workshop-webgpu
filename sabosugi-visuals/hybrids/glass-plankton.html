@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glass Plankton</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #04060f; }
+  #canvas-container { position: fixed; inset: 0; }
+  #status {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    color: #8fa6c8; background: rgba(4, 6, 15, 0.72);
+    padding: 5px 10px; border-radius: 4px; pointer-events: none;
+  }
+  #credit {
+    position: fixed; left: 12px; top: 10px; z-index: 10; max-width: 46ch;
+    font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; color: #5c7191;
+  }
+  #credit a { color: #7fd8ff; text-decoration: none; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../../node_modules/three/build/three.module.js",
+    "three/addons/": "../../node_modules/three/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="canvas-container"></div>
+<div id="credit">
+  Glass Plankton — a hybrid of two MIT-licensed CodePen visuals by
+  <a href="https://codepen.io/sabosugi" target="_blank" rel="noopener">sabosugi</a>:
+  <a href="https://codepen.io/sabosugi/pen/pvbKxKQ" target="_blank" rel="noopener">Vector Plankton</a>
+  and <a href="https://codepen.io/sabosugi/pen/bNwjyXP" target="_blank" rel="noopener">Glass Logo with Panorama</a>.
+</div>
+<div id="status">loading…</div>
+<input type="file" id="svgInput" accept=".svg" hidden>
+<input type="file" id="bgInput" accept="image/*" hidden>
+
+<script type="module">
+/**
+ * Glass Plankton — one SVG, two renderings of it, bound together.
+ *
+ * Both source pens begin at the same call: SVGLoader.parse(text).paths. The glass pen turns those paths
+ * into filled shapes and extrudes them into a transmissive solid; the plankton pen samples the same paths
+ * as polylines and smears N interpolated copies between a start and an end transform. Feeding one parse
+ * to both consumers makes the trail an outline of the very object it resolves into, so the piece reads as
+ * the logo condensing out of a swarm rather than as two effects sharing a canvas.
+ *
+ * The near end of the trail is bound to the glass logo's live transform, so the swarm tracks the solid as
+ * it turns instead of drifting against it.
+ *
+ * The trail lines are additive AND opaque, which sounds contradictory but is the whole trick. Three only
+ * forces NoBlending when blending === NormalBlending && transparent === false (WebGLState.setMaterial),
+ * so an additive material with transparent:false keeps its blending and still sorts into the opaque
+ * bucket — and renderTransmissionPass only feeds opaque and transmissive objects into the buffer that
+ * transmissive materials sample. A transparent trail would composite over the glass; this one refracts
+ * through it.
+ */
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { SVGLoader } from 'three/addons/loaders/SVGLoader.js';
+import GUI from 'three/addons/libs/lil-gui.module.min.js';
+import { createDiskStore, describeStatus } from '../../disk-store.js';
+
+const params = {
+  // Shared shape — both consumers are normalised into the same world-space box.
+  shapeSize: 60,
+  sampleResolution: 900,
+
+  // Glass solid
+  glassColor: '#ffffff',
+  transmission: 1.0,
+  roughness: 0.05,
+  metalness: 0.1,
+  ior: 2.33,
+  thickness: 90.0,
+  extrudeDepth: 14.0,
+  bevelThickness: 2.4,
+  bevelSize: 1.1,
+  logoSize: 1.0,
+
+  // Plankton trail
+  trailSteps: 100,
+  trailColorFar: '#002aff',
+  trailColorNear: '#67e9e1',
+  trailOpacityFar: 0.10,
+  trailOpacityNear: 0.90,
+  startX: 0, startY: 0, startZ: -420,
+  startRotX: 0, startRotY: -0.25, startRotZ: -0.41,
+  startScale: 2.0,
+  animSpeed: 1.435,
+  waveStrength: 9.0,
+  waveFreqShape: 0.0,
+  waveFreqTrail: 1.8,
+  twist: -0.212,
+  randomMotion: 6.0,
+  refractTrail: true,
+  resolveIntoLogo: true,
+  tailEase: 2.0,
+
+  // Environment
+  envTop: '#0a1130',
+  envHorizon: '#7fd8ff',
+  envBottom: '#04060f',
+  envBlobs: 9,
+  envSeed: 7,
+  bgSpeed: 0.05,
+
+  // Motion
+  autoRotate: true,
+  followCursor: true,
+  tiltFreedom: 28,
+};
+
+// Captured before applySaved runs, which is the only moment params still holds the authored values.
+const DEFAULTS = JSON.parse(JSON.stringify(params));
+
+const actions = {
+  uploadSvg: () => document.getElementById('svgInput').click(),
+  uploadBg: () => document.getElementById('bgInput').click(),
+  resetShape: () => { currentSvgText = DEFAULT_SVG; loadSVG(currentSvgText); },
+  reset: () => resetToDefaults(),
+};
+
+// --- Scene ---------------------------------------------------------------------------------------
+
+const container = document.getElementById('canvas-container');
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(25, window.innerWidth / window.innerHeight, 1, 8000);
+camera.position.set(0, 0, 250);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+container.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.enableZoom = false;
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+dirLight.position.set(50, 50, 50);
+scene.add(dirLight);
+const pointLight = new THREE.PointLight(0xabcdef, 5, 500);
+pointLight.position.set(-50, -50, 50);
+scene.add(pointLight);
+
+const glassMaterial = new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color(params.glassColor),
+  metalness: params.metalness,
+  roughness: params.roughness,
+  transmission: params.transmission,
+  ior: params.ior,
+  thickness: params.thickness,
+  transparent: true,
+  side: THREE.DoubleSide,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.1,
+});
+
+const logoWrapper = new THREE.Group();
+scene.add(logoWrapper);
+
+const trailGroup = new THREE.Group();
+scene.add(trailGroup);
+
+// --- Environment panorama ------------------------------------------------------------------------
+
+// Drawn here rather than fetched, so the page has no remote asset to lose. The blobs give the glass
+// something with structure to bend; a flat gradient refracts into mush.
+let panoramaTexture = null;
+
+function buildPanorama() {
+  const w = 1024, h = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0.0, params.envTop);
+  sky.addColorStop(0.5, params.envHorizon);
+  sky.addColorStop(1.0, params.envBottom);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  let seed = params.envSeed >>> 0;
+  const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < params.envBlobs; i++) {
+    const cx = rand() * w;
+    const cy = h * (0.15 + rand() * 0.7);
+    const r = h * (0.06 + rand() * 0.22);
+    const tint = new THREE.Color(params.envHorizon).lerp(new THREE.Color(0xffffff), rand() * 0.8);
+    const rgb = [(tint.r * 255) | 0, (tint.g * 255) | 0, (tint.b * 255) | 0].join(',');
+    const blob = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    blob.addColorStop(0, 'rgba(' + rgb + ',0.85)');
+    blob.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = blob;
+    ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  return tex;
+}
+
+function applyEnvironment(tex) {
+  if (panoramaTexture && panoramaTexture !== tex) panoramaTexture.dispose();
+  panoramaTexture = tex;
+  scene.environment = tex;
+  scene.background = tex;
+}
+
+function regeneratePanorama() {
+  applyEnvironment(buildPanorama());
+}
+
+function loadBackgroundImage(url) {
+  new THREE.TextureLoader().load(url, (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    applyEnvironment(tex);
+  });
+}
+
+// --- One SVG, two consumers ----------------------------------------------------------------------
+
+const DEFAULT_SVG = [
+  '<svg width="800" height="800" viewBox="0 0 800 800" xmlns="http://www.w3.org/2000/svg">',
+  '<path d="M666.667 533.333H400V800L133.333 533.333V266.667H400L666.667 533.333Z" fill="black"/>',
+  '<path d="M666.334 266.667H399.667L133 0H666.334V266.667Z" fill="black"/>',
+  '</svg>',
+].join('\n');
+
+const svgLoader = new SVGLoader();
+
+// Everything downstream reads from this: the outline polylines for the trail, the raw paths for the
+// extrusion, and the one normalisation both must share so the two renderings actually line up.
+let shape = null;
+let currentSvgText = DEFAULT_SVG;
+
+function parseSharedShape(svgText) {
+  const paths = svgLoader.parse(svgText).paths;
+
+  const raw = [];
+  const cuts = new Set();
+  for (const path of paths) {
+    for (const sub of path.subPaths) {
+      const len = sub.getLength();
+      if (len <= 0.1) continue;
+      const pts = sub.getPoints(Math.max(2, Math.floor(len * 2)));
+      for (const p of pts) raw.push(p.x, p.y);
+      cuts.add(raw.length / 2 - 1);
+    }
+  }
+  if (raw.length === 0) return null;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < raw.length; i += 2) {
+    if (raw[i] < minX) minX = raw[i];
+    if (raw[i] > maxX) maxX = raw[i];
+    if (raw[i + 1] < minY) minY = raw[i + 1];
+    if (raw[i + 1] > maxY) maxY = raw[i + 1];
+  }
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const extent = Math.max(maxX - minX, maxY - minY) || 1;
+  const scale = params.shapeSize / extent;
+
+  // Decimate the way the plankton pen does, keeping the subpath breaks so open strokes stay open.
+  const count = raw.length / 2;
+  const step = count > params.sampleResolution ? Math.ceil(count / params.sampleResolution) : 1;
+  const points = [];
+  const keptCuts = new Set();
+  for (let i = 0; i < count; i += step) {
+    // Y is negated here and the extrusion is rotated 180 degrees about X below: both land Y-up.
+    points.push((raw[i * 2] - cx) * scale, -(raw[i * 2 + 1] - cy) * scale, 0);
+    for (let k = 0; k < step; k++) if (cuts.has(i + k)) keptCuts.add(points.length / 3 - 1);
+  }
+
+  return { paths, points: new Float32Array(points), cuts: keptCuts, cx, cy, scale };
+}
+
+function buildGlassMesh() {
+  for (let i = logoWrapper.children.length - 1; i >= 0; i--) {
+    const child = logoWrapper.children[i];
+    child.geometry.dispose();
+    logoWrapper.remove(child);
+  }
+  if (!shape) return;
+
+  // Extrusion depths are authored in world units, so convert them back into the SVG's own scale.
+  const depthSVG = params.extrudeDepth / shape.scale;
+  const bevelThicknessSVG = params.bevelThickness / shape.scale;
+  const bevelSizeSVG = params.bevelSize / shape.scale;
+
+  const allShapes = [];
+  for (const path of shape.paths) {
+    const shapes = SVGLoader.createShapes(path);
+    if (shapes.length > 0) allShapes.push(...shapes);
+    else allShapes.push(...path.toShapes(true));
+  }
+  if (allShapes.length === 0) return;
+
+  const settings = {
+    depth: depthSVG,
+    bevelEnabled: bevelThicknessSVG > 0 || bevelSizeSVG > 0,
+    bevelSegments: 4,
+    steps: 2,
+    bevelSize: bevelSizeSVG,
+    bevelThickness: bevelThicknessSVG,
+  };
+
+  let geometry;
+  try {
+    geometry = new THREE.ExtrudeGeometry(allShapes, settings);
+  } catch (err) {
+    console.warn('Bevel failed, extruding flat instead', err);
+    geometry = new THREE.ExtrudeGeometry(allShapes, Object.assign({}, settings, { bevelEnabled: false }));
+  }
+
+  geometry.translate(-shape.cx, -shape.cy, -depthSVG / 2);
+  geometry.scale(shape.scale, shape.scale, shape.scale);
+  // A rotation rather than a Y mirror: mirroring reverses the winding and inverts the normals, which
+  // a transmissive material shows immediately.
+  geometry.rotateX(Math.PI);
+
+  logoWrapper.add(new THREE.Mesh(geometry, glassMaterial));
+  logoWrapper.scale.setScalar(params.logoSize);
+}
+
+function buildTrail() {
+  for (let i = trailGroup.children.length - 1; i >= 0; i--) {
+    const line = trailGroup.children[i];
+    line.geometry.dispose();
+    line.material.dispose();
+    trailGroup.remove(line);
+  }
+  if (!shape) return;
+
+  const total = shape.points.length / 3;
+  const indices = [];
+  for (let i = 0; i < total - 1; i++) if (!shape.cuts.has(i)) indices.push(i, i + 1);
+
+  const far = new THREE.Color(params.trailColorFar);
+  const near = new THREE.Color(params.trailColorNear);
+  const steps = Math.max(2, Math.round(params.trailSteps));
+
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(total * 3), 3));
+    geometry.setIndex(indices);
+
+    const opacity = THREE.MathUtils.lerp(params.trailOpacityFar, params.trailOpacityNear, t);
+    const color = far.clone().lerp(near, t);
+    // The refract path bakes the fade into the colour, because an opaque material has no alpha to
+    // fade with — additive blending against a dark sky reads the same either way.
+    if (params.refractTrail) color.multiplyScalar(opacity);
+
+    const material = new THREE.LineBasicMaterial({
+      color,
+      transparent: !params.refractTrail,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+
+    const line = new THREE.LineSegments(geometry, material);
+    line.userData.t = t;
+    line.frustumCulled = false;
+    trailGroup.add(line);
+  }
+}
+
+function loadSVG(svgText) {
+  const parsed = parseSharedShape(svgText);
+  if (!parsed) {
+    console.warn('No drawable paths in that SVG.');
+    return false;
+  }
+  shape = parsed;
+  buildGlassMesh();
+  buildTrail();
+  return true;
+}
+
+// --- Animation -----------------------------------------------------------------------------------
+
+const clock = new THREE.Clock();
+const mouse = new THREE.Vector2();
+const targetParallax = new THREE.Vector2();
+const currentParallax = new THREE.Vector2();
+
+const startEuler = new THREE.Euler();
+const endEuler = new THREE.Euler();
+const v1 = new THREE.Vector3();
+const v2 = new THREE.Vector3();
+const startPos = new THREE.Vector3();
+const endPos = new THREE.Vector3();
+const camPos = new THREE.Vector3();
+const camQuat = new THREE.Quaternion();
+const right = new THREE.Vector3();
+const up = new THREE.Vector3();
+
+window.addEventListener('mousemove', (event) => {
+  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+});
+
+function updateTrail(time) {
+  if (!shape || trailGroup.children.length === 0) return;
+
+  startEuler.set(params.startRotX, params.startRotY, params.startRotZ);
+  // The near end IS the glass logo, which is what binds the two pens together.
+  endEuler.copy(logoWrapper.rotation);
+  const endScale = params.logoSize;
+
+  let rx1 = 0, ry1 = 0, rx2 = 0, ry2 = 0;
+  if (params.randomMotion > 0) {
+    const m = params.randomMotion;
+    rx1 = (Math.sin(time * 0.7) + Math.cos(time * 1.9)) * m;
+    ry1 = (Math.cos(time * 0.8) + Math.sin(time * 2.1)) * m;
+    rx2 = (Math.sin(time * 0.9 + 42) + Math.cos(time * 2.3)) * m;
+    ry2 = (Math.cos(time * 1.1 + 13) + Math.sin(time * 2.5)) * m;
+  }
+
+  startPos.set(params.startX + rx1, params.startY + ry1, params.startZ);
+  // Only the far end drifts freely; the near end stays close to the solid so the trail lands on it.
+  endPos.set(rx2 * 0.15, ry2 * 0.15, 0);
+
+  const base = shape.points;
+  const count = base.length / 3;
+
+  for (const line of trailGroup.children) {
+    const t = line.userData.t;
+    const out = line.geometry.attributes.position.array;
+
+    line.position.lerpVectors(startPos, endPos, t);
+
+    // Wave and twist ease out towards the logo, so the swarm resolves into the solid silhouette
+    // instead of buzzing around it.
+    const settle = params.resolveIntoLogo ? Math.pow(1 - t, Math.max(0.01, params.tailEase)) : 1;
+    const twistAngle = t * params.twist * Math.PI * 2 * settle;
+    const cosA = Math.cos(twistAngle);
+    const sinA = Math.sin(twistAngle);
+    const waveAmp = params.waveStrength * settle;
+    const trailPhase = time * params.animSpeed + t * Math.PI * params.waveFreqTrail;
+
+    for (let j = 0; j < count; j++) {
+      const px = base[j * 3];
+      const py = base[j * 3 + 1];
+
+      v1.set(px, py, 0).multiplyScalar(params.startScale).applyEuler(startEuler);
+      v2.set(px, py, 0).multiplyScalar(endScale).applyEuler(endEuler);
+
+      let x = v1.x + (v2.x - v1.x) * t;
+      let y = v1.y + (v2.y - v1.y) * t;
+      let z = v1.z + (v2.z - v1.z) * t;
+
+      if (twistAngle !== 0) {
+        const tx = x * cosA - y * sinA;
+        y = x * sinA + y * cosA;
+        x = tx;
+      }
+
+      if (waveAmp > 0) {
+        z += Math.sin(trailPhase + j * 0.01 * params.waveFreqShape) * waveAmp;
+      }
+
+      out[j * 3] = x;
+      out[j * 3 + 1] = y;
+      out[j * 3 + 2] = z;
+    }
+
+    line.geometry.attributes.position.needsUpdate = true;
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const time = clock.getElapsedTime();
+
+  if (params.autoRotate) {
+    logoWrapper.rotation.y += 0.3 * dt;
+    logoWrapper.rotation.x = Math.sin(time * 0.5) * 0.2;
+  }
+
+  scene.backgroundRotation.y += params.bgSpeed * dt;
+  scene.environmentRotation.y = scene.backgroundRotation.y;
+
+  updateTrail(time);
+  controls.update();
+
+  targetParallax.set(
+    params.followCursor ? mouse.x * -20 : 0,
+    params.followCursor ? mouse.y * -20 : 0,
+  );
+  currentParallax.lerp(targetParallax, 0.05);
+
+  camPos.copy(camera.position);
+  camQuat.copy(camera.quaternion);
+  if (currentParallax.lengthSq() > 0.0001) {
+    right.setFromMatrixColumn(camera.matrixWorld, 0);
+    up.setFromMatrixColumn(camera.matrixWorld, 1);
+    camera.position.addScaledVector(right, currentParallax.x);
+    camera.position.addScaledVector(up, currentParallax.y);
+    camera.lookAt(controls.target);
+  }
+  renderer.render(scene, camera);
+  camera.position.copy(camPos);
+  camera.quaternion.copy(camQuat);
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function updateCameraLimits() {
+  const limit = (params.tiltFreedom * Math.PI) / 180;
+  controls.minPolarAngle = Math.PI / 2 - limit;
+  controls.maxPolarAngle = Math.PI / 2 + limit;
+}
+
+// --- Settings on disk ----------------------------------------------------------------------------
+
+const SAVED_KEYS = Object.keys(params);
+
+const store = createDiskStore({
+  read: '/glass-plankton.json',
+  write: '/api/save-glass-plankton',
+  storage: typeof localStorage !== 'undefined' ? localStorage : null,
+  key: 'sabosugi:glass-plankton',
+});
+
+const statusEl = document.getElementById('status');
+store.onStatus((s) => { statusEl.textContent = describeStatus(s, { file: 'glass-plankton.json' }); });
+
+function snapshot() {
+  const out = {};
+  for (const k of SAVED_KEYS) out[k] = params[k];
+  return out;
+}
+
+function applySaved(saved) {
+  if (!saved) return;
+  for (const k of SAVED_KEYS) {
+    if (saved[k] !== undefined && typeof saved[k] === typeof params[k]) params[k] = saved[k];
+  }
+}
+
+/** Back to the authored look: every value, the shape, the panorama, the camera, and the file on disk. */
+function resetToDefaults() {
+  Object.assign(params, JSON.parse(JSON.stringify(DEFAULTS)));
+
+  glassMaterial.color.set(params.glassColor);
+  glassMaterial.transmission = params.transmission;
+  glassMaterial.roughness = params.roughness;
+  glassMaterial.metalness = params.metalness;
+  glassMaterial.ior = params.ior;
+  glassMaterial.thickness = params.thickness;
+
+  // None of these live in params, and leaving them is what makes a reset feel like it did nothing.
+  camera.position.set(0, 0, 250);
+  controls.target.set(0, 0, 0);
+  controls.update();
+  logoWrapper.rotation.set(0, 0, 0);
+  currentSvgText = DEFAULT_SVG;
+
+  updateCameraLimits();
+  regeneratePanorama();
+  loadSVG(currentSvgText);
+
+  for (const c of gui.controllersRecursive()) c.updateDisplay();
+  store.setJSON(snapshot(), { immediate: true });
+}
+
+// --- GUI -----------------------------------------------------------------------------------------
+
+const gui = new GUI({ title: 'Glass Plankton' });
+gui.add(actions, 'reset').name('Reset everything to defaults');
+
+const fileFolder = gui.addFolder('Shape');
+fileFolder.add(actions, 'uploadSvg').name('Load SVG');
+fileFolder.add(actions, 'resetShape').name('Reset to default');
+fileFolder.add(params, 'shapeSize', 10, 200, 1).name('Shape Size').onChange(() => loadSVG(currentSvgText));
+fileFolder.add(params, 'sampleResolution', 100, 3000, 50).name('Outline Samples').onChange(() => loadSVG(currentSvgText));
+
+const glassFolder = gui.addFolder('Glass Solid');
+glassFolder.addColor(params, 'glassColor').name('Colour').onChange((v) => glassMaterial.color.set(v));
+glassFolder.add(params, 'transmission', 0, 1, 0.01).onChange((v) => { glassMaterial.transmission = v; });
+glassFolder.add(params, 'roughness', 0, 1, 0.01).onChange((v) => { glassMaterial.roughness = v; });
+glassFolder.add(params, 'metalness', 0, 1, 0.01).onChange((v) => { glassMaterial.metalness = v; });
+glassFolder.add(params, 'ior', 1, 2.33, 0.01).name('IOR').onChange((v) => { glassMaterial.ior = v; });
+glassFolder.add(params, 'thickness', 0, 200, 0.5).onChange((v) => { glassMaterial.thickness = v; });
+glassFolder.add(params, 'extrudeDepth', 1, 120, 0.5).name('Extrude Depth').onChange(buildGlassMesh);
+glassFolder.add(params, 'bevelThickness', 0, 20, 0.1).name('Bevel Thickness').onChange(buildGlassMesh);
+glassFolder.add(params, 'bevelSize', 0, 20, 0.1).name('Bevel Size').onChange(buildGlassMesh);
+glassFolder.add(params, 'logoSize', 0.05, 3, 0.01).name('Logo Size').onChange((v) => logoWrapper.scale.setScalar(v));
+
+const trailFolder = gui.addFolder('Plankton Trail');
+trailFolder.add(params, 'trailSteps', 2, 200, 1).name('Steps').onChange(buildTrail);
+trailFolder.addColor(params, 'trailColorFar').name('Far Colour').onChange(buildTrail);
+trailFolder.addColor(params, 'trailColorNear').name('Near Colour').onChange(buildTrail);
+trailFolder.add(params, 'trailOpacityFar', 0, 1, 0.01).name('Far Opacity').onChange(buildTrail);
+trailFolder.add(params, 'trailOpacityNear', 0, 1, 0.01).name('Near Opacity').onChange(buildTrail);
+trailFolder.add(params, 'refractTrail').name('Refract Through Glass').onChange(buildTrail);
+trailFolder.add(params, 'resolveIntoLogo').name('Resolve Into Logo');
+trailFolder.add(params, 'tailEase', 0.2, 8, 0.1).name('Resolve Sharpness');
+
+const startFolder = gui.addFolder('Trail Far End');
+startFolder.add(params, 'startX', -400, 400, 1).name('Pos X');
+startFolder.add(params, 'startY', -400, 400, 1).name('Pos Y');
+startFolder.add(params, 'startZ', -1200, 400, 1).name('Pos Z');
+startFolder.add(params, 'startScale', 0, 6, 0.01).name('Scale');
+startFolder.add(params, 'startRotX', -Math.PI, Math.PI, 0.001).name('Rot X');
+startFolder.add(params, 'startRotY', -Math.PI, Math.PI, 0.001).name('Rot Y');
+startFolder.add(params, 'startRotZ', -Math.PI, Math.PI, 0.001).name('Rot Z');
+
+const animFolder = gui.addFolder('Animation');
+animFolder.add(params, 'animSpeed', 0, 5, 0.001).name('Time Speed');
+animFolder.add(params, 'waveStrength', 0, 100, 0.1).name('Wave Amplitude');
+animFolder.add(params, 'waveFreqShape', 0, 50, 0.1).name('Wave Freq (Shape)');
+animFolder.add(params, 'waveFreqTrail', 0, 20, 0.01).name('Wave Freq (Trail)');
+animFolder.add(params, 'twist', -2, 2, 0.001).name('Spiral Twist');
+animFolder.add(params, 'randomMotion', 0, 50, 0.1).name('Random Motion');
+animFolder.add(params, 'autoRotate').name('Auto-Rotate');
+animFolder.add(params, 'followCursor').name('Follow Cursor');
+animFolder.add(params, 'tiltFreedom', 0, 90, 1).name('Camera Tilt').onChange(updateCameraLimits);
+
+const envFolder = gui.addFolder('Environment');
+envFolder.add(actions, 'uploadBg').name('Load Panorama');
+envFolder.addColor(params, 'envTop').name('Sky Top').onChange(regeneratePanorama);
+envFolder.addColor(params, 'envHorizon').name('Horizon').onChange(regeneratePanorama);
+envFolder.addColor(params, 'envBottom').name('Ground').onChange(regeneratePanorama);
+envFolder.add(params, 'envBlobs', 0, 40, 1).name('Highlights').onChange(regeneratePanorama);
+envFolder.add(params, 'envSeed', 1, 999, 1).name('Highlight Seed').onChange(regeneratePanorama);
+envFolder.add(params, 'bgSpeed', -0.5, 0.5, 0.01).name('Sky Drift');
+envFolder.add(dirLight, 'intensity', 0, 10, 0.1).name('Main Light');
+
+gui.onFinishChange(() => store.setJSON(snapshot()));
+
+trailFolder.open();
+glassFolder.open();
+
+// --- Boot ----------------------------------------------------------------------------------------
+
+document.getElementById('svgInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const text = String(ev.target.result);
+    if (loadSVG(text)) currentSvgText = text;
+  };
+  reader.readAsText(file);
+});
+
+document.getElementById('bgInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) loadBackgroundImage(URL.createObjectURL(file));
+});
+
+window.addEventListener('resize', onWindowResize);
+
+await store.load();
+applySaved(store.json(null));
+for (const c of gui.controllersRecursive()) c.updateDisplay();
+
+glassMaterial.color.set(params.glassColor);
+glassMaterial.transmission = params.transmission;
+glassMaterial.roughness = params.roughness;
+glassMaterial.metalness = params.metalness;
+glassMaterial.ior = params.ior;
+glassMaterial.thickness = params.thickness;
+
+updateCameraLimits();
+regeneratePanorama();
+loadSVG(currentSvgText);
+animate();
+</script>
+</body>
+</html>

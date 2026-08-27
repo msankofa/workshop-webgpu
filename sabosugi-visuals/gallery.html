@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sabosugi Gallery</title>
+<style>
+  :root {
+    --bg: #070b14;
+    --panel: #0d1320;
+    --panel-2: #121a2b;
+    --line: #1e2942;
+    --text: #d6e2f5;
+    --dim: #7186a8;
+    --accent: #7fd8ff;
+    --warn: #ffc46b;
+  }
+  * { box-sizing: border-box; }
+  /* An id rule that sets display outranks the browser's own [hidden] rule, so setting the attribute in
+     script would quietly do nothing. This puts the attribute back in charge for every element here. */
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
+  body {
+    display: grid; grid-template-columns: 320px 1fr;
+    font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  #sidebar { display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); min-height: 0; }
+  #sidebar header { padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }
+  #sidebar h1 { margin: 0 0 3px; font-size: 15px; font-weight: 600; letter-spacing: 0.01em; }
+  #sidebar .sub { color: var(--dim); font-size: 12px; }
+  #sidebar .sub a { color: var(--accent); text-decoration: none; }
+
+  #filters { padding: 10px 14px; display: grid; gap: 8px; border-bottom: 1px solid var(--line); }
+  #search, #category {
+    width: 100%; padding: 7px 9px; border-radius: 5px; color: var(--text);
+    background: var(--panel-2); border: 1px solid var(--line); font: inherit;
+  }
+  #search:focus, #category:focus { outline: none; border-color: var(--accent); }
+  #count { color: var(--dim); font-size: 11px; }
+
+  #list { flex: 1; overflow-y: auto; min-height: 0; padding: 6px 0 20px; }
+  .group { padding: 12px 14px 4px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .pen {
+    display: block; width: 100%; text-align: left; padding: 7px 14px; cursor: pointer;
+    background: none; border: 0; border-left: 2px solid transparent; color: var(--text); font: inherit;
+  }
+  .pen:hover { background: var(--panel-2); }
+  .pen[aria-current="true"] { background: var(--panel-2); border-left-color: var(--accent); }
+  .pen .name { display: block; }
+  .pen .meta { display: block; color: var(--dim); font-size: 11px; }
+  .flag {
+    display: inline-block; margin-left: 5px; padding: 0 5px; border-radius: 3px;
+    font-size: 10px; line-height: 15px; background: #24304a; color: var(--warn);
+  }
+
+  #stage { position: relative; min-width: 0; background: #000; }
+  #frame { width: 100%; height: 100%; border: 0; display: block; background: #000; }
+  #placeholder {
+    position: absolute; inset: 0; display: grid; place-content: center; gap: 6px;
+    text-align: center; color: var(--dim); padding: 40px;
+  }
+  #placeholder strong { color: var(--text); font-size: 15px; font-weight: 600; }
+
+  /* Everything here stays left of centre. Nearly every pen puts its own lil-gui panel at the top right,
+     so that corner has to stay clear or the gallery sits on top of the controls you came to use. */
+  #bar {
+    position: absolute; left: 0; right: 0; top: 0; z-index: 5;
+    display: flex; gap: 8px; align-items: center; padding: 8px 12px;
+    background: linear-gradient(180deg, rgba(7,11,20,0.92) 0%, rgba(7,11,20,0.55) 55%, rgba(7,11,20,0) 100%);
+    pointer-events: none;
+  }
+  #bar > * { pointer-events: auto; }
+  #bar .spacer { flex: 1; pointer-events: none; }
+  #title { font-weight: 600; margin-right: 4px; }
+  #bar a, #bar button {
+    color: var(--text); background: rgba(18,26,43,0.85); border: 1px solid var(--line);
+    border-radius: 5px; padding: 4px 9px; font: inherit; text-decoration: none; cursor: pointer;
+    white-space: nowrap;
+  }
+  #bar a:hover, #bar button:hover { border-color: var(--accent); color: var(--accent); }
+  #notice { color: var(--warn); font-size: 12px; }
+
+  /* The one thing that survives hiding. Bottom left, because lil-gui lives top right and a fair few
+     pens put a caption or a file drop at the bottom centre. */
+  #peek {
+    position: absolute; left: 10px; bottom: 10px; z-index: 6; display: none; gap: 4px;
+    background: rgba(13,19,32,0.82); border: 1px solid var(--line); border-radius: 6px; padding: 3px;
+    backdrop-filter: blur(3px);
+  }
+  #peek button {
+    color: var(--dim); background: none; border: 0; border-radius: 4px;
+    padding: 3px 8px; font: inherit; cursor: pointer; line-height: 18px;
+  }
+  #peek button:hover { color: var(--accent); background: var(--panel-2); }
+
+  body.chrome-hidden { grid-template-columns: 1fr; }
+  body.chrome-hidden #sidebar,
+  body.chrome-hidden #bar { display: none; }
+  body.chrome-hidden #peek { display: flex; }
+
+  @media (max-width: 820px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 45% 55%; }
+    #sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+    body.chrome-hidden { grid-template-rows: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <header>
+    <h1>Sabosugi Gallery</h1>
+    <div class="sub">
+      Reference visuals by <a href="https://codepen.io/sabosugi" target="_blank" rel="noopener">sabosugi</a>,
+      plus our hybrids. Each runs in its own frame.
+    </div>
+  </header>
+  <div id="filters">
+    <input id="search" type="search" placeholder="Search visuals…" autocomplete="off">
+    <select id="category"><option value="">All categories</option></select>
+    <div id="count"></div>
+  </div>
+  <div id="list"></div>
+</div>
+
+<div id="stage">
+  <div id="bar">
+    <span id="title"></span>
+    <button id="hide" title="Hide the gallery so the visual's own controls are reachable">Hide UI</button>
+    <button id="reload" hidden>Restart</button>
+    <a id="open" target="_blank" rel="noopener" hidden>Open alone</a>
+    <a id="source" target="_blank" rel="noopener" hidden>Original pen</a>
+    <span id="notice"></span>
+    <span class="spacer"></span>
+  </div>
+  <div id="peek">
+    <button id="peek-prev" title="Previous visual">‹</button>
+    <button id="peek-show" title="Show the gallery again">Show UI</button>
+    <button id="peek-next" title="Next visual">›</button>
+  </div>
+  <iframe id="frame" title="Selected visual" allow="autoplay; fullscreen" hidden></iframe>
+  <div id="placeholder">
+    <strong>Pick a visual</strong>
+    <span>Ninety-four pens and six hybrids. Each one loads in an isolated frame, so switching away
+      disposes its WebGL context and stops its render loop.</span>
+  </div>
+</div>
+
+<script type="module">
+/**
+ * A shell around visuals that were never written to share a page.
+ *
+ * These pens pin nine different Three versions between them, almost all build their own lil-gui panel,
+ * most append a canvas straight to document.body, and hardly any dispose anything or stop their render
+ * loop. Hosting them in one scene would mean rewriting all of them. An iframe per pen costs nothing and
+ * gives each its own document, module registry, GUI and rAF loop for free — and replacing the frame is
+ * the teardown the pens themselves never implement.
+ *
+ * The list comes from pens-manifest.json, which build-manifest.py regenerates from VISUALS_INDEX.md and
+ * the pens themselves. Zipped pens are served out of their archives by serve.py's /sabosugi/ route.
+ */
+
+const listEl = document.getElementById('list');
+const searchEl = document.getElementById('search');
+const categoryEl = document.getElementById('category');
+const countEl = document.getElementById('count');
+const frameEl = document.getElementById('frame');
+const placeholderEl = document.getElementById('placeholder');
+const titleEl = document.getElementById('title');
+const noticeEl = document.getElementById('notice');
+const sourceEl = document.getElementById('source');
+const openEl = document.getElementById('open');
+const reloadEl = document.getElementById('reload');
+
+let pens = [];
+let current = null;
+
+function describeFlags(pen) {
+  const flags = [];
+  if (pen.wantsFile) flags.push({ label: 'needs a file', title: 'Shows a default or nothing until you load an SVG, image or video into it.' });
+  if (pen.remoteAssets && pen.remoteAssets.length) flags.push({ label: 'needs network', title: 'Fetches assets from ' + pen.remoteAssets.join(', ') });
+  if (pen.hasAudio) flags.push({ label: 'audio', title: 'Has sound. Browsers block autoplay until you click inside the frame.' });
+  if (pen.hasVideo) flags.push({ label: 'video', title: 'Plays or processes video.' });
+  return flags;
+}
+
+function render() {
+  const query = searchEl.value.trim().toLowerCase();
+  const category = categoryEl.value;
+  const shown = pens.filter((pen) => {
+    if (category && pen.category !== category) return false;
+    if (!query) return true;
+    return (pen.title + ' ' + pen.subcategory + ' ' + pen.category).toLowerCase().includes(query);
+  });
+
+  countEl.textContent = shown.length === pens.length
+    ? pens.length + ' visuals'
+    : shown.length + ' of ' + pens.length + ' visuals';
+
+  listEl.textContent = '';
+  let lastCategory = null;
+  for (const pen of shown) {
+    if (pen.category !== lastCategory) {
+      lastCategory = pen.category;
+      const heading = document.createElement('div');
+      heading.className = 'group';
+      heading.textContent = pen.category;
+      listEl.appendChild(heading);
+    }
+
+    const button = document.createElement('button');
+    button.className = 'pen';
+    button.type = 'button';
+    if (current && current.slug === pen.slug) button.setAttribute('aria-current', 'true');
+
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = pen.title;
+    for (const flag of describeFlags(pen)) {
+      const tag = document.createElement('span');
+      tag.className = 'flag';
+      tag.textContent = flag.label;
+      tag.title = flag.title;
+      name.appendChild(tag);
+    }
+
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    meta.textContent = pen.subcategory + (pen.three ? ' · three ' + pen.three : '');
+
+    button.append(name, meta);
+    button.addEventListener('click', () => select(pen));
+    listEl.appendChild(button);
+  }
+}
+
+function select(pen) {
+  current = pen;
+
+  // Blanking the src first drops the old document, and with it the WebGL context and rAF loop that
+  // almost none of these pens shut down on their own.
+  frameEl.src = 'about:blank';
+  frameEl.hidden = false;
+  placeholderEl.hidden = true;
+  requestAnimationFrame(() => { frameEl.src = pen.url; });
+
+  titleEl.textContent = pen.title;
+  const flags = describeFlags(pen);
+  noticeEl.textContent = flags.length ? flags.map((f) => f.label).join(' · ') : '';
+  noticeEl.title = flags.map((f) => f.title).join('\n');
+
+  sourceEl.hidden = !pen.source;
+  if (pen.source) sourceEl.href = pen.source;
+  openEl.hidden = false;
+  openEl.href = pen.url;
+  reloadEl.hidden = false;
+
+  if (location.hash.slice(1) !== pen.slug) history.replaceState(null, '', '#' + pen.slug);
+  render();
+}
+
+/**
+ * Hiding the chrome is not a nicety: the sidebar takes 320px off the pen's viewport and the top bar sits
+ * over it, and nearly every pen has a lil-gui panel of its own that you came here to use.
+ *
+ * The restore control has to be a visible button rather than a keyboard shortcut. Once you click into the
+ * frame, the pen's document owns the focus and its key events never reach this page, so a shortcut would
+ * work only until you touched the thing you were trying to reach.
+ */
+function setChromeHidden(hidden) {
+  document.body.classList.toggle('chrome-hidden', hidden);
+}
+
+document.getElementById('hide').addEventListener('click', () => setChromeHidden(true));
+document.getElementById('peek-show').addEventListener('click', () => setChromeHidden(false));
+
+// Stepping through pens without restoring the sidebar, which otherwise means toggling for all 100.
+function step(offset) {
+  if (!pens.length) return;
+  const index = current ? pens.findIndex((p) => p.slug === current.slug) : -1;
+  select(pens[(index + offset + pens.length) % pens.length]);
+}
+document.getElementById('peek-prev').addEventListener('click', () => step(-1));
+document.getElementById('peek-next').addEventListener('click', () => step(1));
+
+reloadEl.addEventListener('click', () => { if (current) select(current); });
+searchEl.addEventListener('input', render);
+categoryEl.addEventListener('change', render);
+
+window.addEventListener('hashchange', () => {
+  const pen = pens.find((p) => p.slug === location.hash.slice(1));
+  if (pen && (!current || pen.slug !== current.slug)) select(pen);
+});
+
+const response = await fetch('pens-manifest.json', { cache: 'no-store' });
+if (!response.ok) {
+  placeholderEl.innerHTML = '<strong>No manifest</strong><span>Run <code>python sabosugi-visuals/build-manifest.py</code>, then reload.</span>';
+} else {
+  const manifest = await response.json();
+  pens = manifest.pens;
+  for (const category of manifest.categories) {
+    const option = document.createElement('option');
+    option.value = category;
+    option.textContent = category;
+    categoryEl.appendChild(option);
+  }
+  render();
+  const initial = pens.find((p) => p.slug === location.hash.slice(1));
+  if (initial) select(initial);
+}
+</script>
+</body>
+</html>

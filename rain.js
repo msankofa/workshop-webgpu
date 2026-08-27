@@ -91,6 +91,8 @@ export function createRainUniforms(overrides = {}) {
     uOccCenter: uniform(new THREE.Vector2()),
     uOccExtent: uniform(1),
     uOccOn: uniform(0),
+    uOccFloor: uniform(0),   // the map stores heights relative to this, so the texture stays positive
+    uOccMiss: uniform(0),    // the height reported where there is no map: "no roof at any height"
     occTex: texture(fallback),
     _fallback: fallback,
   };
@@ -106,11 +108,15 @@ function instancedQuad(count) {
   return g;
 }
 
-// Height of the tallest occluder under world XZ (0 where nothing was baked).
+// Height of the tallest occluder under world XZ. Outside the baked window, or with the map off, the
+// answer is uOccMiss. That defaults to 0, which suits a page whose ground sits at or above y = 0 —
+// but a page with ground BELOW zero must lower it, or every drop is cut at zero: the callers do
+// `max(roofAt, groundHeight)`, so uOccMiss is a hard lower bound on where rain can reach.
 function roofAt(U, xz) {
   const st = xz.sub(U.uOccCenter).div(U.uOccExtent).add(0.5);
   const inside = step(0, st.x).mul(step(st.x, 1)).mul(step(0, st.y)).mul(step(st.y, 1));
-  return U.occTex.sample(st).r.mul(inside).mul(U.uOccOn);
+  const roof = U.occTex.sample(st).r.add(U.uOccFloor);
+  return mix(U.uOccMiss, roof, inside.mul(U.uOccOn));
 }
 
 // ---- streaks -----------------------------------------------------------------------------------
@@ -327,7 +333,7 @@ export function applyWetSheen(mat, U, { amount = 0.5, darken = 0.15 } = {}) {
 // Renders every object on `layer` from straight above into a height texture centred on `center`
 // spanning `extent` metres, and points the rain uniforms at it. Call once for a static scene, or
 // again after the scene changes. The ground itself must be on the layer so open ground bakes 0.
-export function bakeOccluderMap(renderer, scene, U, { center = [0, 0], extent = 120, size = 512, layer = 1, top = 200 } = {}) {
+export function bakeOccluderMap(renderer, scene, U, { center = [0, 0], extent = 120, size = 512, layer = 1, top = 200, floor = 0 } = {}) {
   const rt = new THREE.RenderTarget(size, size, {
     type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: true,
     minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
@@ -340,23 +346,31 @@ export function bakeOccluderMap(renderer, scene, U, { center = [0, 0], extent = 
   cam.updateMatrixWorld();
   cam.layers.set(layer);
   const heightMat = new MeshBasicNodeMaterial({ fog: false });   // fog would bend the heights
-  heightMat.colorNode = vec4(max(positionWorld.y, 0), 0, 0, 1);
+  // Stored relative to the floor so the texture is non-negative (the clear colour cannot be) and so
+  // half-float keeps its precision on the relief that matters rather than on the distance to zero.
+  heightMat.colorNode = vec4(max(positionWorld.y.sub(float(floor)), 0), 0, 0, 1);
   const prevRT = renderer.getRenderTarget();
   const prevOverride = scene.overrideMaterial;
+  const prevBackground = scene.background;
   const prevClear = new THREE.Color(); renderer.getClearColor(prevClear);
   const prevAlpha = renderer.getClearAlpha();
   scene.overrideMaterial = heightMat;
+  // A scene background is drawn by its own pass, which overrideMaterial does not touch: leaving it
+  // set fills the height texture with the sky colour instead of the "nothing here" clear.
+  scene.background = null;
   renderer.setClearColor(0x000000, 1);
   renderer.setRenderTarget(rt);
   renderer.render(scene, cam);
   renderer.setRenderTarget(prevRT);
   renderer.setClearColor(prevClear, prevAlpha);
+  scene.background = prevBackground;
   scene.overrideMaterial = prevOverride;
   U.occTex.value = rt.texture;
   U.uOccCenter.value.set(center[0], center[1]);
   U.uOccExtent.value = extent;
+  U.uOccFloor.value = floor;
   U.uOccOn.value = 1;
-  return { rt, cam, dispose() { rt.dispose(); } };
+  return { rt, cam, floor, dispose() { rt.dispose(); } };
 }
 
 // ---- lightning: a jagged tube bolt with branches --------------------------------------------------

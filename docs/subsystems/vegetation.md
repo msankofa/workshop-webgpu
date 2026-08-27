@@ -78,7 +78,14 @@ Two constraints worth knowing before changing this:
   supported radius (`maxRadiusHeadroom`), and every panel control maps to a `set*` call.
 - **The radius is clamped to the contact window.** A 160 m square window serves a circle of
   `80 / sqrt(2)` = 56.6 m; the default radius is 55 m. A wider grass radius needs a wider contact
-  window, not a bigger number.
+  window (`contactTilesPerSide` in `base-game-terrain.js`), not a bigger number.
+- **The density ceiling is `Kmax / cellSize^2`.** Base Game passes `grassKmax: 256` over a 2 m
+  cell, so the panel's 0-60 blades/m^2 slider is honest across its whole range. The stock
+  `Kmax: 64` used elsewhere caps at 16/m^2, which silently flattened three quarters of that
+  slider before 2026-08-26.
+- **`stats` reports what is in force.** `radius`/`density` are the clamped values actually
+  running; `requestedRadius`/`requestedDensity` keep what the panel asked for, and `maxDensity`
+  and `dispatch` say where the ceiling is and how much work the last recull did.
 
 **TSL, checked against the shipped r184 build.** `grass-compute.js` is a storage-buffer material,
 so `tsl-build-check.mjs` cannot compile it — but every graph Base Game hands it can be compiled, and
@@ -607,6 +614,19 @@ never depends on accumulated state — this is what "blades never swim" means in
 comment. Buffer capacity (`CAP = maxInstances(maxRadius, cellSize, Kmax)`) is sized for the
 slider's *maximum* radius so the live Radius slider can grow without a reallocation.
 
+**The dispatch is sized per recull, the buffer is not.** `CAP` is the worst case and never moves,
+but the number of threads is `side^2 x perCell` for the *live* window, written to `cull.count`
+before each `computeAsync`. In r184 that one field drives both the dispatch (the backend falls back
+to `computeNode.count` when no explicit size is given, `three.webgpu.js:81284`) and the kernel's own
+`instanceIndex >= count` guard, which is a uniform refreshed immediately before dispatch
+(`:10762`, `:60534`) — so the two can never disagree. The kernel indexes `(cell, slot)` off the live
+`uPerCell` rather than the compile-time `Kmax`, which keeps blade identity stable when density
+changes: raising it adds higher slots and leaves existing blades alone. Before this, every recull
+dispatched `CAP` threads whatever the sliders said, and roughly 87% of them at radius 20 generated
+a candidate far outside the window, sampled the height field, and were discarded by the distance
+test. The procedural write is also guarded by `uHardCap` now, matching the anchor path — with a
+per-recull dispatch, CAP is no longer guaranteed to be the exact worst case.
+
 **Anchor mode (`grass-compute.js` + `grass-anchors.js`).** The procedural path plants blades on a
 single-valued height function (TSL terrain math, or the baked 2048² `heightTex` on authored maps) —
 structurally incapable of caves, overhangs, or floating islands, and its bilinear filtering smears
@@ -1044,7 +1064,7 @@ Grass CPU mode (`GRASS_MODE === 'cpu'`): `grassCount` (blade count, 0-1.2M), `ma
 (map mode only), `grassDistanceCull` (far fade), `wind`.
 
 Grass GPU-compute mode (`GRASS_MODE === 'gpu'`, default): `grassRadius` (8-600), `grassCullStart`,
-`grassDensity` (blades/m^2, 0-16), `grassMaxBlades` (0-2,000,000), `grassBladeHeight`,
+`grassDensity` (blades/m^2, 0-16 at the stock `Kmax: 64`; 0-64 at Base Game's 256), `grassMaxBlades` (0-2,000,000), `grassBladeHeight`,
 `grassBladeWidth`, `grassVerticalOffset`, `wind`.
 
 Both grass modes also get `grassBladeStyle` (select: `streaks`/`dryTip`/`mottle`/`vein`/
@@ -1068,6 +1088,7 @@ placement.
 | `test-forest-cull.mjs` | `forest-cull.js` (`cullInstance`, `classifyInstance`, `shouldRecull`) | `cullInstance`: 4 cases, in-range kept / beyond-maxDist culled / diagonal-beyond-radius culled / diagonal-within-radius kept (squared-distance circular cull). `classifyInstance` (Milestones 2-3): behind-camera instance rejected past the rear margin (both far-behind and near-but-behind); straight-ahead in-cone instance kept; an edge instance just outside the raw FOV but inside the padded cone (cone margin + per-instance angular canopy radius) kept, proving anti-pop padding; beyond-`maxDrawRadius` instance rejected via `farLive` even when dead-ahead, within-radius passes; `coneEnabled: false` keeps a behind-camera instance (backward compat). `shouldRecull` (Milestone 4): 0.01-unit drift does not recull, 2-unit move does, 3-degree turn does, NaN prev state (first/forced recull) always does, custom tighter thresholds honored — 23 assertions total. |
 | `test-forest-gpu-rebuild.mjs` | The `rebuild()` logic pattern in `forest-gpu.js` (reimplemented as a standalone harness, not imported from the real file) | `setChunks(map)` produces the same source/counts buffers as N sequential `setChunk()` calls but triggers exactly one rebuild instead of N; insertion order into the chunk map doesn't change final per-variant counts; an empty `setChunks(new Map())` is a no-op rebuild that leaves buffers zeroed. |
 | `test-forest-placement.mjs` | `forest-placement.js` (`placementRecords`, `buildSpeciesFromFamilies`) | Places between 1 and `count` trees on flat dry ground; identical output for two calls with the same seed/params (determinism); all placements within chunk bounds; positive `scale`; valid `speciesIdx` range; `yaw` present; submerged ground (`heightAt` returns -5) yields zero placements (water rejection); `buildSpeciesFromFamilies` flattens a family into a species table carrying `_tag`; with a `speciesTable` + an all-`'forest'` `biomeAt`, only the forest-tagged species is ever picked and `scale` stays within its `sizeRange`; without a `biomeAt`, every tagged species stays a density-weighted candidate everywhere. |
+| `test-grass-compute.mjs` | `grass-compute.js` CPU-side contracts, plus the `flora.update` call site in `base-game.html` | `maxDensity` follows `Kmax / cellSize^2` (256 -> 64/m^2, 64 -> 16/m^2); the per-recull dispatch shrinks with the radius and grows with density; density 60 is not clamped; worst-case sliders still fit the instance buffer; zero density dispatches nothing; the cell gate still skips reculls; the page hands `flora.update` elapsed seconds and not `dt`. Constructs the real module headless behind a canvas stub. |
 | `test-grass-cells.mjs` | `grass-cells.js` (`cellHash`, `candidateBlade`, `windowCellCount`, `maxInstances`, `perCellCount`) and indirectly `grass-height-ref.js` | `candidateBlade` is deterministic and camera-independent; blade XZ falls inside its own cell footprint; blade `y` equals `grassHeightRef` at that XZ (planted on terrain); different slots in a cell give different positions; `cellHash` varies across cells; `maxInstances` = `windowCellCount * Kmax` and the window covers the disk of radius R; `perCellCount` clamps to `[0, Kmax]` and converts density correctly. |
 | `test-grass-height-tsl.mjs` | `grass-height-ref.js` (`grassHeightRef`) vs `terrain-field.js` (`terrainHeightAt`) | Samples a grid (x,z in [-64,64] step 3.5, including fractional/negative coords) and asserts `grassHeightRef` matches `terrainHeightAt` to within `1e-6` — i.e. the JS reference used by grass placement is provably bit-equivalent to the canonical terrain height function the TSL kernel is transcribed from. Also checks determinism and that `lakeDepth` actually perturbs height somewhere in the sampled grid. |
 | `test-grass-anchors.mjs` | `grass-anchors.js` (all exports) | Cave scene with stacked layers (floor at y=-50, down-facing ceiling, roof top at y=40, vertical wall): only up-facing tris kept, both stacked layers counted in projected area; sample count = density × area; anchor y lands exactly on a surface layer; area-weighted split across layers; deterministic per (key, seed), different seed differs; `maxCount` caps; a 64×64 quad spanning 4 chunks is clipped so each chunk gets ~1024 m² and anchors stay inside their own chunk; helper round-trips (`chunkKey`/`parseChunkKey` with negatives, `pointToChunkDist`, `slotCapacityForRadius` bounds, `hashKey`, `mulberry32`). ~18.5k assertions. |

@@ -7,12 +7,16 @@ import { createProceduralPlayerBody } from './player-procedural-body.js';
 import { createBodyPartBatches } from './body-part-batches.js';
 import { createBodySupportAdapter } from './base-game-body-support.js';
 import { remotePlayerColor } from './base-game-remote-players.js';
-import { armPoseFromPreset, GAIT_DEFAULTS } from './player-procedural-body.js';
+import { armPoseFromPreset } from './player-procedural-body.js';
+import { BASE_GAME_PLAYER_DEFAULT_CONFIG, BASE_GAME_STANCE_SETTINGS } from './base-game-player-controller.js';
+import { stepStanceWeights } from './bot-stance.js';
+import { BASE_GAME_STANCES } from './base-game-protocol.mjs';
 import { LOCOMOTION_DEFAULTS } from './body-locomotion.js';
 import { BOT_BODIES, composeBot } from './bot-body-versions.js';
 import { SOLDIER_ROLE_DESIGNS, buildSoldierDesign } from './bot-body-design.js';
 import { AIM_BLEND_DEFAULTS, solveAimBlend, stepAimChannels, newAimChannels, stepRecoil, wrapAngle } from './bot-aim-blend.js';
-import { BODY_HOLD_DEFAULTS } from './weapon-mount.js';
+import { BODY_HOLD_DEFAULTS, stowedWeaponIds } from './weapon-mount.js';
+import { swapMsFor } from './weapons.js';
 
 // Aim coherence for players: the torso carries most of the look-vs-heading residual and the aim
 // elevation, the head the rest, the barrel trim closes what is left. Same solver as bot-viewer-v3.
@@ -49,26 +53,29 @@ export const BASE_GAME_FACING_DEFAULTS = Object.freeze({ threshold: 0.6, rate: 7
 // bot-viewer-v3's shipped Movement tuning (its botMovementSettings), applied the same way its
 // applyBotMovementSettings() does. armSwing/armAsym are the locomotion layer's own arm channel.
 export const BASE_GAME_MOVEMENT_DEFAULTS = Object.freeze({
-  // Tuned in the browser 2026-08-22 (states/base-game-state-20260822021519.json).
+  // Tuned in the browser 2026-08-22 (states/base-game-state-20260822021519.json), then re-tuned
+  // 2026-08-26 (base-game-states/base-game-state-20260826184842.json): a longer, looser, faster
+  // gait to go with a walk speed halved to 2.75 m/s. Stride runs well behind the body as well as
+  // ahead of it, feet barely overlap, and cadence doubles.
   turnStiffness: 55,
   turnDamping: 15,
   maxForwardLead: 0.64,
   gaitModel: 'tuned',
   stepLeadScale: 0.1,
-  workspaceWidthScale: 0.75,
+  workspaceWidthScale: 1.5,
   workspaceForwardScale: 1.5,
-  bobScale: 0.2,
-  swayScale: 0,
+  bobScale: 0.7,
+  swayScale: 1.05,
   bodyFollowRate: 20,
   locoEnabled: true,
-  locoAmount: 1,
-  stepOverlap: 0.2,
+  locoAmount: 0.5,
+  stepOverlap: 0.02,
   spineFalloff: 3,
   strideScale: 1,
-  forwardStride: GAIT_DEFAULTS.forwardStride,
-  behindStride: GAIT_DEFAULTS.maxBehind,
-  cadenceScale: 1,
-  triggerDistance: GAIT_DEFAULTS.triggerDistance,
+  forwardStride: 1.7,
+  behindStride: 1.5,
+  cadenceScale: 2,
+  triggerDistance: 0.47,
   armSwing: LOCOMOTION_DEFAULTS.armSwing,
   armAsym: 1.5,
 });
@@ -98,14 +105,17 @@ export function createBaseGamePlayerBodies({
   let designKey = 'default';
   let movementTuning = { ...BASE_GAME_MOVEMENT_DEFAULTS };
   // The arm-pose presets blend walk->run on absolute m/s; rescale them to the real move speeds.
-  const movementSpeeds = { walk: 5.5, sprint: 1.75 };
+  // The arm-pose presets blend walk->run on ABSOLUTE m/s, so this has to be the speed the capsule
+  // actually moves at. Taken from the controller's own defaults rather than copied: a stale literal
+  // here tells the rig you are strolling while the body sprints, and the arms never come up.
+  const movementSpeeds = { walk: BASE_GAME_PLAYER_DEFAULT_CONFIG.moveSpeed, sprint: BASE_GAME_PLAYER_DEFAULT_CONFIG.sprintMultiplier };
   const _center = new THREE.Vector3();
   const _aimPoint = new THREE.Vector3();
   const _aimSolved = { torsoYaw: 0, torsoPitch: 0, headYaw: 0, headPitch: 0, barrelYaw: 0, barrelPitch: 0 };
   const _mountFrame = {
     feetY: 0, bodyX: 0, bodyZ: 0, yaw: 0, stance: 'stand', stanceWeights: { crouch01: 0, kneel01: 0, prone01: 0 },
     speed: 0, aiming: false, aimPoint: null, bob: 0, sway: 0, headYaw: 0, aimChannels: null, holdOffsetY: 0, holdOffsetZ: 0,
-    viewFrame: null, viewBlend: 0, reachSolve: true, holdMode: 'body', bodyHold: null,
+    viewFrame: null, viewBlend: 0, reachSolve: true, holdMode: 'body', bodyHold: null, drawBlend: 1,
   };
   // Default facing is environment-viewer's: the body faces the look yaw and the legs strafe, so the
   // gun, the body and the camera agree by construction. 'travel' is the experimental path (heading
@@ -139,12 +149,20 @@ export function createBaseGamePlayerBodies({
     applyMovementTuningTo(body, movementTuning);
     if (armTuning) applyArmTuningTo(body, armTuning);
     else applyMovementSpeedsTo(body);
-    return { body, support, instanced, bodyModel: modelKey, heading: null, aim: newAimChannels(), weapon: newWeaponRecord() };
+    // Remote posture eases HERE from the replicated stance index. The local body takes the
+    // controller's own fixed-clock weights instead; both end up on the same curve.
+    return { body, support, instanced, bodyModel: modelKey, heading: null, aim: newAimChannels(), weapon: newWeaponRecord(),
+      stanceWeights: { crouch01: 0, kneel01: 0, prone01: 0 } };
   }
 
   // Phase 1 shape; `ammo` is phase 3's, `slot` phase 4's.
   function newWeaponRecord() {
-    return { id: null, mount: null, pending: 0, action: 0, actionTick: -1, lastActionTick: -1, ammo: null };
+    // `loadout` is what this body carries; `stow` draws the slots that are not in hand.
+    // `swap` runs the holster/draw hold blend locally off a wall clock: the action and the tick it
+    // began are replicated, the curve between them is not, and stepping it at the 20 Hz snapshot
+    // rate would stutter a motion that lasts half a second.
+    return { id: null, mount: null, pending: 0, action: 0, actionTick: -1, lastActionTick: -1, ammo: null, loadout: null,
+      stow: weaponSystem?.createStow() ?? null, swap: { phase: 0, t: 0, duration: 0 } };
   }
 
   // Clamps a render-local aim point into the body's reach cone (yaw about the heading, pitch about
@@ -172,6 +190,7 @@ export function createBaseGamePlayerBodies({
     const w = record.weapon;
     if (w.id === id) return;
     w.id = id;
+    if (w.loadout) w.stow?.setWeapons(stowedWeaponIds(w.loadout, id));   // what left the hand goes back on the body
     if (w.mount) { weaponSystem?.destroyMount(w.mount); w.mount = null; }
     if (!id || !weaponSystem) return;
     const token = ++w.pending;
@@ -183,6 +202,7 @@ export function createBaseGamePlayerBodies({
 
   function releaseWeapon(record) {
     const w = record.weapon;
+    w.stow?.dispose();
     w.pending++;
     if (w.mount) { weaponSystem?.destroyMount(w.mount); w.mount = null; }
     w.id = null;
@@ -192,6 +212,16 @@ export function createBaseGamePlayerBodies({
     localWeaponId = id || null;
     if (local) requestWeapon(local, localWeaponId);
   }
+
+  // What this body carries, so the slots it is NOT holding can hang on it. Local: the page's own
+  // dropdowns. Remote: the loadout on the snapshot's player state.
+  function setLoadout(record, loadout) {
+    const w = record.weapon;
+    if (!w.stow || !loadout) return;
+    w.loadout = loadout;
+    w.stow.setWeapons(stowedWeaponIds(loadout, w.id));
+  }
+  function setLocalLoadout(loadout) { if (local) setLoadout(local, loadout); }
 
   function setLocalAim(aiming, aimPoint) {
     localAiming = !!aiming;
@@ -205,9 +235,32 @@ export function createBaseGamePlayerBodies({
     if (actionTick == null || actionTick === w.lastActionTick) return;
     w.lastActionTick = actionTick;
     w.actionTick = actionTick;
+    if (w.action === BASE_GAME_WEAPON_ACTIONS.holster) startSwap(record, 3, w.id);
+    if (w.action === BASE_GAME_WEAPON_ACTIONS.draw) startSwap(record, 4, w.id);
     if (w.action === BASE_GAME_WEAPON_ACTIONS.reload) w.mount?.controller.play('reload');
     if (w.action === BASE_GAME_WEAPON_ACTIONS.fire) { w.mount?.controller.recoil(); record.aim.recoilPitch += BASE_GAME_AIM_BLEND.recoilKick; }
   }
+
+  // One half of a swap: 3 runs the hold down to the stow point, 4 runs it back up.
+  function startSwap(record, phase, weaponId) {
+    const ms = swapMsFor(weaponId);
+    const swap = record.weapon.swap;
+    swap.phase = phase;
+    swap.t = 0;
+    swap.duration = Math.max(0.001, (phase === 3 ? ms.holsterMs : ms.drawMs) / 1000);
+  }
+  // 1 = the live hold, 0 = down at the stow point. A finished holster STAYS down: the weapon is
+  // away until the draw says otherwise, and springing back would undo the motion that just played.
+  function swapDrawBlend(record, dt) {
+    const swap = record.weapon.swap;
+    if (!swap.phase) return 1;
+    swap.t = Math.min(swap.duration, swap.t + Math.max(0, dt));
+    const p = swap.t / swap.duration;
+    if (swap.phase === 4) { if (p >= 1) swap.phase = 0; return p; }
+    return 1 - p;
+  }
+  // The local body swaps on its own prediction; remotes learn it from the replicated action.
+  function localSwap(phase, weaponId) { if (local) startSwap(local, phase, weaponId ?? local.weapon.id); }
 
   function localReload() {
     const w = local?.weapon;
@@ -308,6 +361,11 @@ export function createBaseGamePlayerBodies({
   // Converts one global player sample into the body's render-local update state.
   function feed(record, dt, sample, id) {
     const { body, support } = record;
+    // Posture weights: the local body takes the controller's own fixed-clock easing, a remote eases
+    // its own toward the replicated stance index. Both the rig pose and the weapon hold read these,
+    // so what you see and what the capsule is can never disagree.
+    const poseWeights = (record === local ? sample.stanceWeights : record.stanceWeights)
+      || { crouch01: 0, kneel01: 0, prone01: 0 };
     const foot = sample.globalFoot;
     support.setReference(foot);
     worldCoordinates.toRenderLocal(foot, _local);
@@ -361,6 +419,12 @@ export function createBaseGamePlayerBodies({
       radius: sample.radius ?? 0.35,
       velocity: _velocity,
       onFloor: sample.grounded !== false,
+      // The rig's own posture channels (prone > kneel > crouch, each gating the ones below). These
+      // are the SAME eased weights the controller sized its capsule from, so the pose you see and
+      // the capsule you get shot in can never disagree.
+      crouch: poseWeights.crouch01 ?? 0,
+      kneel: poseWeights.kneel01 ?? 0,
+      prone: poseWeights.prone01 ?? 0,
       alive: true,
     });
     if (sample.weapon !== undefined && record !== local) requestWeapon(record, sample.weapon || null);
@@ -382,7 +446,17 @@ export function createBaseGamePlayerBodies({
       }
       const f = _mountFrame;
       f.feetY = _local[1]; f.bodyX = motion.bodyPosition.x; f.bodyZ = motion.bodyPosition.z;
-      f.yaw = motion.visualYaw; f.stance = speed > movementSpeeds.walk * 1.3 ? 'run' : 'stand';
+      // Posture beats gait: a kneeling body is not "standing" however fast its feet are moving, and
+      // the weights come from the controller so the pose and the capsule can never disagree.
+      f.yaw = motion.visualYaw;
+      // Local: the controller's stance name. Remote: the index it replicated, eased on this side.
+      const remoteStance = record !== local ? (BASE_GAME_STANCES[sample.stance ?? 0] ?? 'stand') : null;
+      const stanceName = record === local ? sample.stance : remoteStance;
+      const posture = stanceName && stanceName !== 'stand' ? stanceName : null;
+      f.stance = posture || (speed > movementSpeeds.walk * 1.3 ? 'run' : 'stand');
+      f.stanceWeights.crouch01 = poseWeights.crouch01 ?? 0;
+      f.stanceWeights.kneel01 = poseWeights.kneel01 ?? 0;
+      f.stanceWeights.prone01 = poseWeights.prone01 ?? 0;
       f.speed = speed; f.aiming = aiming; f.aimPoint = aimPoint;
       f.bob = motion.bob; f.sway = motion.sway; f.headYaw = motion.headYaw ?? 0;
       f.aimChannels = split ? ch : null;
@@ -391,17 +465,30 @@ export function createBaseGamePlayerBodies({
       f.viewFrame = record === local ? (sample.viewFrame ?? null) : null;
       f.viewBlend = record === local ? (sample.viewBlend ?? 0) : 0;
       f.reachSolve = reachSolve;
+      f.drawBlend = swapDrawBlend(record, dt);   // 1 = the live hold, 0 = down at the stow point
       f.holdMode = holdMode; f.bodyHold = bodyHold;
       weaponSystem.updateMount(w.mount, dt, f);
       w.mount.visible = body.group.visible !== false;
     }
   }
 
+  // A stowed gun is drawn only when the body is: in first person the local rig is masked away, and
+  // a gun floating where the torso used to be is the one thing you would notice.
+  function flushStow(record) {
+    if (!record?.weapon.stow || record.body.group.visible === false) return;
+    record.weapon.stow.flush(record.body, record.body.motion?.visualYaw ?? record.heading ?? 0);
+  }
+
   function flushWeapons() {
     if (!weaponSystem) return;
     weaponSystem.beginFrame();
     if (local?.weapon.mount) weaponSystem.flushMount(local.weapon.mount);
-    for (const record of remotes.values()) if (record.touched !== false && record.weapon.mount) weaponSystem.flushMount(record.weapon.mount);
+    flushStow(local);
+    for (const record of remotes.values()) {
+      if (record.touched === false) continue;
+      if (record.weapon.mount) weaponSystem.flushMount(record.weapon.mount);
+      flushStow(record);
+    }
     weaponSystem.endFrame();
   }
 
@@ -453,6 +540,8 @@ export function createBaseGamePlayerBodies({
       remotes.set(id, record);
     }
     record.touched = true;
+    stepStanceWeights(record.stanceWeights, BASE_GAME_STANCES[sample.stance ?? 0] ?? 'stand', dt, BASE_GAME_STANCE_SETTINGS);
+    if (sample.loadout) setLoadout(record, sample.loadout);
     record.body.setVisible(enabled && sample.visible !== false);
     if (enabled && sample.visible !== false) {
       feed(record, dt, sample, id);
@@ -532,6 +621,8 @@ export function createBaseGamePlayerBodies({
     setMovementTuning,
     get movementTuning() { return { ...movementTuning }; },
     updateLocal,
+    setLocalLoadout,
+    localSwap,
     beginRemoteFrame,
     updateRemote,
     endRemoteFrame,

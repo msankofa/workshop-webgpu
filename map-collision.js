@@ -69,10 +69,41 @@ function collectWorldTriangles(roots, maxTriangles) {
 
 // `extraRoots` bakes further scene graphs into the same BVH -- procedurally scattered structures
 // are added after the map loads, and a collider that predates them lets bots and bullets through.
+const IDENTITY_ELEMENTS = new THREE.Matrix4().elements;
+function isIdentity(m) {
+  for (let i = 0; i < 16; i++) if (m.elements[i] !== IDENTITY_ELEMENTS[i]) return false;
+  return true;
+}
+
+// Fast path for the streamed-chunk caller: ONE indexed mesh already in world space. The general
+// path below bakes de-indexed world triangles through a growable JS array, which for geometry that
+// is already global is a 3-6x data expansion and a full copy for no gain. Positions are shared
+// (MeshBVH never writes them); the index is copied because MeshBVH reorders it in place, and for a
+// sliced chunk that index is a subarray VIEW onto the geometry being rendered.
+function directGeometry(roots, maxTriangles) {
+  if (roots.length !== 1) return null;
+  const root = roots[0];
+  if (!root.isMesh || root.isInstancedMesh || root.children.length) return null;
+  const src = root.geometry;
+  if (!src?.index || !src.attributes?.position) return null;
+  if (!isIdentity(root.matrixWorld)) return null;
+  const triangleCount = src.index.count / 3;
+  if (triangleCount === 0 || triangleCount > maxTriangles) return null;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', src.attributes.position);
+  geometry.setIndex(new THREE.BufferAttribute(src.index.array.slice(), 1));
+  return { geometry, triangleCount, shared: true };
+}
+
 export function createMapCollider(root, { maxTriangles = 250000, extraRoots = null } = {}) {
   const roots = extraRoots?.length ? [root, ...extraRoots] : [root];
-  const { geometry, triangleCount } = collectWorldTriangles(roots, maxTriangles);
+  const tBake = performance.now();
+  const direct = extraRoots?.length ? null : directGeometry(roots, maxTriangles);
+  const { geometry, triangleCount, shared = false } = direct ?? collectWorldTriangles(roots, maxTriangles);
+  const bakeMs = performance.now() - tBake;
+  const tBvh = performance.now();
   geometry.boundsTree = new MeshBVH(geometry, { lazyGeneration: false });
+  const bvhMs = performance.now() - tBvh;
   const colliderMesh = new THREE.Mesh(geometry);
   colliderMesh.raycast = acceleratedRaycast;
   // Second view of the SAME geometry and BVH, differing only in material side. raycastAll needs
@@ -207,6 +238,9 @@ export function createMapCollider(root, { maxTriangles = 250000, extraRoots = nu
   return {
     geometry,
     triangleCount,
+    // Which half of the build cost is which, and whether the fast path was taken. Guessing at this
+    // split is what a per-chunk 6.6 ms bill does not survive.
+    buildMs: { bake: +bakeMs.toFixed(3), bvh: +bvhMs.toFixed(3), direct: shared },
     resolveCapsule,
     raycastDown,
     raycast,
@@ -215,7 +249,9 @@ export function createMapCollider(root, { maxTriangles = 250000, extraRoots = nu
     dispose() {
       geometry.boundsTree = null;
       twoSidedMesh.material.dispose();
-      geometry.dispose();
+      // The fast path shares its position attribute with the live render geometry: disposing this
+      // wrapper would free a buffer the renderer is still drawing from.
+      if (!shared) geometry.dispose();
     },
   };
 }

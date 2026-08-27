@@ -1,0 +1,2188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0"
+    />
+
+    <title>Liquid Neon Sphere</title>
+
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #000000;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+            "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm"
+        }
+    }
+    </script>
+</head>
+
+<body>
+
+<script type="module">
+import * as THREE from "three";
+import GUI from "lil-gui";
+
+
+// ============================================================
+// Shader compile limits
+// ============================================================
+
+const SHADER_MAX_PRIMARY_STEPS = 256;
+const SHADER_MAX_REFLECTION_STEPS = 256;
+const SHADER_MAX_REFLECTION_BOUNCES = 4;
+
+
+// ============================================================
+// Main parameters
+// ============================================================
+
+const params = {
+    mathPi: 2.99,
+
+    cameraDistance: 3.5,
+    cameraFov: 60.0,
+
+    rotationSpeed: 0.18,
+
+    maxRayDistance: 186.3,
+    surfaceHit: 0.0015,
+    reflectionBias: 0.0,
+    normalEpsilon: 0.0605,
+
+    primarySteps: 128,
+    reflectionSteps: 141,
+    reflectionBounces: 0,
+
+    baseRadius: 1.0,
+    deformAmount: 0.05,
+    distanceScale: 0.6,
+
+    surfaceRoughness: 0.26,
+    surfaceMetallic: 1.3,
+
+    lightIntensity: 15.0,
+    lightAmbientIntensity: -0.141,
+
+    lightColorA: "#00ffcc",
+    lightColorB: "#ff0000",
+
+    liquidColorA: "#1f47bf",
+    liquidColorB: "#24bfe0",
+    liquidColorC: "#8000ff",
+
+    gradientScale: 1.81,
+    gradientSpeed: 1.16,
+    gradientMix: 0.72,
+
+    emissiveStrength: 0.010,
+
+    dpr: 2.0
+};
+
+
+// ============================================================
+// Renderer
+// ============================================================
+
+const renderer = new THREE.WebGLRenderer({
+    antialias: false,
+    alpha: false,
+    powerPreference: "high-performance"
+});
+
+renderer.setClearColor(0x000000, 1);
+
+document.body.appendChild(renderer.domElement);
+
+
+// ============================================================
+// Scene
+// ============================================================
+
+const scene = new THREE.Scene();
+const camera = new THREE.Camera();
+
+
+// ============================================================
+// Fullscreen triangle
+// ============================================================
+
+const geometry = new THREE.BufferGeometry();
+
+geometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(
+        new Float32Array([
+            -1.0, -1.0, 0.0,
+             3.0, -1.0, 0.0,
+            -1.0,  3.0, 0.0
+        ]),
+        3
+    )
+);
+
+
+// ============================================================
+// Colors
+// ============================================================
+
+function makeColorVector(value) {
+    const color = new THREE.Color(value);
+
+    return new THREE.Vector3(
+        color.r,
+        color.g,
+        color.b
+    );
+}
+
+const tempColor = new THREE.Color();
+
+
+// ============================================================
+// Uniforms
+// ============================================================
+
+const uniforms = {
+    iTime: {
+        value: 0.0
+    },
+
+    iResolution: {
+        value: new THREE.Vector2(1, 1)
+    },
+
+    uMathPi: {
+        value: params.mathPi
+    },
+
+    uCameraDistance: {
+        value: params.cameraDistance
+    },
+
+    uCameraFov: {
+        value: params.cameraFov
+    },
+
+    uRotationSpeed: {
+        value: params.rotationSpeed
+    },
+
+    uMaxRayDistance: {
+        value: params.maxRayDistance
+    },
+
+    uSurfaceHit: {
+        value: params.surfaceHit
+    },
+
+    uReflectionBias: {
+        value: params.reflectionBias
+    },
+
+    uNormalEpsilon: {
+        value: params.normalEpsilon
+    },
+
+    uPrimarySteps: {
+        value: params.primarySteps
+    },
+
+    uReflectionSteps: {
+        value: params.reflectionSteps
+    },
+
+    uReflectionBounces: {
+        value: params.reflectionBounces
+    },
+
+    uBaseRadius: {
+        value: params.baseRadius
+    },
+
+    uDeformAmount: {
+        value: params.deformAmount
+    },
+
+    uDistanceScale: {
+        value: params.distanceScale
+    },
+
+    uSurfaceRoughness: {
+        value: params.surfaceRoughness
+    },
+
+    uSurfaceMetallic: {
+        value: params.surfaceMetallic
+    },
+
+    uLightIntensity: {
+        value: params.lightIntensity
+    },
+
+    uLightAmbientIntensity: {
+        value: params.lightAmbientIntensity
+    },
+
+    uLightColorA: {
+        value: makeColorVector(params.lightColorA)
+    },
+
+    uLightColorB: {
+        value: makeColorVector(params.lightColorB)
+    },
+
+    uLiquidColorA: {
+        value: makeColorVector(params.liquidColorA)
+    },
+
+    uLiquidColorB: {
+        value: makeColorVector(params.liquidColorB)
+    },
+
+    uLiquidColorC: {
+        value: makeColorVector(params.liquidColorC)
+    },
+
+    uGradientScale: {
+        value: params.gradientScale
+    },
+
+    uGradientSpeed: {
+        value: params.gradientSpeed
+    },
+
+    uGradientMix: {
+        value: params.gradientMix
+    },
+
+    uEmissiveStrength: {
+        value: params.emissiveStrength
+    }
+};
+
+
+// ============================================================
+// Vertex shader
+// ============================================================
+
+const vertexShader = /* glsl */`
+precision highp float;
+
+attribute vec3 position;
+
+void main() {
+    gl_Position = vec4(position, 1.0);
+}
+`;
+
+
+// ============================================================
+// Fragment shader
+// ============================================================
+
+const fragmentShader = /* glsl */`
+precision highp float;
+precision highp int;
+
+uniform float iTime;
+uniform vec2 iResolution;
+
+uniform float uMathPi;
+
+uniform float uCameraDistance;
+uniform float uCameraFov;
+
+uniform float uRotationSpeed;
+
+uniform float uMaxRayDistance;
+uniform float uSurfaceHit;
+uniform float uReflectionBias;
+uniform float uNormalEpsilon;
+
+uniform int uPrimarySteps;
+uniform int uReflectionSteps;
+uniform int uReflectionBounces;
+
+uniform float uBaseRadius;
+uniform float uDeformAmount;
+uniform float uDistanceScale;
+
+uniform float uSurfaceRoughness;
+uniform float uSurfaceMetallic;
+
+uniform float uLightIntensity;
+uniform float uLightAmbientIntensity;
+
+uniform vec3 uLightColorA;
+uniform vec3 uLightColorB;
+
+uniform vec3 uLiquidColorA;
+uniform vec3 uLiquidColorB;
+uniform vec3 uLiquidColorC;
+
+uniform float uGradientScale;
+uniform float uGradientSpeed;
+uniform float uGradientMix;
+
+uniform float uEmissiveStrength;
+
+
+const int MAX_PRIMARY_STEPS = 256;
+const int MAX_REFLECTION_STEPS = 256;
+const int MAX_REFLECTION_BOUNCES = 4;
+
+
+// ============================================================
+// Data structures
+// ============================================================
+
+struct SceneData {
+    float distance;
+    int material;
+};
+
+
+struct RayData {
+    vec3 origin;
+    vec3 direction;
+    float travel;
+    int material;
+};
+
+
+struct SurfaceData {
+    vec3 position;
+    vec3 normal;
+    vec3 viewRay;
+
+    float distance;
+
+    int material;
+};
+
+
+struct MaterialData {
+    vec3 color;
+    vec3 emission;
+
+    float roughness;
+    float metallic;
+};
+
+
+struct LightData {
+    vec3 direction;
+    vec3 ambient;
+    vec3 radiance;
+};
+
+
+struct ShadeData {
+    vec3 color;
+
+    MaterialData material;
+};
+
+
+// ============================================================
+// Math
+// ============================================================
+
+mat2 rotatePlane(float angle) {
+    float s = sin(angle);
+    float c = cos(angle);
+
+    return mat2(
+         c, -s,
+         s,  c
+    );
+}
+
+
+vec3 safeNormalize(vec3 value) {
+    return normalize(
+        value + vec3(1e-5)
+    );
+}
+
+
+float saturateValue(float value) {
+    return clamp(
+        value,
+        0.0,
+        1.0
+    );
+}
+
+
+// ============================================================
+// Color processing
+// ============================================================
+
+vec3 filmicCurve(vec3 color) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+
+    vec3 numerator =
+        color *
+        (
+            a * color + b
+        );
+
+    vec3 denominator =
+        color *
+        (
+            c * color + d
+        ) +
+        e;
+
+    return clamp(
+        numerator /
+        max(
+            denominator,
+            vec3(1e-5)
+        ),
+        0.0,
+        1.0
+    );
+}
+
+
+vec3 encodeSRGB(vec3 color) {
+    vec3 value =
+        max(
+            color,
+            vec3(0.0)
+        );
+
+    vec3 lowPart =
+        12.92 * value;
+
+    vec3 highPart =
+        1.055 *
+        pow(
+            max(
+                value,
+                vec3(1e-5)
+            ),
+            vec3(1.0 / 2.4)
+        ) -
+        0.055;
+
+    vec3 selector =
+        step(
+            value,
+            vec3(0.0031308)
+        );
+
+    return mix(
+        highPart,
+        lowPart,
+        selector
+    );
+}
+
+
+// ============================================================
+// Domain transforms
+// ============================================================
+
+vec3 applyGlobalRotation(vec3 position) {
+    vec3 p = position;
+
+    float rotationAngle =
+        iTime *
+        uRotationSpeed;
+
+    p.yz =
+        rotatePlane(
+            -rotationAngle
+        ) *
+        p.yz;
+
+    return p;
+}
+
+
+vec3 toShapeSpace(vec3 position) {
+    vec3 p =
+        applyGlobalRotation(
+            position
+        );
+
+    p.xz =
+        p.xz *
+        rotatePlane(p.y);
+
+    return p;
+}
+
+
+vec3 toTextureSpace(vec3 position) {
+    return applyGlobalRotation(
+        position
+    );
+}
+
+
+float sphereDistance(
+    vec3 position,
+    float radius
+) {
+    return
+        length(position) -
+        radius;
+}
+
+
+// ============================================================
+// Surface gradient
+// ============================================================
+
+vec3 gradient3(
+    float t,
+    vec3 colorA,
+    vec3 colorB,
+    vec3 colorC
+) {
+    t = saturateValue(t);
+
+    if (t < 0.5) {
+        float factor =
+            smoothstep(
+                0.0,
+                0.5,
+                t
+            );
+
+        return mix(
+            colorA,
+            colorB,
+            factor
+        );
+    }
+
+    float factor =
+        smoothstep(
+            0.5,
+            1.0,
+            t
+        );
+
+    return mix(
+        colorB,
+        colorC,
+        factor
+    );
+}
+
+
+vec3 sampleLiquidGradient(
+    vec3 worldPosition
+) {
+    vec3 p =
+        toTextureSpace(
+            worldPosition
+        );
+
+    float phaseA =
+        p.y *
+        1.55 *
+        uGradientScale +
+
+        p.x *
+        0.65 +
+
+        p.z *
+        0.45 +
+
+        iTime *
+        uGradientSpeed;
+
+    float phaseB =
+        p.x *
+        1.25 *
+        uGradientScale -
+
+        p.z *
+        0.85 *
+        uGradientScale +
+
+        iTime *
+        uGradientSpeed *
+        0.55;
+
+    float layerA =
+        0.5 +
+        0.5 *
+        sin(phaseA);
+
+    float layerB =
+        0.5 +
+        0.5 *
+        sin(phaseB);
+
+    float mask =
+        mix(
+            layerA,
+            layerB,
+            uGradientMix
+        );
+
+    return gradient3(
+        mask,
+        uLiquidColorA,
+        uLiquidColorB,
+        uLiquidColorC
+    );
+}
+
+
+// ============================================================
+// Distance field
+// ============================================================
+
+SceneData evaluateObject(
+    vec3 position
+) {
+    vec3 p =
+        toShapeSpace(
+            position
+        );
+
+    float waveX =
+        sin(
+            -2.3 * p.x
+        );
+
+    float waveY =
+        sin(
+            9.3 * p.y
+        );
+
+    float waveZ =
+        sin(
+            17.5 * p.z
+        );
+
+    float radius =
+        uBaseRadius +
+
+        uDeformAmount *
+        waveX *
+        waveY *
+        waveZ;
+
+    float distanceValue =
+        sphereDistance(
+            p,
+            radius
+        ) *
+        uDistanceScale;
+
+    return SceneData(
+        distanceValue,
+        1
+    );
+}
+
+
+SceneData sceneDistance(
+    vec3 position
+) {
+    return evaluateObject(
+        position
+    );
+}
+
+
+// ============================================================
+// Surface normal
+// ============================================================
+
+vec3 calculateNormal(
+    vec3 position
+) {
+    vec2 k =
+        vec2(
+            1.0,
+            -1.0
+        );
+
+    vec3 normal =
+
+          k.xyy *
+          sceneDistance(
+              position +
+              k.xyy *
+              uNormalEpsilon
+          ).distance
+
+        + k.yyx *
+          sceneDistance(
+              position +
+              k.yyx *
+              uNormalEpsilon
+          ).distance
+
+        + k.yxy *
+          sceneDistance(
+              position +
+              k.yxy *
+              uNormalEpsilon
+          ).distance
+
+        + k.xxx *
+          sceneDistance(
+              position +
+              k.xxx *
+              uNormalEpsilon
+          ).distance;
+
+    return safeNormalize(
+        normal
+    );
+}
+
+
+// ============================================================
+// Primary ray marching
+// ============================================================
+
+RayData marchPrimary(
+    vec3 rayOrigin,
+    vec3 rayDirection
+) {
+    float travel = 0.0;
+
+    for (
+        int stepIndex = 0;
+        stepIndex < MAX_PRIMARY_STEPS;
+        stepIndex++
+    ) {
+        if (
+            stepIndex >=
+            uPrimarySteps
+        ) {
+            break;
+        }
+
+        if (
+            travel >=
+            uMaxRayDistance
+        ) {
+            break;
+        }
+
+        vec3 position =
+            rayOrigin +
+            rayDirection *
+            travel;
+
+        SceneData sampleData =
+            sceneDistance(
+                position
+            );
+
+        if (
+            sampleData.distance <=
+            uSurfaceHit
+        ) {
+            return RayData(
+                rayOrigin,
+                rayDirection,
+                travel,
+                sampleData.material
+            );
+        }
+
+        travel +=
+            max(
+                abs(
+                    sampleData.distance
+                ),
+                0.002
+            );
+    }
+
+    return RayData(
+        rayOrigin,
+        rayDirection,
+        uMaxRayDistance,
+        -1
+    );
+}
+
+
+// ============================================================
+// Reflection ray marching
+// ============================================================
+
+RayData marchReflection(
+    SurfaceData surface
+) {
+    vec3 rayOrigin =
+        surface.position +
+        surface.normal *
+        uReflectionBias;
+
+    vec3 rayDirection =
+        reflect(
+            surface.viewRay,
+            surface.normal
+        );
+
+    float travel =
+        0.0;
+
+    for (
+        int stepIndex = 0;
+        stepIndex < MAX_REFLECTION_STEPS;
+        stepIndex++
+    ) {
+        if (
+            stepIndex >=
+            uReflectionSteps
+        ) {
+            break;
+        }
+
+        if (
+            travel >=
+            uMaxRayDistance
+        ) {
+            break;
+        }
+
+        vec3 position =
+            rayOrigin +
+            rayDirection *
+            travel;
+
+        SceneData sampleData =
+            sceneDistance(
+                position
+            );
+
+        if (
+            sampleData.distance <=
+            uSurfaceHit
+        ) {
+            return RayData(
+                rayOrigin,
+                rayDirection,
+                travel,
+                sampleData.material
+            );
+        }
+
+        travel +=
+            max(
+                abs(
+                    sampleData.distance
+                ),
+                0.005
+            );
+    }
+
+    return RayData(
+        rayOrigin,
+        rayDirection,
+        uMaxRayDistance,
+        -1
+    );
+}
+
+
+// ============================================================
+// Surface reconstruction
+// ============================================================
+
+SurfaceData buildSurface(
+    RayData ray
+) {
+    SurfaceData surface;
+
+    surface.position =
+        ray.origin +
+        ray.direction *
+        ray.travel;
+
+    surface.viewRay =
+        ray.direction;
+
+    surface.distance =
+        ray.travel;
+
+    surface.material =
+        ray.material;
+
+    if (
+        ray.material > 0
+    ) {
+        surface.normal =
+            calculateNormal(
+                surface.position
+            );
+    } else {
+        surface.normal =
+            safeNormalize(
+                -ray.direction
+            );
+    }
+
+    return surface;
+}
+
+
+// ============================================================
+// Material
+// ============================================================
+
+MaterialData getMaterial(
+    SurfaceData surface
+) {
+    MaterialData material;
+
+    material.color =
+        vec3(0.0);
+
+    material.emission =
+        vec3(0.0);
+
+    material.roughness =
+        1.0;
+
+    material.metallic =
+        0.0;
+
+    if (
+        surface.material == 1
+    ) {
+        vec3 liquidColor =
+            sampleLiquidGradient(
+                surface.position
+            );
+
+        material.color =
+            liquidColor;
+
+        material.emission =
+            liquidColor *
+            uEmissiveStrength;
+
+        material.roughness =
+            uSurfaceRoughness;
+
+        material.metallic =
+            uSurfaceMetallic;
+    }
+
+    return material;
+}
+
+
+// ============================================================
+// BRDF
+// ============================================================
+
+vec3 fresnelSchlick(
+    float halfView,
+    vec3 baseReflectance
+) {
+    float factor =
+        pow(
+            clamp(
+                1.0 -
+                halfView,
+                1e-4,
+                1.2
+            ),
+            5.0
+        );
+
+    return
+        baseReflectance +
+
+        (
+            vec3(1.0) -
+            baseReflectance
+        ) *
+        factor;
+}
+
+
+float ggxDistribution(
+    float normalHalf,
+    float alpha
+) {
+    float alpha2 =
+        alpha *
+        alpha;
+
+    float denominatorTerm =
+        normalHalf *
+        normalHalf *
+        (
+            alpha2 -
+            1.2
+        ) +
+        0.7;
+
+    return
+        alpha2 /
+        max(
+            uMathPi *
+            denominatorTerm *
+            denominatorTerm,
+            1e-5
+        );
+}
+
+
+float smithVisibility(
+    float normalView,
+    float normalLight,
+    float alpha
+) {
+    float alpha2 =
+        alpha *
+        alpha;
+
+    float view2 =
+        normalView *
+        normalView;
+
+    float light2 =
+        normalLight *
+        normalLight;
+
+    float lambdaLight =
+        normalLight *
+        sqrt(
+            max(
+                view2 *
+                (
+                    1.0 -
+                    alpha2
+                ) +
+                alpha2,
+                1e-5
+            )
+        );
+
+    float lambdaView =
+        normalView *
+        sqrt(
+            max(
+                light2 *
+                (
+                    1.0 -
+                    alpha2
+                ) +
+                alpha2,
+                1e-5
+            )
+        );
+
+    return
+        0.5 /
+        max(
+            lambdaLight +
+            lambdaView,
+            1e-5
+        );
+}
+
+
+vec3 evaluateLight(
+    SurfaceData surface,
+    MaterialData material,
+    LightData light
+) {
+    vec3 V =
+        safeNormalize(
+            -surface.viewRay
+        );
+
+    vec3 N =
+        safeNormalize(
+            surface.normal
+        );
+
+    vec3 L =
+        safeNormalize(
+            light.direction
+        );
+
+    vec3 H =
+        safeNormalize(
+            V + L
+        );
+
+    float NoV =
+        clamp(
+            dot(N, V),
+            1e-5,
+            1.0
+        );
+
+    float NoL =
+        clamp(
+            dot(N, L),
+            1e-5,
+            1.0
+        );
+
+    float NoH =
+        clamp(
+            dot(N, H),
+            0.0,
+            1.0
+        );
+
+    float HoV =
+        clamp(
+            dot(H, V),
+            0.0,
+            1.0
+        );
+
+    float alpha =
+        material.roughness *
+        material.roughness;
+
+    vec3 dielectric =
+        vec3(-0.29);
+
+    vec3 F0 =
+        mix(
+            dielectric,
+            material.color,
+            material.metallic
+        );
+
+    vec3 F =
+        fresnelSchlick(
+            HoV,
+            F0
+        );
+
+    float D =
+        ggxDistribution(
+            NoH,
+            alpha
+        );
+
+    float G =
+        smithVisibility(
+            NoV,
+            NoL,
+            alpha
+        );
+
+    vec3 specular =
+        max(
+            F *
+            (
+                D *
+                G
+            ),
+            vec3(0.0)
+        );
+
+    vec3 diffuseWeight =
+        vec3(0.7) -
+        F;
+
+    vec3 diffuseColor =
+        mix(
+            material.color *
+            (
+                vec3(1.0) -
+                dielectric
+            ),
+            vec3(0.0),
+            material.metallic
+        );
+
+    vec3 diffuse =
+        diffuseWeight *
+        diffuseColor /
+        uMathPi;
+
+    vec3 direct =
+        light.radiance *
+        NoL *
+        (
+            diffuse +
+            specular
+        );
+
+    vec3 ambient =
+        light.ambient *
+        material.color;
+
+    return
+        ambient +
+        material.emission +
+        direct;
+}
+
+
+// ============================================================
+// Lighting
+// ============================================================
+
+vec3 illuminateSurface(
+    SurfaceData surface,
+    MaterialData material
+) {
+    LightData lightA;
+
+    lightA.direction =
+        safeNormalize(
+            vec3(
+                1.0,
+                1.1,
+                0.0
+            )
+        );
+
+    lightA.ambient =
+        uLightColorA *
+        uLightAmbientIntensity;
+
+    lightA.radiance =
+        uLightColorA *
+        uLightIntensity;
+
+
+    LightData lightB;
+
+    lightB.direction =
+        safeNormalize(
+            vec3(
+                -0.5,
+                 0.8,
+                 0.0
+            )
+        );
+
+    lightB.ambient =
+        uLightColorB *
+        uLightAmbientIntensity;
+
+    lightB.radiance =
+        uLightColorB *
+        uLightIntensity;
+
+
+    vec3 result =
+        vec3(0.0);
+
+    result +=
+        max(
+            evaluateLight(
+                surface,
+                material,
+                lightA
+            ),
+            vec3(-0.1)
+        );
+
+    result +=
+        max(
+            evaluateLight(
+                surface,
+                material,
+                lightB
+            ),
+            vec3(0.0)
+        );
+
+    return result;
+}
+
+
+ShadeData shadeSurface(
+    SurfaceData surface
+) {
+    ShadeData shading;
+
+    if (
+        surface.material <= 0
+    ) {
+        shading.color =
+            vec3(0.0);
+
+        shading.material.color =
+            vec3(0.0);
+
+        shading.material.emission =
+            vec3(0.0);
+
+        shading.material.roughness =
+            1.0;
+
+        shading.material.metallic =
+            0.0;
+
+        return shading;
+    }
+
+    shading.material =
+        getMaterial(
+            surface
+        );
+
+    shading.color =
+        illuminateSurface(
+            surface,
+            shading.material
+        );
+
+    return shading;
+}
+
+
+// ============================================================
+// Reflection accumulation
+// ============================================================
+
+vec3 renderSurface(
+    SurfaceData surface
+) {
+    ShadeData shading =
+        shadeSurface(
+            surface
+        );
+
+    vec3 result =
+        shading.color;
+
+    float throughput =
+        1.0;
+
+    for (
+        int bounce = 0;
+        bounce < MAX_REFLECTION_BOUNCES;
+        bounce++
+    ) {
+        if (
+            bounce >=
+            uReflectionBounces
+        ) {
+            break;
+        }
+
+        if (
+            surface.material <= 0
+        ) {
+            break;
+        }
+
+        RayData reflectedRay =
+            marchReflection(
+                surface
+            );
+
+        surface =
+            buildSurface(
+                reflectedRay
+            );
+
+        float reflectionStrength =
+            clamp(
+                1.0 -
+                shading.material.roughness,
+                1.0,
+                1.0
+            );
+
+        throughput *=
+            reflectionStrength;
+
+        shading =
+            shadeSurface(
+                surface
+            );
+
+        result +=
+            throughput *
+            clamp(
+                shading.color,
+                vec3(0.0),
+                vec3(10.0)
+            );
+    }
+
+    return result;
+}
+
+
+// ============================================================
+// Camera
+// ============================================================
+
+void createCameraRay(
+    vec2 screenPosition,
+    out vec3 rayOrigin,
+    out vec3 rayDirection
+) {
+    vec3 target =
+        vec3(0.0);
+
+    rayOrigin =
+        vec3(
+            0.0,
+            0.0,
+            uCameraDistance
+        );
+
+    float degToRad =
+        uMathPi /
+        180.0;
+
+    float fov =
+        uCameraFov *
+        degToRad;
+
+    float halfFov =
+        fov *
+        0.5;
+
+    float projectionScale =
+        cos(halfFov) /
+        max(
+            sin(halfFov),
+            1e-5
+        );
+
+    vec3 forward =
+        safeNormalize(
+            target -
+            rayOrigin
+        );
+
+    vec3 right =
+        safeNormalize(
+            cross(
+                forward,
+                vec3(
+                    0.0,
+                    1.0,
+                    0.0
+                )
+            )
+        );
+
+    vec3 up =
+        safeNormalize(
+            cross(
+                right,
+                forward
+            )
+        );
+
+    rayDirection =
+        safeNormalize(
+            right *
+            screenPosition.x +
+
+            up *
+            screenPosition.y +
+
+            forward *
+            projectionScale
+        );
+}
+
+
+// ============================================================
+// Main
+// ============================================================
+
+void mainImage(
+    out vec4 fragColor,
+    in vec2 fragCoord
+) {
+    vec2 screen =
+        fragCoord /
+        max(
+            iResolution,
+            vec2(1.0)
+        );
+
+    screen =
+        screen *
+        2.0 -
+        1.0;
+
+    screen.x *=
+        iResolution.x /
+        max(
+            iResolution.y,
+            1.0
+        );
+
+    vec3 rayOrigin;
+    vec3 rayDirection;
+
+    createCameraRay(
+        screen,
+        rayOrigin,
+        rayDirection
+    );
+
+    RayData primaryRay =
+        marchPrimary(
+            rayOrigin,
+            rayDirection
+        );
+
+    SurfaceData surface =
+        buildSurface(
+            primaryRay
+        );
+
+    vec3 color =
+        renderSurface(
+            surface
+        );
+
+    color =
+        max(
+            color,
+            vec3(0.0)
+        );
+
+    color =
+        filmicCurve(
+            color
+        );
+
+    color =
+        encodeSRGB(
+            color
+        );
+
+    fragColor =
+        vec4(
+            color,
+            1.0
+        );
+}
+
+
+void main() {
+    mainImage(
+        gl_FragColor,
+        gl_FragCoord.xy
+    );
+}
+`;
+
+
+// ============================================================
+// Material
+// ============================================================
+
+const material = new THREE.RawShaderMaterial({
+    uniforms,
+    vertexShader,
+    fragmentShader,
+
+    depthTest: false,
+    depthWrite: false
+});
+
+
+const fullscreenTriangle = new THREE.Mesh(
+    geometry,
+    material
+);
+
+fullscreenTriangle.frustumCulled = false;
+
+scene.add(
+    fullscreenTriangle
+);
+
+
+// ============================================================
+// GUI helpers
+// ============================================================
+
+function updateVectorColor(
+    uniform,
+    value
+) {
+    tempColor.set(value);
+
+    uniform.value.set(
+        tempColor.r,
+        tempColor.g,
+        tempColor.b
+    );
+}
+
+
+// ============================================================
+// GUI
+// ============================================================
+
+const gui = new GUI({
+    title: "Shader Settings"
+});
+
+
+// Camera
+
+const cameraFolder =
+    gui.addFolder("Camera");
+
+cameraFolder
+    .add(
+        params,
+        "cameraDistance",
+        1.5,
+        8.0,
+        0.01
+    )
+    .name("Distance")
+    .onChange(value => {
+        uniforms.uCameraDistance.value =
+            value;
+    });
+
+cameraFolder
+    .add(
+        params,
+        "cameraFov",
+        20.0,
+        120.0,
+        0.1
+    )
+    .name("FOV")
+    .onChange(value => {
+        uniforms.uCameraFov.value =
+            value;
+    });
+
+
+// Animation
+
+const animationFolder =
+    gui.addFolder("Animation");
+
+animationFolder
+    .add(
+        params,
+        "rotationSpeed",
+        -1.0,
+        1.0,
+        0.001
+    )
+    .name("Rotation Speed")
+    .onChange(value => {
+        uniforms.uRotationSpeed.value =
+            value;
+    });
+
+animationFolder
+    .add(
+        params,
+        "gradientSpeed",
+        -5.0,
+        5.0,
+        0.01
+    )
+    .name("Gradient Speed")
+    .onChange(value => {
+        uniforms.uGradientSpeed.value =
+            value;
+    });
+
+
+// Geometry
+
+const geometryFolder =
+    gui.addFolder("Geometry");
+
+geometryFolder
+    .add(
+        params,
+        "baseRadius",
+        0.2,
+        2.0,
+        0.001
+    )
+    .name("Base Radius")
+    .onChange(value => {
+        uniforms.uBaseRadius.value =
+            value;
+    });
+
+geometryFolder
+    .add(
+        params,
+        "deformAmount",
+        0.0,
+        0.5,
+        0.001
+    )
+    .name("Deform Amount")
+    .onChange(value => {
+        uniforms.uDeformAmount.value =
+            value;
+    });
+
+geometryFolder
+    .add(
+        params,
+        "distanceScale",
+        0.1,
+        1.5,
+        0.001
+    )
+    .name("Distance Scale")
+    .onChange(value => {
+        uniforms.uDistanceScale.value =
+            value;
+    });
+
+
+// Material
+
+const materialFolder =
+    gui.addFolder("Material");
+
+materialFolder
+    .add(
+        params,
+        "surfaceRoughness",
+        0.02,
+        1.0,
+        0.001
+    )
+    .name("Roughness")
+    .onChange(value => {
+        uniforms.uSurfaceRoughness.value =
+            value;
+    });
+
+materialFolder
+    .add(
+        params,
+        "surfaceMetallic",
+        0.0,
+        2.0,
+        0.001
+    )
+    .name("Metallic")
+    .onChange(value => {
+        uniforms.uSurfaceMetallic.value =
+            value;
+    });
+
+materialFolder
+    .add(
+        params,
+        "emissiveStrength",
+        0.0,
+        1.0,
+        0.001
+    )
+    .name("Emissive")
+    .onChange(value => {
+        uniforms.uEmissiveStrength.value =
+            value;
+    });
+
+
+// Colors
+
+const colorsFolder =
+    gui.addFolder("Colors");
+
+colorsFolder
+    .addColor(
+        params,
+        "liquidColorA"
+    )
+    .name("Liquid A")
+    .onChange(value => {
+        updateVectorColor(
+            uniforms.uLiquidColorA,
+            value
+        );
+    });
+
+colorsFolder
+    .addColor(
+        params,
+        "liquidColorB"
+    )
+    .name("Liquid B")
+    .onChange(value => {
+        updateVectorColor(
+            uniforms.uLiquidColorB,
+            value
+        );
+    });
+
+colorsFolder
+    .addColor(
+        params,
+        "liquidColorC"
+    )
+    .name("Liquid C")
+    .onChange(value => {
+        updateVectorColor(
+            uniforms.uLiquidColorC,
+            value
+        );
+    });
+
+colorsFolder
+    .add(
+        params,
+        "gradientScale",
+        0.05,
+        8.0,
+        0.01
+    )
+    .name("Gradient Scale")
+    .onChange(value => {
+        uniforms.uGradientScale.value =
+            value;
+    });
+
+colorsFolder
+    .add(
+        params,
+        "gradientMix",
+        0.0,
+        1.0,
+        0.001
+    )
+    .name("Gradient Mix")
+    .onChange(value => {
+        uniforms.uGradientMix.value =
+            value;
+    });
+
+
+// Lighting
+
+const lightingFolder =
+    gui.addFolder("Lighting");
+
+lightingFolder
+    .addColor(
+        params,
+        "lightColorA"
+    )
+    .name("Light A")
+    .onChange(value => {
+        updateVectorColor(
+            uniforms.uLightColorA,
+            value
+        );
+    });
+
+lightingFolder
+    .addColor(
+        params,
+        "lightColorB"
+    )
+    .name("Light B")
+    .onChange(value => {
+        updateVectorColor(
+            uniforms.uLightColorB,
+            value
+        );
+    });
+
+lightingFolder
+    .add(
+        params,
+        "lightIntensity",
+        0.0,
+        15.0,
+        0.01
+    )
+    .name("Intensity")
+    .onChange(value => {
+        uniforms.uLightIntensity.value =
+            value;
+    });
+
+lightingFolder
+    .add(
+        params,
+        "lightAmbientIntensity",
+        -1.0,
+        1.0,
+        0.001
+    )
+    .name("Ambient")
+    .onChange(value => {
+        uniforms.uLightAmbientIntensity.value =
+            value;
+    });
+
+
+// Ray marching
+
+const rayFolder =
+    gui.addFolder("Ray Marching");
+
+rayFolder
+    .add(
+        params,
+        "maxRayDistance",
+        10.0,
+        300.0,
+        0.1
+    )
+    .name("Max Distance")
+    .onChange(value => {
+        uniforms.uMaxRayDistance.value =
+            value;
+    });
+
+rayFolder
+    .add(
+        params,
+        "surfaceHit",
+        0.0001,
+        0.02,
+        0.0001
+    )
+    .name("Surface Hit")
+    .onChange(value => {
+        uniforms.uSurfaceHit.value =
+            value;
+    });
+
+rayFolder
+    .add(
+        params,
+        "normalEpsilon",
+        0.001,
+        0.15,
+        0.0001
+    )
+    .name("Normal Epsilon")
+    .onChange(value => {
+        uniforms.uNormalEpsilon.value =
+            value;
+    });
+
+rayFolder
+    .add(
+        params,
+        "reflectionBias",
+        0.0,
+        0.1,
+        0.0001
+    )
+    .name("Reflection Bias")
+    .onChange(value => {
+        uniforms.uReflectionBias.value =
+            value;
+    });
+
+rayFolder
+    .add(
+        params,
+        "primarySteps",
+        16,
+        SHADER_MAX_PRIMARY_STEPS,
+        1
+    )
+    .name("Primary Steps")
+    .onChange(value => {
+        uniforms.uPrimarySteps.value =
+            Math.round(value);
+    });
+
+rayFolder
+    .add(
+        params,
+        "reflectionSteps",
+        8,
+        SHADER_MAX_REFLECTION_STEPS,
+        1
+    )
+    .name("Reflection Steps")
+    .onChange(value => {
+        uniforms.uReflectionSteps.value =
+            Math.round(value);
+    });
+
+rayFolder
+    .add(
+        params,
+        "reflectionBounces",
+        0,
+        SHADER_MAX_REFLECTION_BOUNCES,
+        1
+    )
+    .name("Reflection Bounces")
+    .onChange(value => {
+        uniforms.uReflectionBounces.value =
+            Math.round(value);
+    });
+
+
+// Advanced
+
+const advancedFolder =
+    gui.addFolder("Advanced");
+
+advancedFolder
+    .add(
+        params,
+        "mathPi",
+        2.5,
+        3.5,
+        0.001
+    )
+    .name("Math PI")
+    .onChange(value => {
+        uniforms.uMathPi.value =
+            value;
+    });
+
+
+// Performance
+
+const performanceFolder =
+    gui.addFolder("Performance");
+
+performanceFolder
+    .add(
+        params,
+        "dpr",
+        {
+            "0.5": 0.5,
+            "0.7": 0.7,
+            "1": 1.0,
+            "1.5": 1.5,
+            "2": 2.0
+        }
+    )
+    .name("DPR")
+    .onChange(() => {
+        resize();
+    });
+
+
+gui.close();
+
+
+// ============================================================
+// Resize
+// ============================================================
+
+const drawingBufferSize =
+    new THREE.Vector2();
+
+function resize() {
+    const width =
+        Math.max(
+            window.innerWidth,
+            1
+        );
+
+    const height =
+        Math.max(
+            window.innerHeight,
+            1
+        );
+
+    renderer.setPixelRatio(
+        params.dpr
+    );
+
+    renderer.setSize(
+        width,
+        height,
+        false
+    );
+
+    renderer.getDrawingBufferSize(
+        drawingBufferSize
+    );
+
+    uniforms.iResolution.value.copy(
+        drawingBufferSize
+    );
+}
+
+
+window.addEventListener(
+    "resize",
+    resize,
+    {
+        passive: true
+    }
+);
+
+resize();
+
+
+// ============================================================
+// Animation
+// ============================================================
+
+const clock =
+    new THREE.Clock();
+
+function animate() {
+    uniforms.iTime.value =
+        clock.getElapsedTime();
+
+    renderer.render(
+        scene,
+        camera
+    );
+
+    requestAnimationFrame(
+        animate
+    );
+}
+
+animate();
+
+</script>
+
+</body>
+</html>

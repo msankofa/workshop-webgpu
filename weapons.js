@@ -327,6 +327,23 @@ export function getWeapon(id) {
   return WEAPONS[id];
 }
 
+// How long a weapon takes to put away and to bring back up. Size is what makes a swap slow, so the
+// carry class decides unless a weapon authors its own `holsterMs` / `drawMs`. Pistol and rifle
+// numbers are the plan's; bot-sidearm.js's SIDEARM_DRAW_MS (550) is the reference for a rifle draw.
+export const SWAP_MS_BY_CLASS = Object.freeze({
+  pistol: Object.freeze({ holsterMs: 350, drawMs: 300 }),
+  rifle: Object.freeze({ holsterMs: 600, drawMs: 550 }),
+  default: Object.freeze({ holsterMs: 250, drawMs: 220 }),   // knife, grenade: nothing to shoulder
+});
+export function swapMsFor(id) {
+  const weapon = typeof id === 'string' ? WEAPONS[id] : id;
+  const base = SWAP_MS_BY_CLASS[weapon?.carryClass] ?? SWAP_MS_BY_CLASS.default;
+  return {
+    holsterMs: Number.isFinite(weapon?.holsterMs) ? weapon.holsterMs : base.holsterMs,
+    drawMs: Number.isFinite(weapon?.drawMs) ? weapon.drawMs : base.drawMs,
+  };
+}
+
 export function enabledWeapons() {
   return Object.values(WEAPONS).filter(w => !w.disabled);
 }

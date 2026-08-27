@@ -16,7 +16,7 @@ import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createTraversalLabWorldQuery, createTraversalLabCollider } from './traversal-lab-collider.js';
 import { createBaseGameTraversalLab } from './base-game-traversal-lab.js';
-import { createBaseGamePlayerController } from './base-game-player-controller.js';
+import { createBaseGamePlayerController, BASE_GAME_PLAYER_DEFAULT_CONFIG } from './base-game-player-controller.js';
 import { createBaseGamePrediction } from './base-game-prediction.js';
 import { createBaseGameRemotePlayers, createRemoteTrack } from './base-game-remote-players.js';
 import { connectBaseGameSession } from './base-game-session.mjs';
@@ -27,9 +27,10 @@ let pass = 0, fail = 0;
 const ok = (condition, message) => { if (condition) pass++; else { fail++; console.error('FAIL:', message); } };
 const near = (a, b, epsilon = 0.02) => Math.abs(a - b) <= epsilon;
 const P = BASE_GAME_PROTOCOL_VERSION;
+const SWAP_SETTLE_TICKS = 160;   // longer than the slowest holster + draw (rifle 600 + 550 ms at 120 Hz)
 
 // ---- protocol sanitizers ----
-ok(P === 10, 'protocol is version 10');
+ok(P === 12, 'protocol is version 12');
 const goodTick = sanitizeBaseGameTickInput({ tick: 5, moveX: 3, moveZ: -0.5, yaw: 1.2, pitch: 9, sprint: 1, jump: true });
 ok(goodTick && goodTick.moveX === 1 && goodTick.moveZ === -0.5 && near(goodTick.pitch, Math.PI / 2, 1e-9)
   && goodTick.sprint === false && goodTick.jump === true, 'tick sanitizer clamps movement and keeps booleans strict');
@@ -117,9 +118,12 @@ ok(me.grounded && near(me.position[1], 0) && me.lastProcessedTick === 120 && me.
 ok(snap.tick === 150 && snap.worldReady === true, 'snapshot carries the authoritative tick and world readiness');
 
 const startZ = me.position[2];
-sendTicks(owner, walk(60, { moveZ: 1 }));
-runSteps(60);
-ok(ownerClient.controller.getPosition()[2] < startZ - 1.5 && ownerClient.lastConsumedTick === 180, 'queued movement ticks move the server player');
+// Measured against the configured walk speed rather than a fixed distance, so retuning movement
+// cannot quietly turn this into an assertion that passes on any value.
+const movedTicks = 60, expectMoved = BASE_GAME_PLAYER_DEFAULT_CONFIG.moveSpeed * (movedTicks / 120) * 0.5;
+sendTicks(owner, walk(movedTicks, { moveZ: 1 }));
+runSteps(movedTicks);
+ok(ownerClient.controller.getPosition()[2] < startZ - expectMoved && ownerClient.lastConsumedTick === 180, 'queued movement ticks move the server player');
 
 // Rejections never change the queue or consumed tick.
 const queueBefore = ownerClient.queue.length;
@@ -144,12 +148,23 @@ ok(ownerClient.queue.length === queueBefore, 'malformed packets are dropped whol
 
   const c = ownerClient;
   ok(weaponForSlot(c.loadout, c.slot) === 'cz_805_bren', 'a new client holds the default primary');
+  // Phase 4: a slot change is a swap. The slot moves at once, but the weapon in hand is still the
+  // outgoing one until the holster finishes, and nothing can reload or fire on the way.
   sendTicks(owner, walk(10, { slot: 1, aim: true }));
   runSteps(10);
   ok(c.slot === 1 && c.aiming === true, 'slot and aim echo from consumed ticks');
   service.broadcastSnapshots();
   let s1 = lastOf(guest, 'base:snapshot').players.find((p) => p.id === ownerId);
-  ok(s1.weapon === 'five_seven' && s1.slot === 1 && s1.aiming === true && s1.action === 0 && s1.health === 100, 'snapshot resolves the slot to the weapon id');
+  ok(s1.slot === 1 && s1.aiming === true && s1.health === 100, 'the snapshot echoes the slot and aim');
+  ok(s1.weapon === 'cz_805_bren' && s1.action === BASE_GAME_WEAPON_ACTION.holster, 'mid-holster the rifle is still the weapon in hand');
+  sendTicks(owner, walk(1, { slot: 1, reload: true }));
+  runSteps(1);
+  ok(c.action === BASE_GAME_WEAPON_ACTION.holster, 'a reload press during a swap does nothing');
+  sendTicks(owner, walk(SWAP_SETTLE_TICKS, { slot: 1 }));
+  runSteps(SWAP_SETTLE_TICKS);
+  service.broadcastSnapshots();
+  s1 = lastOf(guest, 'base:snapshot').players.find((p) => p.id === ownerId);
+  ok(s1.weapon === 'five_seven' && c.action === BASE_GAME_WEAPON_ACTION.idle, 'once the draw finishes the pistol is in hand and the swap is over');
   sendTicks(owner, walk(1, { slot: 1, reload: true }));
   runSteps(1);
   const reloadTick = c.actionTick;
@@ -157,14 +172,17 @@ ok(ownerClient.queue.length === queueBefore, 'malformed packets are dropped whol
   sendTicks(owner, walk(5, { slot: 1, reload: true }));
   runSteps(5);
   ok(c.action === BASE_GAME_WEAPON_ACTION.reload && c.actionTick === reloadTick, 'reload edges during a reload do not restart it');
+  sendTicks(owner, walk(1, { slot: 0 }));
+  runSteps(1);
+  ok(c.slot === 1 && c.action === BASE_GAME_WEAPON_ACTION.reload, 'a slot change during a reload is refused: both hands are busy');
   sendTicks(owner, walk(BASE_GAME_RELOAD_TICKS, { slot: 1 }));
   runSteps(BASE_GAME_RELOAD_TICKS);
   ok(c.action === BASE_GAME_WEAPON_ACTION.idle, 'the reload action clears after the reload window');
-  sendTicks(owner, walk(1, { slot: 1, reload: true }));
-  runSteps(1);
   sendTicks(owner, walk(1, { slot: 0 }));
   runSteps(1);
-  ok(c.action === BASE_GAME_WEAPON_ACTION.idle && c.slot === 0, 'a slot change cancels the reload');
+  ok(c.slot === 0, 'with the reload done the swap goes through');
+  sendTicks(owner, walk(SWAP_SETTLE_TICKS, { slot: 0 }));
+  runSteps(SWAP_SETTLE_TICKS);
   service.handle(owner, { type: 'base:loadout', protocol: P, loadout: { primary: 'm24' } });
   service.broadcastSnapshots();
   s1 = lastOf(guest, 'base:snapshot').players.find((p) => p.id === ownerId);
@@ -175,6 +193,8 @@ ok(ownerClient.queue.length === queueBefore, 'malformed packets are dropped whol
   ok(poses && poses.capacity === 32 && poses.length > 0 && poses.length <= poses.capacity
     && Number.isFinite(oldestPose?.t) && Number.isFinite(newestPose?.t) && oldestPose.t <= newestPose.t,
   'server keeps a fixed-capacity articulated pose history per client');
+  sendTicks(owner, walk(SWAP_SETTLE_TICKS, { slot: 2 }));
+  runSteps(SWAP_SETTLE_TICKS);
   sendTicks(owner, walk(1, { slot: 2, reload: true }));
   runSteps(1);
   ok(c.action === BASE_GAME_WEAPON_ACTION.idle, 'no reload on a slot that holds a knife');

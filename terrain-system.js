@@ -141,6 +141,8 @@ class TerrainSystem {
     this.params = merge(DEFAULTS, options.params);
     this.source = resolveSource(options.source);   // null => hard-coded terrain-field.js (Environment Viewer compat)
     this.lastSourceError = null;
+    this.installMsPending = 0;      // out-of-frame worker install cost, drained by takeInstallCost()
+    this.installCountPending = 0;
     this.group = new THREE.Group();
     this.group.name = 'TerrainChunks';
     this.material = new MeshStandardNodeMaterial({ color: 0x2a2f38, roughness: 1 });
@@ -461,7 +463,27 @@ class TerrainSystem {
     });
   }
 
+  // Worker results land in w.onmessage, outside the rAF and outside every profiler slot, so this
+  // cost is invisible to the frame passes. Accumulate it for the host to drain and report.
   onWorkerChunk(data) {
+    const tInstall = performance.now();
+    try {
+      this.onWorkerChunkInner(data);
+    } finally {
+      this.installMsPending += performance.now() - tInstall;
+      this.installCountPending++;
+    }
+  }
+
+  // Drains the out-of-frame install cost since the last call.
+  takeInstallCost() {
+    const ms = this.installMsPending, n = this.installCountPending;
+    this.installMsPending = 0;
+    this.installCountPending = 0;
+    return { ms, count: n };
+  }
+
+  onWorkerChunkInner(data) {
     if (data.jobType === 'heightTile') {
       if (data.epoch === this.epoch) this.writeHeightTile(data.key, data.heights, data.texels);
       return;

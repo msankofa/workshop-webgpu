@@ -3,7 +3,7 @@
 // shooters, player-ammo.js owns magazines. This file only adds what lockstep needs and nothing
 // had: the semi-auto press edge and the reload window measured in ticks.
 import { validateShot } from './combat.js';
-import { getWeapon } from './weapons.js';
+import { getWeapon, swapMsFor } from './weapons.js';
 import { AIM_DEFAULTS, spreadHalfAngleRad, bloomAfterShot, decayBloomDeg, dispersedDirection } from './bot-aim.js';
 import { mulberry32, hashSeed } from './biome-classifier-js.js';
 import { BASE_GAME_RELOAD_TICKS, BASE_GAME_SIM_HZ } from './base-game-protocol.mjs';
@@ -36,7 +36,7 @@ export function createTriggerState() {
 
 // One tick of trigger handling for `playerId` holding `weaponId`.
 // Returns { fired, dry, reloadStarted, reloadDone, reason }.
-export function stepTrigger(trigger, ammo, { playerId, weaponId, tick, fire, reload, aim = false, alive = true, simHz = BASE_GAME_SIM_HZ, reloadTicks = BASE_GAME_RELOAD_TICKS }) {
+export function stepTrigger(trigger, ammo, { playerId, weaponId, tick, fire, reload, aim = false, alive = true, blocked = false, simHz = BASE_GAME_SIM_HZ, reloadTicks = BASE_GAME_RELOAD_TICKS }) {
   const out = { fired: false, dry: false, reloadStarted: false, reloadDone: false, reason: null };
   if (trigger.reloadUntilTick > 0 && tick >= trigger.reloadUntilTick) {
     if (trigger.reloadWeapon) ammo.reloadAmmo(playerId, trigger.reloadWeapon);
@@ -53,11 +53,12 @@ export function stepTrigger(trigger, ammo, { playerId, weaponId, tick, fire, rel
   if (!weapon || !alive) return out;
   const reloading = trigger.reloadUntilTick > tick;
   const usesAmmo = (weapon.mode || 'hitscan') !== 'melee';
-  if (!reloading && reload && usesAmmo) {
+  if (!reloading && reload && usesAmmo && !blocked) {
     const a = ammo.ensureAmmo(playerId, weaponId);
-    if (a.reserve > 0) { trigger.reloadUntilTick = tick + reloadTicks; trigger.reloadWeapon = weaponId; out.reloadStarted = true; return out; }
+    // A bottomless magazine has nothing to reload into, and the window would only gate firing.
+    if (a.reserve > 0 && a.mag !== Infinity) { trigger.reloadUntilTick = tick + reloadTicks; trigger.reloadWeapon = weaponId; out.reloadStarted = true; return out; }
   }
-  if (!edge || reloading) return out;
+  if (!edge || reloading || blocked) return out;
   const nowMs = tick * 1000 / simHz;
   const shooter = { alive, weapon: weaponId, p: [0, 0, 0], h: 0 };
   const intent = { weapon: weaponId, shotSeq: tick, origin: [0, 0, 0], dir: [0, 0, -1] };
@@ -74,6 +75,57 @@ export function stepTrigger(trigger, ammo, { playerId, weaponId, tick, fire, rel
   trigger.bloomDeg = bloomAfterShot(trigger.bloomDeg, aimSettingsFor(weapon));
   out.fired = true;
   return out;
+}
+
+// ---- weapon swaps -------------------------------------------------------------------------
+// Putting one weapon away and bringing the next up, in ticks so both sides land on the same frame.
+// The swap is the ONLY thing that gates the trigger besides a reload: you cannot shoot with a gun
+// halfway to your back.
+export function createSwapState() { return { active: false, startTick: 0, drawAtTick: 0, untilTick: 0, from: null, to: null }; }
+
+export function swapTicks(ms, simHz = BASE_GAME_SIM_HZ) { return Math.max(1, Math.round(ms * simHz / 1000)); }
+
+// Starts a swap at `tick`. A refused swap (mid-reload) leaves the state untouched and returns false.
+export function beginSwap(swap, { tick, from, to, reloading = false, simHz = BASE_GAME_SIM_HZ }) {
+  if (reloading) return false;   // both hands are busy; the plan's rule, enforced on both sides
+  const holster = from ? swapTicks(swapMsFor(from).holsterMs, simHz) : 0;
+  const draw = to ? swapTicks(swapMsFor(to).drawMs, simHz) : 0;
+  swap.active = holster + draw > 0;
+  swap.startTick = tick;
+  swap.drawAtTick = tick + holster;
+  swap.untilTick = tick + holster + draw;
+  swap.from = from ?? null;
+  swap.to = to ?? null;
+  return swap.active;
+}
+
+// 'idle' | 'holster' | 'draw'. Pure: asking what phase a swap is in must never change it, or the
+// answer depends on who asked first.
+export function swapPhase(swap, tick) {
+  if (!swap?.active || tick >= swap.untilTick) return 'idle';
+  return tick < swap.drawAtTick ? 'holster' : 'draw';
+}
+
+// What the mount's `drawBlend` should be: 1 = the live hold, 0 = the weapon down at its stow point.
+// Holster runs 1 -> 0 on the outgoing weapon, draw 0 -> 1 on the incoming one.
+export function drawBlendFor(swap, tick) {
+  const phase = swapPhase(swap, tick);
+  if (phase === 'idle') return 1;
+  if (phase === 'holster') {
+    const span = swap.drawAtTick - swap.startTick;
+    return span > 0 ? Math.max(0, 1 - (tick - swap.startTick) / span) : 0;
+  }
+  const span = swap.untilTick - swap.drawAtTick;
+  return span > 0 ? Math.min(1, (tick - swap.drawAtTick) / span) : 1;
+}
+
+// The same curve for a remote, whose only evidence is the replicated action and the tick it began.
+export function remoteDrawBlend(action, actionTick, tick, weaponId, simHz = BASE_GAME_SIM_HZ) {
+  if (action !== 3 && action !== 4) return 1;
+  const ms = swapMsFor(weaponId);
+  const span = swapTicks(action === 3 ? ms.holsterMs : ms.drawMs, simHz);
+  const t = Math.max(0, Math.min(1, (tick - actionTick) / span));
+  return action === 3 ? 1 - t : t;
 }
 
 // A quick-throw of the throwable slot: the same trigger step on its own state, so cadence comes
@@ -100,6 +152,15 @@ export function shotDirectionFor(trigger, { yaw, pitch, weaponId, tick, seed = 0
   const roll = mulberry32(hashSeed(seed, tick));
   const out = dispersedDirection({ x: look[0], y: look[1], z: look[2] }, half, roll(), roll());
   return [out.x, out.y, out.z];
+}
+
+// The live dispersion cone for the weapon in hand, in radians (half-angle) -- the same number
+// shotDirectionFor draws inside, exposed so a reticle can show the cone rather than guess at it.
+export function spreadHalfAngleFor(trigger, { weaponId, tick, moveSpeed01 = 0, simHz = BASE_GAME_SIM_HZ }) {
+  const weapon = weaponId ? getWeapon(weaponId) : null;
+  if (!weapon) return 0;
+  const heldMs = trigger?.contactSinceTick >= 0 ? (tick - trigger.contactSinceTick) * 1000 / simHz : 0;
+  return spreadHalfAngleRad({ moveSpeed01, heldMs, bloomDeg: trigger?.bloomDeg ?? 0 }, aimSettingsFor(weapon));
 }
 
 // The look vector from yaw/pitch in the base-game player-view convention.

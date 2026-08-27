@@ -6,7 +6,7 @@ import {
   sanitizeBaseGamePlayerState, sanitizeBaseGameHitEvent, sanitizeBaseGameDeathEvent, wireAmmo,
   sanitizeBaseGameShotEvent, sanitizeBaseGameExplosionEvent, sanitizeBaseGameProjectileState,
 } from './base-game-protocol.mjs';
-import { createTriggerState, stepTrigger, stepThrow, lookDirection, shotDirectionFor } from './base-game-fire.js';
+import { createTriggerState, stepTrigger, stepThrow, lookDirection, shotDirectionFor, createSwapState, beginSwap, swapPhase, swapTicks, drawBlendFor, remoteDrawBlend } from './base-game-fire.js';
 import { botSeedFromId } from './bot-activity.js';
 import { createAmmoStore, defaultAmmoFor } from './player-ammo.js';
 import { createProjectileManager } from './bot-projectiles.js';
@@ -14,7 +14,7 @@ import { isSurfaceDetonation } from './entity-types/combat-projectile.js';
 import { createWorldQueryService } from './world-query.js';
 import { createTraversalLabWorldQuery } from './traversal-lab-collider.js';
 import { createBaseGameRoomService } from './server/base-game-rooms.js';
-import { getWeapon } from './weapons.js';
+import { getWeapon, swapMsFor } from './weapons.js';
 import { playerPoseAnchor, playerPosePoint } from './player-body-pose.js';
 import { readFileSync } from 'node:fs';
 
@@ -80,6 +80,41 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
     ok(ammo.ensureAmmo('p', 'grenade').mag === 0 && ammo.ensureAmmo('p', 'grenade').reserve === 0, 'an empty pouch stays empty');
     const rifle = stepThrow(createTriggerState(), createAmmoStore(), { playerId: 'p', weaponId: 'cz_805_bren', tick: 1, fire: true });
     ok(!rifle.fired && rifle.reason === 'not-throwable', 'a hitscan weapon in the throwable slot is never thrown');
+  }
+
+  // Swaps: holster the old weapon, draw the new one, and neither shoots on the way.
+  {
+    const swap = createSwapState();
+    ok(swapPhase(swap, 0) === 'idle' && drawBlendFor(swap, 0) === 1, 'a fresh swap state is idle and fully drawn');
+    const hold = swapTicks(swapMsFor('cz_805_bren').holsterMs), draw = swapTicks(swapMsFor('five_seven').drawMs);
+    ok(beginSwap(swap, { tick: 100, from: 'cz_805_bren', to: 'five_seven' }), 'a swap starts');
+    ok(swapPhase(swap, 100) === 'holster' && swapPhase(swap, 100 + hold - 1) === 'holster', 'the rifle goes away first');
+    ok(swapPhase(swap, 100 + hold) === 'draw' && swapPhase(swap, 100 + hold + draw - 1) === 'draw', 'then the pistol comes up');
+    ok(swapPhase(swap, 100 + hold + draw) === 'idle', 'and the swap ends on its own');
+    ok(drawBlendFor(swap, 100) === 1 && drawBlendFor(swap, 100 + hold - 1) < 0.05, 'holster runs the hold down to the stow point');
+    const midDraw = drawBlendFor(swap, 100 + hold + Math.floor(draw / 2));
+    ok(midDraw > 0.4 && midDraw < 0.6, 'draw runs it back up, half way at half time');
+    ok(swapMsFor('cz_805_bren').holsterMs > swapMsFor('five_seven').holsterMs, 'a rifle is slower to put away than a pistol');
+    ok(!beginSwap(createSwapState(), { tick: 1, from: 'cz_805_bren', to: 'five_seven', reloading: true }), 'a swap is refused mid-reload');
+    // A remote has only the replicated action and the tick it started on.
+    ok(remoteDrawBlend(0, 0, 50, 'cz_805_bren') === 1, 'an idle remote holds its weapon normally');
+    ok(remoteDrawBlend(3, 10, 10, 'cz_805_bren') === 1 && remoteDrawBlend(3, 10, 10 + hold, 'cz_805_bren') === 0, 'a remote holster runs 1 -> 0');
+    ok(remoteDrawBlend(4, 10, 10, 'five_seven') === 0 && remoteDrawBlend(4, 10, 10 + draw, 'five_seven') === 1, 'a remote draw runs 0 -> 1');
+  }
+
+  // Unlimited ammo: a bottomless magazine, and no reload window to gate the trigger.
+  {
+    const ammo = createAmmoStore(), trigger = createTriggerState();
+    ammo.ensureAmmo('p', 'cz_805_bren').mag = 3;
+    ammo.setUnlimited(true);
+    ok(ammo.ensureAmmo('p', 'cz_805_bren').mag === Infinity, 'turning it on makes the magazine bottomless');
+    let fired = 0;
+    for (let tick = 1; tick <= 1200; tick++) if (stepTrigger(trigger, ammo, { playerId: 'p', weaponId: 'cz_805_bren', tick, fire: true, reload: false, aim: true }).fired) fired++;
+    ok(fired > getWeapon('cz_805_bren').magazineSize, 'a held trigger keeps firing past a magazine');
+    ok(ammo.ensureAmmo('p', 'cz_805_bren').mag === Infinity, 'firing never spends a round');
+    ok(!stepTrigger(trigger, ammo, { playerId: 'p', weaponId: 'cz_805_bren', tick: 1300, fire: false, reload: true, aim: true }).reloadStarted, 'a reload press starts no window, so it cannot gate the trigger');
+    ammo.setUnlimited(false);
+    ok(ammo.ensureAmmo('p', 'cz_805_bren').mag === getWeapon('cz_805_bren').magazineSize, 'turning it off hands back a full magazine');
   }
 
   // Spread: bot-aim.js's cone on weapons.js spreadRad, rolls seeded on (seed, tick).
@@ -162,7 +197,22 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   };
   const both = (count, shooterExtra = {}, victimExtra = {}) => { send(shooterWs, shooter, count, shooterExtra); send(victimWs, victim, count, victimExtra); runSteps(count); };
   // Both settle, then the victim walks down -Z (yaw 0 faces -Z) and stands there.
-  both(30); both(120, {}, { moveZ: 1 }); both(60);
+  // Separate by DISTANCE, not by tick count. Explosives here have a 15 m blast with self-damage on,
+  // so a fixture that walks for a fixed number of ticks quietly kills the shooter the moment the
+  // configured walk speed is retuned downward.
+  const gap = () => {
+    const a = shooter.controller.getPosition(), b = victim.controller.getPosition();
+    return Math.hypot(b[0] - a[0], b[2] - a[2]);
+  };
+  const separate = (metres, cap = 4000) => {
+    let spent = 0;
+    while (gap() < metres && spent < cap) { both(20, {}, { moveZ: 1 }); spent += 20; }
+    both(60);
+    return gap();
+  };
+  both(30);
+  // Close enough that a rifle shot is not a coin toss against the dispersion cone.
+  ok(separate(5) >= 5, 'the victim walks a few metres ahead of the shooter');
   const sp = shooter.controller.getPosition(), vp = victim.controller.getPosition();
   ok(vp[2] < sp[2] - 2, 'the victim stands ahead of the shooter');
   const shotOrigin = playerPoseAnchor(shooter.hitPose, 'muzzle');
@@ -214,7 +264,9 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
   // Melee resolves the same ray at the weapon's short range; only the presentation differs.
   {
     room.events = { hits: [], deaths: [], shots: [], explosions: [] };
-    both(4, { slot: 2, aim: true });   // knife in hand, trigger up: the slot change eats the press edge
+    // Knife in hand, trigger up: the slot change eats the press edge, and the swap has to finish
+    // before anything can be swung (rifle holster 600 ms + knife draw 220 ms at 120 Hz).
+    both(140, { slot: 2, aim: true });
     const hpBefore = hp(victim);
     // Aim at where the victim IS. The respawn puts it back on the spawn point the shooter is
     // standing on, so it can be directly overhead and the stale yaw/pitch points at empty ground.
@@ -229,13 +281,14 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
     ok(room.ammo.ensureAmmo(shooterId, 'knife').mag === 0, 'melee draws from no magazine');
     room.events = { hits: [], deaths: [], shots: [], explosions: [] };
     // Out of reach: the same swing from across the room hits nothing.
-    both(100, { slot: 2 }, { moveZ: 1 });   // clear of the 2 m reach, still on the platform
+    // Clear of the 2 m reach but still on the platform, however fast the walk is tuned.
+    for (let spent = 0; gap() < 6 && spent < 600; spent += 20) both(20, { slot: 2 }, { moveZ: 1 });
     both(120, { slot: 2 });                 // and out past the knife's own 1.5 s interval
     both(1, { slot: 2, aim: true, yaw: mYaw, pitch: mPitch, fire: true });
     const far = room.events.shots.at(-1);
     ok(far && far.kind !== 'player' && hp(victim) === hpBefore - getWeapon('knife').damage, 'a knife swing beyond its 2 m range hits nobody');
     service.handle(shooterWs, { type: 'base:loadout', protocol: P, loadout: { primary: 'cz_805_bren' } });
-    both(4, { slot: 0 });
+    both(140, { slot: 0 });
   }
 
   // Projectiles: an RPG flies as a bot-projectiles.js record, shows in the snapshot, and its blast
@@ -279,12 +332,60 @@ const ticksFor = weaponId => Math.ceil(getWeapon(weaponId).fireIntervalMs * 120 
     for (let i = 0; i < 20 && room.projectiles.list.length; i++) both(12, { yaw: yaw2, pitch: pitch2 });
     ok(room.events.explosions.some(e => e.weapon === 'grenade'), 'the thrown grenade goes off and reports its blast');
   }
+
+  // The same rule in the room: switching slots gates the trigger until the draw finishes.
+  {
+    room.events = { hits: [], deaths: [], shots: [], explosions: [] };
+    both(140, { slot: 0 });
+    both(1, { slot: 1, aim: true, fire: true, yaw: yaw2, pitch: pitch2 });
+    ok(shooter.action === 3 && shooter.slot === 1, 'the slot change stamps a holster action');
+    ok(!room.events.shots.length, 'nothing fires on the frame the swap begins');
+    const swapTotal = swapTicks(swapMsFor('cz_805_bren').holsterMs) + swapTicks(swapMsFor('five_seven').drawMs);
+    both(swapTicks(swapMsFor('cz_805_bren').holsterMs) + 2, { slot: 1, aim: true, fire: true, yaw: yaw2, pitch: pitch2 });
+    ok(shooter.action === 4, 'the second half of the swap is a draw');
+    ok(!room.events.shots.length, 'a held trigger still fires nothing mid-swap');
+    both(swapTotal, { slot: 1, aim: true, fire: true, yaw: yaw2, pitch: pitch2 });
+    ok(!room.events.shots.length, 'a trigger held THROUGH the swap still needs a fresh press: a semi-auto has had no edge');
+    both(2, { slot: 1, aim: true, yaw: yaw2, pitch: pitch2 });
+    both(2, { slot: 1, aim: true, fire: true, yaw: yaw2, pitch: pitch2 });
+    ok(room.events.shots.some(s => s.weapon === 'five_seven'), 'once the draw finishes a fresh press fires the pistol');
+    // Mid-reload the swap is refused outright, so the slot does not move.
+    room.events = { hits: [], deaths: [], shots: [], explosions: [] };
+    both(200, { slot: 1 });
+    both(1, { slot: 1, reload: true });
+    ok(shooter.action === 1, 'a reload is running');
+    both(1, { slot: 0 });
+    ok(shooter.slot === 1 && shooter.action === 1, 'a swap during a reload is refused and the reload continues');
+    both(BASE_GAME_RELOAD_TICKS + 4, { slot: 1 });
+    both(1, { slot: 0 });
+    ok(shooter.slot === 0, 'once the reload is done the swap goes through');
+    both(200, { slot: 0 });
+  }
+
+  // Unlimited ammo is the owner's match rule: a shared world key, applied to the room's one store.
+  {
+    service.handle(shooterWs, { type: 'base:loadout', protocol: P, loadout: { primary: 'cz_805_bren' } });
+    both(20, { slot: 0 });
+    service.handle(shooterWs, { type: 'base:set_world', protocol: P, patch: { unlimitedAmmo: true } });
+    ok(room.world.unlimitedAmmo === true && room.ammo.ensureAmmo(shooterId, 'cz_805_bren').mag === Infinity, "the owner's patch makes every magazine in the room bottomless");
+    both(240, { slot: 0, yaw: yaw2, pitch: pitch2, aim: true, fire: true });
+    ok(room.ammo.ensureAmmo(shooterId, 'cz_805_bren').mag === Infinity && shooter.action === 2, 'a long burst spends nothing and still fires');
+    service.broadcastSnapshots();
+    snap = lastOf(victimWs, 'base:snapshot');
+    const me = snap.players.find(p => p.id === shooterId);
+    ok(me.ammo && me.ammo.mag === null, 'a bottomless magazine travels as null, since JSON has no Infinity');
+    ok(sanitizeBaseGamePlayerState(me).ammo.mag === Infinity, 'and reads back as Infinity on the client');
+    service.handle(victimWs, { type: 'base:set_world', protocol: P, patch: { unlimitedAmmo: false } });
+    ok(room.world.unlimitedAmmo === true, 'a guest cannot change the room rule');
+    service.handle(shooterWs, { type: 'base:set_world', protocol: P, patch: { unlimitedAmmo: false } });
+    ok(room.ammo.ensureAmmo(shooterId, 'cz_805_bren').mag === getWeapon('cz_805_bren').magazineSize, 'turning it off hands everyone a full magazine');
+  }
 }
 
 // ---- page wiring markers ----
 {
   const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
-  for (const marker of ['base-game-fire.js', 'stepTrigger(', 'audioDirector.localFire(', 'snapshot.hits', 'snapshot.deaths', 'combatStatus', 'createEffectRenderer(', 'tracerLifetime(', "pushEffect('muzzle_flash'", "pushEffect('explosion'", 'snapshot.projectiles', 'shotDirectionFor(', 'createFlashLights(', "pushEffect('smoke_puff'", 'soloProjectiles.spawn(', 'presentExplosion(', 'weaponThrowsRubble', 'isSurfaceDetonation(', 'pickImpactVoice(', 'evaluateWhizz(', 'spawnHitBlood(', 'sprayParams(', 'createDebrisSim(', 'createDebrisRenderer(', 'spawnBlastDebris(', 'debrisSim.step(', 'stepLocalThrow(', "event.code === 'KeyG'", 'localThrowableId(']) {
+  for (const marker of ['base-game-fire.js', 'stepTrigger(', 'audioDirector.localFire(', 'snapshot.hits', 'snapshot.deaths', 'combatStatus', 'createEffectRenderer(', 'tracerLifetime(', "pushEffect('muzzle_flash'", "pushEffect('explosion'", 'snapshot.projectiles', 'shotDirectionFor(', 'createFlashLights(', "pushEffect('smoke_puff'", 'soloProjectiles.spawn(', 'presentExplosion(', 'weaponThrowsRubble', 'isSurfaceDetonation(', 'pickImpactVoice(', 'evaluateWhizz(', 'spawnHitBlood(', 'sprayParams(', 'createDebrisSim(', 'createDebrisRenderer(', 'spawnBlastDebris(', 'debrisSim.step(', 'stepLocalThrow(', "event.code === 'KeyG'", 'localThrowableId(', 'applyUnlimitedAmmo(', "'unlimitedAmmo'", 'stepLocalSwap(', 'selectSlot(', 'cycleSlot(', "event.code === 'KeyQ'", 'slotChipMarkup(', 'setLocalLoadout(', 'zoomCamera(', 'event.shiftKey']) {
     ok(html.includes(marker), `base-game.html wires ${marker}`);
   }
 }

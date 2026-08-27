@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0"
+    />
+
+    <title>Neon Ribbons</title>
+
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #000000;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+            "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20.0/+esm"
+        }
+    }
+    </script>
+</head>
+
+<body>
+
+<script type="module">
+
+import * as THREE from "three";
+import GUI from "lil-gui";
+
+
+// ============================================================
+// Main parameters
+// ============================================================
+
+const MAX_BANDS = 8;
+
+const params = {
+
+    animation: {
+        timeScale: 0.7
+    },
+
+    geometry: {
+        bandCount: 4,
+        bandThickness: 0.08
+    },
+
+    material: {
+        lightFalloff: 23.4,
+        coreRadius: 0.07,
+        lightGain: 0.04,
+        colorRate: 0.25
+    },
+
+    performance: {
+        dpr: 1
+    }
+
+};
+
+
+// ============================================================
+// Renderer
+// ============================================================
+
+const renderer = new THREE.WebGLRenderer({
+    antialias: false,
+    alpha: false,
+    powerPreference: "high-performance"
+});
+
+renderer.setPixelRatio(params.performance.dpr);
+renderer.setSize(
+    window.innerWidth,
+    window.innerHeight,
+    false
+);
+
+renderer.setClearColor(0x000000, 1);
+
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+
+document.body.appendChild(renderer.domElement);
+
+
+// ============================================================
+// Scene
+// ============================================================
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.OrthographicCamera(
+    -1,
+    1,
+    1,
+    -1,
+    0,
+    1
+);
+
+
+// ============================================================
+// Resolution
+// ============================================================
+
+const drawingBufferSize = new THREE.Vector2();
+
+renderer.getDrawingBufferSize(
+    drawingBufferSize
+);
+
+
+// ============================================================
+// Uniforms
+// ============================================================
+
+const uniforms = {
+
+    iTime: {
+        value: 0
+    },
+
+    iResolution: {
+        value: drawingBufferSize.clone()
+    },
+
+    uLightFalloff: {
+        value: params.material.lightFalloff
+    },
+
+    uCoreRadius: {
+        value: params.material.coreRadius
+    },
+
+    uLightGain: {
+        value: params.material.lightGain
+    },
+
+    uBandThickness: {
+        value: params.geometry.bandThickness
+    },
+
+    uColorRate: {
+        value: params.material.colorRate
+    },
+
+    uBandCount: {
+        value: params.geometry.bandCount
+    }
+
+};
+
+
+// ============================================================
+// Vertex shader
+// ============================================================
+
+const vertexShader = /* glsl */`
+
+void main()
+{
+    gl_Position = vec4(
+        position.xy,
+        0.0,
+        1.0
+    );
+}
+
+`;
+
+
+// ============================================================
+// Fragment shader
+// ============================================================
+
+const fragmentShader = /* glsl */`
+
+precision highp float;
+precision highp int;
+
+uniform float iTime;
+uniform vec2 iResolution;
+
+uniform float uLightFalloff;
+uniform float uCoreRadius;
+uniform float uLightGain;
+
+uniform float uBandThickness;
+uniform float uColorRate;
+
+uniform int uBandCount;
+
+#define MAX_BANDS ${MAX_BANDS}
+
+
+float spectralResponse(
+    float frequency,
+    float time
+)
+{
+    vec4 offsets =
+        vec4(
+            -2.0,
+            -15.6,
+             2.0,
+             1.0
+        );
+
+    vec4 phase =
+        (frequency + offsets) * 0.07;
+
+    vec4 response =
+        vec4(0.1)
+        - 0.1 * sin(
+            phase + time * 1.1
+        )
+        + 0.1 * cos(
+            phase * 1.6 - time
+        );
+
+    float centerPhase =
+        frequency * 0.07;
+
+    float center =
+        0.1
+        - 0.1 * sin(
+            centerPhase + time * 1.1
+        )
+        + 0.1 * cos(
+            centerPhase * 1.6 - time
+        );
+
+    return (
+        dot(
+            response,
+            vec4(1.0)
+        )
+        + center
+    ) / 5.1;
+}
+
+
+float bandGlow(
+    float signedDistance,
+    float thickness,
+    float intensity
+)
+{
+    float distanceToBand =
+        max(
+            abs(signedDistance)
+            - thickness,
+            0.0
+        );
+
+    float denominator =
+        uLightFalloff
+        * distanceToBand
+        + uCoreRadius;
+
+    return
+        uLightGain
+        * intensity
+        / max(
+            denominator,
+            0.000001
+        );
+}
+
+
+void main()
+{
+    vec2 fragCoord =
+        gl_FragCoord.xy;
+
+    float safeHeight =
+        max(
+            iResolution.y,
+            1.0
+        );
+
+    float aspect =
+        iResolution.x
+        / safeHeight;
+
+    vec2 view =
+        (
+            fragCoord
+            - 0.5
+            * iResolution.xy
+        )
+        / safeHeight;
+
+    vec2 screen =
+        vec2(
+            view.x
+                / max(
+                    aspect,
+                    0.000001
+                )
+                + 0.5,
+
+            view.y
+                + 0.5
+        );
+
+    vec2 fieldCoord =
+        -0.9
+        + 1.7
+        * screen;
+
+    float time =
+        iTime;
+
+    float accumulatedY =
+        fieldCoord.y;
+
+    float colorPhase =
+        time
+        * uColorRate;
+
+    float colorSin =
+        sin(colorPhase);
+
+    float colorCos =
+        cos(colorPhase);
+
+    vec3 emissionTint =
+        vec3(
+            2.5 + colorSin,
+            2.3 - colorSin,
+            2.0 - colorCos
+        );
+
+    vec3 result =
+        vec3(-0.1);
+
+    for (
+        int bandIndex = 0;
+        bandIndex < MAX_BANDS;
+        ++bandIndex
+    )
+    {
+        if (bandIndex >= uBandCount)
+        {
+            break;
+        }
+
+        float layer =
+            float(bandIndex)
+            + 2.0;
+
+        accumulatedY -=
+            0.1
+            * sin(
+                fieldCoord.x
+                + layer
+                    * 0.55555556
+                - time
+                    * 0.2
+            );
+
+        float horizontalShape =
+            sin(
+                screen.x
+                    * 13.0
+                + time
+                    * 1.2
+                + layer
+            );
+
+        horizontalShape *=
+            cos(
+                screen.x
+                    * 2.4
+                - time
+                    * 3.0
+            );
+
+        float frequency =
+            layer
+            * layer
+            * 20.0;
+
+        float modulation =
+            spectralResponse(
+                frequency,
+                time
+            );
+
+        float centerDistance =
+            accumulatedY
+            + horizontalShape
+                * modulation
+                * 0.1;
+
+        float rotationWave =
+            sin(
+                -screen.x
+                    * 6.8
+                - time
+                    * 1.5
+                + layer
+                    * 2.0
+            );
+
+        float thickness =
+            uBandThickness
+            * (
+                0.5
+                + 0.5
+                    * rotationWave
+            );
+
+        float triangularPhase =
+            abs(
+                2.0
+                * fract(
+                    0.5
+                    * (
+                        screen.x
+                        + layer
+                            * 1.7
+                        + time
+                    )
+                )
+                - 1.0
+            );
+
+        float intensity =
+            0.2
+            + 0.36
+                * triangularPhase
+                * triangularPhase;
+
+        float light =
+            bandGlow(
+                centerDistance,
+                thickness,
+                intensity
+            );
+
+        result +=
+            emissionTint
+            * light;
+    }
+
+    gl_FragColor =
+        vec4(
+            result,
+            1.0
+        );
+}
+
+`;
+
+
+// ============================================================
+// Material
+// ============================================================
+
+const material = new THREE.ShaderMaterial({
+
+    uniforms,
+
+    vertexShader,
+
+    fragmentShader,
+
+    depthTest: false,
+    depthWrite: false,
+
+    transparent: false,
+
+    toneMapped: false
+
+});
+
+
+// ============================================================
+// Fullscreen triangle
+// ============================================================
+
+const geometry =
+    new THREE.BufferGeometry();
+
+geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+        [
+            -1, -1, 0,
+             3, -1, 0,
+            -1,  3, 0
+        ],
+        3
+    )
+);
+
+const fullscreenTriangle =
+    new THREE.Mesh(
+        geometry,
+        material
+    );
+
+fullscreenTriangle.frustumCulled =
+    false;
+
+scene.add(
+    fullscreenTriangle
+);
+
+
+// ============================================================
+// lil-gui
+// ============================================================
+
+const gui = new GUI({
+    title: "Settings"
+});
+
+const animationFolder =
+    gui.addFolder("Animation");
+
+animationFolder
+    .add(
+        params.animation,
+        "timeScale",
+        0.0,
+        3.0,
+        0.01
+    )
+    .name("Time Scale");
+
+
+const geometryFolder =
+    gui.addFolder("Geometry");
+
+geometryFolder
+    .add(
+        params.geometry,
+        "bandCount",
+        1,
+        MAX_BANDS,
+        1
+    )
+    .name("Band Count")
+    .onChange((value) => {
+
+        uniforms.uBandCount.value =
+            Math.round(value);
+
+    });
+
+geometryFolder
+    .add(
+        params.geometry,
+        "bandThickness",
+        0.001,
+        0.25,
+        0.001
+    )
+    .name("Band Thickness")
+    .onChange((value) => {
+
+        uniforms.uBandThickness.value =
+            value;
+
+    });
+
+
+const materialFolder =
+    gui.addFolder("Material");
+
+materialFolder
+    .add(
+        params.material,
+        "lightFalloff",
+        1.0,
+        60.0,
+        0.1
+    )
+    .name("Light Falloff")
+    .onChange((value) => {
+
+        uniforms.uLightFalloff.value =
+            value;
+
+    });
+
+materialFolder
+    .add(
+        params.material,
+        "coreRadius",
+        0.005,
+        0.25,
+        0.001
+    )
+    .name("Core Radius")
+    .onChange((value) => {
+
+        uniforms.uCoreRadius.value =
+            value;
+
+    });
+
+materialFolder
+    .add(
+        params.material,
+        "lightGain",
+        0.001,
+        0.15,
+        0.001
+    )
+    .name("Light Gain")
+    .onChange((value) => {
+
+        uniforms.uLightGain.value =
+            value;
+
+    });
+
+materialFolder
+    .add(
+        params.material,
+        "colorRate",
+        0.0,
+        2.0,
+        0.01
+    )
+    .name("Color Rate")
+    .onChange((value) => {
+
+        uniforms.uColorRate.value =
+            value;
+
+    });
+
+
+const performanceFolder =
+    gui.addFolder("Performance");
+
+performanceFolder
+    .add(
+        params.performance,
+        "dpr",
+        {
+            "0.5": 0.5,
+            "0.7": 0.7,
+            "1": 1,
+            "1.5": 1.5,
+            "2": 2
+        }
+    )
+    .name("DPR")
+    .onChange(() => {
+
+        updateRendererSize();
+
+    });
+
+
+gui.close();
+
+
+// ============================================================
+// Resize
+// ============================================================
+
+function updateRendererSize()
+{
+    const width =
+        window.innerWidth;
+
+    const height =
+        window.innerHeight;
+
+    renderer.setPixelRatio(
+        params.performance.dpr
+    );
+
+    renderer.setSize(
+        width,
+        height,
+        false
+    );
+
+    renderer.getDrawingBufferSize(
+        drawingBufferSize
+    );
+
+    uniforms.iResolution.value.copy(
+        drawingBufferSize
+    );
+}
+
+
+function handleResize()
+{
+    updateRendererSize();
+}
+
+
+window.addEventListener(
+    "resize",
+    handleResize,
+    {
+        passive: true
+    }
+);
+
+
+// ============================================================
+// Animation
+// ============================================================
+
+const clock =
+    new THREE.Clock();
+
+let shaderTime = 0;
+
+
+function animate()
+{
+    requestAnimationFrame(animate);
+
+    const delta =
+        Math.min(
+            clock.getDelta(),
+            0.1
+        );
+
+    shaderTime +=
+        delta
+        * params.animation.timeScale;
+
+    uniforms.iTime.value =
+        shaderTime;
+
+    renderer.render(
+        scene,
+        camera
+    );
+}
+
+
+// ============================================================
+// Start
+// ============================================================
+
+updateRendererSize();
+animate();
+
+</script>
+
+</body>
+</html>

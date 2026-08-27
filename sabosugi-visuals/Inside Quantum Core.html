@@ -1,0 +1,1364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    />
+
+    <title>Inside Quantum Core</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #000000;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+
+    <script type="importmap">
+      //Support me by PayPal: https://paypal.com/paypalme/sabosugi
+
+
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+            "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm"
+        }
+    }
+    </script>
+</head>
+
+<body>
+
+<script type="module">
+
+import * as THREE from "three";
+import GUI from "lil-gui";
+
+
+// ============================================================
+// Scene parameters
+// ============================================================
+
+const params = {
+
+    // Animation
+    travelRate: 0.26,
+    mirrorSpeed: 0.07,
+
+    // Camera
+    cameraFadeNear: 0.4,
+    cameraFadeFar: 2.0,
+    startDepth: 2.1,
+
+    // Geometry
+    traceFactor: 0.2,
+
+    primaryPeriod: 15.2,
+    primaryOffset: 9.9,
+
+    secondaryPeriod: 6.7,
+    secondaryOffset: 5.1,
+
+    detailScale: 22.0,
+    detailAmount: 1.5,
+
+    verticalOffset: 12.9,
+
+    angularPeriod: 0.628,
+    angularHalfPeriod: 0.314,
+
+    // Mirror deformation
+    mirrorPhaseX: 0.063,
+    mirrorPhaseY: 0.212,
+    mirrorPhaseZ: 1.046,
+
+    // Spectral color
+    spectralPhaseR: 0.9,
+    spectralPhaseG: 2.8,
+    spectralPhaseB: 5.2,
+
+    lightColor: {
+        r: 1.7 / 3.0,
+        g: 1.6 / 3.0,
+        b: 1.0
+    },
+
+    lightIntensity: 3.0,
+
+    // Output
+    outputScale: 1000.0,
+
+    // Performance
+    traceSteps: 54,
+    foldSteps: 3,
+    dpr: 1.3
+};
+
+
+// ============================================================
+// Renderer
+// ============================================================
+
+const renderer = new THREE.WebGLRenderer({
+    antialias: false,
+    alpha: false,
+    premultipliedAlpha: false,
+    depth: false,
+    stencil: false,
+    powerPreference: "high-performance"
+});
+
+renderer.setClearColor(0x000000, 1);
+renderer.setPixelRatio(params.dpr);
+renderer.toneMapping = THREE.NoToneMapping;
+
+document.body.appendChild(renderer.domElement);
+
+
+// ============================================================
+// Scene
+// ============================================================
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.OrthographicCamera(
+    -1,
+    1,
+    1,
+    -1,
+    0,
+    1
+);
+
+
+// ============================================================
+// Uniforms
+// ============================================================
+
+const uniforms = {
+
+    uResolution: {
+        value: new THREE.Vector2(1, 1)
+    },
+
+    uTime: {
+        value: 0
+    },
+
+    uTravelRate: {
+        value: params.travelRate
+    },
+
+    uMirrorSpeed: {
+        value: params.mirrorSpeed
+    },
+
+    uCameraFadeNear: {
+        value: params.cameraFadeNear
+    },
+
+    uCameraFadeFar: {
+        value: params.cameraFadeFar
+    },
+
+    uStartDepth: {
+        value: params.startDepth
+    },
+
+    uTraceFactor: {
+        value: params.traceFactor
+    },
+
+    uPrimaryPeriod: {
+        value: params.primaryPeriod
+    },
+
+    uPrimaryOffset: {
+        value: params.primaryOffset
+    },
+
+    uSecondaryPeriod: {
+        value: params.secondaryPeriod
+    },
+
+    uSecondaryOffset: {
+        value: params.secondaryOffset
+    },
+
+    uDetailScale: {
+        value: params.detailScale
+    },
+
+    uDetailAmount: {
+        value: params.detailAmount
+    },
+
+    uVerticalOffset: {
+        value: params.verticalOffset
+    },
+
+    uAngularPeriod: {
+        value: params.angularPeriod
+    },
+
+    uAngularHalfPeriod: {
+        value: params.angularHalfPeriod
+    },
+
+    uMirrorPhase: {
+        value: new THREE.Vector3(
+            params.mirrorPhaseX,
+            params.mirrorPhaseY,
+            params.mirrorPhaseZ
+        )
+    },
+
+    uSpectralPhase: {
+        value: new THREE.Vector3(
+            params.spectralPhaseR,
+            params.spectralPhaseG,
+            params.spectralPhaseB
+        )
+    },
+
+    uLightColor: {
+        value: new THREE.Vector3(
+            params.lightColor.r,
+            params.lightColor.g,
+            params.lightColor.b
+        )
+    },
+
+    uLightIntensity: {
+        value: params.lightIntensity
+    },
+
+    uOutputScale: {
+        value: params.outputScale
+    },
+
+    uTraceSteps: {
+        value: params.traceSteps
+    },
+
+    uFoldSteps: {
+        value: params.foldSteps
+    }
+};
+
+
+// ============================================================
+// Vertex shader
+// ============================================================
+
+const vertexShader = /* glsl */ `
+
+void main()
+{
+    gl_Position = vec4(
+        position.xy,
+        0.0,
+        1.0
+    );
+}
+
+`;
+
+
+// ============================================================
+// Fragment shader
+// ============================================================
+
+const fragmentShader = /* glsl */ `
+
+precision highp float;
+precision highp int;
+
+
+// ============================================================
+// Uniforms
+// ============================================================
+
+uniform vec2 uResolution;
+uniform float uTime;
+
+uniform float uTravelRate;
+uniform float uMirrorSpeed;
+
+uniform float uCameraFadeNear;
+uniform float uCameraFadeFar;
+uniform float uStartDepth;
+
+uniform float uTraceFactor;
+
+uniform float uPrimaryPeriod;
+uniform float uPrimaryOffset;
+
+uniform float uSecondaryPeriod;
+uniform float uSecondaryOffset;
+
+uniform float uDetailScale;
+uniform float uDetailAmount;
+
+uniform float uVerticalOffset;
+
+uniform float uAngularPeriod;
+uniform float uAngularHalfPeriod;
+
+uniform vec3 uMirrorPhase;
+
+uniform vec3 uSpectralPhase;
+
+uniform vec3 uLightColor;
+uniform float uLightIntensity;
+
+uniform float uOutputScale;
+
+uniform int uTraceSteps;
+uniform int uFoldSteps;
+
+
+// ============================================================
+// Compile-time limits
+// ============================================================
+
+const int MAX_TRACE_STEPS = 128;
+const int MAX_FOLD_STEPS = 8;
+
+
+// ============================================================
+// Geometry helpers
+// ============================================================
+
+vec3 applyAngularFold(vec3 position)
+{
+    float radius =
+        length(position.xz);
+
+    float angle =
+        atan(
+            position.z,
+            position.x
+        );
+
+    float sector =
+        mod(
+            angle,
+            uAngularPeriod
+        )
+        -
+        uAngularHalfPeriod;
+
+    position.x =
+        radius;
+
+    position.z =
+        radius *
+        sector;
+
+    return position;
+}
+
+
+float crossSectionDistance(
+    vec3 position
+)
+{
+    return length(
+        position.yz
+    );
+}
+
+
+// ============================================================
+// Coordinate deformation
+// ============================================================
+
+vec3 transformSample(
+    vec3 position,
+    float sceneTime
+)
+{
+    position.y +=
+        uVerticalOffset;
+
+    vec3 mirrorAxis =
+        normalize(
+            sin(
+                sceneTime *
+                uMirrorSpeed
+                +
+                uMirrorPhase
+            )
+        );
+
+    position =
+        reflect(
+            position,
+            mirrorAxis
+        );
+
+    position +=
+        sin(
+            position *
+            uDetailScale
+        )
+        /
+        max(
+            uDetailAmount,
+            0.0001
+        );
+
+    position =
+        applyAngularFold(
+            position
+        );
+
+    position.y =
+        mod(
+            position.y,
+            max(
+                uPrimaryPeriod,
+                0.0001
+            )
+        )
+        -
+        uPrimaryOffset;
+
+    return position;
+}
+
+
+// ============================================================
+// Distance field
+// ============================================================
+
+float evaluateField(
+    vec3 position,
+    float sceneTime
+)
+{
+    float distanceValue =
+        crossSectionDistance(
+            position
+        );
+
+    for (
+        int foldIndex = 0;
+        foldIndex < MAX_FOLD_STEPS;
+        ++foldIndex
+    )
+    {
+        if (
+            foldIndex >=
+            uFoldSteps
+        )
+        {
+            break;
+        }
+
+        position =
+            position.zxy;
+
+        position =
+            applyAngularFold(
+                position
+            );
+
+        position.y =
+            mod(
+                position.y
+                +
+                sceneTime *
+                uTravelRate,
+
+                max(
+                    uSecondaryPeriod,
+                    0.0001
+                )
+            )
+            -
+            uSecondaryOffset;
+
+        distanceValue =
+            min(
+                distanceValue,
+
+                crossSectionDistance(
+                    position
+                )
+            );
+    }
+
+    return distanceValue;
+}
+
+
+// ============================================================
+// Light integration
+// ============================================================
+
+vec3 integrateLight(
+    vec3 rayDirection,
+    float sceneTime
+)
+{
+    vec3 lightSum =
+        vec3(0.0);
+
+    float depth =
+        uStartDepth;
+
+    for (
+        int stepIndex = 0;
+        stepIndex < MAX_TRACE_STEPS;
+        ++stepIndex
+    )
+    {
+        if (
+            stepIndex >=
+            uTraceSteps
+        )
+        {
+            break;
+        }
+
+        vec3 samplePosition =
+            rayDirection *
+            depth;
+
+        samplePosition =
+            transformSample(
+                samplePosition,
+                sceneTime
+            );
+
+        float fieldDistance =
+            evaluateField(
+                samplePosition,
+                sceneTime
+            );
+
+        depth +=
+            fieldDistance *
+            uTraceFactor;
+
+        float cameraFade =
+            smoothstep(
+                uCameraFadeNear,
+                uCameraFadeFar,
+                depth
+            );
+
+        vec3 spectralWave =
+            exp(
+                sin(
+                    depth
+                    +
+                    uSpectralPhase
+                )
+            );
+
+        vec3 emission =
+            uLightColor
+            *
+            uLightIntensity
+            *
+            spectralWave;
+
+        lightSum +=
+            emission
+            *
+            cameraFade
+            /
+            max(
+                fieldDistance,
+                0.0001
+            );
+    }
+
+    return lightSum;
+}
+
+
+// ============================================================
+// Camera
+// ============================================================
+
+vec3 createViewRay(
+    vec2 pixel
+)
+{
+    /*
+        Exact adaptation of:
+
+        vec3(1.0, pixel + pixel)
+        - iResolution.yxy;
+    */
+
+    vec3 rayVector =
+        vec3(
+            1.0,
+            pixel.x * 2.0,
+            pixel.y * 2.0
+        )
+        -
+        vec3(
+            uResolution.y,
+            uResolution.x,
+            uResolution.y
+        );
+
+    return normalize(
+        rayVector
+    );
+}
+
+
+// ============================================================
+// Main
+// ============================================================
+
+void main()
+{
+    vec3 rayDirection =
+        createViewRay(
+            gl_FragCoord.xy
+        );
+
+    vec3 radiance =
+        integrateLight(
+            rayDirection,
+            uTime
+        );
+
+    vec3 finalColor =
+        tanh(
+            radiance
+            /
+            max(
+                uOutputScale,
+                0.0001
+            )
+        );
+
+    /*
+        Original Shadertoy alpha became 0 because
+        the emission alpha component was always 0.
+
+        Keep RGB identical, but make the WebGL canvas opaque.
+    */
+
+    gl_FragColor =
+        vec4(
+            finalColor,
+            1.0
+        );
+}
+
+`;
+
+
+// ============================================================
+// Fullscreen geometry
+// ============================================================
+
+const geometry =
+    new THREE.PlaneGeometry(
+        2,
+        2,
+        1,
+        1
+    );
+
+const material =
+    new THREE.ShaderMaterial({
+
+        uniforms,
+
+        vertexShader,
+        fragmentShader,
+
+        depthTest: false,
+        depthWrite: false,
+
+        transparent: false,
+
+        toneMapped: false
+    });
+
+const fullscreenQuad =
+    new THREE.Mesh(
+        geometry,
+        material
+    );
+
+fullscreenQuad.frustumCulled =
+    false;
+
+scene.add(
+    fullscreenQuad
+);
+
+
+// ============================================================
+// Resize
+// ============================================================
+
+const drawingBufferSize =
+    new THREE.Vector2();
+
+
+function resize()
+{
+    const width =
+        Math.max(
+            window.innerWidth,
+            1
+        );
+
+    const height =
+        Math.max(
+            window.innerHeight,
+            1
+        );
+
+    renderer.setPixelRatio(
+        params.dpr
+    );
+
+    renderer.setSize(
+        width,
+        height,
+        false
+    );
+
+    renderer.getDrawingBufferSize(
+        drawingBufferSize
+    );
+
+    uniforms
+        .uResolution
+        .value
+        .copy(
+            drawingBufferSize
+        );
+}
+
+
+window.addEventListener(
+    "resize",
+    resize
+);
+
+resize();
+
+
+// ============================================================
+// lil-gui helpers
+// ============================================================
+
+function bindNumber(
+    folder,
+    property,
+    uniform,
+    min,
+    max,
+    step,
+    label
+)
+{
+    folder
+        .add(
+            params,
+            property,
+            min,
+            max,
+            step
+        )
+        .name(label)
+        .onChange(
+            value => {
+                uniforms[
+                    uniform
+                ].value =
+                    value;
+            }
+        );
+}
+
+
+// ============================================================
+// GUI
+// ============================================================
+
+const gui =
+    new GUI({
+        title:
+            "Settings"
+    });
+
+
+// ============================================================
+// Camera
+// ============================================================
+
+const cameraFolder =
+    gui.addFolder(
+        "Camera"
+    );
+
+
+bindNumber(
+    cameraFolder,
+    "cameraFadeNear",
+    "uCameraFadeNear",
+    0.0,
+    5.0,
+    0.01,
+    "Fade Near"
+);
+
+
+bindNumber(
+    cameraFolder,
+    "cameraFadeFar",
+    "uCameraFadeFar",
+    0.01,
+    10.0,
+    0.01,
+    "Fade Far"
+);
+
+
+bindNumber(
+    cameraFolder,
+    "startDepth",
+    "uStartDepth",
+    0.01,
+    10.0,
+    0.01,
+    "Start Depth"
+);
+
+
+// ============================================================
+// Animation
+// ============================================================
+
+const animationFolder =
+    gui.addFolder(
+        "Animation"
+    );
+
+
+bindNumber(
+    animationFolder,
+    "travelRate",
+    "uTravelRate",
+    -2.0,
+    2.0,
+    0.001,
+    "Travel Rate"
+);
+
+
+bindNumber(
+    animationFolder,
+    "mirrorSpeed",
+    "uMirrorSpeed",
+    0.0,
+    1.0,
+    0.001,
+    "Mirror Speed"
+);
+
+
+// ============================================================
+// Geometry
+// ============================================================
+
+const geometryFolder =
+    gui.addFolder(
+        "Geometry"
+    );
+
+
+bindNumber(
+    geometryFolder,
+    "primaryPeriod",
+    "uPrimaryPeriod",
+    0.1,
+    40.0,
+    0.01,
+    "Primary Period"
+);
+
+
+bindNumber(
+    geometryFolder,
+    "primaryOffset",
+    "uPrimaryOffset",
+    -20.0,
+    20.0,
+    0.01,
+    "Primary Offset"
+);
+
+
+bindNumber(
+    geometryFolder,
+    "secondaryPeriod",
+    "uSecondaryPeriod",
+    0.1,
+    30.0,
+    0.01,
+    "Secondary Period"
+);
+
+
+bindNumber(
+    geometryFolder,
+    "secondaryOffset",
+    "uSecondaryOffset",
+    -15.0,
+    15.0,
+    0.01,
+    "Secondary Offset"
+);
+
+
+bindNumber(
+    geometryFolder,
+    "detailScale",
+    "uDetailScale",
+    0.1,
+    60.0,
+    0.1,
+    "Detail Scale"
+);
+
+
+bindNumber(
+    geometryFolder,
+    "detailAmount",
+    "uDetailAmount",
+    0.05,
+    6.0,
+    0.01,
+    "Detail Amount"
+);
+
+
+bindNumber(
+    geometryFolder,
+    "verticalOffset",
+    "uVerticalOffset",
+    -30.0,
+    30.0,
+    0.01,
+    "Vertical Offset"
+);
+
+
+bindNumber(
+    geometryFolder,
+    "angularPeriod",
+    "uAngularPeriod",
+    0.05,
+    2.0,
+    0.001,
+    "Angular Period"
+);
+
+
+bindNumber(
+    geometryFolder,
+    "angularHalfPeriod",
+    "uAngularHalfPeriod",
+    0.0,
+    1.0,
+    0.001,
+    "Angular Half Period"
+);
+
+
+// ============================================================
+// Material
+// ============================================================
+
+const materialFolder =
+    gui.addFolder(
+        "Material"
+    );
+
+
+bindNumber(
+    materialFolder,
+    "traceFactor",
+    "uTraceFactor",
+    0.001,
+    1.0,
+    0.001,
+    "Trace Factor"
+);
+
+
+bindNumber(
+    materialFolder,
+    "lightIntensity",
+    "uLightIntensity",
+    0.0,
+    10.0,
+    0.01,
+    "Light Intensity"
+);
+
+
+bindNumber(
+    materialFolder,
+    "outputScale",
+    "uOutputScale",
+    50.0,
+    3000.0,
+    1.0,
+    "Output Scale"
+);
+
+
+// ============================================================
+// Colors
+// ============================================================
+
+const colorsFolder =
+    gui.addFolder(
+        "Colors"
+    );
+
+
+colorsFolder
+    .addColor(
+        params,
+        "lightColor"
+    )
+    .name(
+        "Light Color"
+    )
+    .onChange(
+        value => {
+
+            uniforms
+                .uLightColor
+                .value
+                .set(
+                    value.r,
+                    value.g,
+                    value.b
+                );
+
+        }
+    );
+
+
+// ============================================================
+// Spectral
+// ============================================================
+
+const spectralFolder =
+    gui.addFolder(
+        "Spectral"
+    );
+
+
+function updateSpectralPhase()
+{
+    uniforms
+        .uSpectralPhase
+        .value
+        .set(
+            params.spectralPhaseR,
+            params.spectralPhaseG,
+            params.spectralPhaseB
+        );
+}
+
+
+spectralFolder
+    .add(
+        params,
+        "spectralPhaseR",
+        -6.283,
+        6.283,
+        0.001
+    )
+    .name(
+        "Phase R"
+    )
+    .onChange(
+        updateSpectralPhase
+    );
+
+
+spectralFolder
+    .add(
+        params,
+        "spectralPhaseG",
+        -6.283,
+        6.283,
+        0.001
+    )
+    .name(
+        "Phase G"
+    )
+    .onChange(
+        updateSpectralPhase
+    );
+
+
+spectralFolder
+    .add(
+        params,
+        "spectralPhaseB",
+        -6.283,
+        6.283,
+        0.001
+    )
+    .name(
+        "Phase B"
+    )
+    .onChange(
+        updateSpectralPhase
+    );
+
+
+// ============================================================
+// Mirror
+// ============================================================
+
+const mirrorFolder =
+    gui.addFolder(
+        "Mirror"
+    );
+
+
+function updateMirrorPhase()
+{
+    uniforms
+        .uMirrorPhase
+        .value
+        .set(
+            params.mirrorPhaseX,
+            params.mirrorPhaseY,
+            params.mirrorPhaseZ
+        );
+}
+
+
+mirrorFolder
+    .add(
+        params,
+        "mirrorPhaseX",
+        -3.2,
+        3.2,
+        0.001
+    )
+    .name(
+        "Phase X"
+    )
+    .onChange(
+        updateMirrorPhase
+    );
+
+
+mirrorFolder
+    .add(
+        params,
+        "mirrorPhaseY",
+        -3.2,
+        3.2,
+        0.001
+    )
+    .name(
+        "Phase Y"
+    )
+    .onChange(
+        updateMirrorPhase
+    );
+
+
+mirrorFolder
+    .add(
+        params,
+        "mirrorPhaseZ",
+        -3.2,
+        3.2,
+        0.001
+    )
+    .name(
+        "Phase Z"
+    )
+    .onChange(
+        updateMirrorPhase
+    );
+
+
+// ============================================================
+// Performance
+// ============================================================
+
+const performanceFolder =
+    gui.addFolder(
+        "Performance"
+    );
+
+
+performanceFolder
+    .add(
+        params,
+        "traceSteps",
+        1,
+        128,
+        1
+    )
+    .name(
+        "Trace Steps"
+    )
+    .onChange(
+        value => {
+
+            uniforms
+                .uTraceSteps
+                .value =
+                    Math.round(
+                        value
+                    );
+
+        }
+    );
+
+
+performanceFolder
+    .add(
+        params,
+        "foldSteps",
+        0,
+        8,
+        1
+    )
+    .name(
+        "Fold Steps"
+    )
+    .onChange(
+        value => {
+
+            uniforms
+                .uFoldSteps
+                .value =
+                    Math.round(
+                        value
+                    );
+
+        }
+    );
+
+
+performanceFolder
+    .add(
+        params,
+        "dpr",
+        0.5,
+        2.0,
+        0.1
+    )
+    .name(
+        "DPR"
+    )
+    .onChange(
+        resize
+    );
+
+
+gui.close();
+
+
+// ============================================================
+// Animation
+// ============================================================
+
+let elapsedTime = 0;
+
+let previousTime =
+    performance.now();
+
+
+document.addEventListener(
+    "visibilitychange",
+    () => {
+
+        previousTime =
+            performance.now();
+
+    }
+);
+
+
+renderer.setAnimationLoop(
+    currentTime => {
+
+        const deltaTime =
+            Math.min(
+                Math.max(
+                    (
+                        currentTime -
+                        previousTime
+                    ) *
+                    0.001,
+                    0
+                ),
+                0.05
+            );
+
+        previousTime =
+            currentTime;
+
+        if (
+            !document.hidden
+        )
+        {
+            elapsedTime +=
+                deltaTime;
+        }
+
+        uniforms
+            .uTime
+            .value =
+                elapsedTime;
+
+        renderer.render(
+            scene,
+            camera
+        );
+
+    }
+);
+
+</script>
+
+</body>
+</html>

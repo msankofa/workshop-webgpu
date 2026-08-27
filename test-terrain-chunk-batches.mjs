@@ -1,4 +1,5 @@
-// Chunk batching: many streamed chunks, few draws. Run: node test-terrain-chunk-batches.mjs
+// Chunk batching: many streamed chunks, few scene objects (still one GPU draw per visible chunk
+// on WebGPU). Run: node test-terrain-chunk-batches.mjs
 import * as THREE from 'three';
 import { createChunkBatcher } from './terrain-chunk-batches.js';
 import { createWorldQueryService } from './world-query.js';
@@ -49,19 +50,50 @@ console.log('\n[2] streamed chunks draw through batches; residency and eviction 
   terrain.setActive(true);
   for (let i = 0; i < 40; i++) terrain.update([0, 0, 0], 1 / 60);
   let st = terrain.stats;
-  ok(st.residentTiles === 49 && st.batches.chunks === 49 && st.draws === 1, `49 chunks resident, ${st.batches.chunks} batched, ${st.draws} draw`);
+  ok(st.residentTiles === 49 && st.batches.chunks === 49 && st.draws === 49 && st.batches.batches === 1, `49 chunks resident and batched: ${st.draws} GPU draws from ${st.batches.batches} batch object`);
   const own = [...terrain.system.chunks.values()].filter(c => c.mesh.visible).length;
   ok(own === 0, 'no chunk draws its own mesh while batched');
   // walk 600 m: batches follow the window, nothing leaks
   for (let f = 0; f < 600; f++) terrain.update([f, 0, 0], 1 / 60);
   st = terrain.stats;
   ok(st.batches.chunks === terrain.system.chunks.size && st.batches.chunks <= 60, `after travel: ${st.batches.chunks} batched == ${terrain.system.chunks.size} resident`);
-  ok(st.batches.removes > 0 && st.draws <= 2, `${st.batches.removes} evictions, ${st.draws} draw(s)`);
+  const ownAfter = [...terrain.system.chunks.values()].filter(c => c.mesh?.visible).length;
+  ok(st.batches.removes > 0 && st.draws === ownAfter + st.batches.draws, `${st.batches.removes} evictions; draws (${st.draws}) = own meshes (${ownAfter}) + batched (${st.batches.draws})`);
   terrain.setWireframe(true);
   ok(terrain.system.material.wireframe === true, 'wireframe reaches the batched material');
   terrain.setActive(false);
   ok(terrain.stats.draws === 0, 'inactive: no draws');
   terrain.dispose();
+}
+
+console.log('\n[3] per-chunk frustum culling is an option, off by default');
+{
+  // A camera 1000 m up looking further up: every chunk at y=0 is outside its frustum.
+  const cam = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
+  cam.position.set(0, 1000, 0); cam.lookAt(0, 2000, 0); cam.updateMatrixWorld(true);
+  cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
+  const b = createChunkBatcher({ material: new THREE.MeshBasicMaterial() });
+  for (let i = 0; i < 6; i++) b.add(`${i}`, chunkGeo(12, i * 30));
+  const mesh = b.group.children[0];
+  ok(mesh.perObjectFrustumCulled === false && mesh.sortObjects === false, 'default: per-chunk culling off, sorting off (early-out preconditions)');
+  mesh.onBeforeRender(null, null, cam, mesh.geometry, mesh.material);
+  ok(mesh._multiDrawCount === 6, `all 6 chunks submitted with the camera facing away (${mesh._multiDrawCount})`);
+  ok(b.drawCount === 6 && b.stats.draws === 6, 'drawCount / stats.draws report one GPU draw per visible chunk');
+  mesh._multiDrawCount = -1;
+  mesh.onBeforeRender(null, null, cam, mesh.geometry, mesh.material);
+  ok(mesh._multiDrawCount === -1, 'quiet frame: onBeforeRender early-outs, no per-instance cull loop');
+  b.setVisible('0', false);
+  mesh.onBeforeRender(null, null, cam, mesh.geometry, mesh.material);
+  ok(mesh._multiDrawCount === 5 && b.drawCount === 5, 'visibility change rebuilds the list: 5 submitted, drawCount matches');
+  b.dispose();
+  const bc = createChunkBatcher({ material: new THREE.MeshBasicMaterial(), perObjectFrustumCulled: true });
+  for (let i = 0; i < 6; i++) bc.add(`${i}`, chunkGeo(12, i * 30));
+  const meshC = bc.group.children[0];
+  ok(meshC.perObjectFrustumCulled === true, 'perObjectFrustumCulled: true reaches the mesh');
+  meshC.onBeforeRender(null, null, cam, meshC.geometry, meshC.material);
+  ok(meshC._multiDrawCount === 0, 'with culling on, the away-facing camera culls every chunk');
+  ok(bc.drawCount === 6, 'drawCount stays the pre-cull upper bound when culling is on');
+  bc.dispose();
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');

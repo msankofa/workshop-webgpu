@@ -10,6 +10,28 @@ function percentile(sorted, fraction) {
   return sorted[index];
 }
 
+// Passes that run on only some frames by design. Averaging in the frames where they did not run
+// would report half of what they actually cost when they do, so these are summarised over their
+// non-zero samples only; `frames` says how many that was.
+export const SPARSE_PASSES = new Set(['passReflectMs', 'passPostMirrorMs', 'passPostPlainMs']);
+
+// Every pass key seen across the window. Missing samples count as 0 for ordinary passes, so a pass
+// that ran rarely reports an honest per-frame average; see SPARSE_PASSES for the exceptions.
+export function summarizePasses(samples) {
+  const names = new Set();
+  for (const sample of samples) if (sample.passes) for (const key of Object.keys(sample.passes)) names.add(key);
+  if (!names.size) return null;
+  const out = {};
+  for (const name of [...names].sort()) {
+    const series = samples.map(sample => Number(sample.passes?.[name]) || 0);
+    const active = series.filter(v => v > 0);
+    if (!active.length) continue;
+    const used = SPARSE_PASSES.has(name) ? active : series;
+    out[name] = { ...summarizePerformanceSeries(used), frames: active.length };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export function summarizePerformanceSeries(values, { integer = false } = {}) {
   const finite = values.filter(Number.isFinite);
   if (!finite.length) return { latest: 0, average: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0, stdDev: 0 };
@@ -65,6 +87,9 @@ export function buildPerformanceMeasurement(samples, {
     frameMs: summarizePerformanceSeries(frameMs),
     drawCalls: summarizePerformanceSeries(usable.map(sample => sample.drawCalls), { integer: true }),
     triangles: summarizePerformanceSeries(usable.map(sample => sample.triangles), { integer: true }),
+    // Per-pass CPU time, when the caller sampled it. A frame total says nothing about which pass
+    // owns it; this is what turns "high ms" into a name.
+    passes: summarizePasses(usable),
     droppedFrames: {
       start: Math.max(0, Math.round(droppedFramesStart || 0)),
       end: Math.max(0, Math.round(droppedFramesEnd || 0)),

@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+  />
+  <title>Enter to Other Dimension</title>
+
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #000000;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .lil-gui {
+      --width: 310px;
+    }
+  </style>
+</head>
+<body>
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js";
+    import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.20.0/+esm";
+
+    // ============================================================
+    // Scene parameters
+    // ============================================================
+
+    const params = {
+      // Presets
+      preset: "Preset 1",
+
+      // Render configuration
+      traceStepCount: 50,
+      traceStartIndex: 30,
+      domainLayerCount: 3,
+
+      // Scene
+      initialDepth: 1.46,
+      safeMinimum: 0.0001,
+
+      // Animation
+      fieldTimeRate: 0.10,
+      forwardTravelRate: 0.23,
+
+      // Domain
+      domainStrength: 1.69,
+      domainScale: 3.84,
+      domainAttenuation: 3.86,
+
+      // Camera
+      cameraFocalLength: 0.22,
+
+      // Field
+      fieldSlope: -0.10,
+      fieldDetailScale: 4.60,
+
+      // Distance
+      distanceBase: 2.60,
+      distanceDepthFactor: 0.45,
+
+      // Tone mapping
+      exposureScale: 2000.0,
+
+      // Performance
+      dpr: 1.0,
+
+      reset: () => resetParameters()
+    };
+
+    const presets = {
+      "Preset 1": {
+        initialDepth: 1.46,
+        safeMinimum: 0.0001,
+        fieldTimeRate: 0.10,
+        forwardTravelRate: 0.23,
+        domainStrength: 1.69,
+        domainScale: 3.84,
+        domainAttenuation: 3.86,
+        cameraFocalLength: 0.22,
+        fieldSlope: -0.10,
+        fieldDetailScale: 4.60,
+        distanceBase: 2.60,
+        distanceDepthFactor: 0.45,
+        exposureScale: 2000.0,
+        dpr: 1.0
+      },
+
+      "Preset 2": {
+        initialDepth: 3.044,
+        safeMinimum: 0.000001,
+        fieldTimeRate: 0.10,
+        forwardTravelRate: 0.351,
+        domainStrength: 2.652,
+        domainScale: 3.362,
+        domainAttenuation: 3.194,
+        cameraFocalLength: 0.321,
+        fieldSlope: -0.459,
+        fieldDetailScale: 2.276,
+        distanceBase: 2.322,
+        distanceDepthFactor: 0.515,
+        exposureScale: 1673.0,
+        dpr: 2.0
+      }
+    };
+
+    const defaults = {
+      ...presets["Preset 1"]
+    };
+
+    // ============================================================
+    // Renderer
+    // ============================================================
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      alpha: false,
+      powerPreference: "high-performance"
+    });
+
+    renderer.setPixelRatio(params.dpr);
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    renderer.setClearColor(0x000000, 1);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    document.body.appendChild(renderer.domElement);
+
+    // ============================================================
+    // Scene and camera
+    // ============================================================
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    // ============================================================
+    // Fullscreen shader
+    // ============================================================
+
+    const uniforms = {
+      uResolution: { value: new THREE.Vector2(1, 1) },
+      uTime: { value: 0 },
+
+      uInitialDepth: { value: params.initialDepth },
+      uSafeMinimum: { value: params.safeMinimum },
+
+      uFieldTimeRate: { value: params.fieldTimeRate },
+      uForwardTravelRate: { value: params.forwardTravelRate },
+
+      uDomainStrength: { value: params.domainStrength },
+      uDomainScale: { value: params.domainScale },
+      uDomainAttenuation: { value: params.domainAttenuation },
+
+      uCameraFocalLength: { value: params.cameraFocalLength },
+
+      uFieldSlope: { value: params.fieldSlope },
+      uFieldDetailScale: { value: params.fieldDetailScale },
+
+      uDistanceBase: { value: params.distanceBase },
+      uDistanceDepthFactor: { value: params.distanceDepthFactor },
+
+      uExposureScale: { value: params.exposureScale }
+    };
+
+    const vertexShader = /* glsl */ `
+      void main() {
+        gl_Position = vec4(position, 1.0);
+      }
+    `;
+
+    const fragmentShader = /* glsl */ `
+      precision highp float;
+      precision highp int;
+
+      uniform vec2 uResolution;
+      uniform float uTime;
+
+      uniform float uInitialDepth;
+      uniform float uSafeMinimum;
+
+      uniform float uFieldTimeRate;
+      uniform float uForwardTravelRate;
+
+      uniform float uDomainStrength;
+      uniform float uDomainScale;
+      uniform float uDomainAttenuation;
+
+      uniform float uCameraFocalLength;
+
+      uniform float uFieldSlope;
+      uniform float uFieldDetailScale;
+
+      uniform float uDistanceBase;
+      uniform float uDistanceDepthFactor;
+
+      uniform float uExposureScale;
+
+      const int TRACE_STEP_COUNT = 50;
+      const int TRACE_START_INDEX = 30;
+      const int DOMAIN_LAYER_COUNT = 3;
+
+      vec2 getScreenCoordinates(vec2 fragCoord) {
+        vec2 viewport = max(uResolution, vec2(1.0));
+        return (2.0 * fragCoord - viewport) / viewport.y;
+      }
+
+      vec3 getViewRay(vec2 screenPosition) {
+        return normalize(
+          vec3(screenPosition, uCameraFocalLength)
+        );
+      }
+
+      vec3 deformDomain(
+        vec3 samplePosition,
+        float depth,
+        float timeValue,
+        float tracePhase
+      ) {
+        vec3 warpedPosition = samplePosition;
+
+        for (int layerIndex = 0; layerIndex < DOMAIN_LAYER_COUNT; ++layerIndex) {
+          float octave = float(layerIndex + 2);
+          float frequency = octave * uDomainScale;
+          float attenuation = octave + uDomainAttenuation;
+
+          vec3 phase =
+            warpedPosition.yzx * frequency
+            - depth
+            + timeValue
+            + tracePhase;
+
+          warpedPosition +=
+            sin(phase) *
+            (uDomainStrength / attenuation);
+        }
+
+        return warpedPosition;
+      }
+
+      float evaluateFieldDistance(
+        vec3 warpedPosition,
+        float localDepth,
+        float rayDepth
+      ) {
+        float primaryShape = abs(
+          warpedPosition.y +
+          localDepth * uFieldSlope
+        );
+
+        vec3 secondaryShape =
+          sin(warpedPosition - rayDepth) /
+          uFieldDetailScale;
+
+        vec4 fieldVector = vec4(
+          primaryShape,
+          secondaryShape
+        );
+
+        float depthNormalization =
+          uDistanceBase +
+          rayDepth * rayDepth * uDistanceDepthFactor;
+
+        return max(
+          length(fieldVector) / depthNormalization,
+          uSafeMinimum
+        );
+      }
+
+      vec3 getTracePalette(float tracePhase) {
+        // Original Shadertoy palette is preserved exactly.
+        return 0.9 +
+          sin(
+            tracePhase * 1.3 -
+            vec3(4.8, -0.4, 1.2)
+          );
+      }
+
+      vec3 accumulateLight(
+        vec3 palette,
+        float fieldDistance,
+        float rayDepth
+      ) {
+        float safeDepth = max(
+          rayDepth,
+          uInitialDepth
+        );
+
+        float densityDenominator = max(
+          fieldDistance *
+          fieldDistance *
+          safeDepth,
+          uSafeMinimum
+        );
+
+        vec3 concentratedLight =
+          palette / densityDenominator;
+
+        // Original RGB channel balance is preserved exactly.
+        vec3 depthGlow =
+          fieldDistance *
+          rayDepth /
+          vec3(1.000, 0.812, 0.600);
+
+        return concentratedLight + depthGlow;
+      }
+
+      vec3 applyToneMapping(vec3 hdrColor) {
+        vec3 value = clamp(
+          hdrColor / uExposureScale,
+          vec3(-10.0),
+          vec3(10.0)
+        );
+
+        vec3 exponentialValue = exp(
+          2.0 * value
+        );
+
+        vec3 mappedColor =
+          (exponentialValue - 1.0) /
+          max(
+            exponentialValue + 1.0,
+            vec3(uSafeMinimum)
+          );
+
+        return clamp(
+          mappedColor,
+          0.0,
+          1.0
+        );
+      }
+
+      void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+        vec2 screenPosition =
+          getScreenCoordinates(fragCoord);
+
+        vec3 rayDirection =
+          getViewRay(screenPosition);
+
+        float fieldTime =
+          uTime * uFieldTimeRate;
+
+        float cameraTravel =
+          uTime * uForwardTravelRate;
+
+        float rayDepth = uInitialDepth;
+        vec3 accumulatedColor = vec3(0.0);
+
+        for (
+          int traceIndex = TRACE_START_INDEX;
+          traceIndex < TRACE_STEP_COUNT;
+          ++traceIndex
+        ) {
+          float tracePhase =
+            float(traceIndex) + 13.0;
+
+          vec3 rayPosition =
+            rayDirection * rayDepth;
+
+          vec3 travelingPosition = rayPosition;
+          travelingPosition.z += cameraTravel;
+
+          vec3 warpedPosition = deformDomain(
+            travelingPosition,
+            rayDepth,
+            fieldTime,
+            tracePhase
+          );
+
+          float localDepth =
+            warpedPosition.z -
+            cameraTravel;
+
+          float fieldDistance =
+            evaluateFieldDistance(
+              warpedPosition,
+              localDepth,
+              rayDepth
+            );
+
+          vec3 palette =
+            getTracePalette(tracePhase);
+
+          accumulatedColor += accumulateLight(
+            palette,
+            fieldDistance,
+            rayDepth
+          );
+
+          rayDepth += fieldDistance;
+        }
+
+        vec3 finalColor =
+          applyToneMapping(accumulatedColor);
+
+        fragColor = vec4(finalColor, 1.0);
+      }
+
+      void main() {
+        mainImage(gl_FragColor, gl_FragCoord.xy);
+      }
+    `;
+
+    const material = new THREE.ShaderMaterial({
+      uniforms,
+      vertexShader,
+      fragmentShader,
+      depthTest: false,
+      depthWrite: false
+    });
+
+    const geometry = new THREE.PlaneGeometry(2, 2);
+    const fullscreenQuad = new THREE.Mesh(geometry, material);
+    fullscreenQuad.frustumCulled = false;
+    scene.add(fullscreenQuad);
+
+    // ============================================================
+    // GUI
+    // ============================================================
+
+    const gui = new GUI({
+      title: "Scene Settings"
+    });
+
+    gui
+      .add(params, "preset", Object.keys(presets))
+      .name("Preset")
+      .onChange((presetName) => {
+        applyPreset(presetName);
+      });
+
+    const animationFolder = gui.addFolder("Animation");
+    animationFolder
+      .add(params, "fieldTimeRate", 0.0, 1.0, 0.001)
+      .name("Field Time Rate")
+      .onChange((value) => {
+        uniforms.uFieldTimeRate.value = value;
+      });
+
+    animationFolder
+      .add(params, "forwardTravelRate", -1.0, 1.0, 0.001)
+      .name("Forward Travel Rate")
+      .onChange((value) => {
+        uniforms.uForwardTravelRate.value = value;
+      });
+
+    const cameraFolder = gui.addFolder("Camera");
+    cameraFolder
+      .add(params, "cameraFocalLength", 0.03, 1.0, 0.001)
+      .name("Focal Length")
+      .onChange((value) => {
+        uniforms.uCameraFocalLength.value = value;
+      });
+
+    cameraFolder
+      .add(params, "initialDepth", 0.05, 8.0, 0.001)
+      .name("Initial Depth")
+      .onChange((value) => {
+        uniforms.uInitialDepth.value = value;
+      });
+
+    const domainFolder = gui.addFolder("Domain");
+    domainFolder
+      .add(params, "domainStrength", 0.0, 5.0, 0.001)
+      .name("Strength")
+      .onChange((value) => {
+        uniforms.uDomainStrength.value = value;
+      });
+
+    domainFolder
+      .add(params, "domainScale", 0.1, 12.0, 0.001)
+      .name("Scale")
+      .onChange((value) => {
+        uniforms.uDomainScale.value = value;
+      });
+
+    domainFolder
+      .add(params, "domainAttenuation", 0.01, 12.0, 0.001)
+      .name("Attenuation")
+      .onChange((value) => {
+        uniforms.uDomainAttenuation.value = value;
+      });
+
+    const fieldFolder = gui.addFolder("Field");
+    fieldFolder
+      .add(params, "fieldSlope", -2.0, 2.0, 0.001)
+      .name("Slope")
+      .onChange((value) => {
+        uniforms.uFieldSlope.value = value;
+      });
+
+    fieldFolder
+      .add(params, "fieldDetailScale", 0.1, 15.0, 0.001)
+      .name("Detail Scale")
+      .onChange((value) => {
+        uniforms.uFieldDetailScale.value = value;
+      });
+
+    fieldFolder
+      .add(params, "distanceBase", 0.01, 10.0, 0.001)
+      .name("Distance Base")
+      .onChange((value) => {
+        uniforms.uDistanceBase.value = value;
+      });
+
+    fieldFolder
+      .add(params, "distanceDepthFactor", 0.0, 3.0, 0.001)
+      .name("Depth Factor")
+      .onChange((value) => {
+        uniforms.uDistanceDepthFactor.value = value;
+      });
+
+    fieldFolder
+      .add(params, "safeMinimum", 0.000001, 0.01, 0.000001)
+      .name("Safe Minimum")
+      .onChange((value) => {
+        uniforms.uSafeMinimum.value = value;
+      });
+
+    const postFolder = gui.addFolder("Post Processing");
+    postFolder
+      .add(params, "exposureScale", 50.0, 10000.0, 1.0)
+      .name("Exposure Scale")
+      .onChange((value) => {
+        uniforms.uExposureScale.value = value;
+      });
+
+    const performanceFolder = gui.addFolder("Performance");
+    performanceFolder
+      .add(params, "dpr", 0.5, 2.0, 0.1)
+      .name("DPR")
+      .onChange((value) => {
+        renderer.setPixelRatio(value);
+        resize();
+      });
+
+    gui.add(params, "reset").name("Reset Parameters");
+    gui.close();
+
+    // ============================================================
+    // Resize
+    // ============================================================
+
+    function resize() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      renderer.setSize(width, height, false);
+
+      const drawingBufferSize = renderer.getDrawingBufferSize(
+        uniforms.uResolution.value
+      );
+
+      uniforms.uResolution.value.copy(drawingBufferSize);
+    }
+
+    window.addEventListener("resize", resize, { passive: true });
+    resize();
+
+    // ============================================================
+    // Reset
+    // ============================================================
+
+    function updateUniformsFromParameters() {
+      uniforms.uInitialDepth.value = params.initialDepth;
+      uniforms.uSafeMinimum.value = params.safeMinimum;
+      uniforms.uFieldTimeRate.value = params.fieldTimeRate;
+      uniforms.uForwardTravelRate.value = params.forwardTravelRate;
+      uniforms.uDomainStrength.value = params.domainStrength;
+      uniforms.uDomainScale.value = params.domainScale;
+      uniforms.uDomainAttenuation.value = params.domainAttenuation;
+      uniforms.uCameraFocalLength.value = params.cameraFocalLength;
+      uniforms.uFieldSlope.value = params.fieldSlope;
+      uniforms.uFieldDetailScale.value = params.fieldDetailScale;
+      uniforms.uDistanceBase.value = params.distanceBase;
+      uniforms.uDistanceDepthFactor.value = params.distanceDepthFactor;
+      uniforms.uExposureScale.value = params.exposureScale;
+
+      renderer.setPixelRatio(params.dpr);
+      resize();
+    }
+
+    function refreshGui() {
+      gui.controllersRecursive().forEach((controller) => {
+        controller.updateDisplay();
+      });
+    }
+
+    function applyPreset(presetName) {
+      const preset = presets[presetName];
+
+      if (!preset) {
+        return;
+      }
+
+      Object.assign(params, preset);
+      params.preset = presetName;
+
+      updateUniformsFromParameters();
+      refreshGui();
+    }
+
+    function resetParameters() {
+      applyPreset("Preset 1");
+    }
+
+    // ============================================================
+    // Animation
+    // ============================================================
+
+    const clock = new THREE.Clock();
+
+    function animate() {
+      uniforms.uTime.value = clock.getElapsedTime();
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+
+    animate();
+
+    // ============================================================
+    // Cleanup
+    // ============================================================
+
+    window.addEventListener("beforeunload", () => {
+      geometry.dispose();
+      material.dispose();
+      renderer.dispose();
+      gui.destroy();
+    });
+  </script>
+</body>
+</html>

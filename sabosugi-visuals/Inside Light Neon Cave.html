@@ -1,0 +1,1161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inside Light Neon Cave</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #ffffff;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js';
+
+    const sceneParams = {
+      dpr: 0.5
+    };
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      alpha: false,
+      powerPreference: 'high-performance'
+    });
+    renderer.setPixelRatio(sceneParams.dpr);
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    renderer.setClearColor(0xffffff, 1);
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+    renderer.toneMapping = THREE.NoToneMapping;
+    document.body.appendChild(renderer.domElement);
+
+    const uniforms = {
+      iTime: { value: 0 },
+      iResolution: { value: new THREE.Vector3(1, 1, sceneParams.dpr) }
+    };
+
+    const vertexShader = /* glsl */ `
+      void main() {
+        gl_Position = vec4(position, 1.0);
+      }
+    `;
+
+    const fragmentShader = /* glsl */ `uniform vec3 iResolution;
+uniform float iTime;
+
+
+// -------------------- Main parameters -------------------------
+
+const int   MAX_MARCH_STEPS      = 141;
+const float MAX_TRACE_DISTANCE   = 50.3;
+const float SURFACE_EPSILON      = 0.015;
+const float STEP_SCALE           = 1.24;
+
+const float CAMERA_SPEED         = 0.4;
+const float CAMERA_FOV           = 2.50;
+
+const float TUNNEL_RADIUS        = 1.37;
+const float WALL_HALF_THICKNESS  = 0.47;
+
+const float CAVE_DEFORMATION     = 0.215;
+const float CAVE_LENGTH_SCALE    = 0.49;
+
+const float DETAIL_HEIGHT        = 0.11;
+const float PATTERN_REPEAT_ANGLE = 1.85;
+const float PATTERN_REPEAT_Z     = 1.5;
+const float PATTERN_TIME_SPEED   = 0.63;
+
+const float ANGULAR_SEAM_WIDTH   = 0.50;
+
+const float GLOW_STRENGTH        = 2.180;
+const float GLOW_FALLOFF         = 12.1;
+const float FOG_DENSITY          = 0.051;
+
+const float FREQUENCY_SPEED      = 0.3;
+const float FREQUENCY_STRENGTH   = 160.6;
+
+const float BACKGROUND_GLOW_MIX  = -16.06;
+const float PRESENCE_SCALE       = 0.0;
+
+// Near-surface artifact correction
+const int   HIT_REFINE_STEPS     = 9;
+const float MIN_MARCH_STEP       = -0.009;
+const float NEAR_SURFACE_START   = 0.31;
+const float NEAR_SURFACE_END     = -0.01;
+const float NEAR_SURFACE_SCALE   = 0.38;
+
+const float PI  = 3.14159265359;
+const float TAU = 6.28318530718;
+
+// -------------------- Utility functions -----------------------
+
+float saturate(float x)
+{
+    return clamp(x, 0.0, 1.0);
+}
+
+vec3 safeNormalize(vec3 v)
+{
+    float lengthSquared = dot(v, v);
+
+    if (lengthSquared < 1e-8)
+    {
+        return vec3(0.577350269);
+    }
+
+    return v * inversesqrt(lengthSquared);
+}
+
+// -------------------- Procedural frequencies ------------------
+
+float getProceduralFrequency(float frequencyPosition)
+{
+    float time = iTime * FREQUENCY_SPEED;
+
+    float slowWave =
+        0.5 +
+        0.5 * sin(
+            time * mix(0.45, 2.1, frequencyPosition) +
+            frequencyPosition * 17.0
+        );
+
+    float mediumWave =
+        0.5 +
+        0.5 * sin(
+            time * mix(1.1, 3.3, 1.0 - frequencyPosition) -
+            frequencyPosition * 29.0
+        );
+
+    float fastWave =
+        0.5 +
+        0.5 * cos(
+            time * mix(2.0, 6.0, frequencyPosition) +
+            frequencyPosition * 41.0
+        );
+
+    float pulse =
+        slowWave * 1.85 +
+        mediumWave * 0.31 +
+        fastWave * 0.17;
+
+    pulse = smoothstep(0.12, 0.88, pulse);
+
+    return saturate(
+        pulse * FREQUENCY_STRENGTH
+    );
+}
+
+vec3 getFrequencyColor(
+    float b1,
+    float b2,
+    float b3,
+    float m1,
+    float m2,
+    float m3,
+    float t1,
+    float t2,
+    float t3
+)
+{
+    vec3 color =
+        b1 * vec3(1.0, 0.0, 0.2) +
+        b2 * vec3(1.0, 0.3, 0.0) +
+        b3 * vec3(1.0, 0.8, 0.0) +
+        m1 * vec3(0.5, 1.0, 0.0) +
+        m2 * vec3(0.0, 1.0, 0.5) +
+        m3 * vec3(0.0, 0.8, 1.0) +
+        t1 * vec3(0.0, 0.3, 1.0) +
+        t2 * vec3(0.6, 0.0, 1.0) +
+        t3 * vec3(1.0, 0.0, 0.8);
+
+    return safeNormalize(
+        color + vec3(0.15)
+    );
+}
+
+// -------------------- Fractal wall pattern --------------------
+
+float wallFractal(vec2 p)
+{
+    float time =
+        iTime * PATTERN_TIME_SPEED;
+
+    float value = 0.0;
+    float amplitude = 0.75;
+
+    const mat2 transformMatrix =
+        mat2(
+            2.0, 1.3,
+            1.6, 1.7
+        );
+
+    for (int i = 0; i < 5; i++)
+    {
+        vec2 q = p;
+
+        q +=
+            0.32 *
+            vec2(
+                sin(
+                    q.y * 1.2 +
+                    time * 0.71
+                ),
+                cos(
+                    q.x * 1.1 -
+                    time * 0.47
+                )
+            );
+
+        float layerA =
+            sin(q.x) *
+            cos(q.y);
+
+        float layerB =
+            sin(
+                q.x +
+                q.y * 1.7
+            );
+
+        float layerC =
+            cos(
+                q.x * 1.9 -
+                q.y * 1.3
+            );
+
+        value +=
+            abs(
+                layerA +
+                layerB * 0.5 +
+                layerC * 0.35
+            ) *
+            amplitude;
+
+        p =
+            transformMatrix * p +
+            vec2(0.17, -0.11);
+
+        amplitude *= 0.56;
+    }
+
+    return value;
+}
+
+// The wrapped fractal is evaluated only inside the seam region.
+// Outside this region the result is exactly the original sample.
+float getSeamlessFractal(
+    float angle,
+    float z
+)
+{
+    vec2 primaryUV =
+        vec2(
+            angle * PATTERN_REPEAT_ANGLE,
+            z * PATTERN_REPEAT_Z
+        );
+
+    float primaryValue =
+        wallFractal(primaryUV);
+
+    float seamStart =
+        PI -
+        max(
+            ANGULAR_SEAM_WIDTH,
+            0.0001
+        );
+
+    float absoluteAngle =
+        abs(angle);
+
+    if (absoluteAngle <= seamStart)
+    {
+        return primaryValue;
+    }
+
+    float wrappedAngle =
+        angle > 0.0
+        ? angle - TAU
+        : angle + TAU;
+
+    vec2 wrappedUV =
+        vec2(
+            wrappedAngle *
+            PATTERN_REPEAT_ANGLE,
+
+            z *
+            PATTERN_REPEAT_Z
+        );
+
+    float wrappedValue =
+        wallFractal(wrappedUV);
+
+    float seamAverage =
+        0.5 *
+        (
+            primaryValue +
+            wrappedValue
+        );
+
+    float seamBlend =
+        smoothstep(
+            seamStart,
+            PI,
+            absoluteAngle
+        );
+
+    return mix(
+        primaryValue,
+        seamAverage,
+        seamBlend
+    );
+}
+
+float getWallPatternFromAngle(
+    float angle,
+    float z
+)
+{
+    float fractal =
+        getSeamlessFractal(
+            angle,
+            z
+        );
+
+    fractal =
+        smoothstep(
+            0.22,
+            0.95,
+            fractal / 1.6
+        );
+
+    float rings =
+        0.5 +
+        0.5 *
+        sin(
+            z * 10.0 -
+            iTime * 4.0
+        );
+
+    float radialBands =
+        0.5 +
+        0.5 *
+        sin(
+            angle * 10.0 +
+            z * 2.0
+        );
+
+    float combined =
+        mix(
+            fractal,
+            fractal *
+            (
+                0.65 +
+                0.35 * rings
+            ),
+            0.45
+        );
+
+    combined *=
+        mix(
+            0.8,
+            1.2,
+            radialBands
+        );
+
+    return saturate(combined);
+}
+
+float getWallPattern(vec3 p)
+{
+    return getWallPatternFromAngle(
+        atan(p.y, p.x),
+        p.z
+    );
+}
+
+// -------------------- Cave deformation ------------------------
+
+float getCaveRadiusOffset(
+    vec3 p,
+    float radialLength
+)
+{
+    vec2 direction =
+        radialLength > 0.1701
+        ? p.xy / radialLength
+        : vec2(1.0, 0.0);
+
+    float nx = direction.x;
+    float ny = direction.y;
+
+    float nx2 = nx * nx;
+    float ny2 = ny * ny;
+
+    float harmonic2 =
+        nx2 - ny2;
+
+    float harmonic3 =
+        ny *
+        (
+            3.0 * nx2 -
+            ny2
+        );
+
+    float harmonic4 =
+        8.0 *
+        nx2 *
+        nx2 -
+        8.0 *
+        nx2 +
+        1.0;
+
+    float zPhase =
+        p.z *
+        CAVE_LENGTH_SCALE;
+
+    float shape =
+        harmonic2 *
+        (
+            0.89 +
+            0.20 *
+            sin(zPhase)
+        ) +
+        harmonic3 *
+        (
+            0.06 -
+            0.09 *
+            cos(
+                zPhase * 0.48
+            )
+        ) +
+        harmonic4 *
+        0.15;
+
+    return
+        shape *
+        CAVE_DEFORMATION;
+}
+
+// -------------------- Combined scene evaluation ---------------
+
+// Computes the SDF, pattern, radial length and cave radius once.
+// The march loop reuses all outputs instead of recalculating them.
+float evaluateScene(
+    vec3 p,
+    out float pattern,
+    out float radialLength,
+    out float caveRadius
+)
+{
+    radialLength =
+        length(p.xy);
+
+    float angle =
+        atan(p.y, p.x);
+
+    pattern =
+        getWallPatternFromAngle(
+            angle,
+            p.z
+        );
+
+    float radiusOffset =
+        (
+            pattern - 0.5
+        ) *
+        2.0 *
+        DETAIL_HEIGHT;
+
+    float caveOffset =
+        getCaveRadiusOffset(
+            p,
+            radialLength
+        );
+
+    caveRadius =
+        TUNNEL_RADIUS +
+        caveOffset;
+
+    float targetRadius =
+        caveRadius +
+        radiusOffset;
+
+    return
+        abs(
+            radialLength -
+            targetRadius
+        ) -
+        WALL_HALF_THICKNESS;
+}
+
+float mapScene(vec3 p)
+{
+    float pattern;
+    float radialLength;
+    float caveRadius;
+
+    return evaluateScene(
+        p,
+        pattern,
+        radialLength,
+        caveRadius
+    );
+}
+
+// -------------------- Hit refinement --------------------------
+
+float refineHitDistance(
+    vec3 rayOrigin,
+    vec3 rayDirection,
+    float minimumDistance,
+    float maximumDistance
+)
+{
+    float nearDistance =
+        minimumDistance;
+
+    float farDistance =
+        maximumDistance;
+
+    for (
+        int i = 0;
+        i < HIT_REFINE_STEPS;
+        i++
+    )
+    {
+        float middleDistance =
+            0.5 *
+            (
+                nearDistance +
+                farDistance
+            );
+
+        float sceneDistance =
+            mapScene(
+                rayOrigin +
+                rayDirection *
+                middleDistance
+            );
+
+        if (
+            sceneDistance <
+            SURFACE_EPSILON
+        )
+        {
+            farDistance =
+                middleDistance;
+        }
+        else
+        {
+            nearDistance =
+                middleDistance;
+        }
+    }
+
+    return
+        0.5 *
+        (
+            nearDistance +
+            farDistance
+        );
+}
+
+// -------------------- Normal ----------------------------------
+
+vec3 calcNormal(vec3 p)
+{
+    const float epsilon = 0.0015;
+
+    vec2 e =
+        vec2(
+            epsilon,
+            0.0
+        );
+
+    float dx =
+        mapScene(
+            p +
+            vec3(
+                e.x,
+                e.y,
+                e.y
+            )
+        ) -
+        mapScene(
+            p -
+            vec3(
+                e.x,
+                e.y,
+                e.y
+            )
+        );
+
+    float dy =
+        mapScene(
+            p +
+            vec3(
+                e.y,
+                e.x,
+                e.y
+            )
+        ) -
+        mapScene(
+            p -
+            vec3(
+                e.y,
+                e.x,
+                e.y
+            )
+        );
+
+    float dz =
+        mapScene(
+            p +
+            vec3(
+                e.y,
+                e.y,
+                e.x
+            )
+        ) -
+        mapScene(
+            p -
+            vec3(
+                e.y,
+                e.y,
+                e.x
+            )
+        );
+
+    return safeNormalize(
+        vec3(dx, dy, dz)
+    );
+}
+
+// -------------------- Shading ---------------------------------
+
+vec3 shadeSurface(
+    vec3 rayOrigin,
+    vec3 surfacePosition,
+    vec3 normal,
+    vec3 frequencyColor,
+    float bass,
+    float mid,
+    float treb
+)
+{
+    float angle =
+        atan(
+            surfacePosition.y,
+            surfacePosition.x
+        );
+
+    float pattern =
+        getWallPatternFromAngle(
+            angle,
+            surfacePosition.z
+        );
+
+    float axialWave =
+        0.5 +
+        0.5 *
+        sin(
+            surfacePosition.z * 7.0 -
+            iTime * 3.5 +
+            angle * 2.0
+        );
+
+    vec3 hueShift =
+        0.5 +
+        0.5 *
+        cos(
+            vec3(0.0, 2.0, 4.0) +
+            angle * 2.0 +
+            surfacePosition.z * 0.18
+        );
+
+    vec3 wallColor =
+        mix(
+            frequencyColor,
+            hueShift,
+            0.28
+        );
+
+    wallColor *=
+        mix(
+            0.8,
+            1.3,
+            axialWave
+        );
+
+    vec3 lightPosition =
+        rayOrigin +
+        vec3(0.0, 0.0, 3.0);
+
+    vec3 lightDirection =
+        safeNormalize(
+            lightPosition -
+            surfacePosition
+        );
+
+    vec3 viewDirection =
+        safeNormalize(
+            rayOrigin -
+            surfacePosition
+        );
+
+    vec3 halfDirection =
+        safeNormalize(
+            lightDirection +
+            viewDirection
+        );
+
+    float diffuse =
+        max(
+            dot(
+                normal,
+                lightDirection
+            ),
+            0.0
+        );
+
+    float specular =
+        pow(
+            max(
+                dot(
+                    normal,
+                    halfDirection
+                ),
+                0.0
+            ),
+            24.0
+        );
+
+    float fresnel =
+        pow(
+            1.0 -
+            max(
+                dot(
+                    normal,
+                    viewDirection
+                ),
+                0.0
+            ),
+            3.0
+        );
+
+    float emissiveStrength =
+        0.55 +
+        pattern * 2.2 +
+        mid * 0.35 +
+        treb * 0.25;
+
+    vec3 ambient =
+        wallColor *
+        0.14;
+
+    vec3 diffuseTerm =
+        wallColor *
+        diffuse *
+        (
+            0.75 +
+            0.25 * bass
+        );
+
+    vec3 specularTerm =
+        vec3(specular) *
+        (
+            0.35 +
+            0.35 * treb
+        );
+
+    vec3 emissive =
+        wallColor *
+        emissiveStrength;
+
+    vec3 fresnelTerm =
+        wallColor *
+        fresnel *
+        0.5;
+
+    return
+        ambient +
+        diffuseTerm +
+        specularTerm +
+        emissive +
+        fresnelTerm;
+}
+
+// -------------------- Main image ------------------------------
+
+void mainImage(
+    out vec4 fragColor,
+    in vec2 fragCoord
+)
+{
+    vec2 resolution =
+        max(
+            iResolution.xy,
+            vec2(1.0)
+        );
+
+    vec2 uv =
+        (
+            fragCoord -
+            resolution * 0.5
+        ) /
+        resolution.y;
+
+    float b1 =
+        getProceduralFrequency(0.02);
+
+    float b2 =
+        getProceduralFrequency(0.06);
+
+    float b3 =
+        getProceduralFrequency(0.10);
+
+    float m1 =
+        getProceduralFrequency(0.30);
+
+    float m2 =
+        getProceduralFrequency(0.40);
+
+    float m3 =
+        getProceduralFrequency(0.50);
+
+    float t1 =
+        getProceduralFrequency(0.70);
+
+    float t2 =
+        getProceduralFrequency(0.80);
+
+    float t3 =
+        getProceduralFrequency(0.90);
+
+    float bass =
+        (
+            b1 +
+            b2 +
+            b3
+        ) /
+        3.0;
+
+    float mid =
+        (
+            m1 +
+            m2 +
+            m3
+        ) /
+        3.0;
+
+    float treb =
+        (
+            t1 +
+            t2 +
+            t3
+        ) /
+        3.0;
+
+    vec3 frequencyColor =
+        getFrequencyColor(
+            b1,
+            b2,
+            b3,
+            m1,
+            m2,
+            m3,
+            t1,
+            t2,
+            t3
+        );
+
+    vec3 rayOrigin =
+        vec3(
+            0.0,
+            -0.4,
+            iTime * CAMERA_SPEED
+        );
+
+    vec3 rayDirection =
+        safeNormalize(
+            vec3(
+                uv,
+                CAMERA_FOV
+            )
+        );
+
+    float travel = 0.0;
+    float previousTravel = 0.0;
+
+    bool hit = false;
+
+    vec3 glowAccumulation =
+        vec3(0.0);
+
+    for (
+        int i = 0;
+        i < MAX_MARCH_STEPS;
+        i++
+    )
+    {
+        vec3 samplePosition =
+            rayOrigin +
+            rayDirection *
+            travel;
+
+        float pattern;
+        float radialLength;
+        float caveRadius;
+
+        float sceneDistance =
+            evaluateScene(
+                samplePosition,
+                pattern,
+                radialLength,
+                caveRadius
+            );
+
+        float radialDistance =
+            abs(
+                radialLength -
+                TUNNEL_RADIUS
+            );
+
+        float glowMask =
+            exp(
+                -radialDistance *
+                GLOW_FALLOFF
+            );
+
+        float patternGlow =
+            0.35 +
+            0.65 *
+            pattern;
+
+        glowAccumulation +=
+            frequencyColor *
+            glowMask *
+            patternGlow *
+            GLOW_STRENGTH;
+
+        if (
+            sceneDistance <
+            SURFACE_EPSILON
+        )
+        {
+            hit = true;
+
+            travel =
+                refineHitDistance(
+                    rayOrigin,
+                    rayDirection,
+                    previousTravel,
+                    travel
+                );
+
+            break;
+        }
+
+        if (
+            travel >
+            MAX_TRACE_DISTANCE
+        )
+        {
+            break;
+        }
+
+        previousTravel =
+            travel;
+
+        float nearSurfaceFactor =
+            smoothstep(
+                NEAR_SURFACE_START,
+                NEAR_SURFACE_END,
+                sceneDistance
+            );
+
+        float adaptiveScale =
+            mix(
+                STEP_SCALE,
+                STEP_SCALE *
+                NEAR_SURFACE_SCALE,
+                nearSurfaceFactor
+            );
+
+        travel +=
+            max(
+                sceneDistance *
+                adaptiveScale,
+                MIN_MARCH_STEP
+            );
+    }
+
+    vec3 sceneColor =
+        glowAccumulation;
+
+    if (hit)
+    {
+        vec3 hitPosition =
+            rayOrigin +
+            rayDirection *
+            travel;
+
+        vec3 normal =
+            calcNormal(
+                hitPosition
+            );
+
+        vec3 surfaceColor =
+            shadeSurface(
+                rayOrigin,
+                hitPosition,
+                normal,
+                frequencyColor,
+                bass,
+                mid,
+                treb
+            );
+
+        float fog =
+            1.0 -
+            exp(
+                -travel *
+                FOG_DENSITY
+            );
+
+        vec3 fogColor =
+            mix(
+                vec3(1.0),
+                frequencyColor,
+                BACKGROUND_GLOW_MIX
+            );
+
+        sceneColor +=
+            mix(
+                surfaceColor,
+                fogColor,
+                fog * 0.35
+            );
+    }
+    else
+    {
+        sceneColor +=
+            frequencyColor *
+            0.015;
+    }
+
+    sceneColor =
+        1.0 -
+        exp(
+            -sceneColor *
+            1.27
+        );
+
+    sceneColor =
+        clamp(
+            sceneColor,
+            0.0,
+            1.08
+        );
+
+    float glowPresence =
+        max(
+            max(
+                glowAccumulation.r,
+                glowAccumulation.g
+            ),
+            glowAccumulation.b
+        );
+
+    float scenePresence =
+        hit
+        ? 0.4
+        : saturate(
+            glowPresence *
+            PRESENCE_SCALE
+        );
+
+    vec3 backgroundColor =
+        vec3(1.0);
+
+    vec3 finalColor =
+        mix(
+            backgroundColor,
+            sceneColor,
+            scenePresence
+        );
+
+    fragColor =
+        vec4(
+            finalColor,
+            1.0
+        );
+}
+
+void main() {
+    mainImage(gl_FragColor, gl_FragCoord.xy);
+}
+`;
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([
+        -1, -1, 0,
+         3, -1, 0,
+        -1,  3, 0
+      ], 3)
+    );
+
+    const material = new THREE.ShaderMaterial({
+      uniforms,
+      vertexShader,
+      fragmentShader,
+      depthTest: false,
+      depthWrite: false,
+      transparent: false
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+
+    const clock = new THREE.Clock();
+
+    function updateResolution() {
+      renderer.setPixelRatio(sceneParams.dpr);
+      renderer.setSize(window.innerWidth, window.innerHeight, false);
+
+      const drawingBufferSize = new THREE.Vector2();
+      renderer.getDrawingBufferSize(drawingBufferSize);
+      uniforms.iResolution.value.set(
+        drawingBufferSize.x,
+        drawingBufferSize.y,
+        sceneParams.dpr
+      );
+    }
+
+    function animate() {
+      uniforms.iTime.value = clock.getElapsedTime();
+      renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', updateResolution, { passive: true });
+    updateResolution();
+    renderer.setAnimationLoop(animate);
+  </script>
+</body>
+</html>

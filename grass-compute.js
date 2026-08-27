@@ -205,6 +205,9 @@ export function createComputeGrass(opts) {
   const stats = {
     recullMode,
     anchorMode,
+    capacity: CAP,          // instance-buffer size; the live count lives in the indirect buffer
+    dispatch: 0,            // threads the last recull actually ran
+    maxDensity: Kmax / (cellSize * cellSize),
     residentChunks: 0,
     reculls: 0,
     skippedReculls: 0,
@@ -289,12 +292,14 @@ export function createComputeGrass(opts) {
   })().compute(anchorCap) : null;
 
   const proceduralCull = anchorMode ? null : Fn(() => {
-    const idx = int(instanceIndex);                  // 0 .. CAP-1 (CAP is small; int is safe)
-    const K = int(Kmax);
+    const idx = int(instanceIndex);                  // 0 .. cull.count-1, sized to the live window
+    const perCell = int(uPerCell);
+    const K = perCell.max(int(1));                   // live blades per cell; 0 would divide by zero
     const slot = modInt(idx, K);
-    If(slot.lessThan(int(uPerCell)), () => {         // only first uPerCell slots per cell are live
-      const cellI = idx.sub(slot).div(K);            // integer cell index in the window (int domain)
-      const side = int(uSide);
+    const cellI = idx.div(K);                        // integer cell index in the window (int domain)
+    const side = int(uSide);
+    // Clips the workgroup rounding tail, and the whole dispatch when density is zero.
+    If(perCell.greaterThan(int(0)).and(cellI.lessThan(side.mul(side))), () => {
       const lx = modInt(cellI, side);
       const lz = cellI.sub(lx).div(side);
       const camGx = int(floor(uCam.x.div(uCellSize)));
@@ -320,7 +325,8 @@ export function createComputeGrass(opts) {
         .and(densityRand.lessThan(biomeDensity));
       If(live, () => {
         const s = atomicAdd(counter.element(0), uint(1));
-        const withinCap = uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades));
+        const withinCap = s.lessThan(uHardCap)
+          .and(uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades)));
         If(withinCap, () => {
           const base2 = s.mul(uint(2));
           const yaw = slotRandFn(gx, gz, slot, int(3)).mul(6.2831853);
@@ -494,6 +500,12 @@ export function createComputeGrass(opts) {
       if (recullMode !== 'frame' && !dirty && !cellChanged) {
         stats.skippedReculls++;
         return;
+      }
+      // count drives both the dispatch and the shader's own bounds guard, so shrinking the radius
+      // or the density now shrinks the work instead of discarding it inside the kernel.
+      if (!anchorMode) {
+        cull.count = Math.max(1, uSide.value * uSide.value * uPerCell.value);
+        stats.dispatch = cull.count;
       }
       uCam.value.set(camera.position.x, camera.position.z);
       await renderer.computeAsync([reset, cull, finalize]);

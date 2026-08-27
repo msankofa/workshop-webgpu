@@ -26,6 +26,9 @@ export function createChunkMeshWorldQueryProvider({
   const velocity = new THREE.Vector3();
   const scratchContacts = [];
 
+  // Cumulative collider build cost, split by phase (see map-collision.js createMapCollider).
+  const buildStats = { chunks: 0, bakeMs: 0, bvhMs: 0, lastBakeMs: 0, lastBvhMs: 0, direct: null };
+
   function setChunk(key, geometry, { sourceVersion = null } = {}) {
     removeChunk(key);
     if (!geometry?.attributes?.position || geometry.attributes.position.count === 0) return false;
@@ -34,6 +37,13 @@ export function createChunkMeshWorldQueryProvider({
     const collider = createMapCollider(mesh, { maxTriangles: maxTrianglesPerChunk });
     if (!geometry.boundingBox) geometry.computeBoundingBox();
     chunks.set(key, { collider, box: geometry.boundingBox.clone(), triangles: collider.triangleCount, sourceVersion });
+    // Rolling build cost, so a capture can say which half of a collider rebuild is expensive.
+    buildStats.chunks++;
+    buildStats.bakeMs += collider.buildMs.bake;
+    buildStats.bvhMs += collider.buildMs.bvh;
+    buildStats.lastBakeMs = collider.buildMs.bake;
+    buildStats.lastBvhMs = collider.buildMs.bvh;
+    buildStats.direct = collider.buildMs.direct;
     return true;
   }
   function removeChunk(key) {
@@ -66,6 +76,7 @@ export function createChunkMeshWorldQueryProvider({
     get triangleCount() { let n = 0; for (const e of chunks.values()) n += e.triangles; return n; },
     hasChunk(key) { return chunks.has(key); },
     setChunk,
+    buildStats,
     removeChunk,
     clear() { for (const key of [...chunks.keys()]) removeChunk(key); },
 

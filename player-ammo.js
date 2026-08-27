@@ -12,10 +12,23 @@ export function defaultAmmoFor(weaponId) {
 export function createAmmoStore() {
   const playerAmmo = new Map();
   const ammoKey = (playerId, weaponId) => `${playerId}:${weaponId}`;
+  // Bottomless magazines. Infinity is the whole implementation: `mag -= 1` leaves it Infinity,
+  // reloadAmmo's `mag >= magazineSize` short-circuits, and the wire already carries it (protocol
+  // wireAmmo sends null, cleanAmmo reads it back) because JSON has no Infinity.
+  let unlimited = false;
+  const bottomless = (weaponId) => ({ mag: Infinity, reserve: Infinity, magazineSize: Math.max(0, getWeapon(weaponId)?.magazineSize ?? 0) });
+  function setUnlimited(next) {
+    if (unlimited === !!next) return unlimited;
+    unlimited = !!next;
+    // Existing magazines follow the switch either way: turning it off hands everyone a full load
+    // rather than whatever they happened to have before it was turned on.
+    for (const [key, ammo] of playerAmmo) Object.assign(ammo, unlimited ? bottomless(key.slice(key.indexOf(':') + 1)) : defaultAmmoFor(key.slice(key.indexOf(':') + 1)));
+    return unlimited;
+  }
   function ensureAmmo(playerId, weaponId) {
     const key = ammoKey(playerId, weaponId);
     let ammo = playerAmmo.get(key);
-    if (!ammo) { ammo = defaultAmmoFor(weaponId); playerAmmo.set(key, ammo); }
+    if (!ammo) { ammo = unlimited ? bottomless(weaponId) : defaultAmmoFor(weaponId); playerAmmo.set(key, ammo); }
     return ammo;
   }
   function reloadAmmo(playerId, weaponId) {
@@ -36,5 +49,5 @@ export function createAmmoStore() {
   function resetPlayer(playerId) {
     for (const key of [...playerAmmo.keys()]) if (key.startsWith(`${playerId}:`)) playerAmmo.delete(key);
   }
-  return { ensureAmmo, reloadAmmo, consumeAmmo, resetPlayer, removePlayer: resetPlayer };
+  return { ensureAmmo, reloadAmmo, consumeAmmo, resetPlayer, removePlayer: resetPlayer, setUnlimited, get unlimited() { return unlimited; } };
 }

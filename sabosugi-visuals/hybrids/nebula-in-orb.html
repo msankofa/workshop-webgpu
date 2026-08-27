@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Hybrid: Colorful Nebula filling an Anunaki Magical Sphere shell</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #000;
+      user-select: none;
+      -webkit-user-select: none;
+      font-family: monospace;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: grab;
+    }
+    canvas:active {
+      cursor: grabbing;
+    }
+    #note {
+      position: fixed;
+      left: 10px;
+      bottom: 10px;
+      color: #9aa;
+      font-size: 11px;
+      opacity: 0.6;
+      pointer-events: none;
+      max-width: 90vw;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Three.js Library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- lil-gui Library for control panel -->
+  <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
+
+  <!-- WebGL Render Canvas -->
+  <canvas id="webgl-canvas"></canvas>
+  <div id="note">Hybrid of sabosugi's "Anunaki Magical Sphere" (glass shell container) + a choice of interior content: "Colorful Nebula Background" (folded-noise glow) or "Abstract Chromatic Light" (fractal-warp RGB phase shift) &mdash; inverse of orb-in-nebula.html. Drag/scroll orbits+zooms; the Content dropdown swaps what fills the shell.</div>
+
+  <script>
+    // --- Vertex Shader (unchanged full-screen passthrough) ---
+    const vertexShader = `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = vec4(position, 1.0);
+        }
+    `;
+
+    // --- Fragment Shader ---
+    // Keeps Anunaki Magical Sphere's container exactly (ray-sphere intersect, hollow-shell
+    // wallMask, constant-step march through the shell, rim light) but replaces its interior
+    // content generator: instead of the KIFS fractal fold, each marched sample runs the
+    // folded-noise "inner loop" lifted from Colorful Nebula Background's raymarcher, evaluated
+    // at that sample point instead of marching its own independent ray. The outside of the
+    // sphere is plain space, same as the original orb pen -- this hybrid is a single
+    // self-contained object, not two overlapping backdrops.
+    const fragmentShader = `
+        #ifdef GL_ES
+        precision highp float;
+        #endif
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+
+        // Container (glass shell)
+        uniform int uMaxSteps;
+        uniform float uSphereRadius;
+        uniform float uInnerRadius;
+        uniform vec3 uSphereCenter;
+        uniform float uBrightness;
+        uniform float uAutoRotationSpeed;
+        uniform mat3 uInverseRotationMatrix;
+        uniform float uZoom;
+
+        // Content select: 0 = Colorful Nebula Background, 1 = Abstract Chromatic Light
+        uniform int uFillMode;
+
+        // Nebula fill
+        uniform float uNebTimeMul;
+        uniform float uNebNoiseFreq;
+        uniform float uNebCoreRadius;
+        uniform vec4 uNebChromaShift;
+        uniform float uNebScatter;
+        uniform float uNebLightFade;
+        uniform float uDomainScale;
+
+        // Chromatic Light fill
+        uniform int uWarpSteps;
+        uniform float uWarpSpatialScale;
+        uniform float uWarpAmplitude;
+        uniform float uWarpTurnSmoothing;
+        uniform float uChromaTimeMul;
+        uniform float uChromaFrequency;
+        uniform float uChromaIntensity;
+        uniform vec3 uChromaColor;
+
+        varying vec2 vUv;
+
+        vec2 intersectSphere(vec3 rayOrigin, vec3 rayDir, vec3 center, float radius) {
+            vec3 oc = rayOrigin - center;
+            float b = dot(oc, rayDir);
+            float c = dot(oc, oc) - radius * radius;
+            float h = b * b - c;
+            if (h < 0.0) return vec2(-1.0);
+            h = sqrt(h);
+            return vec2(-b - h, -b + h);
+        }
+
+        // Folded-noise volumetric glow, ported from Colorful Nebula Background's per-step
+        // inner loop, evaluated at a single sample position rather than marching its own ray.
+        vec3 nebulaFill(vec3 samplePos, float depthLike) {
+            vec3 pos = samplePos;
+            float step_val = 1.0;
+            float t_scaled = uTime * uNebTimeMul;
+
+            for (int m = 0; m < 6; m++) {
+                if (step_val > 8.9) break;
+                vec3 shift = pos.yzx * step_val * uNebNoiseFreq;
+                shift += depthLike * 0.2;
+                shift += t_scaled;
+                pos += cos(shift) / step_val;
+                step_val *= 1.4285714;
+            }
+
+            float len_xy = length(pos.xy);
+            float core_diff = abs(uNebCoreRadius - len_xy);
+            float scatter_factor = uNebScatter / max(core_diff * 0.1 + 0.045, 0.001);
+            vec4 tint = cos(depthLike + uNebChromaShift) + 1.0;
+            return (tint.rgb * scatter_factor) / uNebLightFade;
+        }
+
+        mat2 rotate2D(float angle) {
+            float s = sin(angle);
+            float c = cos(angle);
+            return mat2(c, -s, s, c);
+        }
+
+        // Domain-warp iteration ported from Abstract Chromatic Light's evaluateFractalWarp:
+        // repeatedly folds position through a decaying-frequency sine displacement, softened
+        // by mixing in the previous (zxy-rotated) position each step.
+        vec3 evaluateFractalWarp(vec3 position) {
+            float frequency = 3.4;
+            float phaseTime = uTime * uChromaTimeMul;
+
+            for (int w = 0; w < 10; w++) {
+                if (w >= uWarpSteps) break;
+                frequency *= 0.625;
+
+                float spatialFrequency = frequency * uWarpSpatialScale;
+                float phaseOffset = frequency + phaseTime;
+                vec3 phase = position * spatialFrequency + phaseOffset;
+                float inverseFrequency = 1.0 / max(frequency, 1e-4);
+                vec3 displacement = sin(phase) * (uWarpAmplitude * inverseFrequency);
+
+                position = mix(position.zxy, position, uWarpTurnSmoothing) + displacement;
+            }
+
+            return position;
+        }
+
+        // Chromatic RGB phase-shift glow, ported from Abstract Chromatic Light's per-trace-step
+        // color formula, evaluated at a single sample position rather than its own ray march.
+        vec3 chromaticFill(vec3 samplePos, float depthLike) {
+            vec3 warpedPosition = evaluateFractalWarp(samplePos);
+            float colorPhase = depthLike + warpedPosition.z * uChromaFrequency;
+            vec3 channelOffsets = vec3(0.0, 1.0, 2.0);
+            vec3 chromaticLight = sin(colorPhase + channelOffsets) + 1.0;
+            return chromaticLight * uChromaColor * uChromaIntensity;
+        }
+
+        void main() {
+            vec2 uvCenter = (2.0 * gl_FragCoord.xy - uResolution.xy) / uResolution.y;
+            vec3 rayOriginWorld = vec3(0.0, 0.0, 0.0);
+            vec3 rayDirectionWorld = normalize(vec3(uvCenter * uZoom, -1.0));
+
+            vec3 localRayOrigin = uInverseRotationMatrix * (rayOriginWorld - uSphereCenter);
+            vec3 localRayDirection = uInverseRotationMatrix * rayDirectionWorld;
+
+            vec2 hitOuter = intersectSphere(localRayOrigin, localRayDirection, vec3(0.0), uSphereRadius);
+
+            if (hitOuter.x < 0.0) {
+                gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                return;
+            }
+
+            float tStart = max(0.0, hitOuter.x);
+            float tEnd = hitOuter.y;
+            float stepSize = (tEnd - tStart) / float(uMaxSteps);
+            float currentDistance = tStart;
+
+            vec3 accumulatedColor = vec3(0.0);
+
+            for (int i = 0; i < 250; i++) {
+                if (i >= uMaxSteps) break;
+
+                vec3 localPos = localRayOrigin + localRayDirection * currentDistance;
+                float distFromCenter = length(localPos);
+
+                float wallMask = smoothstep(uInnerRadius, uInnerRadius + 1.0, distFromCenter) * smoothstep(uSphereRadius, uSphereRadius - 0.2, distFromCenter);
+
+                if (wallMask > 0.01) {
+                    vec3 samplePos = localPos * uDomainScale;
+                    samplePos.xy *= rotate2D(uTime * 0.1 * uAutoRotationSpeed);
+
+                    vec3 glow;
+                    if (uFillMode == 1) {
+                        glow = chromaticFill(samplePos, currentDistance * uDomainScale);
+                    } else {
+                        glow = nebulaFill(samplePos, currentDistance * uDomainScale);
+                    }
+                    accumulatedColor += glow * stepSize * uBrightness * wallMask;
+                }
+
+                currentDistance += stepSize;
+            }
+
+            vec3 orbColor = tanh(accumulatedColor);
+
+            vec3 localHitPoint = localRayOrigin + localRayDirection * hitOuter.x;
+            vec3 surfaceNormalLocal = normalize(localHitPoint);
+            float edgeHighlight = 0.7 - max(dot(-localRayDirection, surfaceNormalLocal), 0.5);
+            orbColor += vec3(0.05, 0.1, 0.3) * pow(edgeHighlight, 4.0);
+
+            gl_FragColor = vec4(orbColor, 1.0);
+        }
+    `;
+
+    // --- JavaScript Scene Setup ---
+    const canvas = document.getElementById('webgl-canvas');
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: false, powerPreference: "high-performance" });
+
+    // Container (glass shell) config -- solid-filled by default (innerRadius 0) so the nebula
+    // reads as cloud filling the whole orb rather than a thin fractal shell.
+    const shellConfig = {
+      maxSteps: 120,
+      brightness: 1.6,
+      sphereRadius: 10.0,
+      innerRadius: 0.0,
+      sphereCenterZ: -18.0,
+      autoRotationSpeed: 1.0,
+      domainScale: 0.3,
+      fillMode: 0, // 0 = Colorful Nebula Background, 1 = Abstract Chromatic Light
+      dpr: 1.0
+    };
+
+    // Nebula-fill config (same defaults as Colorful Nebula Background's own uniforms)
+    const nebConfig = {
+      timeMul: 0.3,
+      lightFade: 2600.0,
+      coreRadius: 2.1,
+      advanceBase: 0.045,
+      noiseFreq: 0.7,
+      scatter: 2.0,
+      chromaR: 6.3,
+      chromaG: 7.0,
+      chromaB: 3.6
+    };
+
+    // Chromatic-light-fill config (same defaults as Abstract Chromatic Light's own uniforms)
+    const chromaConfig = {
+      warpSteps: 6,
+      warpSpatialScale: 0.86,
+      warpAmplitude: 1.1,
+      warpTurnSmoothing: -0.02,
+      timeMul: 0.2,
+      frequency: 0.15,
+      intensity: 1.0,
+      color: '#ffffff'
+    };
+
+    const uniforms = {
+      uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+      uTime: { value: 0.0 },
+      uMaxSteps: { value: shellConfig.maxSteps },
+      uSphereRadius: { value: shellConfig.sphereRadius },
+      uInnerRadius: { value: shellConfig.innerRadius },
+      uSphereCenter: { value: new THREE.Vector3(0.0, 0.0, shellConfig.sphereCenterZ) },
+      uBrightness: { value: shellConfig.brightness },
+      uAutoRotationSpeed: { value: shellConfig.autoRotationSpeed },
+      uInverseRotationMatrix: { value: new THREE.Matrix3() },
+      uZoom: { value: 1.0 },
+      uDomainScale: { value: shellConfig.domainScale },
+      uFillMode: { value: shellConfig.fillMode },
+
+      uNebTimeMul: { value: nebConfig.timeMul },
+      uNebNoiseFreq: { value: nebConfig.noiseFreq },
+      uNebCoreRadius: { value: nebConfig.coreRadius },
+      uNebChromaShift: { value: new THREE.Vector4(nebConfig.chromaR, nebConfig.chromaG, nebConfig.chromaB, 3.0) },
+      uNebScatter: { value: nebConfig.scatter },
+      uNebLightFade: { value: nebConfig.lightFade },
+
+      uWarpSteps: { value: chromaConfig.warpSteps },
+      uWarpSpatialScale: { value: chromaConfig.warpSpatialScale },
+      uWarpAmplitude: { value: chromaConfig.warpAmplitude },
+      uWarpTurnSmoothing: { value: chromaConfig.warpTurnSmoothing },
+      uChromaTimeMul: { value: chromaConfig.timeMul },
+      uChromaFrequency: { value: chromaConfig.frequency },
+      uChromaIntensity: { value: chromaConfig.intensity },
+      uChromaColor: { value: new THREE.Color(chromaConfig.color) }
+    };
+
+    const geometry = new THREE.PlaneGeometry(2, 2);
+    const material = new THREE.ShaderMaterial({
+      vertexShader: vertexShader,
+      fragmentShader: fragmentShader,
+      uniforms: uniforms,
+      depthWrite: false,
+      depthTest: false
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    scene.add(mesh);
+
+    // --- Interaction Mechanics (identical to orb-in-nebula.html) ---
+    let isDragging = false;
+    let previousPointerPosition = { x: 0, y: 0 };
+    let velocityX = 0, velocityY = 0;
+    let currentZoom = 1.0;
+    let targetZoom = 1.0;
+
+    const targetRotation = new THREE.Quaternion();
+    const currentRotation = new THREE.Quaternion();
+    const axisX = new THREE.Vector3(1, 0, 0);
+    const axisY = new THREE.Vector3(0, 1, 0);
+
+    window.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.lil-gui')) return;
+      isDragging = true;
+      previousPointerPosition = { x: e.clientX, y: e.clientY };
+      velocityX = 0;
+      velocityY = 0;
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (!isDragging) return;
+      const deltaX = e.clientX - previousPointerPosition.x;
+      const deltaY = e.clientY - previousPointerPosition.y;
+
+      velocityX = deltaX * 0.0035;
+      velocityY = deltaY * 0.0035;
+
+      const qY = new THREE.Quaternion().setFromAxisAngle(axisY, velocityX);
+      const qX = new THREE.Quaternion().setFromAxisAngle(axisX, velocityY);
+      targetRotation.premultiply(qX).premultiply(qY);
+      targetRotation.normalize();
+
+      previousPointerPosition = { x: e.clientX, y: e.clientY };
+    });
+
+    window.addEventListener('pointerup', () => { isDragging = false; });
+    window.addEventListener('pointercancel', () => { isDragging = false; });
+
+    window.addEventListener('wheel', (e) => {
+      if (e.target.closest('.lil-gui')) return;
+      targetZoom += e.deltaY * 0.001;
+      targetZoom = Math.max(0.3, Math.min(4.0, targetZoom));
+    }, { passive: true });
+
+    let touchStartDist = 0;
+    let baseZoom = 1.0;
+
+    window.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        touchStartDist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        baseZoom = targetZoom;
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 2 && touchStartDist > 0) {
+        const dist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        const factor = dist / touchStartDist;
+        targetZoom = Math.max(0.3, Math.min(4.0, baseZoom / factor));
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchend', () => { touchStartDist = 0; });
+
+    const rotationMatrix4 = new THREE.Matrix4();
+    const rotationMatrix3 = new THREE.Matrix3();
+
+    function updateRotationAndZoom() {
+      if (!isDragging) {
+        velocityX *= 0.95;
+        velocityY *= 0.95;
+
+        const qY = new THREE.Quaternion().setFromAxisAngle(axisY, velocityX);
+        const qX = new THREE.Quaternion().setFromAxisAngle(axisX, velocityY);
+        targetRotation.premultiply(qX).premultiply(qY);
+        targetRotation.normalize();
+      }
+
+      currentRotation.slerp(targetRotation, 0.1);
+      currentZoom += (targetZoom - currentZoom) * 0.15;
+
+      rotationMatrix4.makeRotationFromQuaternion(currentRotation);
+      rotationMatrix4.invert();
+      rotationMatrix3.setFromMatrix4(rotationMatrix4);
+
+      uniforms.uInverseRotationMatrix.value.copy(rotationMatrix3);
+      uniforms.uZoom.value = currentZoom;
+    }
+
+    // --- Combined Control Panel ---
+    const gui = new lil.GUI({ title: "Hybrid Control Panel" });
+    gui.close();
+
+    gui.add(shellConfig, "fillMode", { "Colorful Nebula Background": 0, "Abstract Chromatic Light": 1 })
+      .name("Content").onChange(v => uniforms.uFillMode.value = Number(v));
+
+    const fShell = gui.addFolder("Container (Anunaki shell)");
+    fShell.add(shellConfig, "sphereRadius", 4.0, 20.0, 0.1).name("Outer Radius").onChange(v => {
+      uniforms.uSphereRadius.value = v;
+      if (shellConfig.innerRadius >= v) {
+        shellConfig.innerRadius = v - 1.0;
+        uniforms.uInnerRadius.value = shellConfig.innerRadius;
+        fShell.controllers.find(c => c.property === "innerRadius").updateDisplay();
+      }
+    });
+    fShell.add(shellConfig, "innerRadius", 0.0, 19.0, 0.1).name("Inner Radius (0 = solid)").onChange(v => {
+      if (v >= shellConfig.sphereRadius) {
+        shellConfig.innerRadius = shellConfig.sphereRadius - 1.0;
+        uniforms.uInnerRadius.value = shellConfig.innerRadius;
+        fShell.controllers.find(c => c.property === "innerRadius").updateDisplay();
+      } else {
+        uniforms.uInnerRadius.value = v;
+      }
+    });
+    fShell.add(shellConfig, "maxSteps", 20, 250, 1).name("Raymarching Detail").onChange(v => uniforms.uMaxSteps.value = v);
+    fShell.add(shellConfig, "brightness", 0.1, 6.0, 0.05).name("Brightness").onChange(v => uniforms.uBrightness.value = v);
+    fShell.add(shellConfig, "autoRotationSpeed", 0.0, 3.0, 0.05).name("Interior Swirl Speed").onChange(v => uniforms.uAutoRotationSpeed.value = v);
+    fShell.add(shellConfig, "domainScale", 0.05, 1.0, 0.01).name("Cloud Domain Scale").onChange(v => uniforms.uDomainScale.value = v);
+
+    const fNeb = gui.addFolder("Nebula Fill");
+    fNeb.add(nebConfig, "timeMul", 0.0, 3.0, 0.1).name("Time Multiplier").onChange(v => uniforms.uNebTimeMul.value = v);
+    fNeb.add(nebConfig, "scatter", 0.1, 5.0, 0.1).name("Scattering").onChange(v => uniforms.uNebScatter.value = v);
+    fNeb.add(nebConfig, "noiseFreq", 0.5, 3.0, 0.1).name("Turbulence Freq").onChange(v => uniforms.uNebNoiseFreq.value = v);
+    fNeb.add(nebConfig, "coreRadius", 0.5, 10.0, 0.1).name("Void Radius").onChange(v => uniforms.uNebCoreRadius.value = v);
+    fNeb.add(nebConfig, "lightFade", 200, 10000, 100).name("Light Attenuation").onChange(v => uniforms.uNebLightFade.value = v);
+    fNeb.add(nebConfig, "chromaR", 0, 10, 0.1).name("Channel R Shift").onChange(v => uniforms.uNebChromaShift.value.x = v);
+    fNeb.add(nebConfig, "chromaG", 0, 10, 0.1).name("Channel G Shift").onChange(v => uniforms.uNebChromaShift.value.y = v);
+    fNeb.add(nebConfig, "chromaB", 0, 10, 0.1).name("Channel B Shift").onChange(v => uniforms.uNebChromaShift.value.z = v);
+
+    const fChroma = gui.addFolder("Chromatic Light Fill");
+    fChroma.add(chromaConfig, "warpSteps", 1, 10, 1).name("Warp Steps").onChange(v => uniforms.uWarpSteps.value = v);
+    fChroma.add(chromaConfig, "warpSpatialScale", 0.1, 2.0, 0.001).name("Warp Spatial Scale").onChange(v => uniforms.uWarpSpatialScale.value = v);
+    fChroma.add(chromaConfig, "warpAmplitude", 0.0, 3.0, 0.001).name("Warp Amplitude").onChange(v => uniforms.uWarpAmplitude.value = v);
+    fChroma.add(chromaConfig, "warpTurnSmoothing", -0.5, 1.0, 0.001).name("Turn Smoothing").onChange(v => uniforms.uWarpTurnSmoothing.value = v);
+    fChroma.add(chromaConfig, "timeMul", 0.0, 1.0, 0.001).name("Time Multiplier").onChange(v => uniforms.uChromaTimeMul.value = v);
+    fChroma.add(chromaConfig, "frequency", 0.0, 1.0, 0.001).name("Color Frequency").onChange(v => uniforms.uChromaFrequency.value = v);
+    fChroma.add(chromaConfig, "intensity", 0.0, 4.0, 0.01).name("Intensity").onChange(v => uniforms.uChromaIntensity.value = v);
+    fChroma.addColor(chromaConfig, "color").name("Tint").onChange(v => uniforms.uChromaColor.value.set(v));
+
+    const fSystem = gui.addFolder("System");
+    fSystem.add(shellConfig, "dpr", 0.25, 2.0, 0.25).name("Screen DPR").onChange(v => {
+      renderer.setPixelRatio(v);
+    });
+
+    function onWindowResize() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      renderer.setSize(width, height);
+      uniforms.uResolution.value.set(width, height);
+    }
+    window.addEventListener('resize', onWindowResize);
+
+    onWindowResize();
+    renderer.setPixelRatio(shellConfig.dpr);
+
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      uniforms.uTime.value = clock.getElapsedTime();
+      updateRotationAndZoom();
+      renderer.render(scene, camera);
+    }
+
+    animate();
+  </script>
+</body>
+
+</html>

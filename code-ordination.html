@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Code Ordination</title>
+<style>
+  :root {
+    --bg: #0d1016; --panel: #151a23; --panel2: #1b212c; --line: #2a3340;
+    --ink: #d8e0ea; --dim: #8494a8; --accent: #6fd3c7; --warn: #e8b26a; --bad: #e0736a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  header {
+    display: flex; align-items: center; gap: 14px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header .sub { color: var(--dim); font-size: 12px; }
+  .grow { flex: 1; }
+  button {
+    background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 5px; padding: 6px 12px; cursor: pointer; font: inherit;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: #1d4b47; border-color: var(--accent); color: #cdf3ee; }
+
+  /* ---- the pipeline spine ---- */
+  #spine {
+    display: flex; align-items: stretch; gap: 0; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: #11151d; overflow-x: auto;
+  }
+  .stage {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 10px; min-width: 178px; flex: 1;
+  }
+  .stage.dirty { border-color: var(--warn); }
+  .stage h2 {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--dim); margin: 0 0 6px; display: flex; justify-content: space-between;
+  }
+  .stage h2 .num { color: var(--line); }
+  .stage.dirty h2 { color: var(--warn); }
+  .stage .out {
+    margin-top: 6px; padding-top: 5px; border-top: 1px dashed var(--line);
+    color: var(--accent); font-size: 11px; min-height: 17px;
+  }
+  .arrow { display: flex; align-items: center; color: var(--line); padding: 0 6px; font-size: 15px; }
+  label.row { display: flex; align-items: center; gap: 6px; margin: 3px 0; font-size: 11.5px; color: var(--dim); }
+  label.row > span { flex: 1; }
+  select, input[type=number], input[type=text] {
+    background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 4px; padding: 2px 5px; font: inherit; font-size: 11.5px; max-width: 92px;
+  }
+  input[type=number] { width: 58px; }
+  input[type=checkbox] { accent-color: var(--accent); }
+
+  /* ---- main ---- */
+  #main { flex: 1; display: flex; min-height: 0; }
+  #plotwrap { flex: 1; position: relative; min-width: 0; }
+  canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  #tip {
+    position: absolute; pointer-events: none; background: #000d; border: 1px solid var(--line);
+    border-radius: 4px; padding: 4px 7px; font-size: 11px; display: none; max-width: 320px;
+  }
+  #legend {
+    position: absolute; left: 10px; bottom: 10px; display: flex; flex-wrap: wrap;
+    gap: 3px 9px; max-width: 62%; font-size: 10.5px; color: var(--dim);
+  }
+  #legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+  #axes { position: absolute; left: 10px; top: 8px; font-size: 11px; color: var(--dim); }
+
+  #rail {
+    width: 372px; border-left: 1px solid var(--line); background: var(--panel);
+    overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .card { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  .card h3 {
+    margin: 0 0 8px; font-size: 10px; text-transform: uppercase;
+    letter-spacing: .09em; color: var(--dim); font-weight: 600;
+  }
+  .metric { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; }
+  .metric b { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .good { color: var(--accent); } .meh { color: var(--warn); } .poor { color: var(--bad); }
+  .note { color: var(--warn); font-size: 11px; margin: 3px 0; line-height: 1.45; }
+  .hint { color: var(--dim); font-size: 11px; line-height: 1.5; }
+  ol.nb { margin: 0; padding-left: 20px; font-size: 11.5px; }
+  ol.nb li { margin: 2px 0; cursor: pointer; }
+  ol.nb li:hover { color: var(--accent); }
+  ol.nb .sim { color: var(--dim); font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { text-align: left; color: var(--dim); font-weight: 500; padding: 2px 4px; }
+  td { padding: 2px 4px; font-variant-numeric: tabular-nums; border-top: 1px solid var(--line); }
+  tr.best td { color: var(--accent); }
+  .pair { font-size: 11px; padding: 3px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .pair:hover { color: var(--accent); }
+  .pair .s { color: var(--dim); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  #status { font-size: 11.5px; color: var(--dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Code Ordination</h1>
+  <span class="sub">similarity map of this repo, one stage at a time</span>
+  <span class="grow"></span>
+  <span id="savestate" class="sub"></span>
+  <span id="status">loading corpus…</span>
+  <button id="run" class="primary" disabled>Run</button>
+  <button id="sweep" disabled title="Re-run stages 4 and 5 in every combination and rank them">Sweep tail</button>
+</header>
+
+<div id="spine"></div>
+
+<div id="main">
+  <div id="plotwrap">
+    <canvas id="plot"></canvas>
+    <div id="axes"></div>
+    <div id="legend"></div>
+    <div id="tip"></div>
+  </div>
+  <div id="rail">
+    <div class="card" id="scores"><h3>Score</h3><div class="hint">Run the pipeline to score it.</div></div>
+    <div class="card" id="selected"><h3>Selected unit</h3><div class="hint">Click a point to see its nearest neighbours.</div></div>
+    <div class="card" id="findings"><h3>Similar but never wired together</h3><div class="hint">Pairs the embedding puts close that the dependency graph says never meet.</div></div>
+    <div class="card" id="sweeptable"><h3>Tail sweep</h3><div class="hint">Stages 4–5 only, ranked by purity.</div></div>
+    <div class="card" id="notes"><h3>Caveats</h3><div class="hint">What this run silently dropped will appear here.</div></div>
+  </div>
+</div>
+
+<script type="module">
+import { DEFAULT_CONFIG, prepare, project, sweepTail } from './ordination-pipeline.js';
+import { parseCodeMap, parseCodeMapEdges, findUnconnectedSimilar, labelUnits } from './ordination-score.js';
+import { nearestNeighbors } from './ordination-vectors.js';
+import { createDiskStore, describeStatus } from './disk-store.js';
+
+const cfg = { ...DEFAULT_CONFIG };
+let corpus = null, labels = null, summaries = null, edges = null;
+let prepared = null, projected = null, unitLabels = null, selected = -1;
+// Which stages changed since the last run. Stages 1-3 are the expensive half; 4-6 are cheap.
+let dirty = new Set(['extract', 'represent', 'embed', 'post', 'ordinate', 'score']);
+
+const $ = (id) => document.getElementById(id);
+const status = (msg) => { $('status').textContent = msg; };
+
+// ---------------------------------------------------------------- the spine
+// Each stage owns its controls and reports what it produced, so the page IS the pipeline.
+const STAGES = [
+  { key: 'extract', title: 'Extract', heavy: true, controls: [
+    { k: 'unit', label: 'unit', type: 'select', options: ['file', 'function', 'chunk'] },
+    { k: 'chunkLines', label: 'chunk lines', type: 'number', min: 10, max: 500, step: 10 },
+    { k: 'minChars', label: 'min chars', type: 'number', min: 0, max: 5000, step: 20 },
+    { k: 'maxUnits', label: 'max units', type: 'number', min: 50, max: 6000, step: 50 },
+  ] },
+  { key: 'represent', title: 'Represent', heavy: true, controls: [
+    { k: 'target', label: 'capture', type: 'select', options: ['raw', 'stripped', 'identifiers', 'shape', 'summary'] },
+    { k: 'stripImports', label: 'strip imports', type: 'check' },
+    { k: 'splitCase', label: 'split camelCase', type: 'check' },
+    { k: 'dropStopwords', label: 'drop keywords', type: 'check' },
+    { k: 'maxTokens', label: 'token cap', type: 'number', min: 100, max: 40000, step: 100 },
+  ] },
+  { key: 'embed', title: 'Embed', heavy: true, controls: [
+    { k: 'embedder', label: 'weighting', type: 'select', options: ['tfidf', 'bm25', 'binary', 'hashing', 'random'] },
+    { k: 'minDocFreq', label: 'min doc freq', type: 'number', min: 1, max: 50, step: 1 },
+    { k: 'maxVocab', label: 'max vocab', type: 'number', min: 200, max: 20000, step: 200 },
+    { k: 'dims', label: 'hash dims', type: 'number', min: 32, max: 2048, step: 32 },
+  ] },
+  { key: 'post', title: 'Postprocess', heavy: false, controls: [
+    { k: 'center', label: 'mean-centre', type: 'check' },
+    { k: 'metric', label: 'metric', type: 'select', options: ['cosine', 'euclidean'] },
+  ] },
+  { key: 'ordinate', title: 'Ordinate', heavy: false, controls: [
+    { k: 'method', label: 'method', type: 'select', options: ['pca', 'mds', 'stress'] },
+    { k: 'iters', label: 'stress iters', type: 'number', min: 10, max: 400, step: 10 },
+  ] },
+  { key: 'score', title: 'Score', heavy: false, controls: [
+    { k: 'neighborK', label: 'neighbours k', type: 'number', min: 1, max: 30, step: 1 },
+  ] },
+];
+
+function buildSpine() {
+  const host = $('spine');
+  host.innerHTML = '';
+  STAGES.forEach((stage, i) => {
+    if (i) {
+      const a = document.createElement('div');
+      a.className = 'arrow';
+      a.textContent = '→';
+      host.appendChild(a);
+    }
+    const el = document.createElement('div');
+    el.className = 'stage';
+    el.id = 'stage-' + stage.key;
+    el.innerHTML = `<h2><span>${stage.title}</span><span class="num">${i + 1}</span></h2>`;
+    for (const c of stage.controls) {
+      const row = document.createElement('label');
+      row.className = 'row';
+      row.innerHTML = `<span>${c.label}</span>`;
+      let input;
+      if (c.type === 'select') {
+        input = document.createElement('select');
+        for (const o of c.options) input.appendChild(new Option(o, o));
+        input.value = cfg[c.k];
+      } else if (c.type === 'check') {
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = !!cfg[c.k];
+      } else {
+        input = document.createElement('input');
+        input.type = 'number';
+        input.min = c.min; input.max = c.max; input.step = c.step;
+        input.value = cfg[c.k];
+      }
+      input.addEventListener('change', () => {
+        cfg[c.k] = c.type === 'check' ? input.checked : (c.type === 'number' ? Number(input.value) : input.value);
+        markDirty(stage.key);
+        saveConfig();
+      });
+      row.appendChild(input);
+      el.appendChild(row);
+    }
+    const out = document.createElement('div');
+    out.className = 'out';
+    out.id = 'out-' + stage.key;
+    el.appendChild(out);
+    host.appendChild(el);
+  });
+  refreshDirty();
+}
+
+/** A heavy stage invalidates everything downstream; a cheap one only invalidates itself onward. */
+function markDirty(key) {
+  const order = STAGES.map((s) => s.key);
+  const from = order.indexOf(key);
+  for (let i = from; i < order.length; i++) dirty.add(order[i]);
+  refreshDirty();
+}
+
+function refreshDirty() {
+  for (const s of STAGES) $('stage-' + s.key)?.classList.toggle('dirty', dirty.has(s.key));
+  const heavy = STAGES.filter((s) => s.heavy).some((s) => dirty.has(s.key));
+  $('run').textContent = dirty.size === 0 ? 'Up to date' : (heavy ? 'Re-embed' : 'Re-project');
+  $('run').disabled = !corpus || dirty.size === 0;
+}
+
+function setOut(key, text) { const el = $('out-' + key); if (el) el.textContent = text; }
+
+// ---------------------------------------------------------------- persistence (file, not storage)
+const store = createDiskStore({
+  read: 'ordination-config.json',
+  write: '/api/save-ordination',
+  storage: window.localStorage,
+  key: 'pcw:ordinationConfig',
+});
+let saveReady = false;
+function saveConfig() {
+  if (!saveReady) return;
+  store.setJSON({ config: cfg, savedAt: new Date().toISOString() });
+}
+store.onStatus((st) => {
+  const el = document.getElementById('savestate');
+  if (el) el.textContent = describeStatus(st, { file: 'ordination-config.json' });
+});
+
+// ---------------------------------------------------------------- load
+async function boot() {
+  try {
+    const [corpusRes, mapRes] = await Promise.all([
+      fetch('/api/code-corpus?ext=js,mjs', { cache: 'no-store' }),
+      fetch('code-map.html', { cache: 'no-store' }),
+    ]);
+    if (!corpusRes.ok) throw new Error('corpus route missing -- start serve.py');
+    const data = await corpusRes.json();
+    corpus = data.files;
+    const html = await mapRes.text();
+    ({ labels, summaries } = parseCodeMap(html));
+    edges = parseCodeMapEdges(html);
+
+    await store.load();
+    const saved = store.json();
+    if (saved && saved.config) Object.assign(cfg, saved.config);
+    saveReady = true;
+    buildSpine();
+
+    const covered = corpus.filter((f) => labels[f.path]).length;
+    status(`${corpus.length} files, ${covered} labelled (${Math.round(covered / corpus.length * 100)}%)`);
+    $('run').disabled = false;
+    $('sweep').disabled = false;
+    run();
+  } catch (err) {
+    status('load failed: ' + err.message);
+  }
+}
+
+// ---------------------------------------------------------------- run
+const yieldFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+async function run() {
+  $('run').disabled = true;
+  const heavy = STAGES.filter((s) => s.heavy).some((s) => dirty.has(s.key));
+  try {
+    if (heavy || !prepared) {
+      status('extracting and embedding…');
+      await yieldFrame();
+      const t0 = performance.now();
+      prepared = prepare(corpus, cfg, { summaries });
+      unitLabels = labelUnits(prepared.units, labels);
+      setOut('extract', `${prepared.units.length} units`);
+      const tokens = prepared.docs.reduce((s, d) => s + d.tokens.length, 0);
+      setOut('represent', `${tokens.toLocaleString()} tokens`);
+      setOut('embed', `${prepared.vectors.dim} dims`);
+      status(`embedded in ${Math.round(performance.now() - t0)} ms`);
+      await yieldFrame();
+    }
+    status('projecting…');
+    await yieldFrame();
+    const t1 = performance.now();
+    projected = project(prepared, cfg, { labels });
+    setOut('post', cfg.metric + (cfg.center ? ', centred' : ', raw'));
+    setOut('ordinate', projected.explained.length
+      ? `${(projected.explained.slice(0, 2).reduce((a, b) => a + b, 0) * 100).toFixed(1)}% variance`
+      : `stress ${projected.stress.toFixed(3)}`);
+    setOut('score', `purity ${projected.scores.purity.toFixed(3)}`);
+    status(`projected in ${Math.round(performance.now() - t1)} ms`);
+
+    dirty.clear();
+    refreshDirty();
+    fitView();
+    draw();
+    renderScores();
+    renderNotes();
+    renderFindings();
+    if (selected >= prepared.units.length) selected = -1;
+    renderSelected();
+  } catch (err) {
+    status('error: ' + err.message);
+    console.error(err);
+    refreshDirty();
+  }
+}
+
+// ---------------------------------------------------------------- plot
+const canvas = $('plot');
+const ctx = canvas.getContext('2d');
+let view = { x: 0, y: 0, scale: 1 };
+let hover = -1;
+
+const GROUP_HUE = new Map();
+function colorFor(group) {
+  if (!group) return '#3d4653';
+  if (!GROUP_HUE.has(group)) {
+    let h = 0;
+    for (let i = 0; i < group.length; i++) h = (h * 31 + group.charCodeAt(i)) >>> 0;
+    GROUP_HUE.set(group, h % 360);
+  }
+  return `hsl(${GROUP_HUE.get(group)} 62% 60%)`;
+}
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.parentElement.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.round(r.width * dpr));
+  canvas.height = Math.max(1, Math.round(r.height * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+function fitView() {
+  if (!projected?.coords.length) return;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const c of projected.coords) {
+    minX = Math.min(minX, c[0]); maxX = Math.max(maxX, c[0]);
+    minY = Math.min(minY, c[1]); maxY = Math.max(maxY, c[1]);
+  }
+  const r = canvas.parentElement.getBoundingClientRect();
+  const pad = 46;
+  const sx = (r.width - pad * 2) / Math.max(1e-9, maxX - minX);
+  const sy = (r.height - pad * 2) / Math.max(1e-9, maxY - minY);
+  view.scale = Math.min(sx, sy);
+  view.x = r.width / 2 - ((minX + maxX) / 2) * view.scale;
+  view.y = r.height / 2 + ((minY + maxY) / 2) * view.scale;
+}
+
+const toScreen = (c) => [c[0] * view.scale + view.x, -c[1] * view.scale + view.y];
+
+function draw() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  ctx.clearRect(0, 0, r.width, r.height);
+  if (!projected) return;
+  const { coords } = projected;
+
+  // Neighbour links for the selection, so "nearest in the space" is visible on the plot even
+  // when the projection has thrown the pair apart.
+  if (selected >= 0) {
+    const neigh = nearestNeighbors(projected.G, selected, cfg.neighborK, cfg.metric);
+    ctx.strokeStyle = '#6fd3c766';
+    ctx.lineWidth = 1;
+    const [sx, sy] = toScreen(coords[selected]);
+    for (const nb of neigh) {
+      const [nx, ny] = toScreen(coords[nb.index]);
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(nx, ny); ctx.stroke();
+    }
+  }
+
+  for (let i = 0; i < coords.length; i++) {
+    const [x, y] = toScreen(coords[i]);
+    if (x < -20 || y < -20 || x > r.width + 20 || y > r.height + 20) continue;
+    const isSel = i === selected, isHov = i === hover;
+    ctx.beginPath();
+    ctx.arc(x, y, isSel ? 6 : (isHov ? 5 : 3), 0, Math.PI * 2);
+    ctx.fillStyle = colorFor(unitLabels[i]);
+    ctx.globalAlpha = unitLabels[i] ? 0.9 : 0.35;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    if (isSel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke(); }
+  }
+
+  $('axes').textContent = projected.axesMeaningful
+    ? `axis 1: ${(projected.explained[0] * 100).toFixed(1)}%  ·  axis 2: ${(projected.explained[1] * 100).toFixed(1)}% of variance`
+    : `stress ${projected.stress.toFixed(3)} — axes and gaps carry no meaning here`;
+
+  const groups = [...new Set(unitLabels.filter(Boolean))].sort();
+  $('legend').innerHTML = groups
+    .map((g) => `<span><i style="background:${colorFor(g)}"></i>${g}</span>`)
+    .join('') + `<span><i style="background:#3d4653"></i>unlabelled</span>`;
+}
+
+function pick(mx, my) {
+  if (!projected) return -1;
+  let best = -1, bestD = 12 * 12;
+  for (let i = 0; i < projected.coords.length; i++) {
+    const [x, y] = toScreen(projected.coords[i]);
+    const d = (x - mx) ** 2 + (y - my) ** 2;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (drag) {
+    view.x += e.movementX; view.y += e.movementY;
+    draw();
+    return;
+  }
+  const i = pick(mx, my);
+  if (i !== hover) { hover = i; draw(); }
+  const tip = $('tip');
+  if (i >= 0) {
+    const u = prepared.units[i];
+    tip.style.display = 'block';
+    tip.style.left = Math.min(mx + 12, r.width - 330) + 'px';
+    tip.style.top = (my + 12) + 'px';
+    tip.innerHTML = `<b>${u.name}</b><br><span style="color:#8494a8">${u.path} · ${unitLabels[i] || 'unlabelled'}</span>`;
+  } else {
+    tip.style.display = 'none';
+  }
+});
+let drag = false;
+canvas.addEventListener('mousedown', () => { drag = true; });
+window.addEventListener('mouseup', () => { drag = false; });
+canvas.addEventListener('click', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const i = pick(e.clientX - r.left, e.clientY - r.top);
+  if (i >= 0) { selected = i; renderSelected(); draw(); }
+});
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  view.x = mx - (mx - view.x) * f;
+  view.y = my - (my - view.y) * f;
+  view.scale *= f;
+  draw();
+}, { passive: false });
+window.addEventListener('resize', resize);
+
+// ---------------------------------------------------------------- rail
+function band(v, good, ok) { return v >= good ? 'good' : (v >= ok ? 'meh' : 'poor'); }
+
+function renderScores() {
+  const s = projected.scores;
+  const lift = projected.chance > 0 ? s.purity / projected.chance : 0;
+  $('scores').innerHTML = `<h3>Score</h3>
+    <div class="metric"><span>neighbour purity @${cfg.neighborK}</span><b class="${band(s.purity, 0.4, 0.2)}">${s.purity.toFixed(3)}</b></div>
+    <div class="metric"><span>same, by chance</span><b>${projected.chance.toFixed(3)}</b></div>
+    <div class="metric"><span>lift over chance</span><b class="${band(lift, 3, 1.5)}">${lift.toFixed(1)}×</b></div>
+    <div class="metric"><span>silhouette</span><b class="${band(s.silhouette, 0.15, 0.02)}">${s.silhouette.toFixed(3)}</b></div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:7px 0">
+    <div class="metric"><span>purity in the 2D plot</span><b class="${band(s.layoutPurity, 0.4, 0.2)}">${s.layoutPurity.toFixed(3)}</b></div>
+    <div class="metric"><span>lost to the projection</span><b class="${s.projectionLoss > 0.1 ? 'poor' : 'meh'}">−${s.projectionLoss.toFixed(3)}</b></div>
+    <div class="hint" style="margin-top:7px">
+      Purity is measured in the full vector space; the plot is the lossy picture of it.
+      Scoring on ${s.scored} of ${prepared.units.length} units — the rest are unlabelled or the only
+      member of their subsystem.
+    </div>`;
+}
+
+function renderNotes() {
+  const notes = prepared.notes;
+  $('notes').innerHTML = '<h3>Caveats</h3>' + (notes.length
+    ? notes.map((n) => `<div class="note">${n}</div>`).join('')
+    : '<div class="hint">Nothing was dropped or capped on this run.</div>')
+    + `<div class="hint" style="margin-top:6px">Label coverage is ${(projected.scores.coverage * 100).toFixed(0)}%.
+       Anything unlabelled is plotted but cannot be scored.</div>`;
+}
+
+function renderSelected() {
+  if (selected < 0) {
+    $('selected').innerHTML = '<h3>Selected unit</h3><div class="hint">Click a point to see its nearest neighbours.</div>';
+    return;
+  }
+  const u = prepared.units[selected];
+  const neigh = nearestNeighbors(projected.G, selected, Math.max(8, cfg.neighborK), cfg.metric);
+  $('selected').innerHTML = `<h3>Selected unit</h3>
+    <div style="font-size:12px;margin-bottom:2px"><b>${u.name}</b></div>
+    <div class="hint" style="margin-bottom:7px">${u.path}:${u.startLine} · ${unitLabels[selected] || 'unlabelled'}</div>
+    <ol class="nb">${neigh.map((nb) => {
+      const v = prepared.units[nb.index];
+      const same = unitLabels[nb.index] === unitLabels[selected] && unitLabels[selected];
+      return `<li data-i="${nb.index}"><span class="sim">${(cfg.metric === 'cosine' ? nb.score : -nb.score).toFixed(3)}</span>
+        <span style="color:${same ? 'var(--accent)' : 'inherit'}">${v.name}</span></li>`;
+    }).join('')}</ol>`;
+  for (const li of $('selected').querySelectorAll('li')) {
+    li.addEventListener('click', () => { selected = Number(li.dataset.i); renderSelected(); draw(); });
+  }
+}
+
+function renderFindings() {
+  const hits = findUnconnectedSimilar(projected.G, prepared.units, edges, { minSim: 0.45, limit: 14 });
+  $('findings').innerHTML = '<h3>Similar but never wired together</h3>' + (hits.length
+    ? hits.map((h) => `<div class="pair" data-a="${prepared.units.indexOf(h.a)}">
+        <span class="s">${h.sim.toFixed(3)}</span>${h.a.path} ~ ${h.b.path}</div>`).join('')
+    : '<div class="hint">No pair above 0.45 similarity lacks an import edge.</div>')
+    + '<div class="hint" style="margin-top:6px">High similarity with no dependency between them is where duplication tends to hide.</div>';
+  for (const el of $('findings').querySelectorAll('.pair')) {
+    el.addEventListener('click', () => { selected = Number(el.dataset.a); renderSelected(); draw(); });
+  }
+}
+
+async function runSweep() {
+  if (!prepared) return;
+  $('sweep').disabled = true;
+  status('sweeping stages 4–5…');
+  await yieldFrame();
+  const rows = sweepTail(prepared, { labels });
+  $('sweeptable').innerHTML = `<h3>Tail sweep</h3>
+    <table><tr><th>metric</th><th>centre</th><th>method</th><th>purity</th><th>plot</th></tr>
+    ${rows.map((r, i) => `<tr class="${i === 0 ? 'best' : ''}">
+      <td>${r.metric}</td><td>${r.center ? 'yes' : 'no'}</td><td>${r.method}</td>
+      <td>${r.purity.toFixed(3)}</td><td>${r.layoutPurity.toFixed(3)}</td></tr>`).join('')}</table>
+    <div class="hint" style="margin-top:6px">Only stages 4–5 were re-run; the embedding was reused, which is why this is cheap.</div>`;
+  status('sweep done');
+  $('sweep').disabled = false;
+}
+
+$('run').addEventListener('click', run);
+$('sweep').addEventListener('click', runSweep);
+resize();
+boot();
+</script>
+</body>
+</html>

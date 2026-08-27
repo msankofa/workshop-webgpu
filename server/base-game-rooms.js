@@ -1,6 +1,6 @@
 import {
   BASE_GAME_PROTOCOL_VERSION,
-  BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_WEAPON_ACTION, BASE_GAME_WEAPON_SLOTS, BASE_GAME_RELOAD_TICKS, sanitizeBaseGameLoadout, weaponForSlot,
+  BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_WEAPON_ACTION, BASE_GAME_WEAPON_SLOTS, BASE_GAME_RELOAD_TICKS, sanitizeBaseGameLoadout, weaponForSlot, stanceName, stanceIndex,
   BASE_GAME_LAG_COMP_MS, BASE_GAME_RESPAWN_TICKS, BASE_GAME_FIRE_ACTION_TICKS, wireAmmo,
   BASE_GAME_POSITION_HISTORY,
   DEFAULT_BASE_GAME_BODY_MODEL, bodyModelById, hitProfileForBodyModel, sanitizeBaseGameBodyModel,
@@ -36,7 +36,7 @@ import {
 } from '../player-hit-rig.js';
 import { createPlayerCombatFacade } from '../player-combat.js';
 import { createAmmoStore } from '../player-ammo.js';
-import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor } from '../base-game-fire.js';
+import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor, createSwapState, beginSwap, swapPhase } from '../base-game-fire.js';
 import { createProjectileManager } from '../bot-projectiles.js';
 import { blastDamageAt } from '../entity-types/explosion.js';
 import { isSurfaceDetonation } from '../entity-types/combat-projectile.js';
@@ -299,13 +299,18 @@ export function createBaseGameRoomService({
       pitch: client.lastInput.pitch,
       grounded: controller ? controller.grounded : false,
       slot: client.slot,
-      weapon: weaponForSlot(client.loadout, client.slot),
+      // What is IN HAND, which during a holster is still the weapon being put away: the slot moved
+      // on the key press, but the gun has not left the hands yet, and a remote that swapped the
+      // model now would play the holster on the wrong weapon.
+      weapon: heldWeapon(client),
+      loadout: { ...client.loadout },   // the stowed guns are the slots that are not in hand
       aiming: client.aiming,
+      stance: stanceIndex(client.controller?.stance ?? 'stand'),
       action: client.action,
       actionTick: client.actionTick,
       health: room.combat.getSnapshot(client.id).hp,
       dead: !room.combat.getSnapshot(client.id).alive,
-      ammo: wireAmmo(weaponForSlot(client.loadout, client.slot) ? room.ammo.ensureAmmo(client.id, weaponForSlot(client.loadout, client.slot)) : null),
+      ammo: wireAmmo(heldWeapon(client) ? room.ammo.ensureAmmo(client.id, heldWeapon(client)) : null),
       bodyModel: client.bodyModel,
       hitProfile: client.hitProfile,
       poseEpoch: client.poseEpoch,
@@ -397,6 +402,7 @@ export function createBaseGameRoomService({
       deaths: 0,
       trigger: createTriggerState(),
       throwTrigger: createTriggerState(),
+      swap: createSwapState(),
       bodyModel: DEFAULT_BASE_GAME_BODY_MODEL,
       pendingBodyModel: null,
       hitProfile: hitProfileForBodyModel(DEFAULT_BASE_GAME_BODY_MODEL),
@@ -457,6 +463,7 @@ export function createBaseGameRoomService({
       poseHistory: new Map(),
       projectiles: null,   // bot-projectiles.js manager, built with the world in attachProjectiles
     };
+    room.ammo.setUnlimited(room.world.unlimitedAmmo === true);   // the creator's match rule, before anyone joins
     rooms.set(code, room);
     ensureWorld(room).catch(err => {
       // The world could not be built: tell everyone and drop the room so nobody stays on spawn forever.
@@ -509,6 +516,7 @@ export function createBaseGameRoomService({
     if (Object.keys(patch).length === 0) return true;
     Object.assign(room.world, patch);
     syncRoomWater(room);
+    room.ammo.setUnlimited(room.world.unlimitedAmmo === true);
     room.revision++;
     room.worldUpdatedAt = now();
     broadcast(room);
@@ -629,6 +637,7 @@ export function createBaseGameRoomService({
     client.room.ammo.resetPlayer(client.id);
     client.trigger = createTriggerState();
     client.throwTrigger = createTriggerState();
+    client.swap = createSwapState();
     client.respawnAtTick = 0;
     client.action = BASE_GAME_WEAPON_ACTION.idle;
     if (client.pendingBodyModel) {
@@ -688,15 +697,33 @@ export function createBaseGameRoomService({
     const next = client.queue.shift();
     client.lastConsumedTick = next.tick;
     client.lastInput = next;
-    client.controller.stepOnce({ tick: next.tick, moveX: next.moveX, moveZ: next.moveZ, yaw: next.yaw, sprint: next.sprint, crouch: next.crouch }, next.jump);
+    client.controller.stepOnce({ tick: next.tick, moveX: next.moveX, moveZ: next.moveZ, yaw: next.yaw, sprint: next.sprint, crouch: next.crouch, stance: stanceName(next.stance) }, next.jump);
     // Slot and aim are taken as sent. The trigger step (base-game-fire.js, on combat.js's
     // validateShot and player-ammo.js) decides whether a round leaves; hits resolve below.
-    if (next.slot !== client.slot) { client.slot = next.slot; client.action = BASE_GAME_WEAPON_ACTION.idle; client.trigger.held = true; }
+    // A swap puts one weapon away and brings the next up, and neither can shoot on the way. It is
+    // refused outright mid-reload: both hands are already busy.
+    if (next.slot !== client.slot) {
+      const from = weaponForSlot(client.loadout, client.slot);
+      const to = weaponForSlot(client.loadout, next.slot);
+      if (beginSwap(client.swap, { tick: next.tick, from, to, reloading: client.trigger.reloadUntilTick > next.tick, simHz })) {
+        client.slot = next.slot;
+        client.trigger.held = true;   // the slot change eats the press edge
+        client.action = BASE_GAME_WEAPON_ACTION.holster;
+        client.actionTick = next.tick;
+        client.actionUntilTick = client.swap.drawAtTick;
+      }
+    }
+    const phase = swapPhase(client.swap, next.tick);
+    if (phase === 'draw' && client.action !== BASE_GAME_WEAPON_ACTION.draw) {
+      client.action = BASE_GAME_WEAPON_ACTION.draw;
+      client.actionTick = next.tick;
+      client.actionUntilTick = client.swap.untilTick;
+    }
     client.aiming = next.aim;
     if (client.action !== BASE_GAME_WEAPON_ACTION.idle && next.tick >= client.actionUntilTick) client.action = BASE_GAME_WEAPON_ACTION.idle;
     const room = client.room;
     const weaponId = weaponForSlot(client.loadout, client.slot);
-    const shot = stepTrigger(client.trigger, room.ammo, { playerId: client.id, weaponId, tick: next.tick, fire: next.fire, reload: next.reload, aim: next.aim, alive: room.combat.getSnapshot(client.id).alive, simHz });
+    const shot = stepTrigger(client.trigger, room.ammo, { playerId: client.id, weaponId, tick: next.tick, fire: next.fire, reload: next.reload, aim: next.aim, alive: room.combat.getSnapshot(client.id).alive, blocked: phase !== 'idle', simHz });
     if (shot.reloadStarted) {
       client.action = BASE_GAME_WEAPON_ACTION.reload;
       client.actionTick = next.tick;
@@ -724,6 +751,12 @@ export function createBaseGameRoomService({
   }
 
   // Fixed-capacity articulated hit-pose history, keyed on room time for deterministic rewind.
+  // The weapon actually in the hands right now: the outgoing one until the holster finishes.
+  function heldWeapon(client) {
+    if (swapPhase(client.swap, client.lastConsumedTick) === 'holster' && client.swap.from) return client.swap.from;
+    return weaponForSlot(client.loadout, client.slot);
+  }
+
   function roomMs(room) { return room.tick * stepMs; }
   function rememberPose(client) {
     const room = client.room;

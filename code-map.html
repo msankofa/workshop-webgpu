@@ -143,6 +143,7 @@ const GROUPS = {
   multiplayer: { label: 'Multiplayer',       color: '#ec407a' },
   audio:       { label: 'Audio / SFX',       color: '#26a69a' },
   infra:       { label: 'Infra / UI',        color: '#9e9e9e' },
+  ordination:  { label: 'Code ordination',    color: '#7fd1b9' },
   server:      { label: 'Server (backend)',  color: '#5c6bc0' },
   legacy:      { label: 'Legacy app',        color: '#cfd3dc' },
   weaponcompress: { label: 'Weapon GLB compression', color: '#7e57c2' },
@@ -155,6 +156,38 @@ const GROUPS = {
 };
 
 const NODES = [
+  // --- code ordination ---
+  { id: 'ordination-steps.html', group: 'ordination', kind: 'entry', lines: 900,
+    desc: 'The step viewer: one tab per pipeline stage, each showing that stage&apos;s input and output side by side, so a stage can be checked before the next one is trusted. Step 1 draws the cut points on the source and counts lines inside no piece; step 2 strikes dropped text through in place with a tally by reason; step 3 shows one weight per word with the counts that produced it, plus an all-pieces 3D point field of the sparse matrix (Three.js WebGPU, imported lazily and torn down when the tab is left). Every control has a plain-English hover line, and holding Ctrl swaps it for one explaining each option value. Counterpart to code-ordination.html, which shows only the finished map.',
+    tests: ['test-ordination-steps.mjs'] },
+  { id: 'ordination-annotate.js', group: 'ordination', lines: 250,
+    desc: 'Span-level annotation behind the step viewer: covers a piece of source with typed spans saying which characters survived a stage and why the rest did not, which is what the strike-through view needs and representUnit cannot give. nonCodeRegions is a second implementation of ordination-extract.js maskNonCode, and the test asserts the two agree character for character rather than assuming they do. coverageGaps reports the lines no extracted piece covers, which is step 1 checking its own splitter.',
+    tests: ['test-ordination-steps.mjs'] },
+  { id: 'ordination-explain.js', group: 'ordination', lines: 150,
+    desc: 'Turns one sparse row back into a table a person can check: the word, how often it appears in this piece, how many pieces contain it at all, and the weight those two produced -- weights read straight off the real row, so the table cannot drift from what was actually built. Classifies every word that produced no number as too rare, too common or past the cap, and builds the capped point field for step 3 all-pieces view, reporting what the cap dropped instead of hiding it.',
+    tests: ['test-ordination-steps.mjs'] },
+  { id: 'code-ordination.html', group: 'ordination', kind: 'entry', lines: 560,
+    desc: 'Similarity map of this repo: embeds source text and projects it to 2D, as the counterpart to this dependency graph. The page IS the pipeline -- six stage cards left to right (extract, represent, embed, postprocess, ordinate, score), each owning its controls and reporting what it produced. Scores every configuration against the subsystem labels parsed out of this file, against a chance baseline and against random vectors, and reports vector-space purity separately from the much lower purity of the 2D picture. Saves its config to ordination-config.json through /api/save-ordination.',
+    tests: ['test-ordination.mjs'] },
+  { id: 'ordination-pipeline.js', group: 'ordination', lines: 150,
+    desc: 'Owns DEFAULT_CONFIG and splits the pipeline at its one expensive seam: prepare() runs stages 1-3 (corpus to vectors) and project() runs stages 4-6 (Gram to scored 2D layout). sweepTail() reuses one prepare across every metric/centring/method combination, which is the whole reason that sweep is affordable.',
+    tests: ['test-ordination.mjs'] },
+  { id: 'ordination-extract.js', group: 'ordination', lines: 160,
+    desc: 'Stage 1: corpus to units at file, function or chunk granularity. Owns maskNonCode, which blanks comments, strings, template literals and regex literals so the declaration regex scans structure without false hits, and bodyBraceFrom, which skips balanced parens so a destructured parameter is not mistaken for the function body. A regex over masked source, not a parser: a class is one unit.',
+    tests: ['test-ordination.mjs'] },
+  { id: 'ordination-represent.js', group: 'ordination', lines: 130,
+    desc: 'Stage 2: unit text to tokens under one of five capture targets -- raw, stripped, identifiers, shape (structural skeleton with identifiers collapsed to _, compared as trigrams) and summary (the hand-written desc prose in this file). The capture target is what decides WHAT similarity means; measured on this repo, summary scores roughly twice what source text does.',
+    tests: ['test-ordination.mjs'] },
+  { id: 'ordination-embed.js', group: 'ordination', lines: 145,
+    desc: 'Stage 3: tokens to index-sorted sparse vectors via tf-idf, BM25, binary, feature hashing or random. All local and free by design -- these are the baseline a hosted embedding model has to beat, and `random` is the control that proves the scoring can tell signal from noise at all.',
+    tests: ['test-ordination.mjs'] },
+  { id: 'ordination-vectors.js', group: 'ordination', lines: 200,
+    desc: 'Stages 4-5. Builds the centred Gram matrix straight from sparse dot products via <x-u,y-u> = <x,y> - <x,u> - <y,u> + <u,u>, so mean-centring never densifies a 4000-dimensional tf-idf matrix; every distance, neighbour list and projection then follows from d^2 = Gii + Gjj - 2Gij. eigenCoords reuses stats-math.js powerIteration/deflate on the n-by-n Gram rather than a d-by-d covariance. Offers pca, mds and stress (SMACOF), the last of which reports axesMeaningful false.',
+    tests: ['test-ordination.mjs'] },
+  { id: 'ordination-score.js', group: 'ordination', lines: 200,
+    desc: 'Stage 6, and the reason the map is evidence rather than decoration. Parses this file's NODES for subsystem labels and desc prose and its EDGES for import links, then scores a configuration by neighbour purity, silhouette and a chance baseline that accounts for label sizes. findUnconnectedSimilar crosses the two: pairs the embedding puts close that the dependency graph says never meet, which is where duplication hides.',
+    tests: ['test-ordination.mjs'] },
+
   // --- entry points ---
   { id: 'environment-viewer.html', group: 'entry', kind: 'entry', lines: 2854,
     desc: 'The active WebGPU game entry point. A single &lt;script type="module"&gt; that owns the render loop, camera and scene composition. Imports ~11 modules statically (always needed) and lazily await-imports another ~14 (forest, grass, water, sky, clouds, post-fx…) to spread startup cost — several with cache-busting `?v=` query strings from recent live-tuning fixes.',
@@ -699,6 +732,7 @@ const GROUP_DOCS = {
   shoothouse: 'shoot-house.md', bots: 'bots.md',
   weaponcompress: 'weapon-compression.md', flight: 'flight.md',
   roads: 'roads.md', stadium: 'stadium.md', moves: 'pokemon-moves.md',
+  ordination: 'ordination.md',
 };
 // representative node selected when a doc deep-links back here via #group
 const GROUP_REPRESENTATIVE = {
@@ -713,6 +747,7 @@ const GROUP_REPRESENTATIVE = {
   park: 'demos/pokemon-park.html',
 };
 const DOC_LIST = [
+  ['ordination.md', 'Code ordination', 'ordination'],
   ['entry-point.md', 'Entry point orchestration', 'entry'],
   ['terrain.md', 'Terrain', 'terrain'],
   ['biomes.md', 'Biomes', 'terrain'],
@@ -747,6 +782,25 @@ const DOC_LIST = [
 // re-implementation kept in sync with GPU/TSL code for Node testing —
 // not an actual import relationship), network (talks over the wire).
 const EDGES = [
+  // code ordination
+  ['ordination-steps.html', 'ordination-extract.js', 'static'],
+  ['ordination-steps.html', 'ordination-represent.js', 'static'],
+  ['ordination-steps.html', 'ordination-annotate.js', 'static'],
+  ['ordination-steps.html', 'ordination-embed.js', 'static'],
+  ['ordination-steps.html', 'ordination-explain.js', 'static'],
+  ['ordination-annotate.js', 'ordination-represent.js', 'static'],
+  ['code-ordination.html', 'ordination-pipeline.js', 'static'],
+  ['code-ordination.html', 'ordination-score.js', 'static'],
+  ['code-ordination.html', 'ordination-vectors.js', 'static'],
+  ['code-ordination.html', 'disk-store.js', 'static'],
+  ['ordination-pipeline.js', 'ordination-extract.js', 'static'],
+  ['ordination-pipeline.js', 'ordination-represent.js', 'static'],
+  ['ordination-pipeline.js', 'ordination-embed.js', 'static'],
+  ['ordination-pipeline.js', 'ordination-vectors.js', 'static'],
+  ['ordination-pipeline.js', 'ordination-score.js', 'static'],
+  ['ordination-represent.js', 'ordination-extract.js', 'static'],
+  ['ordination-vectors.js', 'stats-math.js', 'static'],
+  ['ordination-score.js', 'ordination-vectors.js', 'static'],
   // trees in the bot viewer
   ['bot-viewer-v3.html', 'bot-trees.js', 'static'],
   ['bot-viewer-v3.html', 'tree-families-store.js', 'static'],

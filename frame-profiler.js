@@ -91,6 +91,12 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
     }
   }
 
+  // Record a duration measured by the caller. For regions that cannot be wrapped in a closure
+  // because they declare bindings the rest of the frame uses.
+  function mark(name, ms) {
+    return record(latest, smooth, name, ms);
+  }
+
   function recordGpu(name, ms) {
     return record(gpuLatest, gpuSmooth, name, ms);
   }
@@ -131,6 +137,7 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
     beginFrame,
     time,
     timeAsync,
+    mark,
     recordGpu,
     markDropped,
     snapshot,

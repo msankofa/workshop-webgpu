@@ -1,16 +1,21 @@
 import base64
+import concurrent.futures
 import hashlib
 import http.server
+import io
 import json
 import os
 import re
 import sys
 import urllib.parse
+import zipfile
 
 from performance_capture_store import prepend_performance_capture
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+# path -> (mtime, size, text) for /api/code-corpus; keyed on mtime so an edited file is re-read.
+_CORPUS_CACHE = {}
 os.chdir(ROOT)
 port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 
@@ -295,6 +300,17 @@ def save_water_config(body_bytes):
     return 'water-config.json'
 
 
+def save_ordination(body_bytes):
+    # code-ordination.html's pipeline config plus the last sweep table. One file overwritten in
+    # place, same arrangement as water-config.json above -- the page reloads it on next open so a
+    # configuration that scored well is never trapped in browser storage.
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    target = os.path.join(ROOT, 'ordination-config.json')
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return 'ordination-config.json'
+
+
 def save_ground_look(body_bytes):
     # demos/flight-sim.html's "Save to ground-look.json". One file overwritten in place, same
     # arrangement as water-config.json above: the page reloads it on next open.
@@ -303,6 +319,35 @@ def save_ground_look(body_bytes):
     with open(target, 'wb') as f:
         f.write(body_bytes)
     return 'ground-look.json'
+
+
+HYBRID_TUNING_DIR = os.path.join(ROOT, 'sabosugi-visuals', 'hybrid-tuning')
+_SAFE_HYBRID_NAME = re.compile(r'^[a-z0-9-]{1,64}$')
+
+
+def save_hybrid_tuning(raw_name, body_bytes):
+    # One route for every sabosugi hybrid's GUI, rather than a bespoke route per page. The name is
+    # client input, so it is pattern-checked before it is ever used as a filename.
+    name = (raw_name or '').strip()
+    if not _SAFE_HYBRID_NAME.match(name):
+        raise ValueError('unsafe hybrid name: %r' % (raw_name,))
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    os.makedirs(HYBRID_TUNING_DIR, exist_ok=True)
+    target = os.path.join(HYBRID_TUNING_DIR, name + '.json')
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
+
+
+def save_glass_plankton(body_bytes):
+    # sabosugi-visuals/hybrids/glass-plankton.html autosaves its GUI here. Same one-file-overwritten
+    # arrangement as ground-look.json above: the page reads it back on next open, so a tuning session
+    # survives a cleared origin or a different port.
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    target = os.path.join(ROOT, 'glass-plankton.json')
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return 'glass-plankton.json'
 
 
 def save_shot_spread(body_bytes):
@@ -334,6 +379,81 @@ def save_bot_state_trace(raw_name, body_bytes):
     return os.path.relpath(target, ROOT).replace(os.sep, '/')
 
 
+SABOSUGI_DIR = os.path.join(ROOT, 'sabosugi-visuals')
+SABOSUGI_MANIFEST = os.path.join(SABOSUGI_DIR, 'pens-manifest.json')
+_SAFE_SABOSUGI_SLUG = re.compile(r'^[a-z0-9-]+$')
+_SABOSUGI_TYPES = {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+}
+
+# slug -> zip filename, rebuilt whenever build-manifest.py rewrites the manifest, so adding a pen does
+# not need a server restart.
+_sabosugi_index = {'mtime': None, 'slugs': {}}
+
+
+def sabosugi_slug_map():
+    try:
+        mtime = os.path.getmtime(SABOSUGI_MANIFEST)
+    except OSError:
+        return {}
+    if _sabosugi_index['mtime'] != mtime:
+        with open(SABOSUGI_MANIFEST, encoding='utf-8') as f:
+            manifest = json.load(f)
+        _sabosugi_index['slugs'] = {
+            pen['slug']: pen['file'] for pen in manifest.get('pens', [])
+            if pen.get('packaging') == 'zip'
+        }
+        _sabosugi_index['mtime'] = mtime
+    return _sabosugi_index['slugs']
+
+
+def read_sabosugi_asset(slug, relpath):
+    """One file out of a pen's dist/ directory, read from inside its zip rather than an unpacked copy.
+
+    The zips are kept exactly as downloaded -- 80 of them, each already holding a complete self-contained
+    dist/index.html -- so the gallery serves them in place instead of littering the folder with 80
+    extracted directories that would then drift from the archives.
+    """
+    if not _SAFE_SABOSUGI_SLUG.match(slug or ''):
+        raise ValueError('bad slug')
+    zip_name = sabosugi_slug_map().get(slug)
+    if not zip_name:
+        raise KeyError(slug)
+
+    # zip_name comes from our own generated manifest, but it still ends up in a filesystem path.
+    zip_path = os.path.abspath(os.path.join(SABOSUGI_DIR, os.path.basename(zip_name)))
+    if not zip_path.startswith(os.path.abspath(SABOSUGI_DIR) + os.sep):
+        raise ValueError('escapes the pen directory')
+
+    # A member name is matched against the archive's own listing, so nothing here can traverse out.
+    wanted = os.path.normpath(relpath or 'index.html').replace(os.sep, '/')
+    if wanted.startswith('..') or wanted.startswith('/'):
+        raise ValueError('bad member path')
+
+    with zipfile.ZipFile(zip_path) as z:
+        names = z.namelist()
+        entry = next((n for n in names if n.endswith('dist/index.html')), None)
+        if not entry:
+            raise KeyError('no dist/index.html in ' + zip_name)
+        base = entry.rsplit('/', 1)[0]
+        member = base + '/' + wanted
+        if member not in names:
+            raise KeyError(member)
+        body = z.read(member)
+
+    ext = os.path.splitext(wanted)[1].lower()
+    return body, _SABOSUGI_TYPES.get(ext, 'application/octet-stream')
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     # tree-viewer.html's "Export family JSON" POSTs to /api/save-family; plant-viewer.html's
     # equivalent POSTs to /api/save-plant-family. Both land straight in their own directory +
@@ -354,6 +474,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # there's nothing to sanitize; the client fetches each via /sfx/music/<name>.
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        # /sabosugi/<slug>/<file> -- sabosugi-visuals/gallery.html loads each pen in an iframe from
+        # here. Every pen keeps its own document, so its own Three version (nine are in use across the
+        # collection), its own lil-gui panel and its own render loop stay isolated, and swapping the
+        # iframe disposes the WebGL context that almost none of these pens tear down themselves.
+        if path.startswith('/sabosugi/'):
+            self._handle_sabosugi(path)
+            return
         if path == '/api/list-states':
             self._handle_list_states()
             return
@@ -378,7 +505,85 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/fs-scan':
             self._handle_fs_scan()
             return
+        if path == '/api/code-corpus':
+            self._handle_code_corpus()
+            return
         super().do_GET()
+
+    # GET /api/code-corpus -- code-ordination.html embeds source text, so it needs the bytes and
+    # not just the listing /api/fs-scan returns. One request instead of ~600, because the pipeline
+    # re-reads the whole corpus every time the unit or capture target changes. Query params:
+    # ext (comma-separated, default js,mjs), max_bytes per file, dirs (comma-separated prefixes).
+    _CORPUS_SKIP_DIRS = {'node_modules', '__pycache__', 'versions', 'models', 'sfx', 'sabosugi-visuals'}
+
+    def _handle_code_corpus(self):
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            exts = [e.strip().lstrip('.').lower() for e in (params.get('ext') or ['js,mjs'])[0].split(',') if e.strip()]
+            max_bytes = int((params.get('max_bytes') or ['400000'])[0])
+            dir_filter = [d.strip().strip('/') for d in (params.get('dirs') or [''])[0].split(',') if d.strip()]
+            files = []
+            skipped = []
+            wanted = []
+            for dirpath, dirnames, filenames in os.walk(ROOT):
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d not in self._CORPUS_SKIP_DIRS and not d.startswith('.')
+                ]
+                rel_dir = os.path.relpath(dirpath, ROOT).replace(os.sep, '/')
+                if dir_filter and rel_dir != '.':
+                    if not any(rel_dir == d or rel_dir.startswith(d + '/') for d in dir_filter):
+                        continue
+                elif dir_filter and rel_dir == '.':
+                    if '.' not in dir_filter and '' not in dir_filter:
+                        continue
+                for name in filenames:
+                    if name.startswith('.'):
+                        continue
+                    ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+                    if ext not in exts:
+                        continue
+                    full = os.path.join(dirpath, name)
+                    rel = os.path.relpath(full, ROOT).replace(os.sep, '/')
+                    try:
+                        st = os.stat(full)
+                        if st.st_size > max_bytes:
+                            skipped.append({'path': rel, 'size': st.st_size, 'reason': 'over max_bytes'})
+                            continue
+                        wanted.append((full, rel, st.st_mtime, st.st_size))
+                    except OSError as exc:
+                        skipped.append({'path': rel, 'size': 0, 'reason': str(exc)})
+
+            # This repo lives on a Google Drive virtual filesystem where each open costs ~24ms, so
+            # a serial read of the whole corpus takes ~27s. Reads are I/O bound and release the GIL,
+            # so a thread pool collapses that, and the mtime cache makes every later load instant.
+            def read_one(item):
+                full, rel, mtime, size = item
+                hit = _CORPUS_CACHE.get(full)
+                if hit and hit[0] == mtime and hit[1] == size:
+                    return rel, hit[2], size, None
+                try:
+                    with io.open(full, 'r', encoding='utf-8', errors='replace') as fh:
+                        text = fh.read()
+                    _CORPUS_CACHE[full] = (mtime, size, text)
+                    return rel, text, size, None
+                except OSError as exc:
+                    return rel, None, size, str(exc)
+
+            cached_before = sum(1 for w in wanted if w[0] in _CORPUS_CACHE)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+                for rel, text, size, err in pool.map(read_one, wanted):
+                    if err:
+                        skipped.append({'path': rel, 'size': size, 'reason': err})
+                    else:
+                        files.append({'path': rel, 'text': text, 'size': size})
+            files.sort(key=lambda f: f['path'])
+            self._send_json({
+                'ok': True, 'files': files, 'skipped': skipped,
+                'count': len(files), 'cached': cached_before,
+            })
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
 
     # GET /api/fs-scan -- tools/filesystem-map.html's 3D node map walks the whole repo through
     # this instead of a committed manifest, so it never goes stale. Returns every file and
@@ -419,6 +624,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'ok': True, 'root': os.path.basename(base), 'entries': entries})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=500)
+
+    def _handle_sabosugi(self, path):
+        parts = [p for p in path.split('/') if p]      # ['sabosugi', slug, *rest]
+        if len(parts) < 2:
+            self.send_error(404)
+            return
+        slug = parts[1]
+        relpath = '/'.join(parts[2:]) or 'index.html'
+        try:
+            body, content_type = read_sabosugi_asset(slug, relpath)
+        except KeyError:
+            self.send_error(404)
+            return
+        except (ValueError, zipfile.BadZipFile, OSError):
+            self.send_error(400)
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        self.wfile.write(body)
 
     # GET /api/list-maps -- terrain-generator-v5.html's "real exported map" picker enumerates
     # every maps/**/<name>-data.json so it can see its own tool's newest exports.
@@ -570,8 +797,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if self.path.startswith('/api/save-shot-spread'):
             return self._handle_save_shot_spread()
+        if self.path.startswith('/api/save-ordination'):
+            self._handle_save_ordination()
+            return
         if self.path.startswith('/api/save-ground-look'):
             self._handle_save_ground_look()
+            return
+        if self.path.startswith('/api/save-glass-plankton'):
+            self._handle_save_glass_plankton()
+            return
+        if self.path.startswith('/api/save-hybrid'):
+            self._handle_save_hybrid()
             return
         dir_path = self.ROUTES.get(self.path)
         if dir_path is None:
@@ -810,6 +1046,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # POST /api/save-ground-look -- demos/flight-sim.html's ground-look sliders. Terrain shading is
     # tuned by eye over many passes, so it belongs in a diffable file rather than in web storage,
     # which dies with a cleared origin or a different port.
+    def _handle_save_ordination(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 4_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            rel_path = save_ordination(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
     def _handle_save_ground_look(self):
         length = int(self.headers.get('content-length', '0') or 0)
         if length <= 0 or length > 1_000_000:
@@ -817,6 +1064,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             rel_path = save_ground_look(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-hybrid?name=<slug> -- any sabosugi hybrid's GUI, written to
+    # sabosugi-visuals/hybrid-tuning/<slug>.json. Shared by every hybrid page so a new one needs a name,
+    # not a new route.
+    def _handle_save_hybrid(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 1_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_name = (params.get('name') or [''])[0]
+            rel_path = save_hybrid_tuning(raw_name, self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-glass-plankton -- the Glass Plankton hybrid's GUI. Overwrites glass-plankton.json
+    # at the repo root, which the page loads on open so a look survives the browser.
+    def _handle_save_glass_plankton(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 1_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            rel_path = save_glass_plankton(self.rfile.read(length))
             self._send_json({'ok': True, 'path': rel_path})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)

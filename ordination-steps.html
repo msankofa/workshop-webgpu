@@ -1,0 +1,1574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pipeline Steps</title>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+<style>
+  /* Layout rule for this page: every region is a grid or flex child with min-width:0 and
+     min-height:0, and every scrolling area is its own box. Nothing is absolutely positioned
+     over content, so panels can never land on top of each other. */
+  :root {
+    --bg:#0d1016; --panel:#151a23; --panel2:#1b212c; --line:#2a3340;
+    --ink:#d8e0ea; --dim:#8494a8; --faint:#5b6875;
+    --accent:#6fd3c7; --warn:#e8b26a; --bad:#e0736a; --keep:#cfe6ff;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg); color:var(--ink);
+    font:13px/1.55 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  code, pre, .mono { font-family:ui-monospace, "Cascadia Mono", Consolas, monospace; }
+
+  header {
+    display:flex; align-items:center; gap:16px; padding:9px 14px;
+    background:var(--panel); border-bottom:1px solid var(--line); flex:none;
+  }
+  h1 { font-size:14px; margin:0; font-weight:600; }
+  .grow { flex:1; }
+  #status { color:var(--dim); font-size:11.5px; }
+
+  .tabs { display:flex; gap:4px; }
+  .tab {
+    background:var(--panel2); border:1px solid var(--line); color:var(--dim);
+    border-radius:5px; padding:5px 12px; cursor:pointer; font:inherit; font-size:12px;
+  }
+  .tab.on { background:#1d4b47; border-color:var(--accent); color:#cdf3ee; }
+  .tab:disabled { opacity:.4; cursor:default; }
+
+  .step { flex:1; display:none; flex-direction:column; min-height:0; }
+  .step.on { display:flex; }
+
+  details.filter {
+    flex:none; background:#11151d; border-bottom:1px solid var(--line);
+  }
+  details.filter > summary {
+    cursor:pointer; padding:7px 14px; color:var(--dim); font-size:11px;
+    text-transform:uppercase; letter-spacing:.09em; user-select:none;
+  }
+  details.filter > summary::marker { color:var(--faint); }
+  .filterbody { padding:2px 14px 11px; display:flex; flex-wrap:wrap; gap:8px 26px; align-items:flex-start; }
+  .fgroup { min-width:0; }
+  .fgroup > .flabel { color:var(--faint); font-size:10.5px; margin-bottom:3px; }
+  .checks { display:flex; flex-wrap:wrap; gap:3px 12px; max-width:640px; }
+  .checks label { display:flex; align-items:center; gap:4px; font-size:11.5px; color:var(--dim); white-space:nowrap; }
+  .counted { color:var(--accent); font-size:11.5px; align-self:flex-end; }
+
+  .settings {
+    flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:8px 20px;
+    padding:8px 14px; border-bottom:1px solid var(--line); background:var(--panel);
+  }
+  .field { display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--dim); }
+  select, input[type=number], input[type=text] {
+    background:var(--panel2); color:var(--ink); border:1px solid var(--line);
+    border-radius:4px; padding:3px 6px; font:inherit; font-size:11.5px;
+  }
+  input[type=number] { width:72px; }
+  input[type=checkbox] { accent-color:var(--accent); margin:0; }
+  button.mini {
+    background:var(--panel2); color:var(--ink); border:1px solid var(--line);
+    border-radius:4px; padding:3px 9px; cursor:pointer; font:inherit; font-size:11.5px;
+  }
+  button.mini:hover:not(:disabled) { border-color:var(--accent); }
+  button.mini:disabled { opacity:.4; cursor:default; }
+
+  /* three panels: list, in, out */
+  .panels {
+    flex:1; min-height:0; display:grid; gap:1px; background:var(--line);
+    grid-template-columns:minmax(190px, 250px) minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .panel { background:var(--bg); display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .phead {
+    flex:none; padding:6px 10px; background:var(--panel); border-bottom:1px solid var(--line);
+    font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim);
+    display:flex; align-items:center; gap:8px;
+  }
+  .phead .name { color:var(--ink); text-transform:none; letter-spacing:0; font-size:12px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .pbody { flex:1; overflow:auto; min-height:0; }
+  .pfoot {
+    flex:none; padding:6px 10px; border-top:1px solid var(--line); background:var(--panel);
+    font-size:11px; color:var(--dim); display:flex; align-items:center; gap:8px;
+  }
+
+  .searchbox { flex:none; padding:7px; border-bottom:1px solid var(--line); }
+  .searchbox input { width:100%; }
+
+  .row {
+    display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:baseline;
+    padding:3px 10px; cursor:pointer; font-size:11.5px; border-left:2px solid transparent;
+  }
+  .row:hover { background:var(--panel2); }
+  .row.sel { background:#1d4b47; border-left-color:var(--accent); color:#cdf3ee; }
+  .row .n { color:var(--faint); font-variant-numeric:tabular-nums; font-size:10.5px; }
+  .row .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  pre.src { margin:0; padding:8px 0; font-size:11.5px; line-height:1.5; }
+  .ln { display:flex; }
+  .ln > .num {
+    flex:none; width:52px; text-align:right; padding-right:10px; color:#3f4855;
+    user-select:none; font-variant-numeric:tabular-nums;
+  }
+  .ln > .txt { white-space:pre-wrap; word-break:break-word; min-width:0; flex:1; padding-right:10px; }
+  .ln.inpiece { background:#16302e; }
+  .ln.inpiece > .num { color:var(--accent); }
+  .ln.gap > .num { color:var(--warn); }
+  .ln.gap { background:#241d14; }
+  .ln.head > .txt { color:var(--accent); }
+
+  .spanview { margin:0; padding:10px; font-size:11.5px; line-height:1.65; white-space:pre-wrap; word-break:break-word; }
+  .kept { color:var(--keep); }
+  .drop { color:#4d5765; text-decoration:line-through; text-decoration-thickness:1px; }
+
+  .words { padding:9px 10px; display:flex; flex-wrap:wrap; gap:4px 6px; align-content:flex-start; }
+  .word {
+    background:var(--panel2); border:1px solid var(--line); border-radius:3px;
+    padding:1px 6px; font-size:11px; color:var(--keep);
+  }
+  .tallybox { padding:8px 10px; border-top:1px solid var(--line); }
+  .tallybox h4 { margin:0 0 5px; font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.08em; color:var(--dim); font-weight:600; }
+  .trow { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px;
+    font-size:11.5px; color:var(--dim); padding:1px 0; }
+  .trow b { color:var(--ink); font-variant-numeric:tabular-nums; font-weight:500; }
+  .empty { padding:14px 12px; color:var(--faint); font-size:11.5px; }
+
+  /* Hover help. Plain hover gives the short line, Ctrl gives the long one. */
+  [data-help] { cursor:help; }
+  label[data-help], .field[data-help] { cursor:help; }
+  #help {
+    position:fixed; z-index:50; max-width:430px; pointer-events:none; display:none;
+    background:#0a0d12; border:1px solid var(--line); border-radius:5px;
+    padding:7px 10px; font-size:11.5px; line-height:1.55;
+    box-shadow:0 6px 20px #0009;
+  }
+  #help .h { color:var(--ink); }
+  #help .more { color:var(--faint); font-size:10.5px; margin-top:5px; }
+  #help dl { margin:6px 0 0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:2px 10px; }
+  #help dt { color:var(--accent); font-family:ui-monospace, Consolas, monospace; font-size:11px; }
+  #help dd { margin:0; color:var(--dim); }
+  #help .lead { color:var(--dim); margin-top:4px; }
+  .warnbox { padding:8px 10px; color:var(--warn); font-size:11.5px; border-top:1px solid var(--line); }
+
+  /* step 3: the weight table */
+  table.weights { width:100%; border-collapse:collapse; font-size:11px; }
+  table.weights th {
+    position:sticky; top:0; background:var(--panel); text-align:left; font-weight:500;
+    color:var(--dim); padding:5px 8px; border-bottom:1px solid var(--line); z-index:1;
+  }
+  table.weights td { padding:2px 8px; border-bottom:1px solid #1d232d; vertical-align:middle; }
+  table.weights td.num { text-align:right; font-variant-numeric:tabular-nums; color:var(--dim); }
+  table.weights td.w { color:var(--ink); font-variant-numeric:tabular-nums; }
+  table.weights td.word { color:var(--keep); font-family:ui-monospace, Consolas, monospace; }
+  table.weights tr:hover td { background:var(--panel2); }
+  table.weights tr.sel td { background:#1d4b47; color:#cdf3ee; }
+  .bar { display:block; height:7px; background:var(--accent); border-radius:1px; min-width:1px; }
+  .barcell { width:78px; }
+  .wordchips { padding:9px 10px; display:flex; flex-wrap:wrap; gap:4px 6px; align-content:flex-start; }
+  .wordchips .out { color:#454e5c; border-style:dashed; }
+
+  /* step 3: the whole vocabulary */
+  .vocabsearch {
+    position:sticky; top:0; z-index:2; background:var(--bg);
+    padding:7px; border-bottom:1px solid var(--line);
+  }
+  .vocabsearch input { width:100%; }
+  table.vocab { width:100%; border-collapse:collapse; font-size:11px; }
+  table.vocab th {
+    position:sticky; top:41px; background:var(--panel); text-align:left; font-weight:500;
+    color:var(--dim); padding:5px 8px; border-bottom:1px solid var(--line); z-index:1;
+  }
+  table.vocab td { padding:2px 8px; border-bottom:1px solid #1d232d; cursor:pointer; }
+  table.vocab tr:hover td { background:var(--panel2); }
+  table.vocab tr.sel td { background:#1d4b47; color:#cdf3ee; }
+  table.vocab td.word { color:var(--keep); font-family:ui-monospace, Consolas, monospace; }
+  table.vocab td.num { text-align:right; font-variant-numeric:tabular-nums; color:var(--dim); }
+  table.vocab td.rank { color:var(--faint); font-variant-numeric:tabular-nums; text-align:right; }
+  .vocabnote { padding:8px 10px; color:var(--faint); font-size:11px; border-top:1px solid var(--line); }
+
+  /* step 3: the matrix scene */
+  .scene { position:relative; width:100%; height:100%; min-height:0; }
+  .scene canvas { display:block; width:100%; height:100%; }
+  .sceneinfo {
+    position:absolute; left:8px; top:8px; font-size:11px; color:var(--dim);
+    background:#0a0d12cc; border:1px solid var(--line); border-radius:4px; padding:5px 8px;
+    pointer-events:none; max-width:calc(100% - 16px);
+  }
+  .axislabel {
+    position:absolute; color:var(--faint); font-size:10px; pointer-events:none;
+    white-space:nowrap; transform:translate(-50%, -50%); text-shadow:0 0 4px #0d1016, 0 0 4px #0d1016;
+    font-variant-numeric:tabular-nums;
+  }
+  .axislabel.title { color:var(--dim); font-size:11px; letter-spacing:.04em; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pipeline Steps</h1>
+  <div class="tabs">
+    <button class="tab on" id="tab1" data-help="tab.1">1 &middot; Cut the code up</button>
+    <button class="tab" id="tab2" data-help="tab.2">2 &middot; Pick what to compare</button>
+    <button class="tab" id="tab3" data-help="tab.3">3 &middot; Turn words into numbers</button>
+  </div>
+  <span class="grow"></span>
+  <span id="hint" style="color:var(--faint);font-size:11px">hover a label for help &middot; hold Ctrl for the long version</span>
+  <span id="status">loading&hellip;</span>
+</header>
+<div id="help"></div>
+
+<!-- ============================ STEP 1 ============================ -->
+<section class="step on" id="step1">
+  <details class="filter" open>
+    <summary>Upstream filter &mdash; which files get in</summary>
+    <div class="filterbody">
+      <div class="fgroup">
+        <div class="flabel" data-help="f.types">types</div>
+        <div class="checks" id="f1types"></div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel" data-help="f.folders">folders</div>
+        <div class="checks" id="f1folders"></div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel" data-help="f.skipnames">skip names</div>
+        <div class="checks" id="f1skip"></div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel" data-help="f.maxsize">max file size</div>
+        <div class="field" data-help="f.maxsize"><input type="number" id="f1size" value="400" min="1" max="4000" step="10"> kB</div>
+      </div>
+      <div class="counted" id="f1count">&nbsp;</div>
+    </div>
+  </details>
+
+  <div class="settings">
+    <div class="field" data-help="s.unit"><span>cut it into</span>
+      <select id="s1unit" data-help="s.unit"><option value="function">function</option><option value="chunk">chunk</option><option value="file">file</option></select>
+    </div>
+    <div class="field" data-help="s.chunklines"><span>lines per chunk</span><input type="number" id="s1chunk" value="60" min="10" max="500" step="10"></div>
+    <div class="field" data-help="s.minchars"><span>skip pieces under</span><input type="number" id="s1min" value="120" min="0" max="5000" step="20"> chars</div>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <div class="phead"><span id="p1title" data-help="p.files">Files</span></div>
+      <div class="searchbox" data-help="p.search"><input type="text" id="p1search" placeholder="search files"></div>
+      <div class="pbody" id="p1list"></div>
+      <div class="pfoot" id="p1foot">&nbsp;</div>
+    </div>
+    <div class="panel">
+      <div class="phead"><span data-help="p.in1">In</span><span class="name" id="p2title">no file selected</span></div>
+      <div class="pbody" id="p2body"><div class="empty">Pick a file on the left.</div></div>
+      <div class="pfoot" id="p2foot">&nbsp;</div>
+    </div>
+    <div class="panel">
+      <div class="phead"><span data-help="p.out1">Out</span><span class="name" id="p3title">&nbsp;</span></div>
+      <div class="pbody" id="p3body"><div class="empty">The pieces cut out of that file appear here.</div></div>
+      <div class="pfoot" id="p3foot">&nbsp;</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ STEP 2 ============================ -->
+<section class="step" id="step2">
+  <details class="filter" open>
+    <summary>Upstream filter &mdash; which pieces carry over from step 1</summary>
+    <div class="filterbody">
+      <div class="fgroup">
+        <div class="flabel" data-help="g.keep">keep</div>
+        <div class="checks" id="f2kinds"></div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel" data-help="g.skip">skip</div>
+        <div class="checks" id="f2skip"></div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel" data-help="g.smallest">smallest piece</div>
+        <div class="field" data-help="g.smallest"><input type="number" id="f2min" value="120" min="0" max="5000" step="20"> chars</div>
+      </div>
+      <div class="counted" id="f2count">&nbsp;</div>
+    </div>
+  </details>
+
+  <div class="settings">
+    <div class="field" data-help="t.target"><span>compare the</span>
+      <select id="s2target" data-help="t.target">
+        <option value="stripped">stripped</option>
+        <option value="raw">raw</option>
+        <option value="identifiers">identifiers</option>
+        <option value="shape">shape</option>
+        <option value="summary">summary</option>
+      </select>
+    </div>
+    <label class="field" data-help="t.imports"><input type="checkbox" id="s2imports" checked> skip import lines</label>
+    <label class="field" data-help="t.case"><input type="checkbox" id="s2case" checked> split camelCase names</label>
+    <label class="field" data-help="t.stop"><input type="checkbox" id="s2stop" checked> skip keywords</label>
+    <div class="field" data-help="t.cap"><span>stop after</span><input type="number" id="s2cap" value="4000" min="10" max="40000" step="100"> words</div>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <div class="phead"><span id="q1title" data-help="p.pieces">Pieces</span></div>
+      <div class="searchbox" data-help="p.search"><input type="text" id="q1search" placeholder="search pieces"></div>
+      <div class="pbody" id="q1list"></div>
+      <div class="pfoot" id="q1foot">&nbsp;</div>
+    </div>
+    <div class="panel">
+      <div class="phead"><span data-help="p.in2">In</span><span class="name" id="q2title">no piece selected</span></div>
+      <div class="pbody" id="q2body"><div class="empty">Pick a piece on the left.</div></div>
+      <div class="pfoot" id="q2foot">struck out = thrown away &middot; solid = kept</div>
+    </div>
+    <div class="panel">
+      <div class="phead"><span data-help="p.out2">Out</span><span class="name" id="q3title">&nbsp;</span></div>
+      <div class="pbody" id="q3body"><div class="empty">The words that come out appear here.</div></div>
+      <div class="pfoot" id="q3foot">&nbsp;</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ STEP 3 ============================ -->
+<section class="step" id="step3">
+  <details class="filter" open>
+    <summary>Upstream filter &mdash; which words are allowed to become numbers</summary>
+    <div class="filterbody">
+      <div class="fgroup">
+        <div class="flabel" data-help="v.rare">drop words used in fewer than</div>
+        <div class="field" data-help="v.rare"><input type="number" id="f3rare" value="2" min="1" max="50" step="1"> pieces</div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel" data-help="v.common">drop words used in more than</div>
+        <div class="field" data-help="v.common"><input type="number" id="f3common" value="60" min="5" max="100" step="5"> % of pieces</div>
+      </div>
+      <div class="fgroup">
+        <div class="flabel" data-help="v.cap">keep at most</div>
+        <div class="field" data-help="v.cap"><input type="number" id="f3cap" value="4000" min="50" max="40000" step="50"> words</div>
+      </div>
+      <div class="counted" id="f3count">&nbsp;</div>
+    </div>
+  </details>
+
+  <div class="settings">
+    <div class="field" data-help="w.embedder"><span>weigh words by</span>
+      <select id="s3embedder" data-help="w.embedder">
+        <option value="tfidf">tfidf</option>
+        <option value="bm25">bm25</option>
+        <option value="binary">binary</option>
+        <option value="hashing">hashing</option>
+        <option value="random">random</option>
+      </select>
+    </div>
+    <div class="field" data-help="w.inview"><span>In shows</span>
+      <label class="field"><input type="radio" name="s3in" id="s3inpiece" checked> this piece</label>
+      <label class="field"><input type="radio" name="s3in" id="s3invocab"> all words</label>
+    </div>
+    <div class="field" data-help="w.outview"><span>Out shows</span>
+      <label class="field"><input type="radio" name="s3out" id="s3outtable" checked> table</label>
+      <label class="field"><input type="radio" name="s3out" id="s3outgraph"> graph</label>
+    </div>
+    <button class="mini" id="s3rebuild">rebuild numbers</button>
+    <span id="s3note" style="color:var(--faint);font-size:11px"></span>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <div class="phead"><span id="r1title" data-help="p.pieces">Pieces</span></div>
+      <div class="searchbox" data-help="p.search"><input type="text" id="r1search" placeholder="search pieces"></div>
+      <div class="pbody" id="r1list"></div>
+      <div class="pfoot" id="r1foot">&nbsp;</div>
+    </div>
+    <div class="panel">
+      <div class="phead"><span data-help="p.in3">In</span><span class="name" id="r2title">no piece selected</span></div>
+      <div class="pbody" id="r2body"><div class="empty">Pick a piece on the left.</div></div>
+      <div class="pfoot" id="r2foot">&nbsp;</div>
+    </div>
+    <div class="panel">
+      <div class="phead"><span data-help="p.out3">Out</span><span class="name" id="r3title">&nbsp;</span></div>
+      <div class="pbody" id="r3body"><div class="empty">The numbers this piece turns into appear here.</div></div>
+      <div class="pfoot" id="r3foot">&nbsp;</div>
+    </div>
+  </div>
+</section>
+
+<script type="module">
+import { extractUnits } from './ordination-extract.js';
+import { annotateUnit, tallyRows, coverageGaps } from './ordination-annotate.js';
+import { representUnit } from './ordination-represent.js';
+import { embedDocs } from './ordination-embed.js';
+import { explainRow, reverseVocab, vocabSummary, matrixPoints } from './ordination-explain.js';
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const status = (m) => { $('status').textContent = m; };
+
+let corpus = [];              // every file the server returned
+let folders = [];             // top-level folders present in the corpus
+let filtered = [];            // files passing step 1's upstream filter
+let selectedFile = null;
+let filePieces = [];          // pieces cut out of the selected file
+let fileCoverage = null;
+let gapCursor = -1;
+
+let allPieces = null;         // step 2's input: pieces from every filtered file (built on demand)
+let step2Pieces = [];         // after step 2's own upstream filter
+let selectedPiece = null;
+
+const SKIP_PATTERNS = [
+  { key: 'test', label: 'test-*', test: (p) => /(^|\/)test-/.test(p) },
+  { key: 'probe', label: 'probe_*', test: (p) => /(^|\/)probe_/.test(p) },
+  { key: 'bake', label: 'bake-*', test: (p) => /(^|\/)bake-/.test(p) },
+  { key: 'check', label: '_check_*', test: (p) => /(^|\/)_check_/.test(p) },
+];
+
+// ------------------------------------------------------------------ load
+async function boot() {
+  try {
+    const res = await fetch('/api/code-corpus?ext=js,mjs', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    corpus = data.files;
+    const set = new Set();
+    for (const f of corpus) set.add(f.path.includes('/') ? f.path.split('/')[0] : '(root)');
+    folders = [...set].sort();
+    buildFilters();
+    status(`${corpus.length} files loaded`);
+    applyFilter1();
+  } catch (err) {
+    status('could not load: ' + err.message + ' — is serve.py running?');
+  }
+}
+
+function checkbox(host, id, label, checked, onChange, helpKey) {
+  const el = document.createElement('label');
+  el.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''}> <span>${label}</span>`;
+  if (helpKey) el.dataset.help = helpKey;
+  el.querySelector('input').addEventListener('change', (e) => onChange(e.target.checked));
+  host.appendChild(el);
+  return el;
+}
+
+const filter1 = {
+  types: new Set(['js', 'mjs']),
+  folders: new Set(['(root)']),
+  skip: new Set(['test', 'check']),
+  maxKB: 400,
+};
+
+function buildFilters() {
+  const types = $('f1types');
+  for (const t of ['js', 'mjs']) {
+    checkbox(types, 't-' + t, '.' + t, filter1.types.has(t), (on) => {
+      on ? filter1.types.add(t) : filter1.types.delete(t);
+      applyFilter1();
+    }, 'f.types');
+  }
+  const fold = $('f1folders');
+  for (const f of folders) {
+    checkbox(fold, 'd-' + f, f, filter1.folders.has(f), (on) => {
+      on ? filter1.folders.add(f) : filter1.folders.delete(f);
+      applyFilter1();
+    }, 'f.folders');
+  }
+  const skip = $('f1skip');
+  for (const s of SKIP_PATTERNS) {
+    checkbox(skip, 's-' + s.key, s.label, filter1.skip.has(s.key), (on) => {
+      on ? filter1.skip.add(s.key) : filter1.skip.delete(s.key);
+      applyFilter1();
+    }, 'f.skipnames');
+  }
+  $('f1size').addEventListener('change', (e) => { filter1.maxKB = Number(e.target.value); applyFilter1(); });
+
+  for (const id of ['s1unit', 's1chunk', 's1min']) {
+    $(id).addEventListener('change', () => { invalidatePieces(); renderFileList(); if (selectedFile) openFile(selectedFile); });
+  }
+  $('p1search').addEventListener('input', renderFileList);
+
+  // step 2
+  const kinds = $('f2kinds');
+  for (const k of ['function', 'class', 'chunk', 'file']) {
+    checkbox(kinds, 'k-' + k, k, filter2.kinds.has(k), (on) => {
+      on ? filter2.kinds.add(k) : filter2.kinds.delete(k);
+      applyFilter2();
+    }, 'g.keep');
+  }
+  const s2skip = $('f2skip');
+  checkbox(s2skip, 'u-under', 'pieces with no comments', filter2.noComments, (on) => { filter2.noComments = on; applyFilter2(); }, 'g.skip');
+  checkbox(s2skip, 'u-lead', 'names starting with _', filter2.leadingUnderscore, (on) => { filter2.leadingUnderscore = on; applyFilter2(); }, 'g.skip');
+  $('f2min').addEventListener('change', (e) => { filter2.minChars = Number(e.target.value); applyFilter2(); });
+  for (const id of ['s2target', 's2imports', 's2case', 's2stop', 's2cap']) {
+    $(id).addEventListener('change', () => {
+      renderPieceList();
+      if (selectedPiece) openPiece(selectedPiece);
+      invalidateEmbedding();   // the numbers in step 3 came from these words
+    });
+  }
+  $('q1search').addEventListener('input', renderPieceList);
+}
+
+// ------------------------------------------------------------------ step 1
+function cutOptions() {
+  return {
+    unit: $('s1unit').value,
+    chunkLines: Number($('s1chunk').value),
+    minChars: Number($('s1min').value),
+  };
+}
+
+function invalidatePieces() { allPieces = null; invalidateEmbedding(); }
+
+function applyFilter1() {
+  const maxBytes = filter1.maxKB * 1024;
+  filtered = corpus.filter((f) => {
+    const ext = f.path.split('.').pop().toLowerCase();
+    if (!filter1.types.has(ext)) return false;
+    const top = f.path.includes('/') ? f.path.split('/')[0] : '(root)';
+    if (!filter1.folders.has(top)) return false;
+    for (const s of SKIP_PATTERNS) if (filter1.skip.has(s.key) && s.test(f.path)) return false;
+    if (f.size > maxBytes) return false;
+    return true;
+  });
+  $('f1count').textContent = `${corpus.length} files found → ${filtered.length} pass`;
+  invalidatePieces();
+  renderFileList();
+  if (selectedFile && !filtered.some((f) => f.path === selectedFile.path)) clearFile();
+}
+
+let fileCounts = new Map();   // path -> piece count, filled lazily as rows render
+
+function renderFileList() {
+  const q = $('p1search').value.trim().toLowerCase();
+  const rows = filtered.filter((f) => !q || f.path.toLowerCase().includes(q));
+  $('p1title').textContent = `Files (${rows.length})`;
+  const host = $('p1list');
+  host.innerHTML = '';
+  if (!rows.length) { host.innerHTML = '<div class="empty">No file matches.</div>'; return; }
+  const opts = cutOptions();
+  const frag = document.createDocumentFragment();
+  for (const f of rows.slice(0, 600)) {
+    let count = fileCounts.get(f.path + '|' + JSON.stringify(opts));
+    if (count === undefined) {
+      count = extractUnits([f], opts).length;
+      fileCounts.set(f.path + '|' + JSON.stringify(opts), count);
+    }
+    const el = document.createElement('div');
+    el.className = 'row' + (selectedFile && selectedFile.path === f.path ? ' sel' : '');
+    el.innerHTML = `<span class="t">${esc(f.path)}</span><span class="n">${count}</span>`;
+    el.addEventListener('click', () => openFile(f));
+    frag.appendChild(el);
+  }
+  host.appendChild(frag);
+  const shown = Math.min(rows.length, 600);
+  $('p1foot').textContent = rows.length > 600
+    ? `showing ${shown} of ${rows.length} — narrow the search to see the rest`
+    : `${rows.length} files`;
+}
+
+function clearFile() {
+  selectedFile = null; filePieces = []; fileCoverage = null; gapCursor = -1;
+  $('p2title').textContent = 'no file selected';
+  $('p2body').innerHTML = '<div class="empty">Pick a file on the left.</div>';
+  $('p3body').innerHTML = '<div class="empty">The pieces cut out of that file appear here.</div>';
+  $('p2foot').innerHTML = '&nbsp;'; $('p3foot').innerHTML = '&nbsp;'; $('p3title').innerHTML = '&nbsp;';
+}
+
+function openFile(file) {
+  selectedFile = file;
+  filePieces = extractUnits([file], cutOptions());
+  fileCoverage = coverageGaps(file.text, filePieces);
+  gapCursor = -1;
+  renderFileList();
+  renderSource();
+  renderPieces();
+}
+
+function pieceLineRange(p) {
+  return { from: p.startLine, to: p.startLine + p.text.split('\n').length - 1 };
+}
+
+let highlighted = null;
+
+function renderSource() {
+  const lines = selectedFile.text.split('\n');
+  const inPiece = new Uint8Array(lines.length + 2);
+  const isHead = new Uint8Array(lines.length + 2);
+  for (const p of filePieces) {
+    const r = pieceLineRange(p);
+    isHead[r.from] = 1;
+    for (let l = r.from; l <= r.to && l <= lines.length; l++) inPiece[l] = 1;
+  }
+  const hl = highlighted ? pieceLineRange(highlighted) : null;
+
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const n = i + 1;
+    const cls = ['ln'];
+    if (inPiece[n]) cls.push('inpiece');
+    else if (lines[i].trim()) cls.push('gap');
+    if (isHead[n]) cls.push('head');
+    const mark = hl && n >= hl.from && n <= hl.to ? ' style="outline:1px solid #6fd3c7;outline-offset:-1px"' : '';
+    out.push(`<div class="${cls.join(' ')}" id="L${n}"${mark}><span class="num">${n}</span><span class="txt">${esc(lines[i]) || '&nbsp;'}</span></div>`);
+  }
+  $('p2title').textContent = selectedFile.path;
+  $('p2body').innerHTML = `<pre class="src">${out.join('')}</pre>`;
+  const c = fileCoverage;
+  $('p2foot').textContent =
+    `${c.totalLines} lines · ${c.totalLines - c.uncoveredLines - c.blankLines} inside a piece · ` +
+    `${c.uncoveredLines} not · ${c.blankLines} blank`;
+}
+
+function renderPieces() {
+  const host = $('p3body');
+  host.innerHTML = '';
+  $('p3title').textContent = `${filePieces.length} pieces`;
+  if (!filePieces.length) {
+    host.innerHTML = '<div class="empty">Nothing came out of this file at these settings.</div>';
+  } else {
+    const frag = document.createDocumentFragment();
+    for (const p of filePieces) {
+      const r = pieceLineRange(p);
+      const el = document.createElement('div');
+      el.className = 'row' + (highlighted === p ? ' sel' : '');
+      el.innerHTML = `<span class="t">${esc(p.name)}</span><span class="n">L${r.from}–${r.to}</span>`;
+      el.addEventListener('click', () => {
+        highlighted = p;
+        renderSource();
+        renderPieces();
+        document.getElementById('L' + r.from)?.scrollIntoView({ block: 'center' });
+      });
+      frag.appendChild(el);
+    }
+    host.appendChild(frag);
+  }
+  const c = fileCoverage;
+  const foot = $('p3foot');
+  foot.innerHTML = '';
+  const label = document.createElement('span');
+  label.textContent = c.uncoveredLines
+    ? `${c.uncoveredLines} lines not inside any piece`
+    : 'every line is inside a piece';
+  foot.appendChild(label);
+  if (c.gaps.length) {
+    const btn = document.createElement('button');
+    btn.className = 'mini';
+    btn.textContent = 'next gap';
+    btn.addEventListener('click', () => {
+      const real = c.gaps.filter((g) => {
+        const lines = selectedFile.text.split('\n');
+        for (let l = g.from; l <= g.to; l++) if (lines[l - 1].trim()) return true;
+        return false;
+      });
+      if (!real.length) return;
+      gapCursor = (gapCursor + 1) % real.length;
+      const g = real[gapCursor];
+      document.getElementById('L' + g.from)?.scrollIntoView({ block: 'center' });
+      label.textContent = `gap ${gapCursor + 1} of ${real.length}: lines ${g.from}–${g.to}`;
+    });
+    foot.appendChild(btn);
+  }
+}
+
+// ------------------------------------------------------------------ step 2
+const filter2 = {
+  kinds: new Set(['function', 'class', 'chunk', 'file']),
+  noComments: false,
+  leadingUnderscore: false,
+  minChars: 120,
+};
+
+function buildAllPieces() {
+  if (allPieces) return allPieces;
+  status('cutting up ' + filtered.length + ' files…');
+  const opts = cutOptions();
+  allPieces = [];
+  for (const f of filtered) {
+    for (const u of extractUnits([f], opts)) {
+      // Only function mode distinguishes classes; a chunk is named L61, which starts with a
+      // capital and would otherwise be filed as a class.
+      u.kind = opts.unit === 'function'
+        ? (/^[A-Z]/.test(u.name) ? 'class' : 'function')
+        : opts.unit;
+      allPieces.push(u);
+    }
+  }
+  status(`${allPieces.length} pieces from ${filtered.length} files`);
+  return allPieces;
+}
+
+function applyFilter2() {
+  const src = buildAllPieces();
+  step2Pieces = src.filter((p) => {
+    if (!filter2.kinds.has(p.kind)) return false;
+    if (p.text.length < filter2.minChars) return false;
+    if (filter2.noComments && !/\/\/|\/\*/.test(p.text)) return false;
+    if (filter2.leadingUnderscore && p.name.startsWith('_')) return false;
+    return true;
+  });
+  $('f2count').textContent = `${src.length} pieces → ${step2Pieces.length} pass`;
+  renderPieceList();
+  if (selectedPiece && !step2Pieces.includes(selectedPiece)) clearPiece();
+}
+
+function repOptions() {
+  return {
+    target: $('s2target').value,
+    stripImports: $('s2imports').checked,
+    splitCase: $('s2case').checked,
+    dropStopwords: $('s2stop').checked,
+    maxTokens: Number($('s2cap').value),
+  };
+}
+
+function renderPieceList() {
+  if (!step2Pieces.length && allPieces === null) return;
+  const q = $('q1search').value.trim().toLowerCase();
+  const rows = step2Pieces.filter((p) => !q || p.id.toLowerCase().includes(q));
+  $('q1title').textContent = `Pieces (${rows.length})`;
+  const host = $('q1list');
+  host.innerHTML = '';
+  if (!rows.length) { host.innerHTML = '<div class="empty">No piece matches.</div>'; return; }
+  const opts = repOptions();
+  const frag = document.createDocumentFragment();
+  for (const p of rows.slice(0, 500)) {
+    const el = document.createElement('div');
+    el.className = 'row' + (selectedPiece === p ? ' sel' : '');
+    const n = representUnit(p, opts).tokens.length;
+    el.innerHTML = `<span class="t">${esc(p.name)}</span><span class="n">${n}</span>`;
+    el.title = p.path;
+    el.addEventListener('click', () => openPiece(p));
+    frag.appendChild(el);
+  }
+  host.appendChild(frag);
+  $('q1foot').textContent = rows.length > 500
+    ? `showing 500 of ${rows.length} — narrow the search`
+    : `${rows.length} pieces`;
+}
+
+function clearPiece() {
+  selectedPiece = null;
+  $('q2title').textContent = 'no piece selected';
+  $('q2body').innerHTML = '<div class="empty">Pick a piece on the left.</div>';
+  $('q3body').innerHTML = '<div class="empty">The words that come out appear here.</div>';
+  $('q3title').innerHTML = '&nbsp;'; $('q3foot').innerHTML = '&nbsp;';
+}
+
+function openPiece(piece) {
+  selectedPiece = piece;
+  const opts = repOptions();
+  const ann = annotateUnit(piece, opts);
+  const real = representUnit(piece, opts);
+
+  $('q2title').textContent = `${piece.name}  ·  ${piece.path}:${piece.startLine}`;
+  if (!ann.mappable) {
+    $('q2body').innerHTML =
+      `<div class="empty">The "${esc(opts.target)}" setting does not read the source character by
+       character, so there is nothing to strike out here. ` +
+      (opts.target === 'shape'
+        ? 'It replaces every name with a placeholder and compares the leftover structure.'
+        : 'It compares the hand-written description of the file instead of its code.') +
+      ` The words it produced are on the right.</div>`;
+    $('q2foot').textContent = 'no in-place view for this setting';
+  } else {
+    const html = ann.spans.map((s) =>
+      `<span class="${s.kept ? 'kept' : 'drop'}"${s.reason ? ` title="dropped: ${s.reason}"` : ''}>${esc(s.text)}</span>`
+    ).join('');
+    $('q2body').innerHTML = `<pre class="spanview mono">${html}</pre>`;
+    $('q2foot').textContent = 'struck out = thrown away · solid = kept · hover for the reason';
+  }
+
+  // The list on the right is the pipeline's real output, not the overlay's, so a disagreement
+  // between them would be visible here rather than hidden.
+  const words = real.tokens;
+  $('q3title').textContent = `${words.length} words`;
+  const uniq = new Set(words);
+  const chips = words.slice(0, 800).map((w) => `<span class="word">${esc(w)}</span>`).join('');
+  let html = `<div class="words">${chips || '<span class="empty">No words came out.</span>'}</div>`;
+  if (words.length > 800) html += `<div class="warnbox">showing the first 800 of ${words.length}.</div>`;
+
+  if (ann.mappable) {
+    const rows = tallyRows(ann.tally);
+    html += '<div class="tallybox"><h4>thrown away</h4>' + (rows.length
+      ? rows.map((r) => `<div class="trow"><span>${esc(r.label)}</span><b>${r.count}</b></div>`).join('')
+      : '<div class="trow"><span>nothing</span><b>0</b></div>') + '</div>';
+    if (ann.words.join('|') !== words.join('|')) {
+      html += `<div class="warnbox">The overlay and the real pipeline disagree on this piece.
+        That is a bug — please report it.</div>`;
+    }
+  }
+  $('q3body').innerHTML = html;
+  $('q3foot').textContent = `${uniq.size} different words`;
+  renderPieceList();
+}
+
+
+// ================================================================== step 3
+// Words become numbers. The vocabulary is shared across every piece that survived steps 1 and 2,
+// so changing an upstream filter moves every number here -- which is why the note under the
+// settings says so out loud rather than letting it surprise you.
+const filter3 = { minDocFreq: 2, commonPercent: 60, maxVocab: 4000 };
+let embedding = null;       // the built vectors, or null when something upstream changed
+let embedDocsList = null;   // the word lists that produced them, in the same order
+let embedPieces = null;     // the pieces, in the same order
+let selectedVecPiece = null;
+let matrixScene = null;     // lazily created Three.js view for "all pieces"
+
+function embedOptions() {
+  return {
+    embedder: $('s3embedder').value,
+    minDocFreq: filter3.minDocFreq,
+    maxVocab: filter3.maxVocab,
+    commonRatio: filter3.commonPercent / 100,
+  };
+}
+
+function invalidateEmbedding() {
+  embedding = null;
+  vocabWords = null;
+  selectedWordIndex = -1;
+  $('s3note').textContent = 'settings changed — press rebuild';
+  $('s3rebuild').disabled = false;
+}
+
+function buildEmbedding() {
+  applyFilter2();                    // step 3 works on whatever step 2 let through
+  if (!step2Pieces.length) {
+    $('f3count').textContent = 'no pieces came through step 2';
+    return false;
+  }
+  status('turning ' + step2Pieces.length + ' pieces into numbers…');
+  const repOpts = repOptions();
+  embedPieces = step2Pieces;
+  embedDocsList = embedPieces.map((p) => representUnit(p, repOpts));
+  const t0 = performance.now();
+  embedding = embedDocs(embedDocsList, embedOptions());
+  const ms = Math.round(performance.now() - t0);
+
+  const vs = vocabSummary(embedding);
+  $('f3count').textContent = vs.unsupported
+    ? `${embedding.dim} buckets — this weighting uses no vocabulary`
+    : `${vs.total.toLocaleString()} different words → ${vs.kept.toLocaleString()} kept   ` +
+      `(${vs.tooRare.toLocaleString()} too rare · ${vs.tooCommon.toLocaleString()} too common · ` +
+      `${vs.overCap.toLocaleString()} over the cap)`;
+  $('s3note').textContent =
+    `built from the ${embedPieces.length} pieces that got through steps 1 and 2, in ${ms} ms`;
+  $('s3rebuild').disabled = true;
+  status(`${embedPieces.length} pieces × ${embedding.dim} numbers`);
+  return true;
+}
+
+function renderVecList() {
+  if (!embedding) return;
+  const q = $('r1search').value.trim().toLowerCase();
+  const rows = embedPieces
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => !q || p.id.toLowerCase().includes(q));
+  $('r1title').textContent = `Pieces (${rows.length})`;
+  const host = $('r1list');
+  host.innerHTML = '';
+  if (!rows.length) { host.innerHTML = '<div class="empty">No piece matches.</div>'; return; }
+  const frag = document.createDocumentFragment();
+  for (const { p, i } of rows.slice(0, 500)) {
+    const el = document.createElement('div');
+    el.className = 'row' + (selectedVecPiece === i ? ' sel' : '');
+    el.innerHTML = `<span class="t">${esc(p.name)}</span><span class="n">${embedding.rows[i].idx.length}</span>`;
+    el.title = p.path;
+    el.addEventListener('click', () => openVector(i));
+    frag.appendChild(el);
+  }
+  host.appendChild(frag);
+  $('r1foot').textContent = rows.length > 500
+    ? `showing 500 of ${rows.length} — narrow the search`
+    : `${rows.length} pieces`;
+}
+
+function openVector(i) {
+  selectedVecPiece = i;
+  refreshStep3View();
+}
+
+/** In panel, "this piece": the word list step 2 produced, greying out what got no number. */
+function renderPieceWords() {
+  if (selectedVecPiece == null) {
+    $('r2title').textContent = 'no piece selected';
+    $('r2body').innerHTML = '<div class="empty">Pick a piece on the left.</div>';
+    $('r2foot').innerHTML = '&nbsp;';
+    return;
+  }
+  const i = selectedVecPiece;
+  const piece = embedPieces[i];
+  const doc = embedDocsList[i];
+  const ex = explainRow(doc, embedding.rows[i], embedding, { minDocFreq: filter3.minDocFreq });
+  const words = vocabList();
+
+  $('r2title').textContent = `${piece.name}  ·  ${piece.path}:${piece.startLine}`;
+  const missing = new Set(ex.missing.map((m) => m.word));
+  const seen = new Set();
+  const chips = [];
+  for (const w of doc.tokens) {
+    if (seen.has(w)) continue;
+    seen.add(w);
+    const gone = missing.has(w);
+    const vi = words && !gone && embedding.vocab.has(w) ? embedding.vocab.get(w).index : -1;
+    const sel = vi >= 0 && vi === selectedWordIndex ? ' style="outline:1px solid var(--accent)"' : '';
+    chips.push(`<span class="word ${gone ? 'out' : ''}"${vi >= 0 ? ` data-w="${vi}"` : ''}${sel}>${esc(w)}</span>`);
+  }
+  $('r2body').innerHTML = `<div class="wordchips">${chips.join('')}</div>`;
+  for (const el of $('r2body').querySelectorAll('[data-w]')) {
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', () => selectWord(Number(el.dataset.w)));
+  }
+  $('r2foot').textContent = ex.unsupported
+    ? `${doc.tokens.length} words in, ${seen.size} of them different`
+    : `${doc.tokens.length} words in · ${seen.size} different · solid became a number · click one to point Out at it`;
+}
+
+/** Out panel, "table": the selected piece, one row per word. */
+function renderWeightTable() {
+  if (selectedVecPiece == null) {
+    $('r3title').innerHTML = '&nbsp;';
+    $('r3body').innerHTML = '<div class="empty">Pick a piece on the left to see its numbers.</div>';
+    $('r3foot').innerHTML = '&nbsp;';
+    return;
+  }
+  const i = selectedVecPiece;
+  const doc = embedDocsList[i];
+  const row = embedding.rows[i];
+  const ex = explainRow(doc, row, embedding, { minDocFreq: filter3.minDocFreq });
+  const words = vocabList();
+
+  if (ex.unsupported) {
+    $('r3title').textContent = `${row.idx.length} numbers`;
+    $('r3body').innerHTML =
+      `<div class="empty">The "${esc($('s3embedder').value)}" setting does not keep a word list, so
+       there is no word-by-word table to show. It throws words into fixed buckets, and more than one
+       word can land in the same bucket. Switch to tfidf, bm25 or binary to see the breakdown.</div>`;
+    $('r3foot').textContent = `${row.idx.length} numbers, no word behind them`;
+    return;
+  }
+
+  $('r3title').textContent = `${ex.counts.became} numbers`;
+  const max = ex.rows.length ? ex.rows[0].weight : 1;
+  const body = ex.rows.map((r) => `<tr data-w="${embedding.vocab.get(r.word).index}">
+      <td class="word">${esc(r.word)}</td>
+      <td class="num">${r.here}</td>
+      <td class="num">${r.docs}/${r.docCount}</td>
+      <td class="w">${r.weight.toFixed(2)}</td>
+      <td class="barcell"><i class="bar" style="width:${Math.max(1, (r.weight / max) * 74)}px"></i></td>
+    </tr>`).join('');
+
+  let html = `<table class="weights">
+    <tr><th>word</th><th style="text-align:right">here</th><th style="text-align:right">in</th>
+        <th>weight</th><th></th></tr>${body}</table>`;
+  if (ex.truncated) html += `<div class="warnbox">showing the heaviest ${ex.rows.length}; ${ex.truncated} more are not listed.</div>`;
+
+  html += '<div class="tallybox"><h4>did not become a number</h4>';
+  const groups = [
+    ['rare', ex.counts.rare], ['common', ex.counts.common], ['cap', ex.counts.cap],
+  ].filter(([, n]) => n > 0);
+  html += groups.length
+    ? groups.map(([why, n]) => `<div class="trow"><span>${esc(NO_NUMBER_TEXT[why])}</span><b>${n}</b></div>`).join('')
+    : '<div class="trow"><span>every word became a number</span><b>0</b></div>';
+  if (ex.missing.length) {
+    html += '<div class="wordchips" style="padding:7px 0 0">'
+      + ex.missing.slice(0, 60).map((m) => `<span class="word out" title="${esc(m.reason)} — in ${m.docs} of ${m.docCount} pieces">${esc(m.word)}</span>`).join('')
+      + '</div>';
+    if (ex.missing.length > 60) html += `<div class="trow"><span>and ${ex.missing.length - 60} more</span><b></b></div>`;
+  }
+  html += '</div>';
+
+  $('r3body').innerHTML = html;
+  $('r3foot').textContent =
+    `${ex.counts.became} of ${ex.distinctWords} different words became numbers`;
+  for (const tr of $('r3body').querySelectorAll('tr[data-w]')) {
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('click', () => selectWord(Number(tr.dataset.w)));
+  }
+  if (selectedWordIndex >= 0) markTableWord(selectedWordIndex);
+}
+
+/** Point the table at one word: highlight its row, or say the piece does not contain it. */
+function markTableWord(wordIndex) {
+  const host = $('r3body');
+  const rows = host.querySelectorAll('tr[data-w]');
+  if (!rows.length) return;
+  let found = null;
+  for (const tr of rows) {
+    const on = Number(tr.dataset.w) === wordIndex;
+    tr.classList.toggle('sel', on);
+    if (on) found = tr;
+  }
+  const words = vocabList();
+  if (found) {
+    found.scrollIntoView({ block: 'center' });
+    $('r3foot').textContent = `"${words[wordIndex]}" is highlighted above`;
+  } else {
+    $('r3foot').textContent = `"${words[wordIndex]}" produced no number in this piece`;
+  }
+}
+
+const NO_NUMBER_TEXT = {
+  rare: 'used in too few pieces',
+  common: 'used in too many pieces',
+  cap: 'past the vocabulary cap',
+};
+
+// ------------------------------------------------------------------ the whole vocabulary
+// The In panel at "all pieces" scale: every word that survived the filter, in the order the
+// vocabulary itself uses, which is most-used first. Selecting one lights up its column in the
+// field on the right.
+let vocabWords = null;      // index -> word, cached per embedding
+let selectedWordIndex = -1;
+
+function vocabList() {
+  if (!vocabWords && embedding && embedding.vocab) vocabWords = reverseVocab(embedding.vocab);
+  return vocabWords;
+}
+
+function renderVocabulary() {
+  const host = $('r2body');
+  $('r2title').textContent = 'every word in the vocabulary';
+  const words = vocabList();
+  if (!words) {
+    host.innerHTML = `<div class="empty">The "${esc($('s3embedder').value)}" setting keeps no word
+      list, so there is no vocabulary to show. It throws words into fixed buckets instead.</div>`;
+    $('r2foot').textContent = 'no vocabulary for this weighting';
+    return;
+  }
+  const q = ($('vocabq') && $('vocabq').value.trim().toLowerCase()) || '';
+  const total = embedding.docCount;
+  const rows = [];
+  for (let i = 0; i < words.length; i++) {
+    if (q && !words[i].includes(q)) continue;
+    rows.push(i);
+  }
+  const shown = rows.slice(0, 800);
+  const body = shown.map((i) => {
+    const df = embedding.docFreq.get(words[i]) || 0;
+    const share = (df / total) * 100;
+    return `<tr data-w="${i}" class="${i === selectedWordIndex ? 'sel' : ''}">
+      <td class="rank">${i + 1}</td>
+      <td class="word">${esc(words[i])}</td>
+      <td class="num">${df}</td>
+      <td class="num">${share.toFixed(1)}%</td>
+    </tr>`;
+  }).join('');
+
+  host.innerHTML =
+    `<div class="vocabsearch"><input type="text" id="vocabq" placeholder="search the vocabulary" value="${esc(q)}"></div>
+     <table class="vocab">
+       <tr><th style="text-align:right">#</th><th>word</th><th style="text-align:right">pieces</th><th style="text-align:right">share</th></tr>
+       ${body}
+     </table>` +
+    (rows.length > 800 ? `<div class="vocabnote">showing the first 800 of ${rows.length} — narrow the search to see the rest.</div>` : '');
+
+  const input = $('vocabq');
+  input.addEventListener('input', () => {
+    const at = input.selectionStart;
+    renderVocabulary();
+    const next = $('vocabq');
+    next.focus();
+    next.setSelectionRange(at, at);
+  });
+  for (const tr of host.querySelectorAll('tr[data-w]')) {
+    tr.addEventListener('click', () => selectWord(Number(tr.dataset.w)));
+  }
+  $('r2foot').textContent = q
+    ? `${rows.length} of ${words.length} words match`
+    : `${words.length} words, most used first, out of ${embedding.docFreq.size} seen`;
+}
+
+/** Which pieces lean on one word the most, read off the real rows. */
+function topPiecesForWord(wordIndex, limit = 5) {
+  const out = [];
+  for (let r = 0; r < embedding.rows.length; r++) {
+    const row = embedding.rows[r];
+    for (let e = 0; e < row.idx.length; e++) {
+      if (row.idx[e] === wordIndex) { out.push({ piece: embedPieces[r], weight: row.val[e] }); break; }
+      if (row.idx[e] > wordIndex) break;   // indices are sorted, so we are past it
+    }
+  }
+  out.sort((a, b) => b.weight - a.weight);
+  return { top: out.slice(0, limit), used: out.length };
+}
+
+/**
+ * Point both panels at one word. What Out does with it depends on which view it is showing:
+ * the graph lights its column, the table highlights its row.
+ */
+function selectWord(i) {
+  selectedWordIndex = i;
+  if ($('s3invocab').checked) renderVocabulary();
+  else renderPieceWords();
+
+  const words = vocabList();
+  if (!words) return;
+
+  if ($('s3outgraph').checked && matrixScene) {
+    matrixScene.highlight(i);
+    const { top, used } = topPiecesForWord(i);
+    matrixScene.setDetail(
+      `<b style="color:var(--keep)">${esc(words[i])}</b> — in ${used} of ${embedding.rows.length} pieces` +
+      (i >= matrixScene.shownWords
+        ? `<br><span style="color:var(--warn)">past the ${matrixScene.shownWords} words shown, so it has no column here</span>`
+        : '<br><span style="color:var(--faint)">its column is lit below</span>') +
+      (top.length ? `<br>heaviest in ${esc(top[0].piece.name)} (${top[0].weight.toFixed(2)})` : ''));
+    $('r3foot').textContent = `"${words[i]}" — drag to orbit · scroll to zoom`;
+  } else {
+    markTableWord(i);
+  }
+}
+
+// ------------------------------------------------------------------ the all-pieces field
+async function showMatrix() {
+  const host = $('r3body');
+  $('r3title').textContent = 'every piece';
+  host.innerHTML = '<div class="empty">building the field…</div>';
+  const pts = matrixPoints(embedding, { maxPieces: 1200, maxWords: 600, maxPoints: 240000 });
+
+  let THREE, OrbitControls;
+  try {
+    THREE = await import('three/webgpu');
+    ({ OrbitControls } = await import('three/addons/controls/OrbitControls.js'));
+  } catch (err) {
+    host.innerHTML = `<div class="empty">Could not load the 3D library: ${esc(err.message)}.
+      The table view still works.</div>`;
+    return;
+  }
+
+  host.innerHTML = '<div class="scene"><div class="sceneinfo" id="r3info"></div></div>';
+  const wrap = host.querySelector('.scene');
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0d1016);
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 4000);
+
+  // One point per filled cell: x is the word, z is the piece, y is the weight.
+  const n = pts.x.length;
+  const pos = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+  const spanX = Math.max(1, pts.shownWords);
+  const spanZ = Math.max(1, pts.shownPieces);
+  const height = 60;
+  for (let i = 0; i < n; i++) {
+    const t = pts.w[i] / (pts.maxWeight || 1);
+    pos[i * 3] = (pts.x[i] / spanX - 0.5) * 300;
+    pos[i * 3 + 1] = t * height;
+    pos[i * 3 + 2] = (pts.y[i] / spanZ - 0.5) * 300;
+    // dim teal at the bottom through to warm at the top, so height and colour agree
+    col[i * 3] = 0.25 + t * 0.66;
+    col[i * 3 + 1] = 0.62 + t * 0.16;
+    col[i * 3 + 2] = 0.72 - t * 0.38;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const points = new THREE.Points(geo, new THREE.PointsMaterial({ size: 1.1, vertexColors: true }));
+  scene.add(points);
+
+  const floor = new THREE.GridHelper(300, 12, 0x2a3340, 0x1b212c);
+  floor.position.y = -0.5;
+  scene.add(floor);
+
+  // Three axis lines along the near/left edges of the box, so the tick labels have something
+  // to sit against instead of floating in space.
+  const H = 150;                       // half width and half depth of the field
+  const axisPts = [
+    -H, 0, H,  H, 0, H,                // words, along the front edge
+    -H, 0, -H, -H, 0, H,               // pieces, along the left edge
+    -H, 0, H,  -H, height, H,          // weight, up the near-left corner
+  ];
+  const axisGeo = new THREE.BufferGeometry();
+  axisGeo.setAttribute('position', new THREE.BufferAttribute(Float32Array.from(axisPts), 3));
+  const axes = new THREE.LineSegments(axisGeo, new THREE.LineBasicMaterial({ color: 0x4a5666 }));
+  scene.add(axes);
+
+  // Labels are HTML projected from 3D each frame rather than sprites: the text stays crisp and
+  // there is no texture to build, and they stay correct as the camera orbits.
+  const labels = [];
+  const addLabel = (x, y, z, text, kind) => {
+    const el = document.createElement('div');
+    el.className = 'axislabel' + (kind === 'title' ? ' title' : '');
+    el.textContent = text;
+    wrap.appendChild(el);
+    labels.push({ el, v: new THREE.Vector3(x, y, z) });
+  };
+
+  const TICKS = 5;
+  for (let i = 0; i <= TICKS; i++) {
+    const f = i / TICKS;
+    // words run left to right along the front edge
+    addLabel(-H + f * 2 * H, -6, H + 12, String(Math.round(f * pts.shownWords)));
+    // pieces run back to front along the left edge; the stride makes these real piece numbers
+    addLabel(-H - 14, -6, -H + f * 2 * H, String(Math.round(f * pts.shownPieces * pts.pieceStride)));
+  }
+  for (let i = 0; i <= 2; i++) {
+    const f = i / 2;
+    addLabel(-H - 12, f * height, H + 6, (f * pts.maxWeight).toFixed(1));
+  }
+  addLabel(0, -6, H + 30, 'words, most used first \u2192', 'title');
+  addLabel(-H - 40, -6, 0, 'pieces \u2192', 'title');
+  addLabel(-H - 30, height + 14, H, 'weight', 'title');
+
+  const ndc = new THREE.Vector3();
+  function placeLabels() {
+    const r = renderer.domElement.getBoundingClientRect();
+    if (!r.width) return;
+    for (const l of labels) {
+      ndc.copy(l.v).project(camera);
+      // z past 1 means the point is behind the camera, where a projected position is meaningless.
+      if (ndc.z > 1) { l.el.style.display = 'none'; continue; }
+      l.el.style.display = 'block';
+      l.el.style.left = ((ndc.x * 0.5 + 0.5) * r.width) + 'px';
+      l.el.style.top = ((-ndc.y * 0.5 + 0.5) * r.height) + 'px';
+    }
+  }
+
+  const renderer = new THREE.WebGPURenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  wrap.appendChild(renderer.domElement);
+  const controls = new OrbitControls(camera, renderer.domElement);
+  camera.position.set(0, 150, 250);
+  controls.target.set(0, 20, 0);
+  controls.update();
+
+  function resize() {
+    const r = wrap.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    renderer.setSize(r.width, r.height, false);
+    camera.aspect = r.width / r.height;
+    camera.updateProjectionMatrix();
+  }
+  const ro = new ResizeObserver(resize);
+  ro.observe(wrap);
+  resize();
+
+  let alive = true;
+  renderer.setAnimationLoop(() => {
+    if (!alive) return;
+    controls.update();
+    renderer.render(scene, camera);
+    placeLabels();
+  });
+
+  $('r3info').innerHTML =
+    `${pts.shownPieces.toLocaleString()} of ${pts.totalPieces.toLocaleString()} pieces ` +
+    `&times; ${pts.shownWords} of ${pts.totalWords.toLocaleString()} words<br>` +
+    `${n.toLocaleString()} filled cells, ${pts.fillPercent.toFixed(1)}% of the grid<br>` +
+    `<span style="color:var(--faint)">each point is one word in one piece</span>` +
+    (pts.pieceStride > 1 ? `<br><span style="color:var(--warn)">showing every ${pts.pieceStride}th piece to fit</span>` : '') +
+    (pts.skippedPoints ? `<br><span style="color:var(--warn)">${pts.skippedPoints.toLocaleString()} cells past the point cap are not drawn</span>` : '');
+
+  $('r3foot').textContent = 'drag to orbit · scroll to zoom';
+
+  const baseInfo = $('r3info').innerHTML;
+  const setDetail = (html) => {
+    $('r3info').innerHTML = baseInfo + (html ? '<hr style="border:0;border-top:1px solid var(--line);margin:5px 0">' + html : '');
+  };
+
+  // Lighting one word's column means recolouring its points and dimming the rest, which is a
+  // colour-attribute rewrite rather than a rebuild.
+  function highlight(wordIndex) {
+    const c = geo.getAttribute('color');
+    for (let i = 0; i < n; i++) {
+      const t = pts.w[i] / (pts.maxWeight || 1);
+      const on = wordIndex < 0 || pts.x[i] === wordIndex;
+      if (on && wordIndex >= 0) {
+        c.array[i * 3] = 1.0; c.array[i * 3 + 1] = 0.92; c.array[i * 3 + 2] = 0.45;
+      } else {
+        const fade = wordIndex >= 0 ? 0.22 : 1;
+        c.array[i * 3] = (0.25 + t * 0.66) * fade;
+        c.array[i * 3 + 1] = (0.62 + t * 0.16) * fade;
+        c.array[i * 3 + 2] = (0.72 - t * 0.38) * fade;
+      }
+    }
+    c.needsUpdate = true;
+  }
+
+  matrixScene = {
+    highlight,
+    setDetail,
+    shownWords: pts.shownWords,
+    dispose() {
+      alive = false;
+      for (const l of labels) l.el.remove();
+      axisGeo.dispose();
+      axes.material.dispose();
+      ro.disconnect();
+      renderer.setAnimationLoop(null);
+      controls.dispose();
+      geo.dispose();
+      points.material.dispose();
+      renderer.dispose();
+      matrixScene = null;
+    },
+  };
+}
+
+// The two panels choose their view independently, so all four pairings are reachable.
+async function refreshStep3View() {
+  if (!embedding) return;
+  if ($('s3invocab').checked) renderVocabulary();
+  else renderPieceWords();
+
+  if ($('s3outgraph').checked) {
+    if (!matrixScene) await showMatrix();
+    if (selectedWordIndex >= 0) selectWord(selectedWordIndex);
+  } else {
+    if (matrixScene) matrixScene.dispose();
+    renderWeightTable();
+  }
+  renderVecList();
+}
+
+function wireStep3() {
+  $('f3rare').addEventListener('change', (e) => { filter3.minDocFreq = Number(e.target.value); invalidateEmbedding(); });
+  $('f3common').addEventListener('change', (e) => { filter3.commonPercent = Number(e.target.value); invalidateEmbedding(); });
+  $('f3cap').addEventListener('change', (e) => { filter3.maxVocab = Number(e.target.value); invalidateEmbedding(); });
+  $('s3embedder').addEventListener('change', invalidateEmbedding);
+  $('s3rebuild').addEventListener('click', () => {
+    if (buildEmbedding()) {
+      selectedVecPiece = 0;
+      refreshStep3View();
+    }
+  });
+  for (const id of ['s3inpiece', 's3invocab', 's3outtable', 's3outgraph']) {
+    $(id).addEventListener('change', refreshStep3View);
+  }
+  $('r1search').addEventListener('input', renderVecList);
+}
+
+// ------------------------------------------------------------------ tabs
+$('tab1').addEventListener('click', () => showStep(1));
+$('tab2').addEventListener('click', () => showStep(2));
+$('tab3').addEventListener('click', () => showStep(3));
+function showStep(n) {
+  for (const i of [1, 2, 3]) {
+    $('step' + i).classList.toggle('on', n === i);
+    $('tab' + i).classList.toggle('on', n === i);
+  }
+  // The 3D field holds GPU resources, so it is torn down whenever it leaves the screen.
+  if (n !== 3 && matrixScene) matrixScene.dispose();
+  if (n === 2) {
+    applyFilter2();
+    if (!selectedPiece && step2Pieces.length) openPiece(step2Pieces[0]);
+  }
+  if (n === 3) {
+    if (!embedding) {
+      if (buildEmbedding()) { selectedVecPiece = 0; refreshStep3View(); }
+    } else {
+      refreshStep3View();
+    }
+  }
+}
+wireStep3();
+
+// ------------------------------------------------------------------ hover help
+// Every selectable control carries a plain-English line. Holding Ctrl swaps it for the long
+// version, which is where the option values get explained one by one.
+const HELP = {
+  'tab.1': {
+    short: 'Step 1 cuts every file into the pieces that get compared.',
+    long: 'Nothing is measured yet at this step. It only decides what counts as one unit of code, which every later step then works on.',
+  },
+  'tab.2': {
+    short: 'Step 2 turns a piece of code into the list of words that represent it.',
+    long: 'This is the step that decides what similarity actually means. Comparing raw code, or only names, or only structure, gives genuinely different answers about which files are alike.',
+  },
+  'tab.3': {
+    short: 'Step 3 turns each word list into a row of numbers.',
+    long: 'A word on its own cannot be compared for closeness. This step gives every word a weight, high when the word is common in this piece and rare across all the others, so the numbers describe what makes a piece distinctive rather than what it has in common with everything.',
+  },
+  'p.in3': {
+    short: 'What goes into this step: the word list step 2 produced.',
+    long: 'Words shown solid made it into the shared vocabulary and will become numbers. Greyed-out words did not, and the panel on the right says why each one was left out.',
+  },
+  'p.out3': {
+    short: 'What comes out of this step: one weight per word that survived.',
+    long: 'Every row can be checked by hand. "here" is how many times the word appears in this piece, "in" is how many pieces contain it at all, and the weight is what those two produce together. A word that is frequent here and rare elsewhere gets the highest weight.',
+  },
+  'v.rare': {
+    short: 'A word has to appear in at least this many pieces to count.',
+    long: 'A word used in exactly one piece cannot make that piece similar to anything, since nothing else contains it. It only adds size to every row. Raising this trims more of that dead weight.',
+  },
+  'v.common': {
+    short: 'A word in more than this share of pieces is thrown out.',
+    long: 'A word that appears nearly everywhere separates nothing, the same way the word "the" tells you nothing about an English sentence. Measured on this repo at function level, almost nothing is common enough to trip this, so it rarely does anything here.',
+  },
+  'v.cap': {
+    short: 'The most words the shared vocabulary is allowed to hold.',
+    long: 'Words are ranked by how many pieces use them, and the cap keeps the top of that list. It bounds how wide each row of numbers gets. When it bites, the words it dropped are counted in the line to the right.',
+  },
+  'w.embedder': {
+    short: 'The sum used to turn a word count into a weight.',
+    long: 'DL:tfidf|Frequent here times rare elsewhere. The usual choice and the easiest to check by eye.;bm25|The same idea, but it stops long pieces from scoring high on length alone.;binary|Only whether the word is present, ignoring how many times. Blunter, and it stops one repeated variable dominating.;hashing|Skips the vocabulary and throws words into fixed buckets. Fast and needs no word list, but two different words can share a bucket, so there is no word-by-word view.;random|Real numbers with no connection to the code at all. It is here as a control: anything that scores well on random numbers is measuring nothing.',
+  },
+  'w.inview': {
+    short: 'Whether the middle panel shows one piece&apos;s words or the whole vocabulary.',
+    long: 'DL:this piece|The words that came out of step 2 for the selected piece. Greyed-out ones did not make the vocabulary.;all words|Every word in the shared vocabulary, most-used first, with a search. Either way, clicking a word points the Out panel at it.',
+  },
+  'w.outview': {
+    short: 'Whether the right panel shows the numbers as a table or as a field.',
+    long: 'DL:table|The selected piece as one row per word: the count here, the count across all pieces, and the weight those produce. The view to use when you want to check the arithmetic.;graph|Every piece and every word at once as a 3D field, each point one word in one piece, with height and colour the weight. The view to use when you want to see how sparse the whole thing is, or where a single word turns up.',
+  },
+  'p.files': {
+    short: 'Every file that got past the filter above.',
+    long: 'The number on the right of each row is how many pieces that file was cut into. Click a file to see it in the middle panel.',
+  },
+  'p.pieces': {
+    short: 'Every piece of code that came out of step 1.',
+    long: 'The number on the right is how many words that piece produces at the current settings. Click one to see what gets kept and what gets thrown away.',
+  },
+  'p.in1': {
+    short: 'What goes into this step: the file, exactly as it is on disk.',
+    long: 'Lines with a green background are inside a piece. Lines with an orange background are not inside any piece, which means the cutter skipped them. Blank lines are ignored either way.',
+  },
+  'p.out1': {
+    short: 'What comes out of this step: the pieces the file was cut into.',
+    long: 'Each row is one piece, with the line range it covers. Clicking a row outlines that range in the middle panel, so you can check the cut landed where it should.',
+  },
+  'p.in2': {
+    short: 'What goes into this step: one piece of code from step 1.',
+    long: 'Text struck through was thrown away. Solid text was kept. Hover any struck-through part to see the reason it went.',
+  },
+  'p.out2': {
+    short: 'What comes out of this step: the list of words that get compared.',
+    long: 'These words, and nothing else, are what later steps use to decide whether two pieces of code are similar. The count underneath is how many are different from each other.',
+  },
+  'p.search': {
+    short: 'Type to narrow the list below.',
+    long: 'Matches anywhere in the name or path, so typing "nav" finds nav-grid.js and bot-nav-decks.js alike.',
+  },
+
+  'f.types': {
+    short: 'Which kinds of file are allowed in.',
+    long: 'DL:.js|A normal module, which is most of this repo.;.mjs|A standalone Node script. The tests and command-line tools here use this ending.',
+  },
+  'f.folders': {
+    short: 'Which top-level folders to include.',
+    long: 'Turning a folder off removes every file inside it. (root) means files sitting directly in the workshop folder, which is where most of the code lives.',
+  },
+  'f.skipnames': {
+    short: 'The parts of the repo to leave out, by name pattern.',
+    long: 'DL:test-*|The test scripts. They mirror the file they test, so leaving them in makes near-duplicates that are not real findings.;probe_*|Small throwaway experiment scripts.;bake-*|Scripts that pre-generate data files.;_check_*|Generated check scripts, not hand-written code.',
+  },
+  'f.maxsize': {
+    short: 'Files bigger than this are left out.',
+    long: 'Very large files here are usually generated or bundled from somewhere else, like a copied library. They are not code anyone wrote by hand, and their sheer size drowns out everything else.',
+  },
+
+  's.unit': {
+    short: 'How big each piece of code should be.',
+    long: 'DL:function|One piece per function or class. The sharpest choice, because a function is usually one idea.;chunk|Fixed blocks of lines, ignoring where functions start and end. Simple, but it will cut a function in half.;file|The whole file as one piece. Files here run from 40 to 3000 lines, so this partly measures file size rather than what the code does.',
+  },
+  's.chunklines': {
+    short: 'How many lines go in each block. Only used when cutting into chunks.',
+    long: 'Smaller blocks are more precise but lose the surrounding context. Larger blocks keep more context but blur two unrelated ideas together.',
+  },
+  's.minchars': {
+    short: 'Pieces shorter than this are thrown away.',
+    long: 'A three-line getter has almost no words in it, so it ends up looking similar to every other tiny function. Raising this removes that noise; lowering it keeps small helpers in.',
+  },
+
+  'g.keep': {
+    short: 'The parts of the script to include.',
+    long: 'DL:function|A named function.;class|A class, kept whole rather than split into its methods.;chunk|A fixed block of lines, when step 1 was set to cut that way.;file|A whole file, when step 1 was set to cut that way.',
+  },
+  'g.skip': {
+    short: 'The parts of the script to remove.',
+    long: 'DL:pieces with no comments|Removes any piece that has no comment in it at all. Useful because in this repo the comments carry a lot of the meaning.;names starting with _|Removes private helpers, which are usually small and repetitive.',
+  },
+  'g.smallest': {
+    short: 'Pieces shorter than this do not carry over from step 1.',
+    long: 'This is the same idea as the setting in step 1, applied again here so you can tighten it without recutting every file.',
+  },
+
+  't.target': {
+    short: 'Which version of the code actually gets compared.',
+    long: 'DL:raw|The code exactly as written, comments and quoted text included.;stripped|Comments and quoted text removed, so only working code is compared.;identifiers|Only the names, with all punctuation dropped. In this repo this gives the same answer as stripped, because the word list only ever contained names anyway.;shape|Every name replaced by a placeholder, so two pieces match when they have the same structure no matter what they are called. There is no strike-through view for this one.;summary|Not the code at all, but the hand-written description of the file from code-map.html. There is no strike-through view for this one either.',
+  },
+  't.imports': {
+    short: 'Throws away the import lines at the top of a piece.',
+    long: 'Every file in a subsystem imports much the same things, so those lines make unrelated files look alike. Turning this off lets you see how much of the similarity was just shared imports.',
+  },
+  't.case': {
+    short: 'Breaks a name like buildNavGrid into build, nav and grid.',
+    long: 'With this on, buildNavGrid and navGridBuilder share two words out of three. With it off they are two completely different words and share nothing.',
+  },
+  't.stop': {
+    short: 'Throws away language keywords like const, function and return.',
+    long: 'Every piece of JavaScript contains these in roughly equal measure, so they say nothing about what a piece does. The list also drops a few words so common here they are useless, like length and push.',
+  },
+  't.cap': {
+    short: 'Stops reading a piece after this many words.',
+    long: 'A guard against one enormous file dominating everything. When a piece hits the cap, the rest of it is struck through with the reason "past the word cap", so you can see it happen instead of guessing.',
+  },
+};
+
+const helpBox = $('help');
+let helpKey = null;
+let helpXY = { x: 0, y: 0 };
+let ctrlDown = false;
+
+/** Move the box only. Called on every mousemove, so it must not touch innerHTML. */
+function positionHelp() {
+  if (helpBox.style.display === 'none') return;
+  const r = helpBox.getBoundingClientRect();
+  const x = Math.min(helpXY.x + 14, window.innerWidth - r.width - 8);
+  const y = helpXY.y + 18 + r.height > window.innerHeight
+    ? helpXY.y - r.height - 12
+    : helpXY.y + 18;
+  helpBox.style.left = Math.max(8, x) + 'px';
+  helpBox.style.top = Math.max(8, y) + 'px';
+}
+
+/** Rebuild the contents. Only called when the hovered element or the Ctrl state changes. */
+function renderHelp() {
+  const entry = HELP[helpKey];
+  if (!entry) { helpBox.style.display = 'none'; return; }
+  let body = `<div class="h">${entry.short}</div>`;
+  if (ctrlDown) {
+    if (entry.long.startsWith('DL:')) {
+      const rows = entry.long.slice(3).split(';').map((r) => {
+        const [term, def] = r.split('|');
+        return `<dt>${term}</dt><dd>${def}</dd>`;
+      }).join('');
+      body += `<dl>${rows}</dl>`;
+    } else {
+      body += `<div class="lead">${entry.long}</div>`;
+    }
+  } else {
+    body += '<div class="more">hold Ctrl for more</div>';
+  }
+  helpBox.innerHTML = body;
+  helpBox.style.display = 'block';
+  positionHelp();   // clamped inside the window, so the box never hangs off an edge
+}
+
+document.addEventListener('mousemove', (e) => {
+  helpXY = { x: e.clientX, y: e.clientY };
+  const host = e.target.closest('[data-help]');
+  const key = host ? host.dataset.help : null;
+  if (key !== helpKey) { helpKey = key; renderHelp(); }
+  else if (helpKey) positionHelp();
+});
+document.addEventListener('mouseleave', () => { helpKey = null; renderHelp(); });
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Control' && !ctrlDown) { ctrlDown = true; renderHelp(); }
+});
+window.addEventListener('keyup', (e) => {
+  if (e.key === 'Control') { ctrlDown = false; renderHelp(); }
+});
+window.addEventListener('blur', () => { ctrlDown = false; helpKey = null; renderHelp(); });
+
+boot();
+</script>
+</body>
+</html>

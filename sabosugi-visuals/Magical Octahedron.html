@@ -1,0 +1,1163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Magical Octahedron</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #000000;
+        }
+
+        body {
+            overscroll-behavior: none;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        canvas.is-dragging {
+            cursor: grabbing;
+        }
+
+        .lil-gui.root {
+            --width: 300px;
+        }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+            "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20/+esm"
+        }
+    }
+    </script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import GUI from 'lil-gui';
+
+// ============================================================
+// Main scene parameters
+// ============================================================
+
+const params = {
+    geometry: {
+        radius: 2.06,
+        height: 1.16
+    },
+    camera: {
+        distance: 4.7,
+        fov: 1.45
+    },
+    animation: {
+        rotationSpeed: 0.18,
+        colorSpeed: 0.24
+    },
+    fractal: {
+        domainScale: 67.1,
+        pathScale: 0.048,
+        glowDensity: 7.9,
+        volumeOpacity: 0.72,
+        orbBoost: 25.2,
+        edgeGlow: 3.025,
+        backEdgeGlow: 0.38,
+        volumeSteps: 68
+    },
+    colors: {
+        fractalTint: '#ffffff',
+        frontEdge: '#b8e6ff',
+        backEdge: '#a8d1ff',
+        background: '#000000'
+    },
+    interaction: {
+        dragSensitivity: 0.0045,
+        inertia: 0.94
+    },
+    performance: {
+        dpr: 1
+    }
+};
+
+// ============================================================
+// Renderer and fullscreen scene
+// ============================================================
+
+const renderer = new THREE.WebGLRenderer({
+    antialias: false,
+    alpha: false,
+    powerPreference: 'high-performance'
+});
+
+renderer.setPixelRatio(params.performance.dpr);
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.domElement.setAttribute('aria-label', 'Interactive light fractal octahedron');
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const drawingBufferSize = new THREE.Vector2();
+
+function hexToRawColor(hex, target) {
+    const value = Number.parseInt(hex.replace('#', ''), 16);
+    target.setRGB(
+        ((value >> 16) & 255) / 255,
+        ((value >> 8) & 255) / 255,
+        (value & 255) / 255,
+        THREE.LinearSRGBColorSpace
+    );
+}
+
+const frontEdgeColor = new THREE.Color();
+const backEdgeColor = new THREE.Color();
+const backgroundColor = new THREE.Color();
+const fractalTintColor = new THREE.Color();
+
+hexToRawColor(params.colors.frontEdge, frontEdgeColor);
+hexToRawColor(params.colors.backEdge, backEdgeColor);
+hexToRawColor(params.colors.background, backgroundColor);
+hexToRawColor(params.colors.fractalTint, fractalTintColor);
+
+const uniforms = {
+    uTime: { value: 0 },
+    uResolution: { value: new THREE.Vector2(1, 1) },
+
+    uOctahedronRadius: { value: params.geometry.radius },
+    uOctahedronHeight: { value: params.geometry.height },
+
+    uCameraDistance: { value: params.camera.distance },
+    uCameraFov: { value: params.camera.fov },
+    uInteractionScale: { value: 1 },
+
+    uDomainScale: { value: params.fractal.domainScale },
+    uPathScale: { value: params.fractal.pathScale },
+
+    uRotationSpeed: { value: params.animation.rotationSpeed },
+    uColorSpeed: { value: params.animation.colorSpeed },
+    uManualRotation: { value: new THREE.Vector2(0, 0) },
+
+    uGlowDensity: { value: params.fractal.glowDensity },
+    uVolumeOpacity: { value: params.fractal.volumeOpacity },
+    uOrbBoost: { value: params.fractal.orbBoost },
+    uEdgeGlow: { value: params.fractal.edgeGlow },
+    uBackEdgeGlow: { value: params.fractal.backEdgeGlow },
+    uVolumeSteps: { value: params.fractal.volumeSteps },
+
+    uFractalTint: { value: fractalTintColor },
+    uFrontEdgeColor: { value: frontEdgeColor },
+    uBackEdgeColor: { value: backEdgeColor },
+    uBackgroundColor: { value: backgroundColor }
+};
+
+const vertexShader = /* glsl */ `
+void main() {
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`;
+
+const fragmentShader = /* glsl */ `
+precision highp float;
+precision highp int;
+
+uniform float uTime;
+uniform vec2 uResolution;
+
+uniform float uOctahedronRadius;
+uniform float uOctahedronHeight;
+
+uniform float uCameraDistance;
+uniform float uCameraFov;
+uniform float uInteractionScale;
+
+uniform float uDomainScale;
+uniform float uPathScale;
+
+uniform float uRotationSpeed;
+uniform float uColorSpeed;
+uniform vec2 uManualRotation;
+
+uniform float uGlowDensity;
+uniform float uVolumeOpacity;
+uniform float uOrbBoost;
+uniform float uEdgeGlow;
+uniform float uBackEdgeGlow;
+uniform int uVolumeSteps;
+
+uniform vec3 uFractalTint;
+uniform vec3 uFrontEdgeColor;
+uniform vec3 uBackEdgeColor;
+uniform vec3 uBackgroundColor;
+
+const int MAX_VOLUME_STEPS = 128;
+
+float saturate(float x) {
+    return clamp(x, 0.0, 1.0);
+}
+
+mat2 rot(float a) {
+    float s = sin(a);
+    float c = cos(a);
+
+    return mat2(
+         c, -s,
+         s,  c
+    );
+}
+
+vec3 getPathPosition(float z) {
+    return vec3(
+        12.0 * cos(z * vec2(0.1, 0.39)),
+        z
+    );
+}
+
+bool clipPlane(
+    vec3 n,
+    vec3 ro,
+    vec3 rd,
+    float radius,
+    inout float tMin,
+    inout float tMax
+) {
+    float denom = dot(n, rd);
+    float numer = radius - dot(n, ro);
+
+    if (abs(denom) < 1e-5) {
+        return numer >= 0.0;
+    }
+
+    float t = numer / denom;
+
+    if (denom < 0.0) {
+        tMin = max(tMin, t);
+    } else {
+        tMax = min(tMax, t);
+    }
+
+    return tMin <= tMax;
+}
+
+vec2 rayOctahedron(vec3 ro, vec3 rd, float radius) {
+    vec3 localRo = vec3(
+        ro.x,
+        ro.y / uOctahedronHeight,
+        ro.z
+    );
+
+    vec3 localRd = vec3(
+        rd.x,
+        rd.y / uOctahedronHeight,
+        rd.z
+    );
+
+    float tMin = -1e9;
+    float tMax = 1e9;
+
+    if (!clipPlane(vec3( 1.0,  1.0,  1.0), localRo, localRd, radius, tMin, tMax)) return vec2(-1.0);
+    if (!clipPlane(vec3( 1.0,  1.0, -1.0), localRo, localRd, radius, tMin, tMax)) return vec2(-1.0);
+    if (!clipPlane(vec3( 1.0, -1.0,  1.0), localRo, localRd, radius, tMin, tMax)) return vec2(-1.0);
+    if (!clipPlane(vec3( 1.0, -1.0, -1.0), localRo, localRd, radius, tMin, tMax)) return vec2(-1.0);
+
+    if (!clipPlane(vec3(-1.0,  1.0,  1.0), localRo, localRd, radius, tMin, tMax)) return vec2(-1.0);
+    if (!clipPlane(vec3(-1.0,  1.0, -1.0), localRo, localRd, radius, tMin, tMax)) return vec2(-1.0);
+    if (!clipPlane(vec3(-1.0, -1.0,  1.0), localRo, localRd, radius, tMin, tMax)) return vec2(-1.0);
+    if (!clipPlane(vec3(-1.0, -1.0, -1.0), localRo, localRd, radius, tMin, tMax)) return vec2(-1.0);
+
+    if (tMax < max(tMin, 0.0)) {
+        return vec2(-1.0);
+    }
+
+    return vec2(tMin, tMax);
+}
+
+float octahedronCoord(vec3 p) {
+    return
+        abs(p.x) +
+        abs(p.y) / uOctahedronHeight +
+        abs(p.z);
+}
+
+vec3 octahedronNormal(vec3 p) {
+    vec3 localNormal = vec3(
+        p.x < 0.0 ? -1.0 : 1.0,
+        p.y < 0.0 ? -1.0 : 1.0,
+        p.z < 0.0 ? -1.0 : 1.0
+    );
+
+    vec3 worldNormal = vec3(
+        localNormal.x,
+        localNormal.y / uOctahedronHeight,
+        localNormal.z
+    );
+
+    return normalize(worldNormal);
+}
+
+void sampleLayer(
+    vec3 p,
+    float animTime,
+    float phase,
+    out float tunnelGlow,
+    out float orbGlow
+) {
+    vec3 q = p * uDomainScale;
+
+    float domainZ =
+        q.z * 0.16 +
+        animTime +
+        phase;
+
+    vec3 rawPath = getPathPosition(domainZ);
+
+    vec3 pathCenter = vec3(
+        uPathScale * rawPath.x,
+        uPathScale * rawPath.y,
+        p.z + 0.06 * sin(domainZ * 0.07 + phase)
+    );
+
+    float baseRadius =
+        0.26 +
+        0.14 * cos(domainZ * 0.72 + phase);
+
+    float tunnelStructure = min(
+        length(
+            p.xy -
+            pathCenter.xy -
+            vec2(0.14, 0.0)
+        ),
+        length((p - pathCenter).xy)
+    );
+
+    float largeScoops =
+        abs(
+            dot(
+                sin(0.8 * q + phase),
+                vec3(0.52)
+            )
+        ) / 0.1;
+
+    float detailTexture =
+        abs(
+            dot(
+                sin(animTime + 16.0 * p + phase),
+                vec3(0.53)
+            )
+        ) / 3.7;
+
+    float tunnelDist =
+        baseRadius
+        - tunnelStructure
+        + 0.016 * largeScoops
+        - 0.175 * detailTexture;
+
+    tunnelGlow =
+        6.7 /
+        (0.085 + abs(tunnelDist));
+
+    float wave = sin(uTime * 0.7 + phase);
+
+    vec3 orbCenter = vec3(
+        pathCenter.x +
+        0.07 * wave,
+
+        pathCenter.y +
+        0.11 * sin(
+            uTime * 0.9 +
+            phase * 1.3
+        ),
+
+        0.42 * sin(
+            animTime * 0.32 +
+            1.6 +
+            phase
+        )
+    );
+
+    float orbDist =
+        length(p - orbCenter) -
+        0.022;
+
+    orbGlow =
+        -0.9 /
+        (0.43 + max(orbDist, 0.0));
+}
+
+void sampleFractal(
+    vec3 p,
+    float animTime,
+    float colorTime,
+    float stepIndex,
+    out vec3 emission,
+    out float density
+) {
+    float tunnelA;
+    float tunnelB;
+    float tunnelC;
+
+    float orbA;
+    float orbB;
+    float orbC;
+
+    sampleLayer(
+        p,
+        animTime,
+        0.0,
+        tunnelA,
+        orbA
+    );
+
+    sampleLayer(
+        p.yzx,
+        animTime,
+        2.1,
+        tunnelB,
+        orbB
+    );
+
+    sampleLayer(
+        p.zxy,
+        animTime,
+        4.2,
+        tunnelC,
+        orbC
+    );
+
+    float tunnelSum =
+        0.40 * tunnelA +
+        0.33 * tunnelB +
+        0.27 * tunnelC;
+
+    float orbSum =
+        0.40 * orbA +
+        0.34 * orbB +
+        0.26 * orbC;
+
+    vec3 q = p * uDomainScale;
+
+    float globalDetail =
+        abs(
+            dot(
+                sin(
+                    q * 0.11 +
+                    q.yzx * 0.07 +
+                    q.zxy * 0.05 +
+                    animTime
+                ),
+                vec3(0.3333)
+            )
+        ) / 0.3333;
+
+    float colorDetail =
+        abs(
+            dot(
+                sin(
+                    q * 0.11 +
+                    q.yzx * 0.07 +
+                    q.zxy * 0.05 +
+                    colorTime
+                ),
+                vec3(0.3333)
+            )
+        ) / 0.3333;
+
+    float octCoord = octahedronCoord(p);
+
+    float edgeFill =
+        1.0 -
+        smoothstep(
+            uOctahedronRadius * 0.965,
+            uOctahedronRadius,
+            octCoord
+        );
+
+    float core =
+        saturate(
+            1.0 -
+            octCoord /
+            uOctahedronRadius
+        );
+
+    float volumeFill =
+        0.40 +
+        0.60 * pow(
+            max(core, 0.0),
+            0.45
+        );
+
+    float baseFill =
+        0.75 +
+        0.55 * globalDetail;
+
+    density =
+        (
+            0.060 * baseFill +
+            0.085 * tunnelSum +
+            0.100 * orbSum
+        ) *
+        volumeFill *
+        edgeFill;
+
+    density = max(density, 0.0);
+
+    vec3 palette =
+        1.0 +
+        cos(
+            stepIndex * 0.7 +
+            colorDetail * 1.4 +
+            vec3(6.0, 1.0, 2.0)
+        );
+
+    emission =
+        palette *
+        uFractalTint *
+        (
+            0.20 * baseFill +
+            0.28 * tunnelSum +
+            uOrbBoost * 0.085 * orbSum
+        ) *
+        volumeFill *
+        edgeFill;
+}
+
+vec3 renderVolume(vec3 ro, vec3 rd, vec2 hit) {
+    float animTime =
+        uTime * 4.0 +
+        5.0 +
+        5.0 * sin(uTime * 0.3);
+
+    float colorTime =
+        uTime * uColorSpeed +
+        5.0;
+
+    float tNear = max(hit.x, 0.0);
+    float tFar = hit.y;
+
+    float rayLength =
+        max(
+            tFar - tNear,
+            0.0001
+        );
+
+    float stepSize =
+        rayLength /
+        float(max(uVolumeSteps, 1));
+
+    float t =
+        tNear +
+        stepSize * 0.5;
+
+    vec3 color = vec3(0.0);
+    float transmittance = 1.0;
+
+    for (int i = 0; i < MAX_VOLUME_STEPS; i++) {
+        if (
+            i >= uVolumeSteps ||
+            t > tFar ||
+            transmittance < 0.005
+        ) {
+            break;
+        }
+
+        vec3 p = ro + rd * t;
+
+        vec3 emission;
+        float density;
+
+        float stepIndex =
+            float(i) +
+            43.0;
+
+        sampleFractal(
+            p,
+            animTime,
+            colorTime,
+            stepIndex,
+            emission,
+            density
+        );
+
+        float opticalDepth =
+            density *
+            uGlowDensity *
+            uVolumeOpacity *
+            stepSize;
+
+        float alpha =
+            1.0 -
+            exp(
+                -max(
+                    opticalDepth,
+                    0.0
+                )
+            );
+
+        color +=
+            transmittance *
+            emission *
+            alpha;
+
+        transmittance *=
+            1.0 - alpha;
+
+        t += stepSize;
+    }
+
+    vec3 frontPos =
+        ro +
+        rd * tNear;
+
+    vec3 frontNormal =
+        octahedronNormal(frontPos);
+
+    float frontFresnel =
+        pow(
+            1.0 -
+            saturate(
+                dot(
+                    frontNormal,
+                    -rd
+                )
+            ),
+            4.0
+        );
+
+    color +=
+        uEdgeGlow *
+        frontFresnel *
+        uFrontEdgeColor;
+
+    vec3 backPos =
+        ro +
+        rd * tFar;
+
+    vec3 backNormal =
+        octahedronNormal(backPos);
+
+    float backFresnel =
+        pow(
+            1.0 -
+            saturate(
+                dot(
+                    backNormal,
+                    rd
+                )
+            ),
+            3.0
+        );
+
+    color +=
+        transmittance *
+        uBackEdgeGlow *
+        backFresnel *
+        uBackEdgeColor;
+
+    return color;
+}
+
+void main() {
+    vec2 uv =
+        (
+            2.0 * gl_FragCoord.xy -
+            uResolution.xy
+        ) /
+        uResolution.y;
+
+    float safeScale = max(uInteractionScale, 0.05);
+
+    vec3 rayOrigin =
+        vec3(
+            0.0,
+            -0.9,
+            uCameraDistance
+        ) /
+        safeScale;
+
+    vec3 lookTarget = vec3(0.0);
+
+    vec3 forward =
+        normalize(
+            lookTarget -
+            rayOrigin
+        );
+
+    vec3 right =
+        normalize(
+            cross(
+                forward,
+                vec3(0.0, 1.0, 0.0)
+            )
+        );
+
+    vec3 up =
+        cross(
+            right,
+            forward
+        );
+
+    vec3 rayDir =
+        normalize(
+            forward * uCameraFov +
+            uv.x * right +
+            uv.y * up
+        );
+
+    float yaw =
+        uTime * uRotationSpeed +
+        uManualRotation.x;
+
+    float pitch =
+        uManualRotation.y;
+
+    // Apply pitch before yaw so vertical drag stays consistent
+    // at every horizontal orientation.
+    rayOrigin.yz *= rot(-pitch);
+    rayDir.yz *= rot(-pitch);
+
+    rayOrigin.xz *= rot(-yaw);
+    rayDir.xz *= rot(-yaw);
+
+    vec2 hit =
+        rayOctahedron(
+            rayOrigin,
+            rayDir,
+            uOctahedronRadius
+        );
+
+    if (hit.y <= 0.0) {
+        gl_FragColor = vec4(uBackgroundColor, 1.0);
+        return;
+    }
+
+    vec3 color =
+        renderVolume(
+            rayOrigin,
+            rayDir,
+            hit
+        );
+
+    color =
+        tanh(
+            color *
+            color *
+            0.05
+        );
+
+    color =
+        pow(
+            max(
+                color,
+                vec3(0.0)
+            ),
+            vec3(0.4545)
+        );
+
+    gl_FragColor = vec4(color, 1.0);
+}
+`;
+
+const material = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader,
+    fragmentShader,
+    depthTest: false,
+    depthWrite: false,
+    transparent: false
+});
+
+const geometry = new THREE.PlaneGeometry(2, 2);
+const fullscreenQuad = new THREE.Mesh(geometry, material);
+fullscreenQuad.frustumCulled = false;
+scene.add(fullscreenQuad);
+
+// ============================================================
+// Interaction: drag rotation, inertia, mobile pinch scaling
+// ============================================================
+
+const canvas = renderer.domElement;
+const pointers = new Map();
+
+const interactionState = {
+    yaw: 0,
+    pitch: 0,
+    velocityX: 0,
+    velocityY: 0,
+    dragging: false,
+    pinching: false,
+    lastX: 0,
+    lastY: 0,
+    lastMoveTime: performance.now(),
+    pinchStartDistance: 0,
+    pinchStartScale: 1,
+    scale: 1
+};
+
+function getPointerDistance() {
+    const values = Array.from(pointers.values());
+    if (values.length < 2) return 0;
+
+    const dx = values[1].x - values[0].x;
+    const dy = values[1].y - values[0].y;
+    return Math.hypot(dx, dy);
+}
+
+function beginPinch() {
+    interactionState.pinching = true;
+    interactionState.dragging = false;
+    interactionState.velocityX = 0;
+    interactionState.velocityY = 0;
+    interactionState.pinchStartDistance = Math.max(getPointerDistance(), 1);
+    interactionState.pinchStartScale = interactionState.scale;
+    canvas.classList.add('is-dragging');
+}
+
+function handlePointerDown(event) {
+    canvas.setPointerCapture(event.pointerId);
+
+    pointers.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY
+    });
+
+    if (pointers.size === 1) {
+        interactionState.dragging = true;
+        interactionState.pinching = false;
+        interactionState.lastX = event.clientX;
+        interactionState.lastY = event.clientY;
+        interactionState.lastMoveTime = performance.now();
+        interactionState.velocityX = 0;
+        interactionState.velocityY = 0;
+        canvas.classList.add('is-dragging');
+    } else if (pointers.size === 2) {
+        beginPinch();
+    }
+}
+
+function handlePointerMove(event) {
+    if (!pointers.has(event.pointerId)) return;
+
+    pointers.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY
+    });
+
+    if (pointers.size >= 2) {
+        if (!interactionState.pinching) beginPinch();
+
+        const currentDistance = Math.max(getPointerDistance(), 1);
+        const ratio = currentDistance / interactionState.pinchStartDistance;
+
+        interactionState.scale = THREE.MathUtils.clamp(
+            interactionState.pinchStartScale * ratio,
+            0.65,
+            1.8
+        );
+
+        uniforms.uInteractionScale.value = interactionState.scale;
+        return;
+    }
+
+    if (!interactionState.dragging) return;
+
+    const now = performance.now();
+    const dt = Math.max((now - interactionState.lastMoveTime) * 0.001, 1 / 240);
+    const dx = event.clientX - interactionState.lastX;
+    const dy = event.clientY - interactionState.lastY;
+    const sensitivity = params.interaction.dragSensitivity;
+
+    interactionState.yaw -= dx * sensitivity;
+    interactionState.pitch += dy * sensitivity;
+
+    interactionState.velocityX = -dx * sensitivity / dt;
+    interactionState.velocityY = dy * sensitivity / dt;
+
+    interactionState.lastX = event.clientX;
+    interactionState.lastY = event.clientY;
+    interactionState.lastMoveTime = now;
+
+    uniforms.uManualRotation.value.set(
+        interactionState.yaw,
+        interactionState.pitch
+    );
+}
+
+function handlePointerEnd(event) {
+    pointers.delete(event.pointerId);
+
+    if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+    }
+
+    if (pointers.size === 1) {
+        const remaining = pointers.values().next().value;
+
+        interactionState.pinching = false;
+        interactionState.dragging = true;
+        interactionState.lastX = remaining.x;
+        interactionState.lastY = remaining.y;
+        interactionState.lastMoveTime = performance.now();
+        interactionState.velocityX = 0;
+        interactionState.velocityY = 0;
+    } else if (pointers.size === 0) {
+        interactionState.pinching = false;
+        interactionState.dragging = false;
+        canvas.classList.remove('is-dragging');
+    }
+}
+
+canvas.addEventListener('pointerdown', handlePointerDown, { passive: true });
+canvas.addEventListener('pointermove', handlePointerMove, { passive: true });
+canvas.addEventListener('pointerup', handlePointerEnd, { passive: true });
+canvas.addEventListener('pointercancel', handlePointerEnd, { passive: true });
+
+// ============================================================
+// lil-gui
+// ============================================================
+
+const gui = new GUI({ title: 'Settings' });
+
+const geometryFolder = gui.addFolder('Geometry');
+geometryFolder
+    .add(params.geometry, 'radius', 1.0, 3.5, 0.01)
+    .name('Radius')
+    .onChange((value) => {
+        uniforms.uOctahedronRadius.value = value;
+    });
+geometryFolder
+    .add(params.geometry, 'height', 0.6, 2.0, 0.01)
+    .name('Height')
+    .onChange((value) => {
+        uniforms.uOctahedronHeight.value = value;
+    });
+
+const cameraFolder = gui.addFolder('Camera');
+cameraFolder
+    .add(params.camera, 'distance', 2.5, 8.0, 0.01)
+    .name('Distance')
+    .onChange((value) => {
+        uniforms.uCameraDistance.value = value;
+    });
+cameraFolder
+    .add(params.camera, 'fov', 0.6, 2.4, 0.01)
+    .name('FOV')
+    .onChange((value) => {
+        uniforms.uCameraFov.value = value;
+    });
+
+const animationFolder = gui.addFolder('Animation');
+animationFolder
+    .add(params.animation, 'rotationSpeed', -1.0, 1.0, 0.001)
+    .name('Rotation Speed')
+    .onChange((value) => {
+        uniforms.uRotationSpeed.value = value;
+    });
+animationFolder
+    .add(params.animation, 'colorSpeed', 0.0, 2.0, 0.001)
+    .name('Color Speed')
+    .onChange((value) => {
+        uniforms.uColorSpeed.value = value;
+    });
+
+const fractalFolder = gui.addFolder('Fractal');
+fractalFolder
+    .add(params.fractal, 'domainScale', 10.0, 120.0, 0.1)
+    .name('Domain Scale')
+    .onChange((value) => {
+        uniforms.uDomainScale.value = value;
+    });
+fractalFolder
+    .add(params.fractal, 'pathScale', -0.2, 0.2, 0.001)
+    .name('Path Scale')
+    .onChange((value) => {
+        uniforms.uPathScale.value = value;
+    });
+fractalFolder
+    .add(params.fractal, 'glowDensity', 0.5, 16.0, 0.05)
+    .name('Glow Density')
+    .onChange((value) => {
+        uniforms.uGlowDensity.value = value;
+    });
+fractalFolder
+    .add(params.fractal, 'volumeOpacity', 0.05, 1.5, 0.01)
+    .name('Volume Opacity')
+    .onChange((value) => {
+        uniforms.uVolumeOpacity.value = value;
+    });
+fractalFolder
+    .add(params.fractal, 'orbBoost', 0.0, 50.0, 0.1)
+    .name('Orb Boost')
+    .onChange((value) => {
+        uniforms.uOrbBoost.value = value;
+    });
+fractalFolder
+    .add(params.fractal, 'edgeGlow', 0.0, 8.0, 0.01)
+    .name('Edge Glow')
+    .onChange((value) => {
+        uniforms.uEdgeGlow.value = value;
+    });
+fractalFolder
+    .add(params.fractal, 'backEdgeGlow', 0.0, 3.0, 0.01)
+    .name('Back Edge Glow')
+    .onChange((value) => {
+        uniforms.uBackEdgeGlow.value = value;
+    });
+fractalFolder
+    .add(params.fractal, 'volumeSteps', 16, 128, 1)
+    .name('Volume Steps')
+    .onChange((value) => {
+        uniforms.uVolumeSteps.value = Math.round(value);
+    });
+
+const colorsFolder = gui.addFolder('Colors');
+colorsFolder
+    .addColor(params.colors, 'fractalTint')
+    .name('Fractal Tint')
+    .onChange((value) => {
+        hexToRawColor(value, uniforms.uFractalTint.value);
+    });
+colorsFolder
+    .addColor(params.colors, 'frontEdge')
+    .name('Front Edge')
+    .onChange((value) => {
+        hexToRawColor(value, uniforms.uFrontEdgeColor.value);
+    });
+colorsFolder
+    .addColor(params.colors, 'backEdge')
+    .name('Back Edge')
+    .onChange((value) => {
+        hexToRawColor(value, uniforms.uBackEdgeColor.value);
+    });
+colorsFolder
+    .addColor(params.colors, 'background')
+    .name('Background')
+    .onChange((value) => {
+        hexToRawColor(value, uniforms.uBackgroundColor.value);
+    });
+
+const interactionFolder = gui.addFolder('Interaction');
+interactionFolder
+    .add(params.interaction, 'dragSensitivity', 0.001, 0.012, 0.0001)
+    .name('Drag Sensitivity');
+interactionFolder
+    .add(params.interaction, 'inertia', 0.80, 0.995, 0.001)
+    .name('Inertia');
+
+const interactionActions = {
+    resetView() {
+        interactionState.yaw = 0;
+        interactionState.pitch = 0;
+        interactionState.velocityX = 0;
+        interactionState.velocityY = 0;
+        interactionState.scale = 1;
+        uniforms.uManualRotation.value.set(0, 0);
+        uniforms.uInteractionScale.value = 1;
+    }
+};
+
+interactionFolder
+    .add(interactionActions, 'resetView')
+    .name('Reset View');
+
+const performanceFolder = gui.addFolder('Performance');
+performanceFolder
+    .add(params.performance, 'dpr', 0.5, 2.0, 0.1)
+    .name('DPR')
+    .onChange((value) => {
+        renderer.setPixelRatio(value);
+        resize();
+    });
+
+// The panel is collapsed by default.
+gui.close();
+
+// ============================================================
+// Resize and animation
+// ============================================================
+
+function resize() {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    renderer.setSize(width, height, false);
+    renderer.getDrawingBufferSize(drawingBufferSize);
+    uniforms.uResolution.value.copy(drawingBufferSize);
+}
+
+window.addEventListener('resize', resize, { passive: true });
+resize();
+
+let elapsedTime = 0;
+let previousTime = performance.now();
+
+function animate(now) {
+    requestAnimationFrame(animate);
+
+    if (document.hidden) {
+        previousTime = now;
+        return;
+    }
+
+    const deltaTime = Math.min((now - previousTime) * 0.001, 0.05);
+    previousTime = now;
+    elapsedTime += deltaTime;
+
+    if (!interactionState.dragging && !interactionState.pinching) {
+        interactionState.yaw += interactionState.velocityX * deltaTime;
+        interactionState.pitch += interactionState.velocityY * deltaTime;
+
+        const damping = Math.pow(
+            params.interaction.inertia,
+            deltaTime * 60.0
+        );
+
+        interactionState.velocityX *= damping;
+        interactionState.velocityY *= damping;
+
+        if (Math.abs(interactionState.velocityX) < 0.00001) {
+            interactionState.velocityX = 0;
+        }
+
+        if (Math.abs(interactionState.velocityY) < 0.00001) {
+            interactionState.velocityY = 0;
+        }
+
+        uniforms.uManualRotation.value.set(
+            interactionState.yaw,
+            interactionState.pitch
+        );
+    }
+
+    uniforms.uTime.value = elapsedTime;
+    renderer.render(scene, camera);
+}
+
+requestAnimationFrame(animate);
+
+window.addEventListener('beforeunload', () => {
+    geometry.dispose();
+    material.dispose();
+    renderer.dispose();
+});
+</script>
+</body>
+</html>

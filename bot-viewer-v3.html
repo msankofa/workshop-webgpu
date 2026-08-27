@@ -2587,52 +2587,9 @@ function updateBotWeaponMount(dt, mid) {
 // back, pistols on the right hip). Cheap by construction: no rig, no pose controller, no anchors --
 // just a per-frame matrix into the SAME instancing pool as the held gun, using a reduced part list
 // (the biggest sub-meshes only), since a stowed gun is read as a silhouette.
-const STOW_LOD_COVERAGE = 0.9;   // keep the largest sub-meshes covering this share of the vertices
-const STOW_LOD_MAX_PARTS = 2;
-// Torso-local (metres), applied after the body yaw; +X is the bot's right, +Z its facing.
-// Templates are normalized with their long axis on +Z, so the X rotation stands the gun up, Y sets
-// the diagonal, and Z rolls it about its own barrel. `scale` multiplies the weapon's authored
-// thirdPersonHold scale -- rifles are 2x and pistols 0.68x, so a flat number would render a slung
-// rifle at half size.
-const STOW_PLACEMENTS = {
-  back: { position: [0.02, -0.06, -0.20], rotation: [-Math.PI / 2, 0.61, 0], scale: 0.95 },
-  hip: { position: [0.22, -0.32, 0.02], rotation: [Math.PI / 2, 0.25, 0], scale: 0.95 },
-};
-const stowPartsCache = new Map();   // weaponId -> Promise<parts[] | null>
-
-function buildStowParts(instanceParts) {
-  const scored = instanceParts
-    .map((part) => ({ part, verts: part.geometry?.attributes?.position?.count ?? 0 }))
-    .sort((a, b) => b.verts - a.verts);
-  const total = scored.reduce((sum, s) => sum + s.verts, 0) || 1;
-  const kept = [];
-  let covered = 0;
-  for (const s of scored) {
-    if (kept.length >= STOW_LOD_MAX_PARTS || covered / total >= STOW_LOD_COVERAGE) break;
-    kept.push(s.part);
-    covered += s.verts;
-  }
-  return kept.length ? kept : instanceParts;
-}
-
-function stowPlacementFor(weaponId) {
-  return PISTOL_IDS.includes(weaponId) ? STOW_PLACEMENTS.hip : STOW_PLACEMENTS.back;
-}
-
-// Shares the held gun's template cache (same geometries/materials => same instancing buckets), so
-// the real anchors must be passed through: a template first loaded from here would otherwise bake
-// empty anchors for the held path.
-function loadStowParts(weaponId) {
-  if (!stowPartsCache.has(weaponId)) {
-    const def = getWeapon(weaponId);
-    if (!def?.model) return Promise.resolve(null);
-    stowPartsCache.set(weaponId, botWeaponSystem.loadTemplate(weaponId)
-      .then((template) => template ? buildStowParts(template.instanceParts) : null)
-      .catch((error) => { console.warn('[bot-viewer] failed to load stowed weapon', error); return null; }));
-  }
-  return stowPartsCache.get(weaponId);
-}
-
+// The stow implementation now lives in weapon-mount.js (STOW_PLACEMENTS / stowPlacementFor /
+// buildStowParts / the system's createStow), shared with base-game.html. What stays here is the
+// bot-specific part: which weapons count as stowed, and when the set is rebuilt.
 // The loadout minus what's in hand: '' when nothing is stowed. Knife/grenade in hand stows BOTH guns.
 function stowKeyFor(actor) {
   const entity = actor?.entity;
@@ -2647,48 +2604,14 @@ function syncBotStowMounts(actor) {
   const key = stowKeyFor(actor);
   if (actor.stowKey === key) return;
   actor.stowKey = key;
-  actor.stowMounts = [];
-  const token = (actor.stowToken ?? 0) + 1;
-  actor.stowToken = token;
-  for (const weaponId of key ? key.split('|') : []) {
-    void Promise.resolve(loadStowParts(weaponId)).then((parts) => {
-      if (actor.stowToken !== token || !parts) return;
-      const placement = stowPlacementFor(weaponId);
-      const scale = placement.scale * (getWeapon(weaponId)?.thirdPersonHold?.scale ?? 1);
-      actor.stowMounts.push({ weaponId, parts, placement, scale });
-    });
-  }
+  if (!actor.stow) actor.stow = botWeaponSystem.createStow();
+  actor.stow.setWeapons(key ? key.split('|') : []);
 }
 
-const _stowWorld = new THREE.Matrix4();
-const _stowPartMatrix = new THREE.Matrix4();
-const _stowPos = new THREE.Vector3();
-const _stowOffset = new THREE.Vector3();
-const _stowQuat = new THREE.Quaternion();
-const _stowLocalQuat = new THREE.Quaternion();
-const _stowYawQuat = new THREE.Quaternion();
-const _stowEuler = new THREE.Euler();
-const _stowScale = new THREE.Vector3();
 // Rides the torso joint (procedural body only -- a capsule bot has nothing to hang a gun on).
 function flushStowedWeapons(actor) {
-  const botWeaponBatches = botWeaponSystem.batches;
-  if (!botWeaponBatches || !actor.stowMounts?.length) return;
-  const torso = actor.body?.joints?.torso;
-  if (!torso) return;
-  const yaw = actor.body?.motion?.visualYaw ?? actor.entity?.yaw ?? 0;
-  _stowYawQuat.setFromEuler(_stowEuler.set(0, yaw, 0, 'YXZ'));
-  for (const stow of actor.stowMounts) {
-    const { position, rotation } = stow.placement;
-    _stowOffset.set(position[0], position[1], position[2]).applyQuaternion(_stowYawQuat);
-    _stowPos.copy(torso.position).add(_stowOffset);
-    _stowLocalQuat.setFromEuler(_stowEuler.set(rotation[0], rotation[1], rotation[2], 'XYZ'));
-    _stowQuat.copy(_stowYawQuat).multiply(_stowLocalQuat);
-    _stowWorld.compose(_stowPos, _stowQuat, _stowScale.setScalar(stow.scale));
-    for (const part of stow.parts) {
-      _stowPartMatrix.multiplyMatrices(_stowWorld, part.localMatrix);
-      botWeaponBatches.add(part.geometry, part.material, _stowPartMatrix);
-    }
-  }
+  if (!actor.stow) return;
+  actor.stow.flush(actor.body, actor.body?.motion?.visualYaw ?? actor.entity?.yaw ?? 0);
 }
 
 function destroyBotProceduralBody() {
@@ -8458,7 +8381,7 @@ function createBotActor(entity, mesh, roleId = DEFAULT_ROLE) {
     droneKit: null,   // drone rack + launch clocks; built on the operator's first tick, off the live stock slider
     entity, mesh, body: null, weaponMount: null, weaponMountToken: 0, equippedWeapon: entity.weapon,
     reloadUntil: null, reloadWeaponId: null,
-    stowMounts: [], stowKey: null, stowToken: 0,   // low-part copies of the guns not in hand (back/hip)
+    stow: null, stowKey: null,   // weapon-mount.js stow set: low-part copies of the guns not in hand (back/hip)
     swapUntil: 0,               // sidearm draw timer: no firing or reloading until it expires
     lastGunfightAt: null,       // last frame with contact; the lull past it re-holsters the pistol
     lastSelfThreatAt: null,     // last frame someone shot at us, read by the "in a gunfight" test

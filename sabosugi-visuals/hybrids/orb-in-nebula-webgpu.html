@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hybrid WebGPU: Anunaki Magical Sphere in Colorful Nebula Background</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background-color: #000;
+      user-select: none;
+      -webkit-user-select: none;
+      font-family: monospace;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: grab;
+    }
+    canvas:active {
+      cursor: grabbing;
+    }
+    #note {
+      position: fixed;
+      left: 10px;
+      bottom: 10px;
+      color: #9aa;
+      font-size: 11px;
+      opacity: 0.6;
+      pointer-events: none;
+      max-width: 90vw;
+    }
+    #err {
+      position: fixed;
+      left: 10px;
+      top: 10px;
+      color: #ffb3b3;
+      font-size: 12px;
+      white-space: pre-wrap;
+      max-width: 90vw;
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- lil-gui: same CDN UMD build the original GLSL pens use -->
+  <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
+
+  <!-- three@0.184.0 WebGPU + TSL, same CDN pins as material-viewer.html / environment-viewer.html -->
+  <script type="importmap">
+  { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+      "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+      "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js"
+  } }
+  </script>
+
+  <div id="err"></div>
+  <div id="note">WebGPU/TSL port of the orb-in-nebula.html hybrid (raw-GLSL "Anunaki Magical Sphere" + "Colorful Nebula Background") &mdash; same math, ported to a wgslFn raymarcher driving a MeshBasicNodeMaterial.colorNode. Drag/scroll orbits+zooms the orb.</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { WebGPURenderer } from 'three/webgpu';
+    import { uniform, wgslFn, screenCoordinate, screenSize, time, int } from 'three/tsl';
+
+    const errEl = document.getElementById('err');
+    function showError(msg) {
+      errEl.style.display = 'block';
+      errEl.textContent = 'Error: ' + msg;
+    }
+    addEventListener('error', e => showError(e.message || 'script error'));
+    addEventListener('unhandledrejection', e => showError((e.reason && e.reason.message) || String(e.reason)));
+
+    // --- Renderer / scene / camera -----------------------------------------------------------
+    // Same architecture as the GLSL source: an orthographic camera sized to exactly match a
+    // (2,2) full-screen quad, so the quad's corners land on the NDC box (-1..1). The color logic
+    // itself reads screenCoordinate/screenSize (true per-pixel screen position), not the quad's
+    // own UVs, so the vertex path just needs to keep the quad covering the viewport.
+    const renderer = new WebGPURenderer({ antialias: false, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(1.0);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+    await renderer.init();
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    // --- Config (identical defaults to the GLSL hybrid) ---------------------------------------
+    const orbConfig = {
+      maxSteps: 148,
+      foldSteps: 6,
+      kifsScale: 1.26,
+      kifsOffset: 8.9,
+      textureScale: 1.45,
+      brightness: 1.423,
+      coreColor: '#7780ff',
+      colorBoost: 3.0,
+      lightSpeed: 5.5,
+      sphereRadius: 15.0,
+      innerRadius: 14.0,
+      sphereCenterZ: -25.0,
+      autoRotationSpeed: 1.0,
+      dpr: 1.0
+    };
+
+    const nebConfig = {
+      timeMul: 0.3,
+      lightFade: 2600.0,
+      loopLimit: 53.0,
+      coreRadius: 2.1,
+      advanceBase: 0.045,
+      noiseFreq: 0.7,
+      scatter: 2.0,
+      chromaR: 6.3,
+      chromaG: 7.0,
+      chromaB: 3.6,
+      mix: 1.0
+    };
+
+    // --- TSL uniforms (one per GUI-tunable parameter, same names as the GLSL uniforms) --------
+    const U = {
+      uMaxSteps: uniform(orbConfig.maxSteps),
+      uFoldSteps: uniform(orbConfig.foldSteps),
+      uKifsScale: uniform(orbConfig.kifsScale),
+      uKifsOffset: uniform(orbConfig.kifsOffset),
+      uTextureScale: uniform(orbConfig.textureScale),
+      uBrightness: uniform(orbConfig.brightness),
+      uSphereRadius: uniform(orbConfig.sphereRadius),
+      uInnerRadius: uniform(orbConfig.innerRadius),
+      uSphereCenterZ: uniform(orbConfig.sphereCenterZ),
+      uBaseColor: uniform(new THREE.Vector3()),
+      uLightSpeed: uniform(orbConfig.lightSpeed),
+      uAutoRotationSpeed: uniform(orbConfig.autoRotationSpeed),
+      uInverseRotationMatrix: uniform(new THREE.Matrix3()),
+      uZoom: uniform(1.0),
+
+      uNebTimeMul: uniform(nebConfig.timeMul),
+      uNebLightFade: uniform(nebConfig.lightFade),
+      uNebLoopLimit: uniform(nebConfig.loopLimit),
+      uNebChromaShift: uniform(new THREE.Vector4(nebConfig.chromaR, nebConfig.chromaG, nebConfig.chromaB, 3.0)),
+      uNebCoreRadius: uniform(nebConfig.coreRadius),
+      uNebAdvanceBase: uniform(nebConfig.advanceBase),
+      uNebNoiseFreq: uniform(nebConfig.noiseFreq),
+      uNebScatter: uniform(nebConfig.scatter),
+      uNebMix: uniform(nebConfig.mix)
+    };
+
+    function updateBaseColorUniform() {
+      const c = new THREE.Color(orbConfig.coreColor);
+      U.uBaseColor.value.set(c.r * orbConfig.colorBoost, c.g * orbConfig.colorBoost, c.b * orbConfig.colorBoost);
+    }
+    updateBaseColorUniform();
+
+    // --- wgslFn raymarcher -----------------------------------------------------------------
+    // Ported near-verbatim from orb-in-nebula.html's fragment shader. WGSL differences from
+    // GLSL handled here: `float`/`vec3`->`f32`/`vec3<f32>`, `var`/`let` instead of implicit
+    // mutability, explicit `f32(i)` casts, and swizzle writes (`.xy *=`) reconstructed as full
+    // vec3 rebuilds since WGSL only allows assigning through a *single*-component swizzle.
+    // Loop bounds are the uniforms directly -- WGSL (unlike WebGL1 GLSL) allows non-constant
+    // loop bounds, so the GLSL source's "loop to 250, break past the real uniform" pattern
+    // collapses to a plain `for (...; i < uMaxSteps; ...)`.
+    //
+    // IMPORTANT: the entry function must be declared FIRST in this source string -- three's
+    // WGSLNodeParser greps only the first `fn name(...) -> type` for the callable signature,
+    // then appends the rest of the source (the helper fns below) verbatim into the same shader
+    // module, where WGSL's whole-module scoping lets the entry call them regardless of order.
+    const hybridRaymarch = wgslFn(`
+      fn hybridRaymarch(
+        fragCoord: vec2<f32>,
+        resolution: vec2<f32>,
+        uTime: f32,
+        invRot: mat3x3<f32>,
+        zoom: f32,
+        sphereCenterZ: f32,
+        sphereRadius: f32,
+        innerRadius: f32,
+        maxSteps: i32,
+        foldSteps: i32,
+        kifsScale: f32,
+        kifsOffset: f32,
+        textureScale: f32,
+        brightness: f32,
+        baseColor: vec3<f32>,
+        lightSpeed: f32,
+        autoRotationSpeed: f32,
+        nebTimeMul: f32,
+        nebLightFade: f32,
+        nebLoopLimit: f32,
+        nebChromaShift: vec4<f32>,
+        nebCoreRadius: f32,
+        nebAdvanceBase: f32,
+        nebNoiseFreq: f32,
+        nebScatter: f32,
+        nebMix: f32
+      ) -> vec3<f32> {
+        let nebRayDir = normalize(vec3<f32>(fragCoord * 2.0 - resolution, -resolution.y));
+        let bg = nebulaBackground(nebRayDir, uTime, nebTimeMul, nebLoopLimit, nebNoiseFreq, nebCoreRadius, nebAdvanceBase, nebScatter, nebChromaShift, nebLightFade) * nebMix;
+
+        let uvCenter = (fragCoord * 2.0 - resolution) / resolution.y;
+        let rayOriginWorld = vec3<f32>(0.0, 0.0, 0.0);
+        let rayDirectionWorld = normalize(vec3<f32>(uvCenter * zoom, -1.0));
+
+        let sphereCenter = vec3<f32>(0.0, 0.0, sphereCenterZ);
+        let localRayOrigin = invRot * (rayOriginWorld - sphereCenter);
+        let localRayDirection = invRot * rayDirectionWorld;
+
+        let hitOuter = intersectSphere(localRayOrigin, localRayDirection, vec3<f32>(0.0, 0.0, 0.0), sphereRadius);
+
+        if (hitOuter.x < 0.0) {
+          return bg;
+        }
+
+        let tStart = max(0.0, hitOuter.x);
+        let tEnd = hitOuter.y;
+        let stepSize = (tEnd - tStart) / f32(maxSteps);
+        var currentDistance: f32 = tStart;
+        var accumulatedColor: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
+
+        for (var i: i32 = 0; i < maxSteps; i = i + 1) {
+          let localPos = localRayOrigin + localRayDirection * currentDistance;
+          let distFromCenter = length(localPos);
+
+          let wallMask = smoothstep(innerRadius, innerRadius + 1.0, distFromCenter) * smoothstep(sphereRadius, sphereRadius - 0.2, distFromCenter);
+
+          if (wallMask > 0.01) {
+            var currentPos: vec3<f32> = localPos * textureScale;
+
+            let rotXY = rotate2D(uTime * 0.15 * autoRotationSpeed);
+            currentPos = vec3<f32>(rotXY * currentPos.xy, currentPos.z);
+
+            let rotXZ = rotate2D(uTime * 0.10 * autoRotationSpeed);
+            let rotatedXZ = rotXZ * currentPos.xz;
+            currentPos = vec3<f32>(rotatedXZ.x, currentPos.y, rotatedXZ.y);
+
+            currentPos = abs(currentPos);
+
+            let timeVal = 2.6 + f32(i) * 0.356;
+            let reflectionAxis = normalize(tan(timeVal + vec3<f32>(2.5, 1.0, 0.0)));
+            currentPos = reflect(-currentPos, reflectionAxis) - vec3<f32>(-2.6, -1.0, 0.2);
+
+            var accumulatedScale: f32 = 0.1;
+
+            if (currentPos.x < currentPos.z) {
+              currentPos = currentPos.zyx;
+            }
+
+            for (var k: i32 = 0; k < foldSteps; k = k + 1) {
+              currentPos = currentPos * kifsScale;
+              accumulatedScale = accumulatedScale * kifsScale;
+              currentPos.y = currentPos.y + kifsOffset;
+
+              if (currentPos.y > currentPos.z) { currentPos = currentPos.xzy; }
+
+              currentPos = currentPos * kifsScale;
+              accumulatedScale = accumulatedScale * kifsScale;
+              currentPos.y = currentPos.y + kifsOffset;
+
+              if (currentPos.x < currentPos.y) { currentPos = currentPos.yxz; }
+            }
+
+            let currentDensity = max(length(currentPos.xz) / accumulatedScale, 0.001);
+
+            let spatialPhase = currentPos;
+            let lightIntensity = exp(sin(uTime * lightSpeed + spatialPhase)) / currentDensity;
+
+            accumulatedColor = accumulatedColor + baseColor * lightIntensity * stepSize * brightness * wallMask;
+          }
+
+          currentDistance = currentDistance + stepSize;
+        }
+
+        var orbColor = tanh(accumulatedColor);
+
+        let localHitPoint = localRayOrigin + localRayDirection * hitOuter.x;
+        let surfaceNormalLocal = normalize(localHitPoint);
+        let edgeHighlight = 0.7 - max(dot(-localRayDirection, surfaceNormalLocal), 0.5);
+        orbColor = orbColor + vec3<f32>(0.05, 0.1, 0.3) * pow(edgeHighlight, 4.0);
+
+        let alpha = clamp(dot(orbColor, vec3<f32>(0.299, 0.587, 0.114)) * 1.4, 0.0, 1.0);
+        return bg * (1.0 - alpha * 0.85) + orbColor;
+      }
+
+      fn nebulaBackground(rayDir: vec3<f32>, uTime: f32, nebTimeMul: f32, nebLoopLimit: f32, nebNoiseFreq: f32, nebCoreRadius: f32, nebAdvanceBase: f32, nebScatter: f32, nebChromaShift: vec4<f32>, nebLightFade: f32) -> vec3<f32> {
+        var acc: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
+        var depth: f32 = 0.0;
+        var step_val: f32 = 0.0;
+        let t_scaled = uTime * nebTimeMul;
+
+        for (var k: f32 = 0.0; k < nebLoopLimit; k = k + 1.0) {
+          var pos: vec3<f32> = depth * rayDir;
+          step_val = 1.0;
+
+          for (var m: i32 = 0; m < 6; m = m + 1) {
+            if (step_val > 8.9) { break; }
+            var shift: vec3<f32> = pos.yzx * step_val * nebNoiseFreq;
+            shift = shift + depth * 0.2;
+            shift = shift + t_scaled;
+            pos = pos + cos(shift) / step_val;
+            step_val = step_val * 1.4285714;
+          }
+
+          let len_xy = length(pos.xy);
+          let core_diff = abs(nebCoreRadius - len_xy);
+          step_val = nebAdvanceBase + (core_diff * 0.1);
+          depth = depth + step_val;
+
+          let scatter_factor = nebScatter / step_val;
+          let tint = cos(depth + nebChromaShift) + vec4<f32>(1.0, 1.0, 1.0, 1.0);
+          acc = acc + (tint.rgb * scatter_factor) / nebLightFade;
+        }
+        return acc;
+      }
+
+      fn intersectSphere(rayOrigin: vec3<f32>, rayDir: vec3<f32>, center: vec3<f32>, radius: f32) -> vec2<f32> {
+        let oc = rayOrigin - center;
+        let b = dot(oc, rayDir);
+        let c = dot(oc, oc) - radius * radius;
+        let h = b * b - c;
+        if (h < 0.0) {
+          return vec2<f32>(-1.0, -1.0);
+        }
+        let hs = sqrt(h);
+        return vec2<f32>(-b - hs, -b + hs);
+      }
+
+      fn rotate2D(angle: f32) -> mat2x2<f32> {
+        let s = sin(angle);
+        let c = cos(angle);
+        return mat2x2<f32>(c, -s, s, c);
+      }
+    `);
+
+    const material = new THREE.MeshBasicNodeMaterial();
+    material.colorNode = hybridRaymarch(
+      screenCoordinate, screenSize, time,
+      U.uInverseRotationMatrix, U.uZoom, U.uSphereCenterZ, U.uSphereRadius, U.uInnerRadius,
+      int(U.uMaxSteps), int(U.uFoldSteps), U.uKifsScale, U.uKifsOffset, U.uTextureScale, U.uBrightness,
+      U.uBaseColor, U.uLightSpeed, U.uAutoRotationSpeed,
+      U.uNebTimeMul, U.uNebLightFade, U.uNebLoopLimit, U.uNebChromaShift, U.uNebCoreRadius,
+      U.uNebAdvanceBase, U.uNebNoiseFreq, U.uNebScatter, U.uNebMix
+    );
+    material.depthWrite = false;
+    material.depthTest = false;
+
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+    scene.add(mesh);
+
+    // --- Interaction (identical to orb-in-nebula.html) ----------------------------------------
+    let isDragging = false;
+    let previousPointerPosition = { x: 0, y: 0 };
+    let velocityX = 0, velocityY = 0;
+    let currentZoom = 1.0;
+    let targetZoom = 1.0;
+
+    const targetRotation = new THREE.Quaternion();
+    const currentRotation = new THREE.Quaternion();
+    const axisX = new THREE.Vector3(1, 0, 0);
+    const axisY = new THREE.Vector3(0, 1, 0);
+
+    window.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.lil-gui')) return;
+      isDragging = true;
+      previousPointerPosition = { x: e.clientX, y: e.clientY };
+      velocityX = 0;
+      velocityY = 0;
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (!isDragging) return;
+      const deltaX = e.clientX - previousPointerPosition.x;
+      const deltaY = e.clientY - previousPointerPosition.y;
+
+      velocityX = deltaX * 0.0035;
+      velocityY = deltaY * 0.0035;
+
+      const qY = new THREE.Quaternion().setFromAxisAngle(axisY, velocityX);
+      const qX = new THREE.Quaternion().setFromAxisAngle(axisX, velocityY);
+      targetRotation.premultiply(qX).premultiply(qY);
+      targetRotation.normalize();
+
+      previousPointerPosition = { x: e.clientX, y: e.clientY };
+    });
+
+    window.addEventListener('pointerup', () => { isDragging = false; });
+    window.addEventListener('pointercancel', () => { isDragging = false; });
+
+    window.addEventListener('wheel', (e) => {
+      if (e.target.closest('.lil-gui')) return;
+      targetZoom += e.deltaY * 0.001;
+      targetZoom = Math.max(0.3, Math.min(4.0, targetZoom));
+    }, { passive: true });
+
+    let touchStartDist = 0;
+    let baseZoom = 1.0;
+
+    window.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        touchStartDist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        baseZoom = targetZoom;
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 2 && touchStartDist > 0) {
+        const dist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        const factor = dist / touchStartDist;
+        targetZoom = Math.max(0.3, Math.min(4.0, baseZoom / factor));
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchend', () => { touchStartDist = 0; });
+
+    const rotationMatrix4 = new THREE.Matrix4();
+    const rotationMatrix3 = new THREE.Matrix3();
+
+    function updateRotationAndZoom() {
+      if (!isDragging) {
+        velocityX *= 0.95;
+        velocityY *= 0.95;
+
+        const qY = new THREE.Quaternion().setFromAxisAngle(axisY, velocityX);
+        const qX = new THREE.Quaternion().setFromAxisAngle(axisX, velocityY);
+        targetRotation.premultiply(qX).premultiply(qY);
+        targetRotation.normalize();
+      }
+
+      currentRotation.slerp(targetRotation, 0.1);
+      currentZoom += (targetZoom - currentZoom) * 0.15;
+
+      rotationMatrix4.makeRotationFromQuaternion(currentRotation);
+      rotationMatrix4.invert();
+      rotationMatrix3.setFromMatrix4(rotationMatrix4);
+
+      U.uInverseRotationMatrix.value.copy(rotationMatrix3);
+      U.uZoom.value = currentZoom;
+    }
+
+    // --- Combined control panel -----------------------------------------------------------
+    const gui = new lil.GUI({ title: 'Hybrid Control Panel (WebGPU)' });
+    gui.close();
+
+    const fOrb = gui.addFolder('Orb (Anunaki Magical Sphere)');
+    fOrb.add(orbConfig, 'foldSteps', 1, 15, 1).name('Detail Steps').onChange(v => U.uFoldSteps.value = v);
+    fOrb.add(orbConfig, 'kifsScale', 1.0, 1.8, 0.01).name('KIFS Scale').onChange(v => U.uKifsScale.value = v);
+    fOrb.add(orbConfig, 'kifsOffset', 1.0, 15.0, 0.1).name('KIFS Offset').onChange(v => U.uKifsOffset.value = v);
+    fOrb.add(orbConfig, 'textureScale', 0.1, 4.0, 0.05).name('Pattern Scale').onChange(v => U.uTextureScale.value = v);
+    fOrb.add(orbConfig, 'brightness', 0.1, 4.0, 0.01).name('Brightness').onChange(v => U.uBrightness.value = v);
+    fOrb.addColor(orbConfig, 'coreColor').name('Base Tint').onChange(updateBaseColorUniform);
+    fOrb.add(orbConfig, 'colorBoost', 0.5, 6.0, 0.1).name('Glow Intensity').onChange(updateBaseColorUniform);
+    fOrb.add(orbConfig, 'lightSpeed', 0.0, 15.0, 0.1).name('Pulse Speed').onChange(v => U.uLightSpeed.value = v);
+    fOrb.add(orbConfig, 'sphereRadius', 5.0, 25.0, 0.1).name('Outer Radius').onChange(v => {
+      U.uSphereRadius.value = v;
+      if (orbConfig.innerRadius >= v) {
+        orbConfig.innerRadius = v - 1.0;
+        U.uInnerRadius.value = orbConfig.innerRadius;
+        fOrb.controllers.find(c => c.property === 'innerRadius').updateDisplay();
+      }
+    });
+    fOrb.add(orbConfig, 'innerRadius', 4.0, 24.0, 0.1).name('Inner Radius').onChange(v => {
+      if (v >= orbConfig.sphereRadius) {
+        orbConfig.innerRadius = orbConfig.sphereRadius - 1.0;
+        U.uInnerRadius.value = orbConfig.innerRadius;
+        fOrb.controllers.find(c => c.property === 'innerRadius').updateDisplay();
+      } else {
+        U.uInnerRadius.value = v;
+      }
+    });
+    fOrb.add(orbConfig, 'maxSteps', 20, 250, 1).name('Raymarching Detail').onChange(v => U.uMaxSteps.value = v);
+    fOrb.add(orbConfig, 'autoRotationSpeed', 0.0, 3.0, 0.05).name('Auto Spin').onChange(v => U.uAutoRotationSpeed.value = v);
+
+    const fNeb = gui.addFolder('Nebula Backdrop');
+    fNeb.add(nebConfig, 'mix', 0.0, 2.0, 0.05).name('Backdrop Strength').onChange(v => U.uNebMix.value = v);
+    fNeb.add(nebConfig, 'loopLimit', 10, 150, 1).name('Ray Limit').onChange(v => U.uNebLoopLimit.value = v);
+    fNeb.add(nebConfig, 'advanceBase', 0.01, 0.1, 0.005).name('Ray Stride').onChange(v => U.uNebAdvanceBase.value = v);
+    fNeb.add(nebConfig, 'timeMul', 0.0, 3.0, 0.1).name('Time Multiplier').onChange(v => U.uNebTimeMul.value = v);
+    fNeb.add(nebConfig, 'scatter', 0.1, 5.0, 0.1).name('Scattering').onChange(v => U.uNebScatter.value = v);
+    fNeb.add(nebConfig, 'noiseFreq', 0.5, 3.0, 0.1).name('Turbulence Freq').onChange(v => U.uNebNoiseFreq.value = v);
+    fNeb.add(nebConfig, 'coreRadius', 0.5, 10.0, 0.1).name('Void Radius').onChange(v => U.uNebCoreRadius.value = v);
+    fNeb.add(nebConfig, 'lightFade', 500, 10000, 100).name('Light Attenuation').onChange(v => U.uNebLightFade.value = v);
+    fNeb.add(nebConfig, 'chromaR', 0, 10, 0.1).name('Channel R Shift').onChange(v => U.uNebChromaShift.value.x = v);
+    fNeb.add(nebConfig, 'chromaG', 0, 10, 0.1).name('Channel G Shift').onChange(v => U.uNebChromaShift.value.y = v);
+    fNeb.add(nebConfig, 'chromaB', 0, 10, 0.1).name('Channel B Shift').onChange(v => U.uNebChromaShift.value.z = v);
+
+    const fSystem = gui.addFolder('System');
+    fSystem.add(orbConfig, 'dpr', 0.25, 2.0, 0.25).name('Screen DPR').onChange(v => {
+      renderer.setPixelRatio(v);
+    });
+
+    function onWindowResize() {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    window.addEventListener('resize', onWindowResize);
+    renderer.setPixelRatio(orbConfig.dpr);
+
+    renderer.setAnimationLoop(() => {
+      updateRotationAndZoom();
+      renderer.render(scene, camera);
+    });
+  </script>
+</body>
+
+</html>

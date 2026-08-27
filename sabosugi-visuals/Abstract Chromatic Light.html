@@ -1,0 +1,1263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0"
+    />
+
+    <title>Abstract Chromatic Light</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #000000;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body>
+<script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js";
+    import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.20.0/+esm";
+
+    // ============================================================
+    // Scene parameters
+    // ============================================================
+
+    const params = {
+        preset: "Preset 1",
+
+        traceSteps: 114,
+        warpSteps: 6,
+
+        timeSpeed: 0.2,
+
+        initialDepth: 6.1,
+        baseStep: 0.001,
+        depthTarget: 3.8,
+        depthBlend: 0.5,
+        stepDivisor: 11.6,
+
+        warpSpatialScale: 0.86,
+        warpAmplitude: 1.1,
+        warpTurnSmoothing: -0.02,
+
+        fieldSmoothness: 0.01,
+
+        colorFrequency: 0.15,
+        exposure: 30000,
+
+        fractalColor: "#ffffff",
+        backgroundColor: "#000000",
+
+        dpr: 0.5,
+
+        pause: false,
+        resetTime: () => resetAnimationTime()
+    };
+
+    // ============================================================
+    // Presets
+    // ============================================================
+
+    const presets = {
+        "Preset 1": {
+            traceSteps: 114,
+            warpSteps: 6,
+
+            timeSpeed: 0.2,
+
+            initialDepth: 6.1,
+            baseStep: 0.001,
+            depthTarget: 3.8,
+            depthBlend: 0.5,
+            stepDivisor: 11.6,
+
+            warpSpatialScale: 0.86,
+            warpAmplitude: 1.1,
+            warpTurnSmoothing: -0.02,
+
+            fieldSmoothness: 0.01,
+
+            colorFrequency: 0.15,
+            exposure: 30000,
+
+            fractalColor: "#ffffff",
+            backgroundColor: "#000000",
+
+            dpr: 0.5,
+            pause: false
+        },
+
+        "Preset 2": {
+            traceSteps: 114,
+            warpSteps: 6,
+
+            timeSpeed: 0.312,
+
+            initialDepth: 0.1,
+            baseStep: 0.0017,
+            depthTarget: 3.8,
+            depthBlend: 0.5,
+            stepDivisor: 11.6,
+
+            warpSpatialScale: 0.786,
+            warpAmplitude: 1.414,
+            warpTurnSmoothing: -0.02,
+
+            fieldSmoothness: 0.01,
+
+            colorFrequency: 0.017,
+            exposure: 25770,
+
+            fractalColor: "#ffffff",
+            backgroundColor: "#28a3d7",
+
+            dpr: 0.5,
+            pause: false
+        }
+    };
+
+    const DPR_OPTIONS = {
+        "0.5": 0.5,
+        "0.7": 0.7,
+        "1.0": 1,
+        "1.5": 1.5
+    };
+
+    const TRACE_STEPS_MIN = 30;
+    const TRACE_STEPS_MAX = 180;
+
+    const WARP_STEPS_MIN = 1;
+    const WARP_STEPS_MAX = 10;
+
+    // ============================================================
+    // Shaders
+    // ============================================================
+
+    const vertexShader = /* glsl */ `
+        precision highp float;
+
+        void main()
+        {
+            vec2 position;
+
+            if (gl_VertexID == 0)
+            {
+                position = vec2(-1.0, -1.0);
+            }
+            else if (gl_VertexID == 1)
+            {
+                position = vec2(3.0, -1.0);
+            }
+            else
+            {
+                position = vec2(-1.0, 3.0);
+            }
+
+            gl_Position = vec4(position, 0.0, 1.0);
+        }
+    `;
+
+    function createFragmentShader()
+    {
+        const traceSteps = Math.round(
+            THREE.MathUtils.clamp(
+                params.traceSteps,
+                TRACE_STEPS_MIN,
+                TRACE_STEPS_MAX
+            )
+        );
+
+        const warpSteps = Math.round(
+            THREE.MathUtils.clamp(
+                params.warpSteps,
+                WARP_STEPS_MIN,
+                WARP_STEPS_MAX
+            )
+        );
+
+        return /* glsl */ `
+            precision highp float;
+            precision highp int;
+
+            #define TRACE_STEPS ${traceSteps}
+            #define WARP_STEPS ${warpSteps}
+
+            uniform vec2 uResolution;
+            uniform float uAnimationTime;
+
+            uniform float uInitialDepth;
+            uniform float uBaseStep;
+            uniform float uDepthTarget;
+            uniform float uDepthBlend;
+            uniform float uInverseStepDivisor;
+
+            uniform float uWarpSpatialScale;
+            uniform float uWarpAmplitude;
+            uniform float uWarpTurnSmoothing;
+            uniform float uFieldSmoothness;
+
+            uniform float uColorFrequency;
+            uniform float uInverseExposure;
+
+            uniform vec3 uFractalColor;
+            uniform vec3 uBackgroundColor;
+
+            out vec4 outputColor;
+
+            vec3 safeNormalize(vec3 value)
+            {
+                return value * inversesqrt(
+                    max(dot(value, value), 1e-8)
+                );
+            }
+
+            float smoothAbsolute(
+                float value,
+                float radius
+            )
+            {
+                return sqrt(
+                    value * value +
+                    radius * radius
+                );
+            }
+
+            vec3 createViewRay(vec2 fragCoord)
+            {
+                vec2 uv = (
+                    fragCoord * 2.0 -
+                    uResolution
+                ) / max(uResolution.y, 1.0);
+
+                return safeNormalize(
+                    vec3(-uv, 1.0)
+                );
+            }
+
+            vec3 evaluateFractalWarp(vec3 position)
+            {
+                float frequency = 3.4;
+
+                for (
+                    int warpIndex = 0;
+                    warpIndex < WARP_STEPS;
+                    ++warpIndex
+                )
+                {
+                    frequency *= 0.625;
+
+                    float spatialFrequency =
+                        frequency *
+                        uWarpSpatialScale;
+
+                    float phaseOffset =
+                        frequency +
+                        uAnimationTime;
+
+                    vec3 phase =
+                        position *
+                        spatialFrequency +
+                        phaseOffset;
+
+                    float inverseFrequency =
+                        1.0 /
+                        max(frequency, 1e-4);
+
+                    vec3 displacement =
+                        sin(phase) *
+                        (
+                            uWarpAmplitude *
+                            inverseFrequency
+                        );
+
+                    position =
+                        mix(
+                            position.zxy,
+                            position,
+                            uWarpTurnSmoothing
+                        ) +
+                        displacement;
+                }
+
+                return position;
+            }
+
+            float calculateRayStep(
+                float rayDepth,
+                float warpedDepth
+            )
+            {
+                float mixedDepth = mix(
+                    rayDepth,
+                    warpedDepth,
+                    uDepthBlend
+                );
+
+                float fieldDifference =
+                    smoothAbsolute(
+                        uDepthTarget -
+                        mixedDepth,
+                        uFieldSmoothness
+                    );
+
+                return
+                    uBaseStep +
+                    fieldDifference *
+                    uInverseStepDivisor;
+            }
+
+            void main()
+            {
+                vec3 rayDirection =
+                    createViewRay(
+                        gl_FragCoord.xy
+                    );
+
+                float rayDepth =
+                    uInitialDepth;
+
+                vec3 accumulatedLight =
+                    vec3(0.0);
+
+                const vec3 channelOffsets =
+                    vec3(0.0, 1.0, 2.0);
+
+                for (
+                    int traceIndex = 0;
+                    traceIndex < TRACE_STEPS;
+                    ++traceIndex
+                )
+                {
+                    vec3 rayPosition =
+                        rayDirection *
+                        rayDepth;
+
+                    vec3 warpedPosition =
+                        evaluateFractalWarp(
+                            rayPosition
+                        );
+
+                    float rayStep =
+                        calculateRayStep(
+                            rayDepth,
+                            warpedPosition.z
+                        );
+
+                    rayDepth += rayStep;
+
+                    float colorPhase =
+                        rayDepth +
+                        float(traceIndex) *
+                        uColorFrequency;
+
+                    vec3 chromaticLight =
+                        sin(
+                            colorPhase +
+                            channelOffsets
+                        ) +
+                        1.0;
+
+                    accumulatedLight +=
+                        chromaticLight /
+                        max(rayStep, 1e-6);
+                }
+
+                vec3 originalFractalColor =
+                    tanh(
+                        accumulatedLight *
+                        uInverseExposure
+                    );
+
+                vec3 tintedFractalColor =
+                    originalFractalColor *
+                    uFractalColor;
+
+                float fractalMask = clamp(
+                    max(
+                        tintedFractalColor.r,
+                        max(
+                            tintedFractalColor.g,
+                            tintedFractalColor.b
+                        )
+                    ),
+                    0.0,
+                    1.0
+                );
+
+                vec3 finalColor =
+                    uBackgroundColor +
+                    tintedFractalColor *
+                    fractalMask;
+
+                outputColor = vec4(
+                    max(finalColor, vec3(0.0)),
+                    1.0
+                );
+            }
+        `;
+    }
+
+    // ============================================================
+    // Renderer
+    // ============================================================
+
+    const renderer = new THREE.WebGLRenderer({
+        antialias: false,
+        alpha: false,
+        depth: false,
+        stencil: false,
+        powerPreference: "high-performance"
+    });
+
+    renderer.outputColorSpace =
+        THREE.SRGBColorSpace;
+
+    renderer.setClearColor(
+        params.backgroundColor,
+        1
+    );
+
+    document.body.appendChild(
+        renderer.domElement
+    );
+
+    // ============================================================
+    // Scene and camera
+    // ============================================================
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.Camera();
+
+    // ============================================================
+    // Uniforms
+    // ============================================================
+
+    const uniforms = {
+        uResolution: {
+            value: new THREE.Vector2()
+        },
+
+        uAnimationTime: {
+            value: 0
+        },
+
+        uInitialDepth: {
+            value: params.initialDepth
+        },
+
+        uBaseStep: {
+            value: params.baseStep
+        },
+
+        uDepthTarget: {
+            value: params.depthTarget
+        },
+
+        uDepthBlend: {
+            value: params.depthBlend
+        },
+
+        uInverseStepDivisor: {
+            value: 1 / params.stepDivisor
+        },
+
+        uWarpSpatialScale: {
+            value: params.warpSpatialScale
+        },
+
+        uWarpAmplitude: {
+            value: params.warpAmplitude
+        },
+
+        uWarpTurnSmoothing: {
+            value: params.warpTurnSmoothing
+        },
+
+        uFieldSmoothness: {
+            value: params.fieldSmoothness
+        },
+
+        uColorFrequency: {
+            value: params.colorFrequency
+        },
+
+        uInverseExposure: {
+            value: 1 / params.exposure
+        },
+
+        uFractalColor: {
+            value: new THREE.Color(
+                params.fractalColor
+            )
+        },
+
+        uBackgroundColor: {
+            value: new THREE.Color(
+                params.backgroundColor
+            )
+        }
+    };
+
+    // ============================================================
+    // Material
+    // ============================================================
+
+    function createShaderMaterial()
+    {
+        return new THREE.RawShaderMaterial({
+            uniforms,
+            vertexShader,
+            fragmentShader:
+                createFragmentShader(),
+            glslVersion:
+                THREE.GLSL3,
+            depthTest: false,
+            depthWrite: false,
+            transparent: false,
+            toneMapped: false
+        });
+    }
+
+    // ============================================================
+    // Fullscreen triangle
+    // ============================================================
+
+    const geometry =
+        new THREE.BufferGeometry();
+
+    geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(
+            new Float32Array([
+                0, 0, 0,
+                0, 0, 0,
+                0, 0, 0
+            ]),
+            3
+        )
+    );
+
+    const fullscreenTriangle =
+        new THREE.Mesh(
+            geometry,
+            createShaderMaterial()
+        );
+
+    fullscreenTriangle.frustumCulled =
+        false;
+
+    scene.add(fullscreenTriangle);
+
+    function rebuildShader()
+    {
+        const previousMaterial =
+            fullscreenTriangle.material;
+
+        fullscreenTriangle.material =
+            createShaderMaterial();
+
+        previousMaterial.dispose();
+
+        requestRender();
+    }
+
+    // ============================================================
+    // Render state
+    // ============================================================
+
+    const clock = new THREE.Clock();
+
+    let elapsedTime = 0;
+    let forceRender = true;
+
+    let isInViewport = true;
+    let isDocumentVisible =
+        !document.hidden;
+
+    function requestRender()
+    {
+        forceRender = true;
+    }
+
+    function resetAnimationTime()
+    {
+        elapsedTime = 0;
+
+        uniforms.uAnimationTime.value = 0;
+
+        clock.getDelta();
+
+        requestRender();
+    }
+
+    // ============================================================
+    // Resolution
+    // ============================================================
+
+    let viewportWidth = 0;
+    let viewportHeight = 0;
+    let currentDpr = 0;
+
+    function updateResolution()
+    {
+        const width = Math.max(
+            window.innerWidth,
+            1
+        );
+
+        const height = Math.max(
+            window.innerHeight,
+            1
+        );
+
+        const nextDpr =
+            Number(params.dpr);
+
+        if (
+            width !== viewportWidth ||
+            height !== viewportHeight ||
+            nextDpr !== currentDpr
+        )
+        {
+            viewportWidth = width;
+            viewportHeight = height;
+            currentDpr = nextDpr;
+
+            renderer.setPixelRatio(
+                nextDpr
+            );
+
+            renderer.setSize(
+                width,
+                height,
+                false
+            );
+
+            renderer.getDrawingBufferSize(
+                uniforms.uResolution.value
+            );
+        }
+
+        requestRender();
+    }
+
+    function handleResize()
+    {
+        updateResolution();
+    }
+
+    window.addEventListener(
+        "resize",
+        handleResize,
+        {
+            passive: true
+        }
+    );
+
+    updateResolution();
+
+    // ============================================================
+    // Visibility
+    // ============================================================
+
+    const intersectionObserver =
+        new IntersectionObserver(
+            (entries) => {
+                const entry =
+                    entries[0];
+
+                isInViewport =
+                    entry.isIntersecting &&
+                    entry.intersectionRatio > 0;
+
+                if (isInViewport)
+                {
+                    clock.getDelta();
+                    requestRender();
+                }
+            },
+            {
+                threshold: 0
+            }
+        );
+
+    intersectionObserver.observe(
+        renderer.domElement
+    );
+
+    function handleVisibilityChange()
+    {
+        isDocumentVisible =
+            !document.hidden;
+
+        clock.getDelta();
+
+        if (isDocumentVisible)
+        {
+            requestRender();
+        }
+    }
+
+    document.addEventListener(
+        "visibilitychange",
+        handleVisibilityChange
+    );
+
+    // ============================================================
+    // GUI
+    // ============================================================
+
+    const gui = new GUI({
+        title: "Scene Settings"
+    });
+
+    gui.domElement.style.top = "12px";
+    gui.domElement.style.right = "12px";
+
+    const presetController =
+        gui
+            .add(
+                params,
+                "preset",
+                Object.keys(presets)
+            )
+            .name("Preset")
+            .onChange((presetName) => {
+                applyPreset(presetName);
+            });
+
+    const animationFolder =
+        gui.addFolder("Animation");
+
+    animationFolder
+        .add(
+            params,
+            "timeSpeed",
+            0,
+            1,
+            0.001
+        )
+        .name("Time Speed")
+        .onChange(() => {
+            requestRender();
+        });
+
+    animationFolder
+        .add(
+            params,
+            "pause"
+        )
+        .name("Pause")
+        .onChange(() => {
+            clock.getDelta();
+            requestRender();
+        });
+
+    animationFolder
+        .add(
+            params,
+            "resetTime"
+        )
+        .name("Reset Time");
+
+    const geometryFolder =
+        gui.addFolder("Geometry");
+
+    geometryFolder
+        .add(
+            params,
+            "traceSteps",
+            TRACE_STEPS_MIN,
+            TRACE_STEPS_MAX,
+            1
+        )
+        .name("Trace Steps")
+        .onFinishChange(() => {
+            params.traceSteps =
+                Math.round(
+                    params.traceSteps
+                );
+
+            rebuildShader();
+        });
+
+    geometryFolder
+        .add(
+            params,
+            "warpSteps",
+            WARP_STEPS_MIN,
+            WARP_STEPS_MAX,
+            1
+        )
+        .name("Warp Steps")
+        .onFinishChange(() => {
+            params.warpSteps =
+                Math.round(
+                    params.warpSteps
+                );
+
+            rebuildShader();
+        });
+
+    geometryFolder
+        .add(
+            params,
+            "initialDepth",
+            0.1,
+            12,
+            0.01
+        )
+        .name("Initial Depth")
+        .onChange((value) => {
+            uniforms.uInitialDepth.value =
+                value;
+
+            requestRender();
+        });
+
+    geometryFolder
+        .add(
+            params,
+            "depthTarget",
+            -2,
+            10,
+            0.01
+        )
+        .name("Depth Target")
+        .onChange((value) => {
+            uniforms.uDepthTarget.value =
+                value;
+
+            requestRender();
+        });
+
+    geometryFolder
+        .add(
+            params,
+            "depthBlend",
+            0,
+            1.5,
+            0.001
+        )
+        .name("Depth Blend")
+        .onChange((value) => {
+            uniforms.uDepthBlend.value =
+                value;
+
+            requestRender();
+        });
+
+    geometryFolder
+        .add(
+            params,
+            "baseStep",
+            0.0001,
+            0.02,
+            0.0001
+        )
+        .name("Base Step")
+        .onChange((value) => {
+            uniforms.uBaseStep.value =
+                value;
+
+            requestRender();
+        });
+
+    geometryFolder
+        .add(
+            params,
+            "stepDivisor",
+            1,
+            30,
+            0.01
+        )
+        .name("Step Divisor")
+        .onChange((value) => {
+            uniforms
+                .uInverseStepDivisor
+                .value =
+                1 / Math.max(
+                    value,
+                    1e-6
+                );
+
+            requestRender();
+        });
+
+    const warpFolder =
+        gui.addFolder("Fractal Warp");
+
+    warpFolder
+        .add(
+            params,
+            "warpSpatialScale",
+            0.1,
+            2,
+            0.001
+        )
+        .name("Spatial Scale")
+        .onChange((value) => {
+            uniforms.uWarpSpatialScale.value =
+                value;
+
+            requestRender();
+        });
+
+    warpFolder
+        .add(
+            params,
+            "warpAmplitude",
+            0,
+            3,
+            0.001
+        )
+        .name("Warp Amplitude")
+        .onChange((value) => {
+            uniforms.uWarpAmplitude.value =
+                value;
+
+            requestRender();
+        });
+
+    warpFolder
+        .add(
+            params,
+            "warpTurnSmoothing",
+            -0.5,
+            1,
+            0.001
+        )
+        .name("Turn Smoothing")
+        .onChange((value) => {
+            uniforms.uWarpTurnSmoothing.value =
+                value;
+
+            requestRender();
+        });
+
+    warpFolder
+        .add(
+            params,
+            "fieldSmoothness",
+            0.0001,
+            0.2,
+            0.0001
+        )
+        .name("Field Smoothness")
+        .onChange((value) => {
+            uniforms.uFieldSmoothness.value =
+                value;
+
+            requestRender();
+        });
+
+    const colorsFolder =
+        gui.addFolder("Colors");
+
+    colorsFolder
+        .addColor(
+            params,
+            "fractalColor"
+        )
+        .name("Fractal Color")
+        .onChange((value) => {
+            uniforms.uFractalColor.value
+                .set(value);
+
+            requestRender();
+        });
+
+    colorsFolder
+        .addColor(
+            params,
+            "backgroundColor"
+        )
+        .name("Background Color")
+        .onChange((value) => {
+            uniforms.uBackgroundColor.value
+                .set(value);
+
+            renderer.setClearColor(
+                value,
+                1
+            );
+
+            document.body.style.backgroundColor =
+                value;
+
+            requestRender();
+        });
+
+    colorsFolder
+        .add(
+            params,
+            "colorFrequency",
+            0,
+            1,
+            0.001
+        )
+        .name("Color Frequency")
+        .onChange((value) => {
+            uniforms.uColorFrequency.value =
+                value;
+
+            requestRender();
+        });
+
+    colorsFolder
+        .add(
+            params,
+            "exposure",
+            1000,
+            100000,
+            10
+        )
+        .name("Exposure")
+        .onChange((value) => {
+            uniforms.uInverseExposure.value =
+                1 / Math.max(value, 1);
+
+            requestRender();
+        });
+
+    const performanceFolder =
+        gui.addFolder("Performance");
+
+    performanceFolder
+        .add(
+            params,
+            "dpr",
+            DPR_OPTIONS
+        )
+        .name("DPR")
+        .onChange((value) => {
+            params.dpr = Number(value);
+
+            updateResolution();
+        });
+
+    gui.close();
+
+    // ============================================================
+    // Preset application
+    // ============================================================
+
+    function applyPreset(presetName)
+    {
+        const preset =
+            presets[presetName];
+
+        if (!preset)
+        {
+            return;
+        }
+
+        const previousTraceSteps =
+            params.traceSteps;
+
+        const previousWarpSteps =
+            params.warpSteps;
+
+        for (
+            const [key, value]
+            of Object.entries(preset)
+        )
+        {
+            params[key] = value;
+        }
+
+        params.preset = presetName;
+
+        uniforms.uInitialDepth.value =
+            params.initialDepth;
+
+        uniforms.uBaseStep.value =
+            params.baseStep;
+
+        uniforms.uDepthTarget.value =
+            params.depthTarget;
+
+        uniforms.uDepthBlend.value =
+            params.depthBlend;
+
+        uniforms.uInverseStepDivisor.value =
+            1 / Math.max(
+                params.stepDivisor,
+                1e-6
+            );
+
+        uniforms.uWarpSpatialScale.value =
+            params.warpSpatialScale;
+
+        uniforms.uWarpAmplitude.value =
+            params.warpAmplitude;
+
+        uniforms.uWarpTurnSmoothing.value =
+            params.warpTurnSmoothing;
+
+        uniforms.uFieldSmoothness.value =
+            params.fieldSmoothness;
+
+        uniforms.uColorFrequency.value =
+            params.colorFrequency;
+
+        uniforms.uInverseExposure.value =
+            1 / Math.max(
+                params.exposure,
+                1
+            );
+
+        uniforms.uFractalColor.value.set(
+            params.fractalColor
+        );
+
+        uniforms.uBackgroundColor.value.set(
+            params.backgroundColor
+        );
+
+        renderer.setClearColor(
+            params.backgroundColor,
+            1
+        );
+
+        document.body.style.backgroundColor =
+            params.backgroundColor;
+
+        gui.controllersRecursive().forEach(
+            (controller) => {
+                controller.updateDisplay();
+            }
+        );
+
+        updateResolution();
+
+        const shaderStructureChanged =
+            previousTraceSteps !==
+                params.traceSteps ||
+            previousWarpSteps !==
+                params.warpSteps;
+
+        if (shaderStructureChanged)
+        {
+            rebuildShader();
+        }
+        else
+        {
+            requestRender();
+        }
+
+        clock.getDelta();
+    }
+
+    // ============================================================
+    // Animation
+    // ============================================================
+
+    function animate()
+    {
+        requestAnimationFrame(animate);
+
+        if (
+            !isDocumentVisible ||
+            !isInViewport
+        )
+        {
+            clock.getDelta();
+            return;
+        }
+
+        const isAnimated =
+            !params.pause &&
+            params.timeSpeed > 0;
+
+        if (
+            !isAnimated &&
+            !forceRender
+        )
+        {
+            clock.getDelta();
+            return;
+        }
+
+        const deltaTime = Math.min(
+            clock.getDelta(),
+            1 / 30
+        );
+
+        if (isAnimated)
+        {
+            elapsedTime += deltaTime;
+
+            uniforms.uAnimationTime.value =
+                elapsedTime *
+                params.timeSpeed;
+        }
+
+        renderer.render(
+            scene,
+            camera
+        );
+
+        forceRender = false;
+    }
+
+    animate();
+
+    // ============================================================
+    // Cleanup
+    // ============================================================
+
+    function dispose()
+    {
+        window.removeEventListener(
+            "resize",
+            handleResize
+        );
+
+        document.removeEventListener(
+            "visibilitychange",
+            handleVisibilityChange
+        );
+
+        intersectionObserver.disconnect();
+
+        gui.destroy();
+
+        geometry.dispose();
+
+        fullscreenTriangle
+            .material
+            .dispose();
+
+        renderer.dispose();
+    }
+
+    window.addEventListener(
+        "beforeunload",
+        dispose,
+        {
+            once: true
+        }
+    );
+</script>
+</body>
+</html>

@@ -1084,13 +1084,25 @@ profile in uv.
 
 **What is new here:**
 
-- **Rain shadow.** `bakeOccluderMap(renderer, scene, U, {center, extent, size, layer, top})` renders
-  everything on `layer` from straight above with an override material writing `max(worldY, 0)` into
-  a HalfFloat `RenderTarget` (Nearest-filtered, so TSL emits `textureLoad` and it can be read in the
-  vertex stage). The streak fragment multiplies alpha by `step(roof, worldY)`; splash rings sample
-  the map in the vertex stage and sit at `roof + 0.012`. The ground must be on the layer so open
-  ground bakes 0. Bake once for a static scene; the demo's "Rebake" button re-runs it. The bake
-  material has `fog: false` — scene fog would bend the heights.
+- **Rain shadow.** `bakeOccluderMap(renderer, scene, U, {center, extent, size, layer, top, floor})`
+  renders everything on `layer` from straight above with an override material writing
+  `max(worldY - floor, 0)` into a HalfFloat `RenderTarget` (Nearest-filtered, so TSL emits
+  `textureLoad` and it can be read in the vertex stage). The streak fragment multiplies alpha by
+  `step(roof, worldY)`; splash rings sample the map in the vertex stage and sit at `roof + 0.012`.
+  The ground must be on the layer so open ground bakes the floor. Bake once for a static scene; the
+  demo's "Rebake" button re-runs it. The bake material has `fog: false` — scene fog would bend the
+  heights.
+
+  **Two uniforms decide what "no roof" means, and both default to 0 (2026-08-26).** `uOccFloor` is
+  the height the texture is stored relative to: the clear colour cannot be negative, so a scene with
+  occluders below zero has to bias them up, and a tight floor also keeps half-float precision on the
+  relief instead of spending it on the distance down to zero. `uOccMiss` is what `roofAt` returns
+  outside the baked window or with the map off. That one is a correctness trap rather than a tuning
+  knob: both callers do `max(roofAt, groundHeight)`, so `uOccMiss` is a hard lower bound on where
+  rain can reach, and leaving it at 0 cuts every drop at y = 0. A page whose ground is at or above
+  zero — `demos/rain.html`, `demos/flight-sim.html`, `bot-viewer-v3.html` — is right to leave both
+  alone. Base Game lowers `uOccMiss` to −10000 and takes `uOccFloor` from the bounds of what it
+  bakes; see `base-game.md` §Weather R3.
 - **Accumulator drive, not `time`.** `update(dt, camera)` advances `uFall += speed·dt` and
   `uWindOff += (wind + gust)·dt`; each drop's own speed spread (0.75..1.25×) multiplies `uFall` on
   the GPU. Moving the speed or wind slider changes the rate, not the position, so drops never jump.
