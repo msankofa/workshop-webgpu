@@ -870,39 +870,48 @@ not see theirs. `weaponLight.update` runs in the frame's `fx` block. Node-tested
 `test-weapon-light.mjs`.
 
 **The laser sight (double-tap L).** `weapon-laser.js` — `createWeaponLaser({ THREE, scene, options })`.
-Deliberately the opposite kind of thing to the flashlight: a laser is not a light source, so this one
-is **drawn** — a beam mesh from the muzzle to the hit and a dot with a hot core and a coloured halo,
-all additive `MeshBasicNodeMaterial` with `toneMapped: false`. Making it a light instead could not
-express either half.
 
-It runs its **own raycast**, and that is the point of carrying one: the reticle's ray leaves your eye
-(capsule top, look direction — the ray the server fires), the laser's leaves the **barrel**, so the
-two do not agree and the dot is the honest answer to "where is this gun pointing". `updateWeaponLaser`
-converts the render-local muzzle through `worldCoordinates.toGlobal`, calls `worldQuery.raycast`
-along `barrelDirection`, and hands the module `hitDistance` and `normal`; a normal is unaffected by a
-rebase, which is a translation. The raycast is gated on `settings.laserOn`, so an unlit laser costs
-nothing. With no hit the beam runs to `laserRange`.
+**The dot is a real light**, not a drawn quad: a `SpotLight` with a cone a fifth of a degree wide and
+`decay: 0`. Zero decay is not a cheat, it is what a laser *is* — a collimated beam does not spread,
+so its irradiance does not fall off, and three's `getDistanceAttenuation` reduces to a constant 1 at
+decay 0 (`lightDistance.pow(0)`) while the Frostbite window still fades the dot out at the end of
+`range`. The dot is therefore the same brightness at two metres and at eighty.
 
-Two shape decisions carry the look. **Both the beam width and the dot radius are floored in screen
-pixels**, not metres (`metresPerPixel(fovYDeg, viewportHeight)` and `screenSizeFloor`): a 5 mm beam is
-a fraction of a pixel at 40 m and shimmers in and out along its length, so each frame it is widened
-to whatever `beamMinPixels` / `dotMinPixels` costs at that depth — the beam is measured at its own
-**midpoint** depth, because using the far end fattens the near half into a cone. And **the dot is
-oriented to the surface normal** and lifted `surfaceOffset` off it, so a spot on a sloped wall is the
-ellipse it should be; only a hit with no normal falls back to billboarding at the camera.
+That buys, for free, everything the first version of this had to fake: the dot lands on whatever is
+actually there, wraps over edges and curves, and takes the surface's own material response. The
+version it replaced raycast the world every frame and pasted a billboard at the hit — which put the
+dot on the terrain *behind* a player instead of on them, because `world-query.js` has no provider for
+bodies. There is now **no laser raycast at all**.
 
-`laserEnd` treats `hitDistance == null` as "hit nothing" rather than `Number(null)`'s finite zero,
-which would collapse the beam to a point whenever you pointed at the sky. Losing the mount fades the
-laser out from its last placement instead of blinking it off.
+Two cone details are load-bearing. `penumbra` is never 0: three's falloff is
+`smoothstep(coneCos, penumbraCos, angleCos)` and penumbra 0 makes those edges equal, which is
+degenerate — and a hard edge on a four-pixel dot crawls as you turn. And `shadows` defaults **on**
+here, unlike the flashlight's, because a spot lights every surface inside its cone, so without a
+shadow map the dot also appears on the wall behind the pillar it just hit — two dots. The saving
+grace is that the shadow frustum is under a degree wide, so a 512² map is enormous angular
+resolution. `laserShadows` ("Dot is blocked by cover") turns it off for one fewer shadow pass.
+
+**The beam is the one part a light cannot express** — no light source draws a visible column of air —
+so it stays a mesh: an additive cylinder down the bore, `depthWrite: false` and depth testing **on**,
+drawn to the full `range`. Opaque geometry clips it exactly where the beam would stop, which is the
+second reason no raycast is needed. Its width is floored in screen pixels (`metresPerPixel`,
+`screenSizeFloor`) at the beam's own **midpoint** depth: a 5 mm cylinder is a fraction of a pixel far
+away and shimmers along its length, and measuring at the far end fattens the near half into a cone.
+
+The emitter rides `barrelDirection` off the same mount as the flashlight, so the dot and the reticle
+do not agree — the reticle is drawn from the ray the server fires, which leaves your eye. That
+disagreement is the point of carrying a laser.
 
 **The L key is one switch with two positions.** `tapKind(lastTapMs, nowMs, windowMs)` (default
 `DOUBLE_TAP_MS` 280) separates a tap from a double tap. A single tap toggles the flashlight; a double
 tap toggles the laser *and flips the flashlight back*, because the first tap of the pair already
 moved it — the light blinks for a fraction of a second rather than every tap waiting on a timer to
 learn what it was. A third tap starts a fresh pair. Settings: `laserOn`, `laserBeam` (dot only when
-off), `laserHue` (`hueToHex`, a full wheel: 0 red, 1/3 green), `laserBeamOpacity`, `laserDotPixels`,
-`laserRange`; `applyLaser()` pushes them through `configure`. Local only, like the flashlight.
-`updateWeaponLaser` runs in the frame's `fx` block. Node-tested: `test-weapon-laser.mjs`.
+off), `laserHue` (`hueToHex`, a full wheel: 0 red, 1/3 green), `laserDotAngle` (the cone half-angle,
+so the dot holds a near-constant size on screen), `laserIntensity`, `laserBeamOpacity`, `laserRange`,
+`laserShadows`; `applyLaser()` pushes them through `configure`. Resident and intensity-switched like
+every other light on this page. Local only, like the flashlight. `updateWeaponLaser` runs in the
+frame's `fx` block. Node-tested: `test-weapon-laser.mjs`.
 
 **What a blast throws.** Shrapnel is the warhead coming apart, so every blast throws it. Rubble is
 torn *out of a surface*, so it needs two things, and this page diverges from bot-viewer-v3's
@@ -1343,7 +1352,21 @@ interpolated through `createRemoteTrack`; the chase camera is the flight sim's c
 runs the same module in `stepSoloDrones` so it works without the relay. No client prediction of the
 drone; it renders at the interpolated server pose like a remote player.
 
-**Not done, in order of how much it will show:** a first-person view for the quad, the drone as a hit volume (nothing can shoot it down yet: `damageBaseGameDrone` exists,
+**Flight parity audit (2026-08-27).** The user reported the flying was "not even close" to the
+flight sim; a four-reader adversarial Sonnet pass with a skeptic per finding confirmed nine real
+differences and refuted none. Fixed: (1) **`base-game-prediction.js` rebuilt every tick by hand and
+never copied `slot`, `aim`, `fire`, `reload`, `throw` or `drone`**, so from a browser the server
+never received a trigger, a slot change or the drone stick (the server tests send ticks directly
+and so never saw it); (2) the chase camera's up vector was world-up, so the screen never banked
+with the craft; now it is the mesh's own up, the back distance grows with airspeed and the up offset
+is body-space, and the lens opens with speed, all as the sim's chase branch; (3) manual flight
+integrates in fixed 1/120 s substeps in Solo too (the rate lag and Euler forces are step-size
+dependent); (4) taking the stick starts at the airframe's `idleThrottle` like the sim's spawn, not
+at computed hover. Left as-is: online drone flight has no client prediction (a stick input is one
+round trip plus the interpolation delay late; the body has prediction, the drone renders like a
+remote), and the assist flag has no toggle (`rec.assist`, default on).
+
+**Not done, in order of how much it will show:** client prediction of the drone online, a first-person view for the quad, the drone as a hit volume (nothing can shoot it down yet: `damageBaseGameDrone` exists,
 nobody calls it), crash FX when a deadstick reaches the ground, sounds, the lab's flat floor as its
 only ground, and every number, which has never been seen in a browser. Tests:
 `test-base-game-drones.mjs`, `server/test-base-game-drones-room.mjs`.

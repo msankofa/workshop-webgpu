@@ -350,15 +350,18 @@ const DEFAULT_SETTINGS = Object.freeze({
   flashlightWarmth: WEAPON_LIGHT_DEFAULTS.warmth,
   flashlightSpill: WEAPON_LIGHT_DEFAULTS.spillIntensity,
   flashlightShadows: false,
-  // Laser sight (double-tap L). Drawn, not lit — a laser is a scattering column of air and a spot,
-  // which no light can express. It is aimed down the bore, so it shows where the GUN points, which
-  // is not where the reticle is: that is the whole reason to carry one.
+  // Laser sight (double-tap L). The DOT is a real light: a spot with a cone a fifth of a degree
+  // wide and no decay, which is what a collimated beam is. Only the beam in the air is drawn, since
+  // no light source can express one. Aimed down the bore, so it shows where the GUN points, which is
+  // not where the reticle is: that is the whole reason to carry one.
   laserOn: false,
   laserBeam: true,
   laserHue: WEAPON_LASER_DEFAULTS.hue,
+  laserDotAngle: WEAPON_LASER_DEFAULTS.dotAngleDeg,
+  laserIntensity: WEAPON_LASER_DEFAULTS.intensity,
   laserBeamOpacity: WEAPON_LASER_DEFAULTS.beamOpacity,
-  laserDotPixels: WEAPON_LASER_DEFAULTS.dotMinPixels,
-  laserRange: WEAPON_LASER_DEFAULTS.maxRange,
+  laserRange: WEAPON_LASER_DEFAULTS.range,
+  laserShadows: WEAPON_LASER_DEFAULTS.shadows,
   weaponHoldHeight: 0,
   weaponHoldForward: 0,
   weaponReachSolve: false,
@@ -513,7 +516,8 @@ const NUMBER_LIMITS = Object.freeze({
   tpAimMagnification: [1, 8],
   flashlightIntensity: [0, 2000], flashlightRange: [1, 300], flashlightAngle: [1, 80],
   flashlightSoftness: [0, 1], flashlightWarmth: [0, 1], flashlightSpill: [0, 40],
-  laserHue: [0, 1], laserBeamOpacity: [0, 1], laserDotPixels: [1, 20], laserRange: [1, 300],
+  laserHue: [0, 1], laserDotAngle: [0.01, 45], laserIntensity: [0, 500],
+  laserBeamOpacity: [0, 1], laserRange: [1, 300],
   dofFocusDistance: [0.3, 80], dofAperture: [0.05, 3], dofMaxRadius: [2, 40], dofFarScale: [0.5, 4],
   interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
@@ -1411,34 +1415,27 @@ function applyFlashlight() {
   });
   weaponLight.setOn(settings.flashlightOn === true);
 }
-// The laser rides the same mount as the flashlight. Its own raycast, though: the reticle's ray
-// leaves your EYE, and the point of a laser is that it leaves the BARREL, which is somewhere else.
+// The laser rides the same mount as the flashlight, and takes no ray of its own: the dot is the
+// spot light landing on whatever is really there, so occlusion, curvature and anything the world
+// query has no provider for (bodies, most of all) come out right for free. Only the beam in the air
+// is drawn, and depth testing clips that where it meets geometry.
 const weaponLaser = createWeaponLaser({ THREE, scene });
-const _laserRayOrigin = [0, 0, 0];
-const _laserSource = { muzzle: _weaponLightMuzzle, direction: _weaponLightDir, hitDistance: null, normal: null };
 const _laserView = { cameraPosition: camera.position, metresPerPixel: 0 };
 function applyLaser() {
   weaponLaser.configure({
     hue: settings.laserHue,
+    dotAngleDeg: settings.laserDotAngle,
+    intensity: settings.laserIntensity,
     beamOpacity: settings.laserBeamOpacity,
-    dotMinPixels: settings.laserDotPixels,
-    maxRange: settings.laserRange,
+    range: settings.laserRange,
     beamVisible: settings.laserBeam === true,
+    shadows: settings.laserShadows === true,
   });
   weaponLaser.setOn(settings.laserOn === true);
 }
 function updateWeaponLaser(dt, source) {
-  // The raycast only happens while the laser is actually lit; it is a second world query per frame
-  // on top of the reticle's, and paying for it with the laser off would be paying for nothing.
-  if (!source || !settings.laserOn) { weaponLaser.update(dt, null, _laserView); return; }
-  const origin = worldCoordinates.toGlobal(_weaponLightMuzzle, _laserRayOrigin);
-  let hit = null;
-  try { hit = worldQuery.raycast({ origin, direction: _weaponLightDir, maxDistance: settings.laserRange }); } catch { hit = null; }
-  _laserSource.hitDistance = hit ? hit.distance : null;
-  // A rebase is a translation, so a global normal is already the render-local one.
-  _laserSource.normal = hit?.normal ?? null;
   _laserView.metresPerPixel = metresPerPixel(camera.fov, renderer.domElement.clientHeight);
-  weaponLaser.update(dt, _laserSource, _laserView);
+  weaponLaser.update(dt, source, _laserView);
 }
 // Where the lamp is bolted: the held weapon's muzzle and bore. A knife or an empty hand has no
 // barrel, so the beam falls back to the eye and the look direction rather than blinking out.
@@ -2959,11 +2956,14 @@ const hueName = value => value < 0.04 || value > 0.96 ? 'red' : value < 0.13 ? '
 addToggle(torchSec, 'laserOn', 'Laser sight (double-tap L)');
 addToggle(torchSec, 'laserBeam', 'Show the beam, not only the dot');
 addRange(torchSec, 'laserHue', 'Laser colour', 0, 1, 0.005, value => `${hueName(value)} (${(value * 360).toFixed(0)} deg)`);
+addRange(torchSec, 'laserDotAngle', 'Dot width', 0.01, 45, 0.01, value => `${value.toFixed(2)} deg`).title =
+  'The half-angle of the cone, so the dot holds a near-constant size on screen the way a real one does. Past a degree or so it stops being a dot and becomes a small spotlight.';
+addRange(torchSec, 'laserIntensity', 'Dot brightness', 0, 500, 1, value => value.toFixed(0));
 addRange(torchSec, 'laserBeamOpacity', 'Beam strength', 0, 1, 0.01, value => value <= 0.005 ? 'invisible' : value.toFixed(2));
-addRange(torchSec, 'laserDotPixels', 'Smallest dot on screen', 1, 20, 0.5, value => `${value.toFixed(1)} px`);
 addRange(torchSec, 'laserRange', 'Laser range', 1, 300, 1, value => `${value.toFixed(0)} m`);
+addToggle(torchSec, 'laserShadows', 'Dot is blocked by cover');
 const laserNote = document.createElement('div'); laserNote.className = 'note';
-laserNote.textContent = 'The laser is aimed down the barrel, so its dot and the reticle do not agree — that is the point of one. The reticle is drawn from the ray the server fires, which leaves your eye; the dot is where the gun is actually pointing. The beam and dot are widened to stay at least this many pixels wide, so they do not thin to nothing at range. It costs a second world raycast each frame while lit, and like the flashlight, other players cannot see it.';
+laserNote.textContent = 'The dot is a real light with a cone a fraction of a degree wide and no falloff, which is what a collimated beam is — so it lands on whatever is actually there, bends over edges, and is the same brightness near and far. Only the beam in the air is drawn, because no light can express one. The laser is aimed down the barrel, so its dot and the reticle do not agree: that is the point of carrying one. Turning off “blocked by cover” drops a shadow pass but then the dot also appears on the wall behind whatever it hit. Like the flashlight, other players cannot see it.';
 torchSec.append(laserNote);
 
 
@@ -4309,7 +4309,7 @@ async function animate() {
         comfortRateY: comfortOn ? comfort.y : 0,
       });
       applyAimOptics();   // FOV/zoom/eye push before the gun frame reads the camera
-      if (droneCtl.active) { camera.fov = settings.cameraFov; camera.updateProjectionMatrix(); droneView.placeCamera(camera, droneCtl.id, dt); }   // at the stick, the camera rides the drone; no zoom
+      if (droneCtl.active) droneView.placeCamera(camera, droneCtl.id, dt);   // at the stick, the camera rides the drone (it owns the fov, as the sim's chase view does)
     } else {
       if (settings.playerControlMode === 'orbit') controls.update();
       playerView.syncCapsule(playerRenderPosition, {
