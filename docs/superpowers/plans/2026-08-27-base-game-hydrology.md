@@ -60,6 +60,27 @@ a pure function of world position and the descriptor, like the rest of this stac
   `TERRAIN_SOURCE_DESCRIPTOR`). Its `lake`/`lakeDepth` params are a smoothstep-gated noise basin
   in the closed-form field — a shape, not a water body, and nothing reads them as water.
 
+## Standing direction this plan answers to
+
+Prior plans already set terms for this step, and they are constraints, not context:
+
+- The roadmap calls it **regional** river and lake hydrology (`docs/subsystems/base-game.md:390`).
+- `2026-08-21-base-game-terrain-execution.md:125` makes it a rule of the source contract: "A source
+  cannot claim `infinite` capability if it depends on finite paint/import grids, bounded erosion,
+  lake discovery or volumetric export **without a regional solution**", and its list of
+  "finite/regional only until their own later phase" items is "flow accumulation, lake discovery
+  and hydrology" (:494). This is that later phase, so the regional solution is what it must
+  deliver — and the bounded-block rule below is stated as an explicit boundary contract for
+  exactly that reason.
+- The same plan's LOD phase (:529) requires that "height, biome, material, moisture, hydrology and
+  hole fields use the same LOD level" in the prefiltered tile pyramid, and that procedural
+  evaluation "drops frequencies smaller than the requested sample spacing". H2's band-limit rule
+  and H3's tile field are how this plan meets that; H3 carries the field through the pyramid with
+  the others rather than inventing a private path.
+- `2026-08-23-base-game-plants.md:155` fixes where moisture changes hands: the proxy "holds until
+  hydrology publishes a real field. The swap then happens inside `buildTile` and nothing else
+  moves." H8 does exactly that and nothing more.
+
 ## The hard problem, and the decision
 
 Flow accumulation and basin filling are **global** algorithms: a cell's drainage depends on every
@@ -72,9 +93,13 @@ apron, so two neighbouring regions disagree about the same river, and the disagr
 the player moves. That is exactly the non-determinism this codebase spent the terrain plan
 removing, and it breaks multiplayer, where the server and every client must carve identically.
 
-**B — a deterministic drainage graph over a coarse region lattice.** Decided. Rivers are not
-simulated; they are *derived from a bounded neighbourhood* of the large-scale height field, which
-is smooth and cheap to sample:
+**B — a deterministic drainage graph over a coarse region lattice.** Decided. This is the regional
+solution the source contract asks for, and its **boundary contract is explicit**: every hydrology
+answer at a point depends only on the `(2·reach+1)²` block of coarse region cells around it, and on
+nothing else. Two callers anywhere — the worker, the server, a client that just streamed in — reach
+the same answer because they read the same bounded block of the same band-limited field. Rivers are
+not simulated; they are *derived from that bounded neighbourhood* of the large-scale height field,
+which is smooth and cheap to sample:
 
 - The world is a lattice of region cells (`regionSize`, default 2048 m). A cell's elevation is
   `heightAtSpacing(centre, regionSize)` — the band-limited field, so it is the landform, not the
@@ -115,7 +140,8 @@ deliberately not in this plan (see Known limits).
   server, the client and the terrain worker all answer the same thing without talking.
 - **No new streamed field window.** `waterAt` is cheap and pure, so physics, audio and moisture
   call it directly; only the *mesh* is baked, as a new `water` tile field the worker fills while
-  it already has the tile. `terrain-sea-depth.js` stays as it is — it answers a different
+  it already has the tile — prefiltered at the same LOD levels as height, biome, material and
+  moisture, as the terrain execution plan's LOD phase requires, not on a private schedule. `terrain-sea-depth.js` stays as it is — it answers a different
   question (is any ground in the window below sea level) at a coarser resolution than a 6 m
   channel needs.
 - **Sea and inland water are one query.** `base-game-water-sim.js` answers
@@ -172,6 +198,10 @@ deliberately not in this plan (see Known limits).
 - The worker fills `water` while it has the tile: per texel a level, a kind (none / river / lake /
   sea), and a packed flow direction and speed, plus the tile's channel polylines for the mesh
   builder. Sized so a 6 m channel has real texels; measured against tile build time.
+- The field is part of the tile pyramid, at the same LOD levels as height, biome, material and
+  moisture (`2026-08-21-base-game-terrain-execution.md:529`). A lod > 0 tile's water field is the
+  band-limited carve at that tile's spacing, so a coarse ring's water agrees with its own ground
+  rather than with lod 0's.
 - `base-game-terrain.js` grows `waterAt(x, z)`, `nearestChannel(x, z)` and a `hydrology` getter,
   and carries the new field through the chunk commit path the way `surfaceHeights` and `moisture`
   already are.
@@ -234,7 +264,9 @@ deliberately not in this plan (see Known limits).
 ### H8 — Moisture, and the plants that wanted it
 
 - Real moisture: distance to the nearest water plus elevation above the local water table, from
-  `nearestChannel`, replacing `moistureProxyForBiome` in the streamed `moisture` field. The proxy
+  `nearestChannel`, replacing `moistureProxyForBiome` in the streamed `moisture` field. The swap
+  happens inside `buildTile` and nothing else moves, which is the handover the plants plan
+  specified (`2026-08-23-base-game-plants.md:155`). The proxy
   module stays for loaded finite maps, which have no hydrology.
 - `flora-field.js` consumes it unchanged (it already takes moisture as an input), so riverbanks
   grow differently from ridges without touching the placement code.
