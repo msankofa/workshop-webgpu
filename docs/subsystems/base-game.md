@@ -55,6 +55,7 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Blast debris | `blast-debris-sim.js` / `blast-debris.js` / `explosion-tier.js` |
 | Dynamic flash lights | `flash-lights.js` (extracted from `bot-viewer-visuals.js`) |
 | Weapon flashlight | `weapon-light.js` |
+| Weapon laser sight | `weapon-laser.js` |
 | Procedural weapon handling voices (reload, draw) | `weapon-sfx-synth.js` |
 | Drone autonomy, manual flight, wire state | `base-game-drones.js` on `bot-drones.js` + `flight-model.js` |
 | Drone meshes, pose, chase camera | `base-game-drone-view.js` on `flight-meshes.js` |
@@ -127,7 +128,18 @@ All controls work without reloading the page.
   locomotion toggle, cyclic amount, step overlap, spine falloff), applied live to every rig through
   `playerBodies.setMovementTuning()`. Arms also gets Backswing (`armAsym`, the locomotion layer's
   backward-swing fraction).
-- Sky: entire group, dome, sun disc, moon disc, stars, Milky Way, additional bodies.
+- Sky: entire group, dome, sun disc, moon disc, stars, Milky Way, additional bodies. Two nested
+  sections (2026-08-27) expose the generator: "Stellar generation (shared)" carries `skySeed` (+
+  a Reroll button), `skyPlanetCount`, `skyMoonCount`, `skyBodyScale` and the `skyMilkyWay` flag —
+  all shared world keys, all wired commit-on-release (`addCommitRange`) because they rebuild the
+  sky; "Sky appearance (local)" carries the live star count/brightness/color, Milky Way brightness,
+  and sun/moon disc color/size/opacity sliders (uniform, draw-range, or canvas-repaint writes — no
+  rebuild), plus the commit-class `skyMilkyWayDensity`. `skyBodyResolution` sits at the section
+  foot labeled as a bake-cost knob (the per-body canvas is clamped 96–2048 px, paid per rebuild).
+  `applySkySettings()` in `updateWorld` diffs applied-vs-current so a 20 Hz snapshot restating the
+  same world never triggers a rebuild; when any rebuild-class key moved it issues ONE
+  `sky.setPalette(skyPaletteOverrides())`. The palette passes `bodies: true` so turning the shared
+  Milky Way off does not delete the planets.
 - Lighting: directional sunlight, ambient light, moonlight, shadows.
 - Time: astronomical driver, manual primary body, hour, latitude, day of year, moon phase offset,
   clock speed, play/pause.
@@ -177,9 +189,12 @@ server-selected `hitProfile`, and `poseEpoch`. Clients send only numbered tick i
 there is no position message. The implementation state is recorded under roadmap Step 4 below.
 
 Shared world keys are `primaryBody`, all `tod*` clock/astronomy values, manual sun elevation and
-azimuth, and sun/ambient intensity. Guests see these controls disabled. Camera state, panel/UI,
-save slots, sky-part visibility, light-part visibility, and shadows remain local so every client can
-isolate rendering components without changing the world for others. Loading a state as room owner
+azimuth, sun/ambient intensity, and (2026-08-27) the stellar generation keys `skySeed`,
+`skyPlanetCount`, `skyMoonCount`, `skyBodyScale`, `skyMilkyWay` — the planets are landmarks, so what
+is up there is the room's; how a client draws stars and discs stays local. Guests see these controls
+disabled. Camera state, panel/UI, save slots, sky-part visibility, light-part visibility, and
+shadows remain local so every client can isolate rendering components without changing the world for
+others. Loading a state as room owner
 publishes its shared values through the server; loading as a guest applies only local values.
 
 ## Server-authoritative player hurt rig (protocol 10)
@@ -853,6 +868,41 @@ setting, so key and panel are one source of truth), `flashlightIntensity`, `flas
 The beam is **local only** — it is not in the protocol, so other players do not see yours and you do
 not see theirs. `weaponLight.update` runs in the frame's `fx` block. Node-tested:
 `test-weapon-light.mjs`.
+
+**The laser sight (double-tap L).** `weapon-laser.js` — `createWeaponLaser({ THREE, scene, options })`.
+Deliberately the opposite kind of thing to the flashlight: a laser is not a light source, so this one
+is **drawn** — a beam mesh from the muzzle to the hit and a dot with a hot core and a coloured halo,
+all additive `MeshBasicNodeMaterial` with `toneMapped: false`. Making it a light instead could not
+express either half.
+
+It runs its **own raycast**, and that is the point of carrying one: the reticle's ray leaves your eye
+(capsule top, look direction — the ray the server fires), the laser's leaves the **barrel**, so the
+two do not agree and the dot is the honest answer to "where is this gun pointing". `updateWeaponLaser`
+converts the render-local muzzle through `worldCoordinates.toGlobal`, calls `worldQuery.raycast`
+along `barrelDirection`, and hands the module `hitDistance` and `normal`; a normal is unaffected by a
+rebase, which is a translation. The raycast is gated on `settings.laserOn`, so an unlit laser costs
+nothing. With no hit the beam runs to `laserRange`.
+
+Two shape decisions carry the look. **Both the beam width and the dot radius are floored in screen
+pixels**, not metres (`metresPerPixel(fovYDeg, viewportHeight)` and `screenSizeFloor`): a 5 mm beam is
+a fraction of a pixel at 40 m and shimmers in and out along its length, so each frame it is widened
+to whatever `beamMinPixels` / `dotMinPixels` costs at that depth — the beam is measured at its own
+**midpoint** depth, because using the far end fattens the near half into a cone. And **the dot is
+oriented to the surface normal** and lifted `surfaceOffset` off it, so a spot on a sloped wall is the
+ellipse it should be; only a hit with no normal falls back to billboarding at the camera.
+
+`laserEnd` treats `hitDistance == null` as "hit nothing" rather than `Number(null)`'s finite zero,
+which would collapse the beam to a point whenever you pointed at the sky. Losing the mount fades the
+laser out from its last placement instead of blinking it off.
+
+**The L key is one switch with two positions.** `tapKind(lastTapMs, nowMs, windowMs)` (default
+`DOUBLE_TAP_MS` 280) separates a tap from a double tap. A single tap toggles the flashlight; a double
+tap toggles the laser *and flips the flashlight back*, because the first tap of the pair already
+moved it — the light blinks for a fraction of a second rather than every tap waiting on a timer to
+learn what it was. A third tap starts a fresh pair. Settings: `laserOn`, `laserBeam` (dot only when
+off), `laserHue` (`hueToHex`, a full wheel: 0 red, 1/3 green), `laserBeamOpacity`, `laserDotPixels`,
+`laserRange`; `applyLaser()` pushes them through `configure`. Local only, like the flashlight.
+`updateWeaponLaser` runs in the frame's `fx` block. Node-tested: `test-weapon-laser.mjs`.
 
 **What a blast throws.** Shrapnel is the warhead coming apart, so every blast throws it. Rubble is
 torn *out of a surface*, so it needs two things, and this page diverges from bot-viewer-v3's

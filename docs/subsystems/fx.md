@@ -198,7 +198,10 @@ resident `PointLight`s on `flashCurve`/`pickLightSlotsInto`; intensity-only writ
 in sync by hand, like the CPU/GPU twins. The same page's weapon flashlight is
 `weapon-light.js`: a real `SpotLight` on the weapon bore plus a small lens `PointLight`, resident and
 intensity-switched by the same rule, replacing v3's drawn additive cone (`beams`) — see
-`base-game.md` "The weapon flashlight". Note the base game does **not** use v3's
+`base-game.md` "The weapon flashlight". Its laser sight is the reverse choice:
+`weapon-laser.js` is drawn (additive beam mesh + surface-oriented dot), because no light source can
+express a beam and a spot, and both are floored in SCREEN pixels so they do not thin to nothing at
+range. Note the base game does **not** use v3's
 "rubble when the blast is within 0.6 R of the ground" test: it spawns rubble only for a detonation
 `entity-types/combat-projectile.js` tagged as touching a surface (`isSurfaceDetonation`) by a weapon
 without `projectile.rubble: false`. See `base-game.md` "What a blast throws".

@@ -153,6 +153,7 @@ import { evaluateWhizz, createWhizzVoice, pickImpactVoice } from './ballistic-au
 import { BLOOD_BASE, BLOOD_TUNING, sprayParams, stainParams, splatterParams } from './blood-tuning.js';
 import { createFlashLights, BLAST_FLASH } from './flash-lights.js';
 import { createWeaponLight, WEAPON_LIGHT_DEFAULTS } from './weapon-light.js';
+import { createWeaponLaser, WEAPON_LASER_DEFAULTS, metresPerPixel, tapKind } from './weapon-laser.js';
 import { createDebrisSim, TIER_DEBRIS_SCALE } from './blast-debris-sim.js';
 import { createProjectileManager } from './bot-projectiles.js';
 import { isSurfaceDetonation } from './entity-types/combat-projectile.js';
@@ -349,6 +350,15 @@ const DEFAULT_SETTINGS = Object.freeze({
   flashlightWarmth: WEAPON_LIGHT_DEFAULTS.warmth,
   flashlightSpill: WEAPON_LIGHT_DEFAULTS.spillIntensity,
   flashlightShadows: false,
+  // Laser sight (double-tap L). Drawn, not lit — a laser is a scattering column of air and a spot,
+  // which no light can express. It is aimed down the bore, so it shows where the GUN points, which
+  // is not where the reticle is: that is the whole reason to carry one.
+  laserOn: false,
+  laserBeam: true,
+  laserHue: WEAPON_LASER_DEFAULTS.hue,
+  laserBeamOpacity: WEAPON_LASER_DEFAULTS.beamOpacity,
+  laserDotPixels: WEAPON_LASER_DEFAULTS.dotMinPixels,
+  laserRange: WEAPON_LASER_DEFAULTS.maxRange,
   weaponHoldHeight: 0,
   weaponHoldForward: 0,
   weaponReachSolve: false,
@@ -449,6 +459,24 @@ const DEFAULT_SETTINGS = Object.freeze({
   starsEnabled: true,
   milkyWayEnabled: true,
   bodiesEnabled: true,
+  // Stellar generation (shared: the planets are landmarks) + local sky look (see skyPaletteOverrides).
+  skySeed: 1,
+  skyPlanetCount: 3,
+  skyMoonCount: 2,
+  skyBodyScale: 1,
+  skyMilkyWay: true,
+  skyStarCount: 1400,
+  skyStarOpacity: 1.0,
+  skyStarColor: '#dfe8ff',
+  skyMilkyWayDensity: 1.1,
+  skyMilkyWayIntensity: 0.7,
+  skySunColor: '#fff4e0',
+  skySunSize: 0.06,
+  skySunOpacity: 1.0,
+  skyMoonColor: '#dfe7ff',
+  skyMoonSize: 0.06,
+  skyMoonOpacity: 1.0,
+  skyBodyResolution: 1.0,
   sunLightEnabled: true,
   ambientLightEnabled: true,
   moonLightEnabled: true,
@@ -485,6 +513,7 @@ const NUMBER_LIMITS = Object.freeze({
   tpAimMagnification: [1, 8],
   flashlightIntensity: [0, 2000], flashlightRange: [1, 300], flashlightAngle: [1, 80],
   flashlightSoftness: [0, 1], flashlightWarmth: [0, 1], flashlightSpill: [0, 40],
+  laserHue: [0, 1], laserBeamOpacity: [0, 1], laserDotPixels: [1, 20], laserRange: [1, 300],
   dofFocusDistance: [0.3, 80], dofAperture: [0.05, 3], dofMaxRadius: [2, 40], dofFarScale: [0.5, 4],
   interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
@@ -524,6 +553,11 @@ const NUMBER_LIMITS = Object.freeze({
   rainPuddle: [0, 1], rainRipple: [0, 4],
   rainOccExtent: [20, 2000], rainOccSize: [64, 2048], rainOccTop: [20, 2000],
   weatherSeed: [0, 1e9],
+  // Sky. The shared four match the protocol table; the rest are local look, wider than the useful band.
+  skySeed: [0, 1e9], skyPlanetCount: [0, 16], skyMoonCount: [0, 12], skyBodyScale: [0.1, 6],
+  skyStarCount: [0, 3000], skyStarOpacity: [0, 2], skyMilkyWayDensity: [0, 4], skyMilkyWayIntensity: [0, 3],
+  skySunSize: [0.005, 0.5], skySunOpacity: [0, 1], skyMoonSize: [0.005, 0.5], skyMoonOpacity: [0, 1],
+  skyBodyResolution: [0.25, 4],
   lightningThreshold: [0, 1], lightningInterval: [0.5, 300], lightningIntervalSpread: [0, 1],
   lightningDistMin: [20, 20000], lightningDistMax: [50, 40000],
   lightningFlash: [0, 8], lightningDecay: [0.2, 20], lightningBoltScale: [0.1, 8], lightningSunLift: [0, 10],
@@ -1377,6 +1411,35 @@ function applyFlashlight() {
   });
   weaponLight.setOn(settings.flashlightOn === true);
 }
+// The laser rides the same mount as the flashlight. Its own raycast, though: the reticle's ray
+// leaves your EYE, and the point of a laser is that it leaves the BARREL, which is somewhere else.
+const weaponLaser = createWeaponLaser({ THREE, scene });
+const _laserRayOrigin = [0, 0, 0];
+const _laserSource = { muzzle: _weaponLightMuzzle, direction: _weaponLightDir, hitDistance: null, normal: null };
+const _laserView = { cameraPosition: camera.position, metresPerPixel: 0 };
+function applyLaser() {
+  weaponLaser.configure({
+    hue: settings.laserHue,
+    beamOpacity: settings.laserBeamOpacity,
+    dotMinPixels: settings.laserDotPixels,
+    maxRange: settings.laserRange,
+    beamVisible: settings.laserBeam === true,
+  });
+  weaponLaser.setOn(settings.laserOn === true);
+}
+function updateWeaponLaser(dt, source) {
+  // The raycast only happens while the laser is actually lit; it is a second world query per frame
+  // on top of the reticle's, and paying for it with the laser off would be paying for nothing.
+  if (!source || !settings.laserOn) { weaponLaser.update(dt, null, _laserView); return; }
+  const origin = worldCoordinates.toGlobal(_weaponLightMuzzle, _laserRayOrigin);
+  let hit = null;
+  try { hit = worldQuery.raycast({ origin, direction: _weaponLightDir, maxDistance: settings.laserRange }); } catch { hit = null; }
+  _laserSource.hitDistance = hit ? hit.distance : null;
+  // A rebase is a translation, so a global normal is already the render-local one.
+  _laserSource.normal = hit?.normal ?? null;
+  _laserView.metresPerPixel = metresPerPixel(camera.fov, renderer.domElement.clientHeight);
+  weaponLaser.update(dt, _laserSource, _laserView);
+}
 // Where the lamp is bolted: the held weapon's muzzle and bore. A knife or an empty hand has no
 // barrel, so the beam falls back to the eye and the look direction rather than blinking out.
 function weaponLightSource(canControl) {
@@ -1734,7 +1797,8 @@ function renderCombatStatus(now) {
   const posture = playerStance === 'stand' && isStance === 'stand' ? ''
     : `<br>posture ${playerStance}${isStance !== playerStance ? ` (${isStance})` : ''}${playerController.standBlocked ? ' — no headroom' : ''}`;
   // In daylight a lit beam is invisible, so the only way to know the switch took is to say so.
-  const torch = settings.flashlightOn ? '<br>[L] light on' : '';
+  const torch = settings.flashlightOn || settings.laserOn
+    ? `<br>[L] ${[settings.flashlightOn ? 'light' : null, settings.laserOn ? 'laser' : null].filter(Boolean).join(' + ')} on` : '';
   // Write only on change. innerHTML reparses, and health, ammo and the hit flag hold still for whole
   // seconds at a time, so the great majority of frames wrote the identical markup back.
   const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${torch}${droneHudLine()}${killed}${slots}`;
@@ -2029,10 +2093,25 @@ function aimLight(light, direction) {
   light.updateMatrixWorld();
 }
 
+// The full sky palette from settings: generation keys are the room's (shared), look keys are this
+// client's. `bodies: true` keeps the planets when the shared Milky Way is off (the generator's
+// milkyWay flag doubles as its night marker).
+function skyPaletteOverrides() {
+  return {
+    celestialType: settings.primaryBody, bodies: true,
+    seed: settings.skySeed >>> 0, planetCount: settings.skyPlanetCount, moonCount: settings.skyMoonCount,
+    bodyScale: settings.skyBodyScale, milkyWay: settings.skyMilkyWay,
+    milkyWayDensity: settings.skyMilkyWayDensity, bodyResolution: settings.skyBodyResolution,
+    starCount: settings.skyStarCount, starOpacity: settings.skyStarOpacity, starColor: settings.skyStarColor,
+    milkyWayIntensity: settings.skyMilkyWayIntensity,
+    sun: settings.skySunColor, sunSize: settings.skySunSize, sunOpacity: settings.skySunOpacity,
+    moonColor: settings.skyMoonColor, moonSize: settings.skyMoonSize, moonOpacity: settings.skyMoonOpacity,
+  };
+}
 const sky = createSky({
   scene, camera, size: WORLD_SIZE,
   sunDir: dirFromAzEl(settings.sunElevation, settings.sunAzimuth, _sunDir),
-  palette: { celestialType: settings.primaryBody },
+  palette: skyPaletteOverrides(),
 });
 scene.add(sky.group);
 // The sea: one wave surface at the terrain's sea level (base-game-water.js). Its look (colours,
@@ -2263,6 +2342,36 @@ function applySkyComponentVisibility() {
   sky.setMilkyWayVisible(settings.milkyWayEnabled);
   sky.setBodiesVisible(settings.bodiesEnabled);
 }
+// Sky settings applier. Two classes on purpose: the rebuild keys regenerate geometry (sky.setPalette
+// disposes through the age-gated queue), so they are wired to commit-on-release controls and diffed
+// here — a snapshot restating the same world every 50 ms must never trigger a rebuild. The live keys
+// are uniform/draw-range/canvas-repaint writes and are safe on every drag frame.
+const SKY_REBUILD_KEYS = ['skySeed', 'skyPlanetCount', 'skyMoonCount', 'skyBodyScale', 'skyMilkyWay',
+  'skyMilkyWayDensity', 'skyBodyResolution'];
+const SKY_LIVE_KEYS = {
+  skyStarCount: v => sky.setStarCount(v),
+  skyStarOpacity: v => sky.setStarOpacity(v),
+  skyStarColor: v => sky.setStarColor(v),
+  skyMilkyWayIntensity: v => sky.setMilkyWayIntensity(v),
+  skySunSize: v => sky.setSunSize(v),
+  skySunColor: v => sky.setSunColor(v),
+  skySunOpacity: v => sky.setSunOpacity(v),
+  skyMoonSize: v => sky.setMoonSize(v),
+  skyMoonColor: v => sky.setMoonColor(v),
+  skyMoonOpacity: v => sky.setMoonOpacity(v),
+};
+const appliedSky = {};
+for (const key of [...SKY_REBUILD_KEYS, ...Object.keys(SKY_LIVE_KEYS)]) appliedSky[key] = settings[key];
+function applySkySettings() {
+  let rebuild = false;
+  for (const key of SKY_REBUILD_KEYS) if (appliedSky[key] !== settings[key]) { appliedSky[key] = settings[key]; rebuild = true; }
+  for (const [key, apply] of Object.entries(SKY_LIVE_KEYS)) {
+    if (appliedSky[key] === settings[key]) continue;
+    appliedSky[key] = settings[key];
+    if (!rebuild) apply(settings[key]);
+  }
+  if (rebuild) sky.setPalette(skyPaletteOverrides());   // one rebuild per commit; reads every key
+}
 
 function updateWorld(dt) {
   const traversalLabVisible = settings.worldMode === 'traversalLab';
@@ -2311,6 +2420,7 @@ function updateWorld(dt) {
   applyBodyMovement();
   applyArmTuning();
   applySkyComponentVisibility();
+  applySkySettings();
   renderer.shadowMap.enabled = settings.shadowsEnabled;
 
   let sunIntensity = 0;
@@ -2514,8 +2624,9 @@ function changed(key) {
     syncAllControls();   // the three offset sliders now show the other mode's numbers
   } else if (key === 'unlimitedAmmo') {
     applyUnlimitedAmmo();
-  } else if (key?.startsWith('flashlight')) {
+  } else if (key?.startsWith('flashlight') || key?.startsWith('laser')) {
     applyFlashlight();
+    applyLaser();
   } else if (key === 'weaponPrimary' || key === 'weaponSidearm' || key === 'weaponMelee' || key === 'weaponThrowable' || key === 'weaponGadget' || key === 'weaponGadget2') {
     applyWeaponSelection();
   } else if (key === 'fpPreset') {
@@ -2564,6 +2675,24 @@ function addRange(host, key, label, min, max, step, format = value => String(val
   input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step);
   row.append(text, output); wrap.append(row, input); host.append(wrap);
   input.addEventListener('input', () => {
+    settings[key] = Number(input.value); output.textContent = format(settings[key]); changed(key);
+  });
+  registerControl(key, () => { input.value = String(settings[key]); output.textContent = format(settings[key]); }, input);
+  return wrap;
+}
+// Rebuild-class sliders: the readout follows the drag, but the setting only commits on RELEASE
+// ('change'). Anything routed through here regenerates GPU resources, and a rebuild per drag
+// frame races the WebGPU submit (the slider-rebuild crash class) — so never wire these to 'input'.
+function addCommitRange(host, key, label, min, max, step, format = value => String(value)) {
+  const wrap = document.createElement('div'); wrap.className = 'control';
+  const row = document.createElement('div'); row.className = 'control-line';
+  const text = document.createElement('label'); text.textContent = label;
+  const output = document.createElement('output');
+  const input = document.createElement('input');
+  input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step);
+  row.append(text, output); wrap.append(row, input); host.append(wrap);
+  input.addEventListener('input', () => { output.textContent = format(Number(input.value)); });
+  input.addEventListener('change', () => {
     settings[key] = Number(input.value); output.textContent = format(settings[key]); changed(key);
   });
   registerControl(key, () => { input.value = String(settings[key]); output.textContent = format(settings[key]); }, input);
@@ -2807,9 +2936,11 @@ const reticleNote = document.createElement('div'); reticleNote.className = 'note
 reticleNote.textContent = 'The reticle sits where the round would land, not at screen centre — in third person the camera is behind and beside your head, so those are metres apart. Its gap is the live cone through the camera FOV, and it turns amber whenever the trigger would do nothing (reloading, mid-swap, empty).';
 playerSec.append(reticleNote);
 
-// Weapon flashlight. Not v3's drawn cone — a real SpotLight on the bore, so what you see is
-// surfaces being lit. Its own section because it is seven numbers nobody needs open by default.
-const torchSec = createSection(playerSec, 'Weapon flashlight', { collapsed: true });
+// Weapon flashlight and laser: the two things that hang off the bore. The flashlight is not v3's
+// drawn cone but a real SpotLight, so what you see is surfaces being lit; the laser is the reverse,
+// drawn rather than lit, because no light source can express a beam and a spot. Their own section
+// because between them they are fourteen numbers nobody needs open by default.
+const torchSec = createSection(playerSec, 'Weapon flashlight and laser', { collapsed: true });
 addToggle(torchSec, 'flashlightOn', 'Flashlight on (L)');
 addRange(torchSec, 'flashlightIntensity', 'Beam brightness', 0, 2000, 5, value => value.toFixed(0));
 addRange(torchSec, 'flashlightRange', 'Beam range', 1, 300, 1, value => `${value.toFixed(0)} m`);
@@ -2821,6 +2952,20 @@ addToggle(torchSec, 'flashlightShadows', 'Beam casts shadows');
 const torchNote = document.createElement('div'); torchNote.className = 'note';
 torchNote.textContent = 'The lamp sits on the barrel, so the beam points where the gun points, not where the camera does. With no gun in hand it falls back to your eye. Shadows stop the beam shining through walls but add a second shadow pass, and switching them recompiles the scene’s materials once. The beam is yours alone: it is not sent to other players yet.';
 torchSec.append(torchNote);
+
+const hueName = value => value < 0.04 || value > 0.96 ? 'red' : value < 0.13 ? 'orange'
+  : value < 0.2 ? 'yellow' : value < 0.45 ? 'green' : value < 0.55 ? 'cyan'
+  : value < 0.75 ? 'blue' : value < 0.88 ? 'violet' : 'magenta';
+addToggle(torchSec, 'laserOn', 'Laser sight (double-tap L)');
+addToggle(torchSec, 'laserBeam', 'Show the beam, not only the dot');
+addRange(torchSec, 'laserHue', 'Laser colour', 0, 1, 0.005, value => `${hueName(value)} (${(value * 360).toFixed(0)} deg)`);
+addRange(torchSec, 'laserBeamOpacity', 'Beam strength', 0, 1, 0.01, value => value <= 0.005 ? 'invisible' : value.toFixed(2));
+addRange(torchSec, 'laserDotPixels', 'Smallest dot on screen', 1, 20, 0.5, value => `${value.toFixed(1)} px`);
+addRange(torchSec, 'laserRange', 'Laser range', 1, 300, 1, value => `${value.toFixed(0)} m`);
+const laserNote = document.createElement('div'); laserNote.className = 'note';
+laserNote.textContent = 'The laser is aimed down the barrel, so its dot and the reticle do not agree — that is the point of one. The reticle is drawn from the ray the server fires, which leaves your eye; the dot is where the gun is actually pointing. The beam and dot are widened to stay at least this many pixels wide, so they do not thin to nothing at range. It costs a second world raycast each frame while lit, and like the flashlight, other players cannot see it.';
+torchSec.append(laserNote);
+
 
 addToggle(playerSec, 'unlimitedAmmo', 'Unlimited ammo');
 const unlimitedAmmoNote = document.createElement('div'); unlimitedAmmoNote.className = 'note';
@@ -3012,6 +3157,35 @@ for (const [key, label] of [
   ['moonDiscEnabled', 'Moon disc'], ['starsEnabled', 'Stars'],
   ['milkyWayEnabled', 'Milky Way'], ['bodiesEnabled', 'Additional bodies'],
 ]) addToggle(skySec, key, label);
+// Stellar generation: the room's sky identity (shared keys — the planets are landmarks). These
+// REGENERATE the sky, so every slider here is commit-on-release (addCommitRange), never live.
+const stellarSec = createSection(skySec, 'Stellar generation (shared)', { collapsed: false });
+addCommitRange(stellarSec, 'skySeed', 'Sky seed', 0, 1e9, 1, value => value.toFixed(0));
+addAction(stellarSec, 'Reroll the sky', () => {
+  if (!canEditSharedSettings()) return;
+  settings.skySeed = Math.floor(Math.random() * 1e9);
+  syncAllControls();
+  changed('skySeed');
+});
+addCommitRange(stellarSec, 'skyPlanetCount', 'Planets', 0, 16, 1, value => value.toFixed(0));
+addCommitRange(stellarSec, 'skyMoonCount', 'Extra moons', 0, 12, 1, value => value.toFixed(0));
+addCommitRange(stellarSec, 'skyBodyScale', 'Planet/moon size', 0.1, 6, 0.05, f2);
+addToggle(stellarSec, 'skyMilkyWay', 'Milky Way exists in this world');
+// Local sky appearance: uniform / draw-range / canvas-repaint writes, safe as live drags.
+const skyLookSec = createSection(skySec, 'Sky appearance (local)', { collapsed: true });
+addRange(skyLookSec, 'skyStarCount', 'Star count', 0, 3000, 50, value => value.toFixed(0));
+addRange(skyLookSec, 'skyStarOpacity', 'Star brightness', 0, 2, 0.02, f2);
+addColor(skyLookSec, 'skyStarColor', 'Star color');
+addCommitRange(skyLookSec, 'skyMilkyWayDensity', 'Milky Way density (regenerates)', 0, 4, 0.05, f2);
+addRange(skyLookSec, 'skyMilkyWayIntensity', 'Milky Way brightness', 0, 3, 0.05, f2);
+addColor(skyLookSec, 'skySunColor', 'Sun disc color');
+addRange(skyLookSec, 'skySunSize', 'Sun disc size', 0.005, 0.5, 0.005, value => value.toFixed(3));
+addRange(skyLookSec, 'skySunOpacity', 'Sun disc opacity', 0, 1, 0.02, f2);
+addColor(skyLookSec, 'skyMoonColor', 'Moon disc color');
+addRange(skyLookSec, 'skyMoonSize', 'Moon disc size', 0.005, 0.5, 0.005, value => value.toFixed(3));
+addRange(skyLookSec, 'skyMoonOpacity', 'Moon disc opacity', 0, 1, 0.02, f2);
+// A bake-cost knob, not a look: scales the per-body canvas (clamped 96-2048 px), paid once per rebuild.
+addCommitRange(skySec, 'skyBodyResolution', 'Planet texture resolution (bake cost, regenerates)', 0.25, 4, 0.05, f2);
 
 addToggle(timeSec, 'todEnabled', 'Drive from time of day');
 addSelect(timeSec, 'primaryBody', 'Manual primary body', ['sun', 'moon']);
@@ -3277,6 +3451,7 @@ if (missingControls.length) throw new Error(`Unsaved/unconfigured settings: ${mi
 loadShotSpread();   // the committed accuracy numbers; the built-in fallback stands until it lands
 applyUnlimitedAmmo();   // restored from the autosave in Solo, replaced by the room's world online
 applyFlashlight();      // purely local: the beam is not replicated, so it is never the room's to set
+applyLaser();           // likewise local-only
 playerBodies.setLocalLoadout(currentLoadout());
 
 const multiplayerStatus = document.createElement('div');
@@ -3452,6 +3627,7 @@ function applyAllState(payload) {
   applySectionStates(ctrlBody, data.ui?.sections);
   applyAudioSettings();
   applyFlashlight();
+  applyLaser();
   applyMusicSetting().catch(reportBaseGameError);
   controls.update();
   syncAllControls();
@@ -3652,6 +3828,7 @@ addEventListener('keydown', event => {
   }
 });
 
+let lastLightTapMs = null;   // the L key's double-tap clock
 addEventListener('keydown', event => {
   if (activeMode === 'menu' || gameplayPaused || settings.playerControlMode !== 'player') return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
@@ -3673,10 +3850,18 @@ addEventListener('keydown', event => {
   if (event.code === 'KeyB' && !event.repeat) droneCtl.sendEdge = true;
   if (event.code === 'KeyN' && !event.repeat) droneCtl.recallEdge = true;
   if (event.code === 'KeyL' && !event.repeat) {
-    // The key writes the SETTING, so the panel toggle and the key are one switch, not two.
+    // One key, two switches: a tap is the flashlight, a double tap is the laser. The first tap of a
+    // pair has already flipped the light by the time the second arrives, so a double tap flips it
+    // back — the light blinks for a fraction of a second rather than the tap waiting on a timer to
+    // find out what it was. A third tap starts a fresh pair instead of reading as a triple.
+    const now = performance.now();
+    const kind = tapKind(lastLightTapMs, now);
+    lastLightTapMs = kind === 'double' ? null : now;
     settings.flashlightOn = !settings.flashlightOn;
+    if (kind === 'double') settings.laserOn = !settings.laserOn;
+    // The key writes the SETTINGS, so the panel toggles and the key are one switch, not two.
     syncAllControls();
-    changed('flashlightOn');   // applies it
+    changed(kind === 'double' ? 'laserOn' : 'flashlightOn');   // applies both
     scheduleAutosaveSafe();
   }
   // Posture toggles, not holds: you do not hold a key to stay lying down. Pressing the key you are
@@ -4268,7 +4453,7 @@ async function animate() {
       if (water.underwater !== underwaterAudio) { underwaterAudio = water.underwater; envAudio.setUnderwater?.(underwaterAudio); }
     });
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) { refreshTerrainRuntimeLine(); refreshGrassRuntimeLine(); }
-    frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); weaponLight.update(dt, weaponLightSource(canControl)); });
+    frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); const gunLight = weaponLightSource(canControl); weaponLight.update(dt, gunLight); updateWeaponLaser(dt, gunLight); });
     // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
     await frameProfiler.timeAsync('grassGpu', () => flora.update(frameStart / 1000));
     frameProfiler.time('sky', () => updateWorld(dt));
