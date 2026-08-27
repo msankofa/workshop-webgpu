@@ -75,6 +75,17 @@ folder keeps 80 zips instead of gaining 80 directories that would drift from the
 pattern-checked and looked up in the manifest, and the member is resolved against the archive's own
 listing, so a path cannot traverse out. See `docs/subsystems/infra.md`.
 
+### Windows path length
+
+The CodePen exports carry their full pen title in the filename, donation appeal and all, so the longest
+run to about 100 characters. Cloning into a deep directory on Windows can push them past the 260-character
+`MAX_PATH` limit: git checks out everything it can, prints a checkout error, and silently leaves the
+longest files missing from the working tree while they sit perfectly in the repo. It showed up here as 71
+of 82 zips appearing, at a path measured at exactly 261 characters.
+
+If that happens, either clone somewhere shorter or set `git config --system core.longpaths true`. The
+giveaway is `git status` listing deletions you did not make.
+
 ### When the pens 404
 
 The manifest and the 21 standalone pens are plain static files; only the 80 zipped ones need the
