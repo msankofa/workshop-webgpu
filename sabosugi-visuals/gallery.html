@@ -81,6 +81,14 @@
   #bar a:hover, #bar button:hover { border-color: var(--accent); color: var(--accent); }
   #notice { color: var(--warn); font-size: 12px; }
 
+  #route-warning {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 7;
+    background: #2a1e12; border-top: 1px solid #5a4020; color: var(--warn);
+    padding: 10px 14px; font-size: 12.5px; line-height: 1.6;
+  }
+  #route-warning code { color: #ffd9a0; font-family: ui-monospace, Consolas, monospace; }
+  #route-warning b { color: #ffe6c2; }
+
   /* The one thing that survives hiding. Bottom left, because lil-gui lives top right and a fair few
      pens put a caption or a file drop at the bottom centre. */
   #peek {
@@ -140,6 +148,7 @@
     <button id="peek-next" title="Next visual">›</button>
   </div>
   <iframe id="frame" title="Selected visual" allow="autoplay; fullscreen" hidden></iframe>
+  <div id="route-warning" hidden></div>
   <div id="placeholder">
     <strong>Pick a visual</strong>
     <span>Ninety-four pens and six hybrids. Each one loads in an isolated frame, so switching away
@@ -293,6 +302,38 @@ window.addEventListener('hashchange', () => {
   if (pen && (!current || pen.slug !== current.slug)) select(pen);
 });
 
+const warningEl = document.getElementById('route-warning');
+
+/**
+ * 80 of the pens are served out of their zips by serve.py's /sabosugi/ route, and nothing on the page
+ * needs that route until you click one — the manifest and the standalone pens are plain static files, so
+ * a server without it lists all 100 entries and then 404s most of them.
+ *
+ * The way that happens in practice is a long-running `python serve.py` started before the route existed:
+ * Python does not reload, so an old process keeps serving static files perfectly while the route it never
+ * had returns 404. Probing once at boot turns a blank frame into a sentence.
+ */
+async function checkZipRoute(pens) {
+  const zipPen = pens.find((p) => p.packaging === 'zip');
+  if (!zipPen) return true;
+  try {
+    // GET, not HEAD: do_HEAD is a separate handler on the Python side, so a HEAD probe would 404 even
+    // against a server whose route works perfectly. A pen's index.html is about a kilobyte.
+    const res = await fetch(zipPen.url, { cache: 'no-store' });
+    if (res.ok) return true;
+  } catch {
+    // A network error lands here the same as a 404; either way the pens will not load.
+  }
+  warningEl.hidden = false;
+  warningEl.innerHTML = `<b>This server cannot serve the zipped pens.</b> The 80 CodePen exports are read
+    out of their archives by <code>serve.py</code>'s <code>/sabosugi/</code> route, and a request for one
+    just failed. The usual cause is a <code>serve.py</code> process started before that route was added —
+    Python does not reload, so it still serves static files while the route 404s. Restart it, or open this
+    page from a server that has it. The ${pens.length - pens.filter((p) => p.packaging === 'zip').length}
+    standalone pens and the hybrids work either way.`;
+  return false;
+}
+
 const response = await fetch('pens-manifest.json', { cache: 'no-store' });
 if (!response.ok) {
   placeholderEl.innerHTML = '<strong>No manifest</strong><span>Run <code>python sabosugi-visuals/build-manifest.py</code>, then reload.</span>';
@@ -306,6 +347,7 @@ if (!response.ok) {
     categoryEl.appendChild(option);
   }
   render();
+  checkZipRoute(pens);
   const initial = pens.find((p) => p.slug === location.hash.slice(1));
   if (initial) select(initial);
 }

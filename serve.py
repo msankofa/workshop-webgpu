@@ -625,7 +625,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=500)
 
-    def _handle_sabosugi(self, path):
+    # SimpleHTTPRequestHandler answers HEAD from its own do_HEAD, which knows nothing about the routes
+    # added above, so a HEAD for a pen would 404 while the GET beside it succeeds.
+    def do_HEAD(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path.startswith('/sabosugi/'):
+            self._handle_sabosugi(path, body=False)
+            return
+        super().do_HEAD()
+
+    def _handle_sabosugi(self, path, body=True):
         parts = [p for p in path.split('/') if p]      # ['sabosugi', slug, *rest]
         if len(parts) < 2:
             self.send_error(404)
@@ -633,7 +642,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         slug = parts[1]
         relpath = '/'.join(parts[2:]) or 'index.html'
         try:
-            body, content_type = read_sabosugi_asset(slug, relpath)
+            payload, content_type = read_sabosugi_asset(slug, relpath)
         except KeyError:
             self.send_error(404)
             return
@@ -642,10 +651,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header('Content-Type', content_type)
-        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Content-Length', str(len(payload)))
         self.send_header('Cache-Control', 'no-cache')
         self.end_headers()
-        self.wfile.write(body)
+        if body:
+            self.wfile.write(payload)
 
     # GET /api/list-maps -- terrain-generator-v5.html's "real exported map" picker enumerates
     # every maps/**/<name>-data.json so it can see its own tool's newest exports.

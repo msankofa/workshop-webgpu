@@ -75,6 +75,17 @@ folder keeps 80 zips instead of gaining 80 directories that would drift from the
 pattern-checked and looked up in the manifest, and the member is resolved against the archive's own
 listing, so a path cannot traverse out. See `docs/subsystems/infra.md`.
 
+### When the pens 404
+
+The manifest and the 21 standalone pens are plain static files; only the 80 zipped ones need the
+`/sabosugi/` route. So a server without that route lists all 101 entries perfectly and then fails on most
+of them. In practice that means **a `serve.py` process started before the route was added** — Python does
+not reload, so an old process keeps serving static files while the route it never had returns 404.
+Restart it.
+
+`gallery.html` probes the route once at boot and says so in a banner rather than showing a blank frame.
+The probe uses GET rather than HEAD, because `do_HEAD` is a separate handler on the Python side.
+
 ## Hybrids
 
 | Hybrid | Combines | Joined at |

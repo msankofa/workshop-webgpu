@@ -651,6 +651,10 @@ complete `dist/index.html` alongside the `script.js` and `style.css` it referenc
 extracting, and the folder keeps its 80 archives instead of gaining 80 directories that would drift from
 them.
 
+`do_HEAD` is overridden to cover this route too. `SimpleHTTPRequestHandler` answers HEAD from its own
+handler, which knows nothing about the routes added to `do_GET`, so without that a HEAD for a pen returns
+404 while the GET beside it succeeds — which is exactly what a health probe would ask.
+
 `<slug>` is matched against `^[a-z0-9-]+$` and then looked up in `sabosugi-visuals/pens-manifest.json`,
 so only a pen the manifest names can be reached; the requested member is resolved against the archive's
 own listing, so a path cannot traverse out of it. The slug map is cached and reloaded whenever
