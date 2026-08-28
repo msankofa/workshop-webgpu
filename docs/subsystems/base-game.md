@@ -129,10 +129,10 @@ All controls work without reloading the page.
   `playerBodies.setMovementTuning()`. Arms also gets Backswing (`armAsym`, the locomotion layer's
   backward-swing fraction).
 - Sky: entire group, dome, sun disc, moon disc, stars, Milky Way, additional bodies. Two nested
-  sections (2026-08-27) expose the generator: "Stellar generation (shared)" carries `skySeed` (+
+  sections (2026-08-27) expose the generator: "Stellar generation" carries `skySeed` (+
   a Reroll button), `skyPlanetCount`, `skyMoonCount`, `skyBodyScale` and the `skyMilkyWay` flag —
   all shared world keys, all wired commit-on-release (`addCommitRange`) because they rebuild the
-  sky; "Sky appearance (local)" carries the live star count/brightness/color, Milky Way brightness,
+  sky; "Sky appearance" carries the live star count/brightness/color, Milky Way brightness,
   and sun/moon disc color/size/opacity sliders (uniform, draw-range, or canvas-repaint writes — no
   rebuild), plus the commit-class `skyMilkyWayDensity`. `skyBodyResolution` sits at the section
   foot labeled as a bake-cost knob (the per-body canvas is clamped 96–2048 px, paid per rebuild).
@@ -894,9 +894,12 @@ resolution. `laserShadows` ("Dot is blocked by cover") turns it off for one fewe
 **The beam is the one part a light cannot express** — no light source draws a visible column of air —
 so it stays a mesh: an additive cylinder down the bore, `depthWrite: false` and depth testing **on**,
 drawn to the full `range`. Opaque geometry clips it exactly where the beam would stop, which is the
-second reason no raycast is needed. Its width is floored in screen pixels (`metresPerPixel`,
-`screenSizeFloor`) at the beam's own **midpoint** depth: a 5 mm cylinder is a fraction of a pixel far
-away and shimmers along its length, and measuring at the far end fattens the near half into a cone.
+second reason no raycast is needed. Its drawn width is the **larger** of two exposed controls: `laserBeamWidth`,
+a thickness in metres that wins up close, and `laserBeamMinPixels`, a screen-pixel floor that takes
+over once the far end goes sub-pixel (`metresPerPixel`, `screenSizeFloor`). The floor is measured at
+the beam's own **midpoint** depth — a 5 mm cylinder is a fraction of a pixel at 40 m and shimmers
+along its length, while measuring at the far end would fatten the near half into a cone. Setting the
+floor to 0 lets the beam thin out with distance the way a real one does.
 
 The emitter rides `barrelDirection` off the same mount as the flashlight, so the dot and the reticle
 do not agree — the reticle is drawn from the ray the server fires, which leaves your eye. That
@@ -908,8 +911,8 @@ tap toggles the laser *and flips the flashlight back*, because the first tap of 
 moved it — the light blinks for a fraction of a second rather than every tap waiting on a timer to
 learn what it was. A third tap starts a fresh pair. Settings: `laserOn`, `laserBeam` (dot only when
 off), `laserHue` (`hueToHex`, a full wheel: 0 red, 1/3 green), `laserDotAngle` (the cone half-angle,
-so the dot holds a near-constant size on screen), `laserIntensity`, `laserBeamOpacity`, `laserRange`,
-`laserShadows`; `applyLaser()` pushes them through `configure`. Resident and intensity-switched like
+so the dot holds a near-constant size on screen), `laserIntensity`, `laserBeamOpacity`, `laserBeamWidth`,
+`laserBeamMinPixels`, `laserRange`, `laserShadows`; `applyLaser()` pushes them through `configure`. Resident and intensity-switched like
 every other light on this page. Local only, like the flashlight. `updateWeaponLaser` runs in the
 frame's `fx` block. Node-tested: `test-weapon-laser.mjs`.
 
@@ -1324,7 +1327,7 @@ targets directly from the head joint, bot-viewer's heal-pose way; `heldAnchor(id
 between the solved hands) and the drone view puts the craft there, nose along the body's heading
 (`record.heading`, not `motion.visualYaw`, which carries the rig's yaw+PI spin). Click throws it (server `launchGadget`: a fire edge once the draw is
 done, one of each kind aloft per player, from 0.5 m above the eye along the look at 8 m/s). It then
-flies itself: the quad shadows over the owner's shoulder, the UAV orbits the owner at 35 m. `F` takes
+flies itself: the quad shadows over the owner's shoulder, the UAV (the sim's plane) orbits the owner at 900 m and 300 m up, accelerating from the throw to its 120 m/s circuit speed at the airframe's thrust/mass (`autoSpeed` on the record, also reset from the airspeed when the stick is released) because `cruiseTo` would otherwise snap it there in one tick. `F` takes
 the stick (the body stands still, on the server too; the camera rides the drone from behind), `B`
 sends it to the point under the crosshair (world query, then the terrain field marched out to
 1.5 km), `N` recalls it. At the stick the flight sim's keys: arrows pitch/roll, A/D yaw, W/S throttle; the mouse does
@@ -1333,8 +1336,9 @@ nothing and the right button does not zoom, so the body's view is where you left
 **One drone, two steppers** (`base-game-drones.js`). `bot-drones.js` steering (`hoverTo`,
 `cruiseTo`, `orbitAround`, `advance`, now exported) flies the autonomy states `launch`, `follow`,
 `goto`, `hold`, `return`; `flight-model.js` `stepFlyer` flies `manual`, so the quad has the flight
-sim's `drone` airframe and tilt physics and the UAV a new registered `uav` airframe (the `bird`
-table's wing and mass, the plane's control rates and damping, authority 1.0 at its 15 m/s cruise, and a 22 N pusher; the bird's own rates put the nose 70 degrees up in one second and stalled it). Position and velocity are shared as-is; the handoff
+sim's `drone` airframe and tilt physics and the UAV the sim's `plane` airframe, unmodified
+(an invented `uav` airframe from the bird's wing lasted one day: the user's UAV is the sim's plane,
+and bot-viewer-v3's `recon` mesh was never a flyable body). Position and velocity are shared as-is; the handoff
 converts attitude only (`quatFromHeading` / `headingFromQuat`, round-trip tested). `deadstick` is
 `bot-drones.js`'s own, with v3's deadstick-or-break roll on a kill (`damageBaseGameDrone`). A dead
 owner drops the quad and parks the UAV where it is. `flight-terrain.js`'s `setHeightSource` is bound
@@ -1346,8 +1350,8 @@ throttle, send, recall }` and only for a drone the client owns; the snapshot car
 (`droneWireState` → `sanitizeBaseGameDroneState`) and each player's `controlling`. Ground is
 `sim.heightAt` in terrain rooms and the spawn floor in the lab.
 
-**Client**: `base-game-drone-view.js` draws them with `flight-meshes.js` in node materials, in the sim's craft tint (`buildDrone` at 2.2x,
-`buildRecon` at 1.2x, the v3 scales), posed from yaw/pitch/bank the way v3's `poseDroneCraft` does,
+**Client**: `base-game-drone-view.js` draws them with `flight-meshes.js` in node materials, in the sim's craft tint (`buildDrone` at 2.2x, the v3
+scale; `buildPlane` at 1x), posed from yaw/pitch/bank the way v3's `poseDroneCraft` does,
 interpolated through `createRemoteTrack`; the chase camera is the flight sim's chase branch. Solo
 runs the same module in `stepSoloDrones` so it works without the relay. No client prediction of the
 drone; it renders at the interpolated server pose like a remote player.
@@ -1362,7 +1366,26 @@ with the craft; now it is the mesh's own up, the back distance grows with airspe
 is body-space, and the lens opens with speed, all as the sim's chase branch; (3) manual flight
 integrates in fixed 1/120 s substeps in Solo too (the rate lag and Euler forces are step-size
 dependent); (4) taking the stick starts at the airframe's `idleThrottle` like the sim's spawn, not
-at computed hover. Left as-is: online drone flight has no client prediction (a stick input is one
+at computed hover. **Stock, throw and reload (2026-08-27).** A player carries `BASE_GAME_GADGET_STOCK` of each drone
+per life (2 and 2; a respawn restocks). Click starts the throw: the arms wind up behind the head and
+heave (`THROW_KEYS` in `base-game-player-bodies.js`, driven by `overheadPhase`), and the server
+spawns the drone at `BASE_GAME_GADGET_THROW_TICKS` (0.35 s) into the
+`BASE_GAME_GADGET_THROW_ACTION_TICKS` (0.7 s) action; the press spends one from the stock and
+empties the hands. With empty hands and stock left, R runs the reload action for
+`BASE_GAME_GADGET_RELOAD_TICKS` (2 s: hands to the hip, then back up with the next one). The
+player state carries `gadgets` and `gadgetReady`; remotes play both motions from `action` and
+`actionTick` against their replicated `tick`; the local body plays them from the key edge so the
+arms move on the press. Solo runs the same timers in `stepGadgetHands`/`stepSoloDrones`. The UAV
+flies as the plane but draws as the `recon` model at its authored size, with the chase distance sized to it.
+
+**Proof the physics are the sim's** (`test-base-game-drones.mjs`, "bit for bit"): the sim's own
+`makeFlyer('plane')` and the base-game drone under the stick, fed one identical 60 s script (pull,
+roll, rudder, throttle, afterburner, a dive to the ground), must not differ by a single metre; they
+share the one airframe object and the one `stepFlyer`. Writing that test found two more
+differences: `stepManual` forced `input.sweep = false`, so Shift (afterburner) never reached the
+plane (the paths split at exactly the second the script held Shift; `sweep`/`flap` now ride
+`tick.drone`), and an extra 6 m altitude floor of ours split them at 36 s (removed; the flight
+model's own ground rule applies). Left as-is: online drone flight has no client prediction (a stick input is one
 round trip plus the interpolation delay late; the body has prediction, the drone renders like a
 remote), and the assist flag has no toggle (`rec.assist`, default on).
 
@@ -1370,6 +1393,89 @@ remote), and the assist flag has no toggle (`rec.assist`, default on).
 nobody calls it), crash FX when a deadstick reaches the ground, sounds, the lab's flat floor as its
 only ground, and every number, which has never been seen in a browser. Tests:
 `test-base-game-drones.mjs`, `server/test-base-game-drones-room.mjs`.
+
+### NPC bots, slice 2: the server (shipped 2026-08-27, Node-tested, unseen in a browser)
+
+Plan: [2026-08-27-base-game-npc-bots.md](../superpowers/plans/2026-08-27-base-game-npc-bots.md).
+The bot-viewer-v3 brain runs in the room as `bot-brain.js` (see `bots.md`, "The brain as a
+module"); `server/base-game-npcs.js` hosts one brain per room.
+
+**An NPC is a client with no socket.** `makeNpcClient` builds the same record `makeClient` does
+(`npc: { team, role }`, `team`, `npcSpawn`, a rolled `appearance`), with a controller at the
+harness speeds (`NPC_WALK_SPEED` 2.4 m/s, run x1.7). `stepClient` hands it to `stepNpcClient`,
+which asks the brain for this tick's intent (`tickInputFor`: the bot's wanted velocity becomes
+`moveX/moveZ/sprint` in the controller's frame, `yaw` is the bot yaw plus pi, `pitch`, `stance`
+from `bot-stance.js`, `aim` in AIM/FIRE, `fire` when the brain's `fireBotShot` hook fired this
+think, `reload` on the brain's reload edge) and pushes it through the ordinary `consumeTick`, so
+the trigger, ammo store, hurt rig, `fireShot`, `applyDamage`, respawn and the snapshot are all the
+player's. The brain thinks at 60 Hz (`room.npcs.think` before the client loop); its ammo copy is
+overwritten from `room.ammo` every tick; players are handed to it as `worldEntities` on their
+team; `applyDamage` forwards every hit to `brain.damaged`, which is what makes a bot flee, report
+to allies and drop a dead target.
+
+**Zone grid.** 384 m at 1.5 m around the connected players' centroid (never a bot), heightfield
+walkability (rise to any neighbour <= 1.3 m, above sea level), `buildLazyVisibilityField` and crest
+corners at the env constants (span 4.5 m, far 24 m), rebaked at 96 m of drift. **The bake is
+sliced**: each cell is sampled once, 2 ms of sampling per think, then `finalizeNavGrid`, the
+visibility field and the corner map each in their own tick (10 / 3 / 30 ms on a v5 world), and the
+old zone stays live meanwhile. It was one call at first, which on a v5 world was 812 ms inside a
+single tick and ran again on every spawn; the room's quarter-second catch-up cap then dropped time
+for everyone in it, which is what "bots freeze, then all fight at once, and the UAV jerks" was
+(2026-08-27, first browser session). A patrol ring (8 points at 40 m plus every spawn anchor)
+gives `updatePatrolMovement` something to walk, which the harness gets from its layout; a new
+anchor joins the live ring without a rebake.
+
+**Gate N1, measured** (`bench-base-game-npcs.mjs`, `--v5 --fight`, one player, sea off): 16 bots
+0.58 ms per 120 Hz tick, 32 bots 1.0 ms (budget 8.3); worst 100 ms of sim 10-15 ms of wall time.
+Analytic world: 16 bots 0.3 ms per tick. `room.npcs.stats` carries the brain's breakdown (think,
+sync, input, rays, heightAt, visibility, bakes). Before the `holeAt` cache in `terrain-source-v5.js`
+the same bench read 2.2 ms / 4.4 ms, and a CPU profile put 65% of the server in the density field:
+every `stepClient` on a v5 world asked `hasTerrain` about five times, and each call scanned a
+density column (~60 `fbm3` samples) to decide whether the point is a cave mouth. Human players paid
+that too, which is why a room lagged with only a handful of bots. The brain was never the cost.
+
+**Service profiler.** `step()` in `base-game-rooms.js` times every wake-up and each phase inside
+`stepRoom` (prepare, npc think, clients, projectiles, drones) plus the 20 Hz snapshot broadcast
+(ms and bytes sent). Once per second it prints `[base-game prof] ...` when the longest wake-up
+was 12 ms or more, or a gap between wake-ups passed 50 ms; set `BASE_GAME_PROF=1` to print it
+every second while NPCs exist. That line is what to paste when a session feels laggy: a long
+`clients` phase is the controller/world cost, a long `think` is the brain or a bake, a long gap
+is something else on the event loop.
+
+**Protocol 14.** Player entries carry `team` (players 1, enemy NPCs 2), `npc`, `appearance`
+(`{ skin, hair, expression }`, names from `bot-face.js`'s tables). Shared keys `npcRespawn`,
+`npcNoticeMs`, `npcAccuracy`, `npcFriendlyFire` (gates `applyDamage` for everyone; self-damage
+always counts), `npcSpawnDistance`. Owner message `base:npc` `{ action: 'spawn'|'clear', team,
+count, role, at }`; `at` is the aimed point for the slot-9 spawner (slice 3), else the side marker
+(friendly beside the requester, enemy `npcSpawnDistance` along their look). Bots vanish on a
+terrain change (they belong to the ground they stood on) and, with respawn off, 3 s after death.
+
+**Measured** (`server/test-base-game-npcs-room.mjs`, analytic world, sea off): 4 bots walk,
+300 shots and 19 hits in 60 s, hits only across teams, respawn off removes the dead, clear
+empties the roster. Not done: the client (slice 3: team tint, panel, faces, the spawner), N1's
+cost curve, cover behind crests seen in a browser, tree occlusion (the server has no trees), and
+the spawner refusing a point in the sea (today it falls back to the aimed point).
+
+### NPC bots, slice 3: the client (shipped 2026-08-27, unseen in a browser)
+
+- **Bodies.** An NPC arrives in `players[]` like anyone else and is drawn by
+  `base-game-player-bodies.js`'s remote path. Two additions: a body with `npc` takes its tint from
+  `BASE_GAME_TEAM_TINTS[team]` (green friendly, red enemy; players keep their identity hue), and a
+  body with `appearance` is composed with a human head (`composeBot(model, 'human',
+  { expression })`) and the named `SKIN_TONES`/`HAIR_COLORS` from `bot-face.js` as its per-body
+  palette, which `setTint` leaves alone. The face is part of the record key, so a changed face
+  rebuilds the body. Soldier kits keep their helmets (no head swap) and only take the tints.
+- **Panel: "NPC bots".** Toggles `npcRespawn`, `npcFriendlyFire`; ranges `npcNoticeMs`,
+  `npcAccuracy`, `npcSpawnDistance` (all shared keys, so guests see them disabled); a role
+  select; buttons Add friendly / Add 4 friendly / Add enemy / Add 4 enemy / Clear bots, sent by
+  `session.sendNpc`. Solo shows a note: bots need a room for now (the loopback room is not built).
+- **The spawner, key 9.** A tool mode over the held sidearm rather than a seventh slot: `9`
+  toggles it and draws the sidearm (so the laser has a muzzle), click sends `base:npc` with
+  `aimed: true` and the server casts the requester's own look ray (`aimedGroundPoint`: world
+  query to 300 m, then the ground marched out to 1.5 km), `R` cycles side and role, the combat HUD
+  shows the current pick and the last result. The trigger stays quiet while the spawner is up.
+- `npcAccuracy` is on the wire and in the panel but **not read by the server yet**: an NPC's spread
+  is the player trigger's. `npcNoticeMs` reaches the brain as `reactionMs`.
 
 ### Pre-terrain server-authoritative player replication
 

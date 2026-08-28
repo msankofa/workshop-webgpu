@@ -98,6 +98,25 @@ ok(laser.spot.target.position.x > laser.spot.position.x, 'and re-aims with it');
   laser.configure({ range: WEAPON_LASER_DEFAULTS.range });
 }
 
+// The two beam-width controls do different jobs: the world thickness wins up close, the pixel floor
+// wins far away, and the drawn width is whichever is larger.
+{
+  laser.configure({ beamWidth: 0.005, beamMinPixels: 1.5, range: WEAPON_LASER_DEFAULTS.range });
+  laser.update(1, source, view);
+  const floored = laser.beam.scale.x;
+  laser.configure({ beamMinPixels: 0 });
+  laser.update(1, source, view);
+  ok(laser.beam.scale.x === 0.005, 'with no pixel floor the beam is exactly its authored world thickness');
+  ok(floored > laser.beam.scale.x, 'and the floor was what had widened it at this range');
+  laser.configure({ beamWidth: 0.4 });
+  laser.update(1, source, view);
+  ok(laser.beam.scale.x === 0.4, 'a fat beam is drawn fat');
+  laser.configure({ beamMinPixels: 1.5 });
+  laser.update(1, source, view);
+  ok(laser.beam.scale.x === 0.4, 'and a world thickness that already beats the floor is left alone');
+  laser.configure({ beamWidth: WEAPON_LASER_DEFAULTS.beamWidth, beamMinPixels: WEAPON_LASER_DEFAULTS.beamMinPixels });
+}
+
 // Losing the mount fades rather than blinking.
 laser.update(1, source, view);
 laser.update(1 / 240, null, view);
@@ -132,7 +151,8 @@ ok((() => { try { createWeaponLaser({ THREE }); return false; } catch { return t
 {
   const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
   const markers = ['weapon-laser.js', 'createWeaponLaser(', 'updateWeaponLaser(', 'applyLaser(', 'tapKind(',
-    'lastLightTapMs', "'laserOn'", "'laserBeam'", "'laserShadows'", 'metresPerPixel('];
+    'lastLightTapMs', "'laserOn'", "'laserBeam'", "'laserShadows'", "'laserBeamWidth'",
+    "'laserBeamMinPixels'", 'metresPerPixel('];
   for (const marker of markers) ok(html.includes(marker), `base-game.html wires ${marker}`);
   // The whole point of the rebuild: the laser no longer costs a world query per frame.
   const body = html.slice(html.indexOf('function updateWeaponLaser'));

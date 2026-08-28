@@ -106,9 +106,11 @@ import { lerpHex } from './sky-field.js';
 import { createFrameProfiler } from './frame-profiler.js';
 import { buildPerformanceMeasurement, changedPerformanceSettings } from './performance-capture.mjs';
 import { createSlotSection } from './bot-viewer-slots.js';
-import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld } from './base-game-protocol.mjs';
+import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld, BASE_GAME_TEAMS, BASE_GAME_NPC_ROLE_IDS } from './base-game-protocol.mjs';
 import { createBaseGameWater } from './base-game-water.js';
 import { createBaseGameFlora, BASE_GAME_FLORA_DEFAULTS } from './base-game-flora.js';
+import { createBaseGameForest, BASE_GAME_FOREST_DEFAULTS } from './base-game-forest.js';
+import { BASE_GAME_TREE_DEFAULTS } from './base-game-trees.js';
 import { createBaseGameClouds, deckHorizonAngle } from './base-game-clouds.js';
 import { createBaseGameRain, rainResponse } from './base-game-rain.js';
 import { applyWetSurface, createRainBed, playThunder } from './rain.js';
@@ -166,7 +168,7 @@ import { BASE_GAME_PLAYER_DEFAULT_CONFIG } from './base-game-player-controller.j
 import { createPlayerBodyPose, playerPoseAnchor, stepPlayerBodyPose } from './player-body-pose.js';
 import { createPlayerHitRigDebug } from './player-hit-rig-debug.js';
 import { createBaseGameRemotePlayers, remotePlayerColor } from './base-game-remote-players.js';
-import { isBaseGameGadget, BASE_GAME_GADGET_IDS } from './base-game-protocol.mjs';
+import { isBaseGameGadget, BASE_GAME_GADGET_IDS, BASE_GAME_GADGET_THROW_TICKS, BASE_GAME_GADGET_THROW_ACTION_TICKS, BASE_GAME_GADGET_RELOAD_TICKS, BASE_GAME_SIM_HZ, BASE_GAME_WEAPON_ACTION, defaultGadgetStock } from './base-game-protocol.mjs';
 import { createBaseGameDroneView, CRAFT_TINT } from './base-game-drone-view.js';
 import { createBaseGameDrone, stepBaseGameDrone, sendDroneTo, recallDrone, takeOverDrone, releaseDrone, droneWireState } from './base-game-drones.js';
 import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS, BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
@@ -219,6 +221,26 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassGroundTintMip: BASE_GAME_FLORA_DEFAULTS.grassGroundTintMip,
   grassCullStart: BASE_GAME_FLORA_DEFAULTS.grassCullStart,
   grassDispatchBudgetM: BASE_GAME_FLORA_DEFAULTS.grassDispatchBudgetM,
+  // Trees. Density and the palette shape the forest every peer stands in; the draw radius,
+  // the LOD rings and the render parts are each peer's own quality settings.
+  treesEnabled: BASE_GAME_TREE_DEFAULTS.treesEnabled,
+  treesPerHectare: BASE_GAME_TREE_DEFAULTS.treesPerHectare,
+  treeMaxSize: BASE_GAME_TREE_DEFAULTS.treeMaxSize,
+  treeSpecies: BASE_GAME_TREE_DEFAULTS.treeSpecies,
+  treeVerticalOffset: BASE_GAME_TREE_DEFAULTS.treeVerticalOffset,
+  treeDrawRadius: BASE_GAME_FOREST_DEFAULTS.treeDrawRadius,
+  treeLodR0: BASE_GAME_FOREST_DEFAULTS.treeLodR0,
+  treeLodR1: BASE_GAME_FOREST_DEFAULTS.treeLodR1,
+  treeLodR2: BASE_GAME_FOREST_DEFAULTS.treeLodR2,
+  treeLod0: BASE_GAME_FOREST_DEFAULTS.treeLod0,
+  treeLod1: BASE_GAME_FOREST_DEFAULTS.treeLod1,
+  treeLod2: BASE_GAME_FOREST_DEFAULTS.treeLod2,
+  treeCapPerVariant: BASE_GAME_FOREST_DEFAULTS.treeCapPerVariant,
+  treeLeafSway: BASE_GAME_FOREST_DEFAULTS.treeLeafSway,
+  treeBark: BASE_GAME_FOREST_DEFAULTS.treeBark,
+  treeLeaves: BASE_GAME_FOREST_DEFAULTS.treeLeaves,
+  treeBarkShadows: BASE_GAME_FOREST_DEFAULTS.treeBarkShadows,
+  treeLeafShadows: BASE_GAME_FOREST_DEFAULTS.treeLeafShadows,
   waveCount: 17, waveBaseLength: 1598, waveLengthMul: 0.51, waveBaseAmp: 0.6, waveAmpMul: 0.59, waveChop: 0.51,
   waveWindDeg: 38, waveSpreadDeg: 79, waveDispersion: true, waveSpeed: 6, waveSeed: 7,
   // Weather, phase C1: cloud decks. The master rain slider is a later phase; `weatherOvercast` is
@@ -334,6 +356,12 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponGadget: BASE_GAME_DEFAULT_LOADOUT.gadget,
   weaponGadget2: BASE_GAME_DEFAULT_LOADOUT.gadget2,
   unlimitedAmmo: false,
+  // NPC bots (shared room rules; the counts are spawn commands, not settings)
+  npcRespawn: true,
+  npcNoticeMs: 260,
+  npcAccuracy: 0.5,
+  npcFriendlyFire: true,
+  npcSpawnDistance: 60,
   // How much of a weapon's magnification third-person aiming is allowed to use. 1 disables the
   // third-person zoom entirely; the full 8x of a sniper would frame the inside of your own shoulder.
   tpAimMagnification: 1.6,
@@ -360,6 +388,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   laserDotAngle: WEAPON_LASER_DEFAULTS.dotAngleDeg,
   laserIntensity: WEAPON_LASER_DEFAULTS.intensity,
   laserBeamOpacity: WEAPON_LASER_DEFAULTS.beamOpacity,
+  // Two controls, because the beam's drawn width is the larger of them: a world thickness that
+  // wins up close, and a screen-pixel floor that takes over once the far end goes sub-pixel.
+  laserBeamWidth: WEAPON_LASER_DEFAULTS.beamWidth,
+  laserBeamMinPixels: WEAPON_LASER_DEFAULTS.beamMinPixels,
   laserRange: WEAPON_LASER_DEFAULTS.range,
   laserShadows: WEAPON_LASER_DEFAULTS.shadows,
   weaponHoldHeight: 0,
@@ -517,7 +549,9 @@ const NUMBER_LIMITS = Object.freeze({
   flashlightIntensity: [0, 2000], flashlightRange: [1, 300], flashlightAngle: [1, 80],
   flashlightSoftness: [0, 1], flashlightWarmth: [0, 1], flashlightSpill: [0, 40],
   laserHue: [0, 1], laserDotAngle: [0.01, 45], laserIntensity: [0, 500],
-  laserBeamOpacity: [0, 1], laserRange: [1, 300],
+  laserBeamOpacity: [0, 1], laserBeamWidth: [0, 1], laserBeamMinPixels: [0, 20],
+  laserRange: [1, 300],
+  npcNoticeMs: [0, 10000], npcAccuracy: [0, 1], npcSpawnDistance: [5, 2000],
   dofFocusDistance: [0.3, 80], dofAperture: [0.05, 3], dofMaxRadius: [2, 40], dofFarScale: [0.5, 4],
   interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
@@ -1197,6 +1231,52 @@ const remoteHeadLocal = [0, 0, 0];
 const droneView = createBaseGameDroneView({ scene, worldCoordinates, tintFor: () => CRAFT_TINT });   // the flight sim's colours; owner tint can come later
 const droneCtl = { active: false, id: null, toggleEdge: false, sendEdge: false, recallEdge: false, fireHeld: false };
 const soloDrones = new Map();   // Solo only: the same records the server keeps, stepped in animate()
+// What is in the hands: stock per kind (the server's online, ours in Solo), whether one is out, and
+// the two arm motions as start times (ms). The server owns the counts online; the motions are
+// played locally from the edges so the arms move on the press, not a round trip later.
+const THROW_MS = BASE_GAME_GADGET_THROW_ACTION_TICKS * 1000 / BASE_GAME_SIM_HZ;
+const THROW_RELEASE = BASE_GAME_GADGET_THROW_TICKS / BASE_GAME_GADGET_THROW_ACTION_TICKS;
+const RELOAD_MS = BASE_GAME_GADGET_RELOAD_TICKS * 1000 / BASE_GAME_SIM_HZ;
+const gadgetLocal = { stock: defaultGadgetStock(), ready: true, throwStart: 0, reloadStart: 0, spawnAt: 0, spawnKind: null, fireHeld: false };
+function gadgetPhases(now) {
+  const t = gadgetLocal.throwStart ? (now - gadgetLocal.throwStart) / THROW_MS : 2;
+  const r = gadgetLocal.reloadStart ? (now - gadgetLocal.reloadStart) / RELOAD_MS : 2;
+  return { throw: t < 1 ? t : null, reload: r < 1 ? r : null };
+}
+// The edges for the gadget in hand, from the same keys the weapons use. Returns what the arms
+// should be doing this frame and whether the drone is visibly in the hands.
+function stepGadgetHands(now, canControl) {
+  const kind = heldGadgetKind();
+  const fireEdge = canControl && weaponState.firing && !gadgetLocal.fireHeld;
+  gadgetLocal.fireHeld = canControl && weaponState.firing;
+  const phases = gadgetPhases(now);
+  const busy = phases.throw != null || phases.reload != null || droneCtl.active;
+  if (kind && canControl && !combatState.dead && !busy) {
+    if (fireEdge && gadgetLocal.ready && gadgetLocal.stock[kind] > 0 && !droneView.ownedBy(localDroneOwnerId(), kind)) {
+      gadgetLocal.throwStart = now; gadgetLocal.ready = false; gadgetLocal.stock[kind] -= 1;
+      gadgetLocal.spawnAt = now + THROW_MS * THROW_RELEASE; gadgetLocal.spawnKind = kind;
+    } else if (weaponState.reloadEdge && !gadgetLocal.ready && gadgetLocal.stock[kind] > 0) {
+      gadgetLocal.reloadStart = now;
+    }
+  }
+  if (gadgetLocal.reloadStart && now - gadgetLocal.reloadStart >= RELOAD_MS) { gadgetLocal.reloadStart = 0; gadgetLocal.ready = true; }
+  const p = gadgetPhases(now);
+  const inHand = p.throw != null ? p.throw < THROW_RELEASE : p.reload != null ? p.reload > 0.72 : gadgetLocal.ready;
+  const overhead = kind && !combatState.dead && (inHand || p.throw != null || p.reload != null) ? kind : null;
+  return { kind, overhead, phases: p, inHand: !!kind && inHand };
+}
+// A remote's arms from the action it replicated (throw and reload run on the server's tick).
+function remoteGadgetPhases(sample) {
+  const kind = isBaseGameGadget(sample.weapon) ? sample.weapon : null;
+  if (!kind) return { overhead: null, phases: null, inHand: false };
+  const age = Math.max(0, (sample.tick ?? 0) - (sample.actionTick ?? 0));
+  const phases = {
+    throw: sample.action === BASE_GAME_WEAPON_ACTION.throw && age < BASE_GAME_GADGET_THROW_ACTION_TICKS ? age / BASE_GAME_GADGET_THROW_ACTION_TICKS : null,
+    reload: sample.action === BASE_GAME_WEAPON_ACTION.reload && age < BASE_GAME_GADGET_RELOAD_TICKS ? age / BASE_GAME_GADGET_RELOAD_TICKS : null,
+  };
+  const inHand = phases.throw != null ? phases.throw < THROW_RELEASE : phases.reload != null ? phases.reload > 0.72 : sample.gadgetReady !== false;
+  return { overhead: inHand || phases.throw != null || phases.reload != null ? kind : null, phases, inHand };
+}
 const localHeadLocal = [0, 0, 0];
 function localDroneOwnerId() { return isOnline() ? (networkSession?.clientId ?? 'local') : 'local'; }
 function ownedDroneId(kind) { return droneView.ownedBy(localDroneOwnerId(), kind)?.id ?? null; }
@@ -1231,12 +1311,13 @@ function buildDroneInput() {
   const id = droneCtl.active ? droneCtl.id : (ownedDroneId(heldGadgetKind()) ?? ownedDroneId(null));
   if (!id) { droneCtl.sendEdge = false; droneCtl.recallEdge = false; return null; }
   const k = (code) => (playerKeys.has(code) ? 1 : 0);
-  const di = { id, mode: droneCtl.active ? 1 : 0, pitch: 0, roll: 0, yaw: 0, throttle: 0, send: null, recall: false };
+  const di = { id, mode: droneCtl.active ? 1 : 0, pitch: 0, roll: 0, yaw: 0, throttle: 0, sweep: false, flap: false, send: null, recall: false };
   if (droneCtl.active) {
     di.pitch = k('ArrowDown') - k('ArrowUp');
     di.roll = k('ArrowRight') - k('ArrowLeft');
     di.yaw = k('KeyD') - k('KeyA');
     di.throttle = k('KeyW') - k('KeyS');
+    di.sweep = !!(k('ShiftLeft') || k('ShiftRight'));   // afterburner, as in the sim
   }
   if (droneCtl.sendEdge) { droneCtl.sendEdge = false; const p = droneSendPoint(); if (p) { di.send = p; di.mode = 0; droneCtl.active = false; } }
   if (droneCtl.recallEdge) { droneCtl.recallEdge = false; di.recall = true; di.mode = 0; droneCtl.active = false; }
@@ -1245,35 +1326,42 @@ function buildDroneInput() {
 // Solo: the server's launchGadget / applyDroneInput / stepDrones, on this page's ground.
 const _soloWorld = { ownerPos: null, ownerYaw: 0, ownerAlive: true, groundY: soloGroundY, input: null };
 function stepSoloDrones(dt, canControl, di) {
-  const kind = heldGadgetKind();
-  const fireEdge = canControl && weaponState.firing && !droneCtl.fireHeld;
-  droneCtl.fireHeld = canControl && weaponState.firing;
-  if (fireEdge && kind && !droneView.ownedBy('local', kind) && !combatState.dead) {
-    const eye = fpState.hasEye ? worldCoordinates.toGlobal(fpState.eye) : (() => { const g = playerController.getPosition(); return [g[0], g[1] + 1.7, g[2]]; })();
-    const rec = createBaseGameDrone(kind, { ownerId: 'local', from: [eye[0], eye[1] + 0.5, eye[2]], look: lookDirection(playerView.yaw, playerView.pitch), throwSpeed: 8, groundY: soloGroundY(eye[0], eye[2]) });
-    soloDrones.set(rec.id, rec);
-    audioDirector.localSlotChange();
+  // The throw was started by stepGadgetHands; the drone leaves the hands at the release point.
+  if (gadgetLocal.spawnAt && performance.now() >= gadgetLocal.spawnAt) {
+    const kind = gadgetLocal.spawnKind;
+    gadgetLocal.spawnAt = 0; gadgetLocal.spawnKind = null;
+    if (kind && !droneView.ownedBy('local', kind) && !combatState.dead) {
+      const eye = fpState.hasEye ? worldCoordinates.toGlobal(fpState.eye) : (() => { const g = playerController.getPosition(); return [g[0], g[1] + 1.7, g[2]]; })();
+      const rec = createBaseGameDrone(kind, { ownerId: 'local', from: [eye[0], eye[1] + 0.5, eye[2]], look: lookDirection(playerView.yaw, playerView.pitch), throwSpeed: 8, groundY: soloGroundY(eye[0], eye[2]) });
+      soloDrones.set(rec.id, rec);
+      audioDirector.localSlotChange();
+    }
   }
   const rec = di ? soloDrones.get(di.id) : null;
   if (rec && !rec.done) {
     if (di.send) sendDroneTo(rec, di.send);
     else if (di.recall) recallDrone(rec);
-    else if (di.mode === 1) { if (rec.mode !== 'manual') takeOverDrone(rec, { groundY: soloGroundY }); if (rec.mode === 'manual') { rec.input.pitch = di.pitch; rec.input.roll = di.roll; rec.input.yaw = di.yaw; rec.input.throttle = di.throttle; } }
+    else if (di.mode === 1) { if (rec.mode !== 'manual') takeOverDrone(rec, { groundY: soloGroundY }); if (rec.mode === 'manual') { rec.input.pitch = di.pitch; rec.input.roll = di.roll; rec.input.yaw = di.yaw; rec.input.throttle = di.throttle; rec.input.sweep = di.sweep; rec.input.flap = di.flap; } }
     else if (rec.mode === 'manual') releaseDrone(rec);
   }
   for (const r of soloDrones.values()) if (r.mode === 'manual' && (!di || di.id !== r.id || di.mode !== 1)) releaseDrone(r);
   _soloWorld.ownerPos = playerController.getPosition();
   _soloWorld.ownerYaw = playerView.yaw;
   _soloWorld.ownerAlive = !combatState.dead;
-  for (const r of soloDrones.values()) { _soloWorld.input = r.input; stepBaseGameDrone(r, Math.min(dt, 0.05), _soloWorld); if (r.done) soloDrones.delete(r.id); }
+  for (const r of soloDrones.values()) {
+    _soloWorld.input = r.input; stepBaseGameDrone(r, Math.min(dt, 0.05), _soloWorld);
+    if (r.done) { if (r.crash && r.def.crashBlast) presentExplosion(r.crash, r.def.crashBlast.radius, { contact: true, weaponId: `${r.kind}_crash` }); soloDrones.delete(r.id); }
+  }
   droneView.ingest([...soloDrones.values()].map(droneWireState), performance.now());
 }
 function droneHudLine() {
   const owner = localDroneOwnerId();
   const parts = [];
   for (const rec of droneView.drones.values()) if (rec.owner === owner) parts.push(`${rec.kind} ${rec.mode === 'manual' ? 'FLYING' : rec.state}${Number.isFinite(rec.hp) ? ` ${Math.round(rec.hp)}hp` : ''}`);
-  if (!parts.length) return heldGadgetKind() ? `<br>[click] throw the ${heldGadgetKind()}` : '';
-  return `<br>drone ${parts.join(' · ')}<br>[F] ${droneCtl.active ? 'release' : 'fly'} · [B] send · [N] recall`;
+  const kind = heldGadgetKind();
+  const stockLine = kind ? `<br>${kind} ×${gadgetLocal.stock[kind] ?? 0} ${gadgetLocal.ready ? 'in hand · [click] throw' : gadgetLocal.reloadStart ? 'coming out…' : (gadgetLocal.stock[kind] ?? 0) > 0 ? '[R] bring out the next' : 'none left'}` : '';
+  if (!parts.length) return stockLine;
+  return `${stockLine}<br>drone ${parts.join(' · ')}<br>[F] ${droneCtl.active ? 'release' : 'fly'} · [B] send · [N] recall`;
 }
 // Presentation only: bodies consume predicted/authoritative global state and can never move the capsule.
 // Held weapons: one mount system for every body (instanced GLBs, shared anchors and poses).
@@ -1288,6 +1376,25 @@ const playerHitRigDebug = createPlayerHitRigDebug({ THREE, scene, worldCoordinat
 // eased from it inside the controller on the fixed clock, so nothing here snaps.
 let playerStance = 'stand';
 const weaponState = { slot: 0, lastSlot: 1, aiming: false, reloadEdge: false, firing: false, throwEdge: false };
+// The spawner (key 9): a tool mode over the held sidearm, not a weapon of its own. Click asks the
+// room to put a bot where you aim (the server casts your look ray); R cycles the side and role.
+const spawner = { active: false, side: 'enemy', roleIndex: 0, clickEdge: false, note: '' };
+const SPAWNER_SIDES = ['enemy', 'friendly'];
+function cycleSpawner() {
+  const next = spawner.roleIndex + 1;
+  if (next >= BASE_GAME_NPC_ROLE_IDS.length) { spawner.roleIndex = 0; spawner.side = SPAWNER_SIDES[(SPAWNER_SIDES.indexOf(spawner.side) + 1) % SPAWNER_SIDES.length]; }
+  else spawner.roleIndex = next;
+}
+function spawnerPlace() {
+  const ok = sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS[spawner.side], count: 1, role: BASE_GAME_NPC_ROLE_IDS[spawner.roleIndex], aimed: true });
+  spawner.note = ok ? `placed ${spawner.side} ${BASE_GAME_NPC_ROLE_IDS[spawner.roleIndex]}` : (npcNote.textContent || 'not placed');
+  spawner.noteUntil = performance.now() + 1500;
+}
+function spawnerHudLine() {
+  if (!spawner.active) return '';
+  const note = spawner.noteUntil > performance.now() ? ` — ${spawner.note}` : '';
+  return `<br>[9] spawner: ${spawner.side} ${BASE_GAME_NPC_ROLE_IDS[spawner.roleIndex]}${note}<br><span class="dim">click places, R cycles</span>`;
+}
 const localTrigger = createTriggerState();
 const localThrowTrigger = createTriggerState();
 // The predicted half of a weapon swap. It runs on the SAME tick numbers the server uses, because
@@ -1427,6 +1534,8 @@ function applyLaser() {
     dotAngleDeg: settings.laserDotAngle,
     intensity: settings.laserIntensity,
     beamOpacity: settings.laserBeamOpacity,
+    beamWidth: settings.laserBeamWidth,
+    beamMinPixels: settings.laserBeamMinPixels,
     range: settings.laserRange,
     beamVisible: settings.laserBeam === true,
     shadows: settings.laserShadows === true,
@@ -1798,7 +1907,7 @@ function renderCombatStatus(now) {
     ? `<br>[L] ${[settings.flashlightOn ? 'light' : null, settings.laserOn ? 'laser' : null].filter(Boolean).join(' + ')} on` : '';
   // Write only on change. innerHTML reparses, and health, ammo and the hit flag hold still for whole
   // seconds at a time, so the great majority of frames wrote the identical markup back.
-  const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${torch}${droneHudLine()}${killed}${slots}`;
+  const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${torch}${droneHudLine()}${spawnerHudLine()}${killed}${slots}`;
   if (markup !== shownCombatStatus) { shownCombatStatus = markup; combatStatus.innerHTML = markup; }
   const flash = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
   if (flash !== shownDamageFlash) { shownDamageFlash = flash; damageFlash.style.opacity = flash; }
@@ -1940,6 +2049,7 @@ function resetPlayer() {
   localAmmo.resetPlayer(LOCAL_AMMO_ID);
   Object.assign(localTrigger, createTriggerState());
   combatState.health = 100; combatState.dead = false; combatState.killedBy = null;
+  Object.assign(gadgetLocal, { stock: defaultGadgetStock(), ready: true, throwStart: 0, reloadStart: 0, spawnAt: 0, spawnKind: null });   // a new life restocks the drones
   playerView.setLook(0, -0.12);
   playerView.resetSmoothing();
   // Online the server owns the transform: ask it to respawn and let the snapshot hard-snap us.
@@ -2139,7 +2249,7 @@ function applyFloraSettings() {
   for (const key of FLORA_APPLY_KEYS) if (appliedFlora[key] !== settings[key]) { appliedFlora[key] = settings[key]; dirty = true; }
   if (!dirty) return;
   const on = settings.grassEnabled && settings.worldMode === 'terrain';
-  if (on && !floraLoading) { floraLoading = true; flora.load().then(ok => { if (!ok) showError(`grass unavailable: ${flora.stats.lastError}`); }); }
+  if (on && !floraLoading) { floraLoading = true; flora.load().then(ok => { if (!ok) console.warn(`[base-game] grass unavailable: ${flora.stats.lastError}`); }); }
   flora.setEnabled(on);
   flora.apply({
     grassDensity: settings.grassDensity,
@@ -2157,6 +2267,39 @@ function applyFloraSettings() {
     grassCullStart: settings.grassCullStart,
     grassDispatchBudgetM: settings.grassDispatchBudgetM,
   });
+}
+
+// Trees over the same streamed fields (base-game-forest.js + base-game-trees.js). Placement reads
+// the 8 m window's coverTree channel; the trunks sit on the collision surface, so a trunk and the
+// player's feet cannot disagree about the ground.
+const forest = createBaseGameForest({ scene, renderer, camera, terrain, worldCoordinates, settings });
+// Out of the planar mirror in v1 (tree plan D7): the reflect pass is already the frame's most
+// expensive, and a reflected forest doubles the forest's draw cost on every mirror frame.
+let forestMirrorMeshes = [];
+forest.onMeshes(meshes => {
+  for (const mesh of forestMirrorMeshes) {
+    const at = reflectionExclusions.indexOf(mesh);
+    if (at >= 0) reflectionExclusions.splice(at, 1);
+  }
+  forestMirrorMeshes = meshes.slice();
+  for (const mesh of forestMirrorMeshes) if (!reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh);
+});
+const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'treeMaxSize', 'treeSpecies',
+  'treeVerticalOffset', 'treeDrawRadius', 'treeLodR0', 'treeLodR1', 'treeLodR2',
+  'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway',
+  'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows'];
+const appliedForest = {};
+let forestLoading = false;
+function applyForestSettings() {
+  let dirty = false;
+  for (const key of FOREST_APPLY_KEYS) if (appliedForest[key] !== settings[key]) { appliedForest[key] = settings[key]; dirty = true; }
+  if (!dirty) return;
+  const on = settings.treesEnabled && settings.worldMode === 'terrain';
+  if (on && !forestLoading) { forestLoading = true; forest.load().then(ok => { if (!ok) console.warn(`[base-game] trees unavailable: ${forest.stats.lastError}`); }); }
+  forest.setEnabled(on);
+  const next = {};
+  for (const key of FOREST_APPLY_KEYS) if (key !== 'treesEnabled' && key !== 'worldMode') next[key] = settings[key];
+  forest.apply(next);
 }
 // water-config.json (authored in demos/water-demo.html) is the look on load: adopt its foam and
 // clarity into the panel so the sliders show what is live, then let the panel own them from there.
@@ -2239,7 +2382,7 @@ const frameProfiler = createFrameProfiler();
 // not include terrain or fx, so a snapshot taken with it reports zero for them.
 const BASE_GAME_PASS_PREFIXES = Object.freeze({
   terrain: 'passTerrainMs', water: 'passWaterMs', fx: 'passFxMs', sky: 'passSkyMs',
-  grassGpu: 'passGrassMs', postRender: 'passPostMs', weather: 'passWeatherMs',
+  grassGpu: 'passGrassMs', forestGpu: 'passForestMs', postRender: 'passPostMs', weather: 'passWeatherMs',
   rainBake: 'passRainBakeMs',
   // The encode, split by mirror frame. reflect is the mirror's own time; postMirror/postPlain are
   // the whole encode on frames where it did and did not run. All three are inside postRender.
@@ -2259,7 +2402,7 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
 // Slots that partition the frame. Sub-slots are excluded from the residual: every terrain* one is
 // either inside terrain's own slot (fold, field, and the fold's colorize/batch/collider split) or
 // outside the frame entirely (install), and reflect/postMirror/postPlain are all inside postRender.
-const BASE_GAME_FRAME_SLOTS = ['terrain', 'water', 'fx', 'grassGpu', 'sky', 'weather', 'rainBake',
+const BASE_GAME_FRAME_SLOTS = ['terrain', 'water', 'fx', 'grassGpu', 'forestGpu', 'sky', 'weather', 'rainBake',
   'playerSim', 'playerView', 'bodies', 'audio', 'postRender'];
 function profiledMs() {
   const snap = frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES);
@@ -2379,6 +2522,7 @@ function updateWorld(dt) {
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
   applyWaterSettings();
   applyFloraSettings();
+  applyForestSettings();
   applyCloudSettings();
   applyRainSettings();
   if (terrain.splatEnabled !== settings.terrainTextures) terrain.setSplatEnabled(settings.terrainTextures);
@@ -2760,6 +2904,7 @@ const captureSec = createSection(ctrlBody, 'Performance Capture', { collapsed: f
 const worldSec = createSection(ctrlBody, 'World / Traversal Lab', { collapsed: false });
 const playerSec = createSection(ctrlBody, 'Player / Camera', { collapsed: false });
 const networkSec = createSection(ctrlBody, 'Network / Remote players', { collapsed: false });
+const npcSec = createSection(ctrlBody, 'NPC bots', { collapsed: false });
 const audioSec = createSection(ctrlBody, 'Audio', { collapsed: true });
 const armSec = createSection(ctrlBody, 'Arms', { collapsed: true });
 const bodyMoveSec = createSection(ctrlBody, 'Body movement', { collapsed: true });
@@ -2960,6 +3105,10 @@ addRange(torchSec, 'laserDotAngle', 'Dot width', 0.01, 45, 0.01, value => `${val
   'The half-angle of the cone, so the dot holds a near-constant size on screen the way a real one does. Past a degree or so it stops being a dot and becomes a small spotlight.';
 addRange(torchSec, 'laserIntensity', 'Dot brightness', 0, 500, 1, value => value.toFixed(0));
 addRange(torchSec, 'laserBeamOpacity', 'Beam strength', 0, 1, 0.01, value => value <= 0.005 ? 'invisible' : value.toFixed(2));
+addRange(torchSec, 'laserBeamWidth', 'Beam thickness', 0, 1, 0.001, value => value < 0.1 ? `${(value * 1000).toFixed(0)} mm` : `${value.toFixed(2)} m`).title =
+  'The beam’s thickness in the world. It is what you see up close; further away the pixel floor below takes over.';
+addRange(torchSec, 'laserBeamMinPixels', 'Thinnest beam on screen', 0, 20, 0.1, value => value <= 0.05 ? 'no floor' : `${value.toFixed(1)} px`).title =
+  'A 5 mm beam is a fraction of a pixel at 40 m and shimmers along its length. This is the width it is widened to instead. Set it to zero to let the beam thin out with distance the way a real one does.';
 addRange(torchSec, 'laserRange', 'Laser range', 1, 300, 1, value => `${value.toFixed(0)} m`);
 addToggle(torchSec, 'laserShadows', 'Dot is blocked by cover');
 const laserNote = document.createElement('div'); laserNote.className = 'note';
@@ -2971,6 +3120,34 @@ addToggle(playerSec, 'unlimitedAmmo', 'Unlimited ammo');
 const unlimitedAmmoNote = document.createElement('div'); unlimitedAmmoNote.className = 'note';
 unlimitedAmmoNote.textContent = 'Bottomless magazines: no reloads, no dry clicks. Ammo is the server’s, so online this is the room owner’s to set and applies to everyone.';
 playerSec.append(unlimitedAmmoNote);
+
+// ---- NPC bots: room rules are shared keys; adding bots is an owner command over the session.
+addToggle(npcSec, 'npcRespawn', 'Bots respawn');
+addToggle(npcSec, 'npcFriendlyFire', 'Friendly fire');
+addRange(npcSec, 'npcNoticeMs', 'Notice time (ms)', 0, 10000, 10, v => `${Math.round(v)} ms`);
+addRange(npcSec, 'npcAccuracy', 'Accuracy', 0, 1, 0.01, v => v.toFixed(2));
+addRange(npcSec, 'npcSpawnDistance', 'Enemy spawn distance (m)', 5, 2000, 1, v => `${Math.round(v)} m`);
+const npcRoleRow = document.createElement('div'); npcRoleRow.className = 'row';
+const npcRoleLabel = document.createElement('label'); npcRoleLabel.textContent = 'Role';
+const npcRoleSelect = document.createElement('select');
+for (const role of BASE_GAME_NPC_ROLE_IDS) { const o = document.createElement('option'); o.value = role; o.textContent = role; npcRoleSelect.append(o); }
+npcRoleRow.append(npcRoleLabel, npcRoleSelect); npcSec.append(npcRoleRow);
+const npcNote = document.createElement('div'); npcNote.className = 'note'; npcSec.append(npcNote);
+function sendNpc(request) {
+  if (!networkSession?.owner) { npcNote.textContent = activeMode === 'solo' ? 'Bots need a room for now: create one from the start menu (a local relay is enough).' : 'Only the room owner can add bots.'; return false; }
+  const ok = networkSession.sendNpc({ role: npcRoleSelect.value, ...request });
+  npcNote.textContent = ok ? '' : 'The relay refused that request.';
+  return ok;
+}
+const npcButtons = document.createElement('div'); npcButtons.className = 'row'; npcSec.append(npcButtons);
+addAction(npcButtons, 'Add friendly', () => sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS.friendly, count: 1 }));
+addAction(npcButtons, 'Add 4 friendly', () => sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS.friendly, count: 4 }));
+addAction(npcButtons, 'Add enemy', () => sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS.enemy, count: 1 }));
+addAction(npcButtons, 'Add 4 enemy', () => sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS.enemy, count: 4 }));
+addAction(npcButtons, 'Clear bots', () => sendNpc({ action: 'clear', team: null }));
+const npcHelp = document.createElement('div'); npcHelp.className = 'note';
+npcHelp.textContent = 'Friendlies spawn beside you and never aim at players; enemies spawn ahead of you at the spawn distance. Key 9 holds the spawner: click places a bot where you aim, R cycles the side and role.';
+npcSec.append(npcHelp);
 
 // Weapon spread: bot-viewer-v3's labels and ranges, over shot-spread.js instead of botAimSettings.
 const spreadSec = createSection(playerSec, 'Weapon spread', { collapsed: true });
@@ -3159,7 +3336,7 @@ for (const [key, label] of [
 ]) addToggle(skySec, key, label);
 // Stellar generation: the room's sky identity (shared keys — the planets are landmarks). These
 // REGENERATE the sky, so every slider here is commit-on-release (addCommitRange), never live.
-const stellarSec = createSection(skySec, 'Stellar generation (shared)', { collapsed: false });
+const stellarSec = createSection(skySec, 'Stellar generation', { collapsed: false });
 addCommitRange(stellarSec, 'skySeed', 'Sky seed', 0, 1e9, 1, value => value.toFixed(0));
 addAction(stellarSec, 'Reroll the sky', () => {
   if (!canEditSharedSettings()) return;
@@ -3172,7 +3349,7 @@ addCommitRange(stellarSec, 'skyMoonCount', 'Extra moons', 0, 12, 1, value => val
 addCommitRange(stellarSec, 'skyBodyScale', 'Planet/moon size', 0.1, 6, 0.05, f2);
 addToggle(stellarSec, 'skyMilkyWay', 'Milky Way exists in this world');
 // Local sky appearance: uniform / draw-range / canvas-repaint writes, safe as live drags.
-const skyLookSec = createSection(skySec, 'Sky appearance (local)', { collapsed: true });
+const skyLookSec = createSection(skySec, 'Sky appearance', { collapsed: true });
 addRange(skyLookSec, 'skyStarCount', 'Star count', 0, 3000, 50, value => value.toFixed(0));
 addRange(skyLookSec, 'skyStarOpacity', 'Star brightness', 0, 2, 0.02, f2);
 addColor(skyLookSec, 'skyStarColor', 'Star color');
@@ -3271,6 +3448,47 @@ function refreshGrassRuntimeLine() {
     + `~${(g.expected / 1e3).toFixed(0)}k blades, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull, `
     + `ground ${g.groundSamplesTextures ? 'textures' : 'tint'}, field ${(g.coverage * 100).toFixed(0)}% streamed.`
     + `${thinned}${over}`;
+}
+
+// ---- Trees (tree plan T2) ----
+// Density is the world's; everything below the divider is this peer's own quality. The per-rung
+// distance and the per-rung switch are two different measurements: collapsing a band moves those
+// trees to the next rung, hiding one takes them off the screen, which is what isolates a rung's
+// raster cost.
+addToggle(plantsSec, 'treesEnabled', 'Trees');
+addRange(plantsSec, 'treesPerHectare', 'Trees per hectare (asked)', 0, 400, 1, value => value.toFixed(0));
+addCommitRange(plantsSec, 'treeSpecies', 'Species', 1, 8, 1, value => value.toFixed(0));
+addCommitRange(plantsSec, 'treeMaxSize', 'Max tree size', 0.05, 3, 0.05, value => value.toFixed(2));
+addRange(plantsSec, 'treeVerticalOffset', 'Trunk vertical bias (m)', -1, 1, 0.01, value => `${value.toFixed(2)} m`);
+addRange(plantsSec, 'treeLeafSway', 'Canopy sway', 0, 4, 0.05, value => value.toFixed(2));
+addRange(plantsSec, 'treeDrawRadius', 'Draw radius', 40, 900, 5, value => `${value.toFixed(0)} m`);
+addRange(plantsSec, 'treeLodR0', 'LOD0 distance (full detail)', 5, 900, 5, value => `${value.toFixed(0)} m`);
+addToggle(plantsSec, 'treeLod0', 'Draw LOD0');
+addRange(plantsSec, 'treeLodR1', 'LOD1 distance', 5, 900, 5, value => `${value.toFixed(0)} m`);
+addToggle(plantsSec, 'treeLod1', 'Draw LOD1');
+addRange(plantsSec, 'treeLodR2', 'LOD2 distance (the forest ends here)', 5, 900, 5, value => `${value.toFixed(0)} m`);
+addToggle(plantsSec, 'treeLod2', 'Draw LOD2');
+addToggle(plantsSec, 'treeBark', 'Draw trunks');
+addToggle(plantsSec, 'treeLeaves', 'Draw leaves');
+addToggle(plantsSec, 'treeBarkShadows', 'Trunks cast shadows');
+addToggle(plantsSec, 'treeLeafShadows', 'Canopies cast shadows');
+addCommitRange(plantsSec, 'treeCapPerVariant', 'Instances per variant (capacity)', 64, 8192, 64, value => value.toFixed(0));
+// The density slider asks; the cover gate decides. Without this line a slider reading 45 while the
+// world stands 6 looks like a bug rather than like slope and dryness thinning the forest.
+const forestRuntimeLine = document.createElement('div');
+forestRuntimeLine.className = 'note';
+plantsSec.append(forestRuntimeLine);
+function refreshForestRuntimeLine() {
+  const f = forest.stats;
+  if (!f.enabled) { forestRuntimeLine.textContent = 'Trees off.'; return; }
+  if (!f.built) { forestRuntimeLine.textContent = `Trees waiting on the palette${f.lastError ? `: ${f.lastError}` : ' and the terrain field.'}`; return; }
+  const asked = Math.round(f.requestedTrees);
+  const thinned = asked > 0 ? ` (asked ${asked}, cover thinned ${(f.coverThinning * 100).toFixed(0)}%)` : '';
+  const over = f.truncating ? ` Capacity ${f.capacity} is full, so ${f.dropped} trees are not drawn; raise instances per variant.` : '';
+  forestRuntimeLine.textContent = `${f.trees} trees${thinned} over ${f.resident} chunks: `
+    + `${f.draws} draws, ~${(f.triangles / 1000).toFixed(0)}k triangles, `
+    + `${f.lod0}/${f.lod1}/${f.lod2} at LOD0/1/2, ${f.visibleVariants} of ${f.variants} variants, `
+    + `palette ${f.paletteMs.toFixed(0)} ms, placing ${f.placeMs.toFixed(2)} ms.${over}`;
 }
 
 // ---- Weather: clouds (phase C1; rain, lightning and the shared master land in later phases) ----
@@ -3489,6 +3707,8 @@ function applyPlayerSnapshot(snapshot, session) {
   if (!simulationReady || !session?.clientId) return;
   const local = snapshot.players?.find(player => player.id === session.clientId);
   if (local) {
+    if (local.gadgets) Object.assign(gadgetLocal.stock, local.gadgets);
+    if (!gadgetLocal.throwStart && !gadgetLocal.reloadStart) gadgetLocal.ready = local.gadgetReady !== false;   // between motions the server's word is final
     combatState.health = local.health ?? 100;
     if (local.dead && !combatState.dead) combatState.killedBy = snapshot.deaths?.find(d => d.victim === session.clientId)?.killer ?? combatState.killedBy;
     combatState.dead = local.dead === true;
@@ -3844,7 +4064,11 @@ addEventListener('keydown', event => {
     changed('playerViewMode');
   }
   if (event.code === 'KeyT' && !event.repeat) { resetPlayer(); scheduleAutosave(); }
-  if (event.code === 'KeyR' && !event.repeat) weaponState.reloadEdge = true;
+  if (event.code === 'KeyR' && !event.repeat) { if (spawner.active) cycleSpawner(); else weaponState.reloadEdge = true; }
+  if (event.code === 'Digit9' && !event.repeat) {
+    spawner.active = !spawner.active;
+    if (spawner.active && weaponState.slot !== 1) selectSlot(1);   // the sidearm carries the laser
+  }
   if (event.code === 'KeyG' && !event.repeat) weaponState.throwEdge = true;
   if (event.code === 'KeyF' && !event.repeat) droneCtl.toggleEdge = true;
   if (event.code === 'KeyB' && !event.repeat) droneCtl.sendEdge = true;
@@ -3876,7 +4100,7 @@ addEventListener('keydown', event => {
 // Right mouse button aims while held (pointer-locked play only).
 renderer.domElement.addEventListener('mousedown', (event) => {
   if (event.button === 2) weaponState.aiming = true;
-  if (event.button === 0 && document.pointerLockElement === renderer.domElement) weaponState.firing = true;
+  if (event.button === 0 && document.pointerLockElement === renderer.domElement) { if (spawner.active) spawner.clickEdge = true; else weaponState.firing = true; }
 });
 addEventListener('mouseup', (event) => { if (event.button === 2) weaponState.aiming = false; if (event.button === 0) weaponState.firing = false; });
 document.addEventListener('pointerlockchange', () => { if (document.pointerLockElement !== renderer.domElement) weaponState.firing = false; });
@@ -4001,6 +4225,7 @@ function captureContext() {
       reflectLastMs: +water.reflectStats.lastMs.toFixed(2),
     },
     flora: {
+      trees: { ...forest.stats },
       grass: { ...flora.stats },
       placementCoverage: terrain.fields ? +terrain.fields.coverage.toFixed(3) : null,
       contactCoverage: terrain.contactField ? +terrain.contactField.coverage.toFixed(3) : null,
@@ -4220,6 +4445,7 @@ async function animate() {
 
     const online = isOnline();
     const canControl = !gameplayPaused && settings.playerControlMode === 'player';
+    const gadgetHands = stepGadgetHands(performance.now(), canControl);
     const droneInput = canControl ? buildDroneInput() : null;
     const atStick = droneCtl.active;   // the movement keys are the drone's; the body stands (the server's rule too)
     const input = canControl ? {
@@ -4232,9 +4458,10 @@ async function animate() {
       stance: stanceIndex(playerStance),
       slot: weaponState.slot,
       aim: !atStick && weaponState.aiming,   // the right button is not a zoom while flying
-      fire: weaponState.firing,
+      fire: weaponState.firing && !spawner.active,
     } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false, crouch: false, stance: stanceIndex(playerStance), slot: weaponState.slot, aim: false, fire: false };
-    if (!canControl) { weaponState.reloadEdge = false; weaponState.throwEdge = false; }
+    if (!canControl) { weaponState.reloadEdge = false; weaponState.throwEdge = false; spawner.clickEdge = false; }
+    if (spawner.clickEdge) { spawner.clickEdge = false; spawnerPlace(); }
     // The jump edge is cleared only when a simulation tick actually consumes it: a frame with zero
     // fixed steps (high refresh rates, pacing below 1x) must not swallow the key press.
     if (!canControl) jumpEdgeQueued = false;
@@ -4289,6 +4516,8 @@ async function animate() {
         visible: settings.playerCapsuleVisible && settings.playerViewMode === 'thirdPerson',
         grounded: playerController.grounded,
       });
+      // The drones are posed before the camera so the chase view reads this frame's pose, not last frame's.
+      droneView.update(performance.now(), dt, { interpolationDelayMs: online ? settings.interpolationDelayMs : 0 });
       const comfort = FP_COMFORT[settings.fpCameraComfort] ?? FP_COMFORT.off;
       const firstPerson = settings.playerViewMode === 'firstPerson';
       const firstPersonEye = firstPerson && fpState.hasEye;
@@ -4374,7 +4603,8 @@ async function animate() {
       visible: bodyVisible,
       viewFrame,
       viewBlend: viewFrame ? fpState.viewBlend : 0,
-      overhead: combatState.dead ? null : heldGadgetKind(),   // both hands up with the gadget
+      overhead: gadgetHands.overhead,   // both hands up with the gadget, or the throw / reload motion
+      overheadPhase: gadgetHands.phases,
     });
     fpState.hasEye = !!playerBodies.localEyePoint(fpState.eye);
     stepPlayerBodyPose(localCombatPose, {
@@ -4417,12 +4647,15 @@ async function animate() {
             actionTick: record.sample.actionTick,
             bodyModel: record.sample.bodyModel,
             stance: record.sample.stance,
-            overhead: isBaseGameGadget(record.sample.weapon) ? record.sample.weapon : null,
+            overhead: remoteGadgetPhases(record.sample).overhead,
+            overheadPhase: remoteGadgetPhases(record.sample).phases,
+            team: record.sample.team, npc: record.sample.npc, appearance: record.sample.appearance,
           });
           // A gadget in a remote's hands is drawn overhead by the drone view, not the weapon mount.
           const remoteHands = playerBodies.heldAnchor(id, remoteHeadLocal);
           if (!remoteHands) { worldCoordinates.toRenderLocal(record.sample.position, remoteHeadLocal); remoteHeadLocal[1] += 2.3; }
-          droneView.showHeld(id, isBaseGameGadget(record.sample.weapon) ? record.sample.weapon : null, remoteHeadLocal, remoteHands ? remoteHands.yaw : record.sample.yaw, !remoteHands);
+          const rg = remoteGadgetPhases(record.sample);
+          droneView.showHeld(id, rg.inHand ? record.sample.weapon : null, remoteHeadLocal, remoteHands ? remoteHands.yaw : record.sample.yaw, !remoteHands);
         }
       }
       playerBodies.endRemoteFrame();
@@ -4430,11 +4663,11 @@ async function animate() {
     } else {
       playerBodies.flushWeapons();
     }
-    droneView.update(performance.now(), dt, { interpolationDelayMs: online ? settings.interpolationDelayMs : 0 });
+    if (!canControl) droneView.update(performance.now(), dt, { interpolationDelayMs: online ? settings.interpolationDelayMs : 0 });   // paused or Orbit: the camera block above did not run
     // The gadget in the local hands: between the solved hands when the rig is drawn, over the head otherwise.
     const localHands = playerBodies.heldAnchor('local', localHeadLocal);
     if (!localHands) { localHeadLocal[0] = playerRenderPosition[0]; localHeadLocal[1] = playerRenderPosition[1] + 2.3; localHeadLocal[2] = playerRenderPosition[2]; }
-    droneView.showHeld('local', combatState.dead ? null : heldGadgetKind(), localHeadLocal, localHands ? localHands.yaw : playerView.yaw, !localHands);
+    droneView.showHeld('local', gadgetHands.inHand ? gadgetHands.kind : null, localHeadLocal, localHands ? localHands.yaw : playerView.yaw, !localHands);
     frameProfiler.mark('bodies', performance.now() - tBodies);
     sky.group.position.copy(camera.position);
     frameProfiler.time('audio', () => envAudio.update(frameStart));
@@ -4452,10 +4685,11 @@ async function animate() {
       water.update(dt, camera.position, playerController.waterTime + playerInterpolationAlpha * playerFixedDt);
       if (water.underwater !== underwaterAudio) { underwaterAudio = water.underwater; envAudio.setUnderwater?.(underwaterAudio); }
     });
-    if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) { refreshTerrainRuntimeLine(); refreshGrassRuntimeLine(); }
+    if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) { refreshTerrainRuntimeLine(); refreshGrassRuntimeLine(); refreshForestRuntimeLine(); }
     frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); const gunLight = weaponLightSource(canControl); weaponLight.update(dt, gunLight); updateWeaponLaser(dt, gunLight); });
     // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
     await frameProfiler.timeAsync('grassGpu', () => flora.update(frameStart / 1000));
+    await frameProfiler.timeAsync('forestGpu', () => forest.update());
     frameProfiler.time('sky', () => updateWorld(dt));
     // After the sky slot: the drop tint reads scene.background, which updateWorld has just written.
     frameProfiler.time('weather', () => {
