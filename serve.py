@@ -66,9 +66,11 @@ _SAFE_BODY_TUNING_FILENAME = re.compile(r'^body-tuning-(?:[a-z0-9-]{1,40}-)?\d{8
 # ones (see createDiskStore + the "snapshot" button); keep in sync with those client-side names.
 # stadium-stances.json is the authoritative neutral pose per species: the walker is its only editor and
 # every other reader obeys it, so it is snapshotted like the tuning file rather than treated as scratch.
+# pokemon-lab.json is the Pokemon Lab annotation library -- what a person decided every bone of every
+# species is. It shares this directory because it is about the same models, but nothing else writes it.
 _SAFE_STADIUM_FILENAME = re.compile(
-    r'^(stadium-tuning\.json|stadium-trials\.json|stadium-stances\.json'
-    r'|stadium-(tuning|stances)-\d{8}-\d{6}\.json)$')
+    r'^(stadium-tuning\.json|stadium-trials\.json|stadium-stances\.json|pokemon-lab\.json'
+    r'|(stadium-(tuning|stances)|pokemon-lab)-\d{8}-\d{6}\.json)$')
 # demos/pokemon-park.html autosaves its world seed, tuning and sightings to the fixed name and snapshots
 # to the timestamped one (see createDiskStore + the "snapshot" button); keep in sync with those.
 _SAFE_PARK_FILENAME = re.compile(
@@ -236,9 +238,9 @@ def save_body_tuning(raw_name, body_bytes):
 
 def save_stadium(raw_name, body_bytes):
     # Gait setpoints, poses, bone roles, panel state, the trial log and the per-species neutral stances
-    # from demos/stadium-walker.html and its v2. The three fixed names are live documents and are
-    # overwritten in place; a timestamped name is an explicit snapshot and gets a collision suffix so two
-    # in the same second both survive.
+    # from demos/stadium-walker.html and its v2, plus pokemon-lab.html's annotation library. The fixed
+    # names are live documents and are overwritten in place; a timestamped name is an explicit snapshot
+    # and gets a collision suffix so two in the same second both survive.
     basename = os.path.basename((raw_name or '').replace('\\', '/'))
     if not _SAFE_STADIUM_FILENAME.match(basename) or '..' in basename:
         raise ValueError(f'unsafe stadium filename: {raw_name!r}')

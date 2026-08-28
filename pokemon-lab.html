@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pokemon Lab — browse the 151 and the animations that shipped with them</title>
+<!--
+  POKEMON LAB v1 — BROWSE
+
+  Every one of the 151 Pokemon Stadium models, the animations the ROM shipped with each of them, and the
+  facts its skeleton can be measured for. This is the first mode of four; annotating, posing and reviewing
+  come next, and they all read the same file this one writes.
+
+  WHAT IS MEASURED AND WHAT IS DECIDED
+  ------------------------------------
+  Everything in the facts panel comes from `pokemon-rig.js`, which measures and never guesses. Everything
+  saved to disk comes from `pokemon-annotation.js` and is something a person clicked. The two are kept in
+  different modules because the old mapper fused them, and once a measurement and a guess arrive in the
+  same object with the same authority there is no way to disagree with either.
+
+  So the manifest's idea of which clip is the idle is shown as a SUGGESTION, and stays a suggestion until
+  you record it. That is the whole philosophy of this project working at its smallest scale.
+
+  WHERE THE WORK GOES
+  -------------------
+  stadium-saves/pokemon-lab.json, autosaved on every change. `localStorage` holds a copy only so that a
+  page opened without the server still shows your work and a failed write does not lose it.
+
+  RUN IT
+  ------
+  Needs a local server, since it fetches models/stadium/*.glb:
+
+      python serve.py        then open http://127.0.0.1:8080/pokemon-lab.html
+
+  KEYS
+  ----
+  space play/pause, left and right step one frame, i and o set the start and end of the range,
+  ctrl+z and ctrl+shift+z undo and redo, [ and ] previous/next species, / focus the filter box.
+-->
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0d1014; color: #cfd6dd;
+               font: 13px/1.45 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #app { display: grid; grid-template-columns: 300px 1fr 320px; height: 100%; }
+
+  .col { background: #11151b; border-right: 1px solid #222932; display: flex; flex-direction: column;
+         min-height: 0; }
+  #side { border-right: none; border-left: 1px solid #222932; }
+  .col header { padding: 11px 13px 9px; border-bottom: 1px solid #2a323c; flex: none; }
+  .col h1 { margin: 0 0 2px; font-size: 13px; letter-spacing: .02em; }
+  .col h2 { margin: 0 0 2px; font-size: 13px; letter-spacing: .02em; }
+  .col p.sub { margin: 0; color: #7d8794; font-size: 11px; }
+  .scroll { overflow-y: auto; padding: 9px 11px 16px; min-height: 0; flex: 1; }
+
+  h3 { margin: 14px 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+       color: #7d8794; font-weight: 600; }
+  h3:first-child { margin-top: 2px; }
+
+  input[type=text], select, button { background: #171d25; color: #cfd6dd; border: 1px solid #2f3742;
+                                     border-radius: 4px; padding: 4px 6px; font: inherit; font-size: 12px; }
+  input[type=text], select { width: 100%; box-sizing: border-box; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: #4a5766; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.on { border-color: #5fd08a; background: #1b2b23; color: #9fe0b8; }
+  input[type=range] { width: 100%; margin: 0; accent-color: #5fd08a; }
+  .row { display: flex; align-items: center; gap: 7px; margin: 6px 0; }
+  .row input[type=checkbox] { margin: 0; accent-color: #5fd08a; }
+  .buttons { display: flex; gap: 6px; margin: 8px 0 2px; }
+  .buttons button { flex: 1; }
+
+  /* --- the dex grid --------------------------------------------------------------------------------
+     Three columns of small tiles rather than a list: 151 of anything is a wall, and the number and the
+     status dot are the only things you scan for. */
+  #grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .tile { position: relative; padding: 5px 6px 6px; border: 1px solid #232a34; border-radius: 5px;
+          background: #141a21; cursor: pointer; overflow: hidden; }
+  .tile:hover { border-color: #3c4756; background: #182029; }
+  .tile.sel { border-color: #5fd08a; background: #1b2b23; }
+  .tile .num { font: 10px ui-monospace, monospace; color: #6b7480; }
+  .tile.sel .num { color: #9fe0b8; }
+  .tile .nm { font-size: 11px; color: #b6bfc9; white-space: nowrap; overflow: hidden;
+              text-overflow: ellipsis; }
+  .tile.sel .nm { color: #e6edf3; }
+  .tile .dot { position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%;
+               background: #333c47; }
+  .tile.untouched .dot { background: #333c47; }
+  .tile.progress .dot { background: #d8a657; }
+  .tile.ready .dot { background: #5fa8d0; }
+  .tile.done .dot { background: #5fd08a; }
+  .tile.done-findings .dot { background: #5fd08a; box-shadow: 0 0 0 2px #d8a657 inset; }
+
+  /* --- the clip list -------------------------------------------------------------------------------- */
+  .clip { display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+          padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+  .clip:hover { background: #1c232c; }
+  .clip.sel { background: #223a2c; }
+  .clip .cn { font: 11px ui-monospace, monospace; color: #cfd6dd; }
+  .clip .cd { font: 10px ui-monospace, monospace; color: #6b7480; flex: none; }
+  .clip.sel .cn { color: #9fe0b8; }
+  .clip .note { display: block; font-size: 10px; color: #6b7480; font-family: ui-sans-serif, sans-serif; }
+  .clip .idle { color: #5fd08a; }
+
+  /* Which frames are selected, under the scrubber. The slider says where you are; this says what plays. */
+  #rangeBar { position: relative; height: 4px; border-radius: 2px; background: #202832; margin: 2px 0 7px; }
+  #rangeFill { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: #5fd08a; }
+  #rangeFill.back { background: #d8a657; }
+
+  /* --- named segments ------------------------------------------------------------------------------ */
+  .seg { display: flex; align-items: baseline; gap: 6px; padding: 4px 6px; border-radius: 4px;
+         cursor: pointer; }
+  .seg:hover { background: #1c232c; }
+  .seg.sel { background: #223a2c; }
+  .seg .sname { font: 11px ui-monospace, monospace; color: #cfd6dd; flex: 1;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .seg.sel .sname { color: #9fe0b8; }
+  .seg .skind { font: 9px ui-monospace, monospace; flex: none; padding: 1px 4px; border-radius: 3px;
+                text-transform: uppercase; letter-spacing: 0.4px; }
+  .seg .skind.state { background: #1b2b23; color: #7fc79b; }
+  .seg .skind.transition { background: #2b2519; color: #c9a45f; }
+  .seg .srange { font: 10px ui-monospace, monospace; color: #6b7480; flex: none; }
+  .seg .del { border: none; background: none; color: #6b7480; padding: 0 2px; font-size: 13px;
+              line-height: 1; flex: none; }
+  .seg .del:hover { color: #e07a7a; }
+
+  .mono { font: 11px/1.6 ui-monospace, monospace; color: #8b95a2; white-space: pre-wrap; }
+  .hint { color: #6b7480; font-size: 10.5px; margin: 4px 0 0; }
+  .warn { color: #d8a657; font-size: 11px; margin-top: 6px; white-space: pre-wrap; }
+  #disk { flex: none; padding: 8px 13px; border-top: 1px solid #222932; color: #7d8794; font-size: 10.5px; }
+
+  #stage { position: relative; min-width: 0; background: #0d1014; }
+  #stage canvas { width: 100%; height: 100%; }
+  #stageMsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+              color: #6b7480; font-size: 12px; text-align: center; padding: 0 40px; pointer-events: none; }
+  #error { position: fixed; inset: auto 10px 10px 10px; max-height: 40vh; overflow: auto; display: none;
+           background: #2a1416; border: 1px solid #6b2b30; border-radius: 6px; padding: 10px 12px;
+           color: #f0b7ba; font: 11px/1.5 ui-monospace, monospace; white-space: pre-wrap; z-index: 20; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <aside class="col">
+    <header>
+      <h1>Pokemon Lab</h1>
+      <p class="sub" id="progress">Loading the dex…</p>
+    </header>
+    <div style="padding: 8px 11px 0; flex: none;">
+      <input type="text" id="filter" placeholder="Filter by name or dex number" autocomplete="off">
+      <select id="statusFilter" style="margin-top: 6px;">
+        <option value="">Every species</option>
+        <option value="untouched">Untouched</option>
+        <option value="progress">In progress</option>
+        <option value="ready">Ready</option>
+        <option value="done">Done</option>
+        <option value="done-findings">Done, with findings</option>
+      </select>
+    </div>
+    <div class="scroll"><div id="grid"></div></div>
+    <div id="disk">Nothing saved yet.</div>
+  </aside>
+
+  <div id="stage">
+    <div id="stageMsg">Choose a species from the dex to load it.</div>
+  </div>
+
+  <aside class="col" id="side">
+    <header>
+      <h2 id="speciesName">No species loaded</h2>
+      <p class="sub" id="speciesSub">The 151 Stadium models, and the animations the ROM shipped with them.</p>
+    </header>
+    <div class="scroll">
+      <h3>What the skeleton measures</h3>
+      <div class="mono" id="facts">—</div>
+      <div class="warn" id="factWarn"></div>
+
+      <h3>Animations</h3>
+      <div id="clips" class="mono">—</div>
+
+      <h3>Playback</h3>
+      <div class="row">
+        <button id="stepBackBtn" title="Step back one frame." disabled>◀</button>
+        <button id="playBtn" disabled>Play</button>
+        <button id="stepFwdBtn" title="Step forward one frame." disabled>▶</button>
+        <button id="snapBtn" class="on"
+          title="The scrubber lands on whole frames. Click to scrub continuously between them.">Snap</button>
+        <button id="restBtn" disabled>Rest pose</button>
+      </div>
+      <div class="row">
+        <input type="range" id="scrub" min="0" max="1" step="1" value="0" disabled>
+      </div>
+      <div id="rangeBar"><div id="rangeFill"></div></div>
+      <div class="mono" id="timeRead">—</div>
+      <div class="row">
+        <span style="color:#9aa4b0; font-size:11px;">Speed</span>
+        <input type="range" id="speed" min="0.05" max="2" step="0.05" value="1">
+        <span class="mono" id="speedRead" style="flex:none;">1.00x</span>
+      </div>
+
+      <h3>New segment from this animation</h3>
+      <div class="row">
+        <button id="setInBtn" disabled>Set start</button>
+        <button id="setOutBtn" disabled>Set end</button>
+        <button id="wholeBtn" disabled>Whole clip</button>
+        <button id="markPoseBtn" disabled title="Set the start and the end to the frame you are on.">Mark pose</button>
+        <button id="loopBtn" class="on" title="Loop the range instead of playing it once and holding.">Loop</button>
+      </div>
+      <div class="row">
+        <button id="ghostBtn" class="on" title="Show the start or end frame as a translucent ghost.">Ghosts</button>
+        <button id="ghostModeBtn">Overlap</button>
+        <button id="ghostPoseBtn">Start</button>
+      </div>
+      <div class="mono" id="rangeRead">—</div>
+      <div class="row">
+        <input type="text" id="segName" placeholder="Name, e.g. idle or enter_shell" list="segNames">
+        <button id="saveSegBtn" disabled>Save</button>
+      </div>
+      <datalist id="segNames"></datalist>
+      <p class="hint">If the start frame is higher than the end frame, it plays backwards.</p>
+
+      <h3>Saved segments</h3>
+      <p class="hint">A range that loops, or a single frame, is a state the creature can stay in. Any other
+        range is a transition, because it runs out and leaves the creature somewhere else.</p>
+      <div class="mono" id="segList">—</div>
+      <div class="mono" id="idleState"></div>
+      <div class="buttons">
+        <button id="undoBtn" title="Undo the last change to any species." disabled>Undo</button>
+        <button id="redoBtn" title="Redo the change you just undid." disabled>Redo</button>
+      </div>
+
+      <h3>The file</h3>
+      <div class="buttons">
+        <button id="snapshotBtn">Save a snapshot</button>
+      </div>
+      <div class="mono" id="fileNotes"></div>
+    </div>
+  </aside>
+</div>
+
+<div id="error"></div>
+
+<script>
+// Anything thrown before or inside the module lands on screen: a silent failure on someone else's machine
+// is undebuggable, and this page needs a server, a GPU and 151 files to all go right.
+window.addEventListener('error', (e) => showError(e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => showError(e.reason));
+function showError(err) {
+  const el = document.getElementById('error');
+  el.style.display = 'block';
+  el.textContent = (el.textContent ? el.textContent + '\n\n' : '') + (err && err.stack ? err.stack : String(err));
+}
+</script>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
+// SkeletonUtils.clone, not Object3D.clone(true): a plain clone shares the skeleton, so posing a ghost
+// would pose the live model with it.
+import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
+import { readRigFromGLB } from './pokemon-rig.js';
+import {
+  emptyAnnotation, getAnnotation, putAnnotation, setSegment, removeSegment, segmentsOf,
+  resolveSegment, wholeClip, segmentKind, poseAt, COMMON_STATES,
+} from './pokemon-annotation.js';
+import { describeStatus } from './disk-store.js';
+import {
+  LAB_FILE, createLabStore, readLibrary, loadManifest, dexEntries, modelURL, clipLabels,
+  suggestedIdle, speciesStatus, labSummary, STATUS_LABELS, rigMismatch,
+  snapshotFilename, snapshotWriteURL,
+} from './pokemon-lab-io.js';
+
+const $ = (id) => document.getElementById(id);
+
+// --- the document ---------------------------------------------------------------------------------
+const store = createLabStore({ storage: localStorage });
+await store.load();
+let { library, notes: fileNotes } = readLibrary(store);
+const saveLibrary = () => store.setJSON(library);
+store.onStatus((s) => { $('disk').textContent = describeStatus(s, { file: LAB_FILE }); });
+window.addEventListener('beforeunload', () => { store.flush(); });
+$('fileNotes').textContent = fileNotes.length ? fileNotes.join('\n') : `Reading and writing ${LAB_FILE}.`;
+
+// --- undo ------------------------------------------------------------------------------------------
+//
+// A stack of whole libraries, which is only affordable because every edit in pokemon-annotation.js
+// returns a NEW object instead of mutating: the unchanged species are shared between snapshots rather
+// than copied. Every write to `library` goes through commit() so nothing can slip past the history.
+const history = { past: [], future: [], limit: 200 };
+
+function commit(next) {
+  if (next === library) return;
+  history.past.push(library);
+  if (history.past.length > history.limit) history.past.shift();
+  history.future.length = 0;
+  library = next;
+  saveLibrary();
+  afterEdit();
+}
+
+function undo() {
+  if (!history.past.length) return;
+  history.future.push(library);
+  library = history.past.pop();
+  saveLibrary();
+  afterEdit();
+}
+
+function redo() {
+  if (!history.future.length) return;
+  history.past.push(library);
+  library = history.future.pop();
+  saveLibrary();
+  afterEdit();
+}
+
+$('undoBtn').addEventListener('click', undo);
+$('redoBtn').addEventListener('click', redo);
+
+// --- the dex --------------------------------------------------------------------------------------
+const manifest = await loadManifest();
+const dex = dexEntries(manifest);
+const tiles = new Map();
+
+// --- the scene ------------------------------------------------------------------------------------
+const stage = $('stage');
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+stage.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1014);
+const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 500);
+camera.position.set(2, 1.4, 3);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xbfd4e8, 0x1a1f26, 2.1));
+const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
+keyLight.position.set(3, 6, 4);
+scene.add(keyLight);
+
+const modelRoot = new THREE.Group();
+const ghostRoot = new THREE.Group();
+scene.add(modelRoot, ghostRoot);
+let grid = null;
+let floorRing = null;
+
+// The Blender-style axis widget in the bottom-right corner: click an axis to snap the camera to it.
+// Guarded because it is an addon drawing itself into a WebGPU pass, and a broken gizmo must not take the
+// rest of the page down with it.
+let viewHelper = null;
+try {
+  viewHelper = new ViewHelper(camera, renderer.domElement);
+  viewHelper.center = controls.target;
+  renderer.autoClear = false;
+} catch (err) {
+  console.warn('[lab] the axis gizmo did not start, so it is off:', err);
+}
+// The gizmo lives in the bottom-right 128 square of the canvas, over the top of OrbitControls. Controls
+// are switched off for the duration of a click there rather than the event being stopped: swallowing the
+// pointerup left OrbitControls stuck mid-drag, so the camera kept orbiting with the button already up.
+const GIZMO_SIZE = 128;
+function overGizmo(ev) {
+  if (!viewHelper) return false;
+  const r = renderer.domElement.getBoundingClientRect();
+  return ev.clientX >= r.right - GIZMO_SIZE && ev.clientY >= r.bottom - GIZMO_SIZE;
+}
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  if (overGizmo(ev)) controls.enabled = false;
+});
+renderer.domElement.addEventListener('pointerup', (ev) => {
+  try { viewHelper?.handleClick(ev); } catch {}
+  controls.enabled = true;
+});
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  if (!w || !h) return;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h, false);
+}
+new ResizeObserver(resize).observe(stage);
+resize();
+
+// --- loading a species ----------------------------------------------------------------------------
+const loader = new GLTFLoader();
+// Parsed models are kept for a few species, since re-parsing is the one clearly non-linear cost in going
+// back to something you were just looking at. Older ones are disposed rather than accumulating on the GPU.
+const CACHE_LIMIT = 6;
+const cache = new Map();
+
+let current = null;              // { entry, rig, gltf, root, mixer, rest, clips }
+let currentClip = -1;
+let action = null;
+
+async function assetsFor(entry) {
+  const hit = cache.get(entry.species);
+  if (hit) { cache.delete(entry.species); cache.set(entry.species, hit); return hit; }
+
+  const res = await fetch(modelURL(entry.species));
+  if (!res.ok) throw new Error(`${entry.name} did not load: HTTP ${res.status} on ${modelURL(entry.species)}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  // The same bytes go two ways: through GLTFLoader for something to draw, and through this repo's own
+  // reader for the facts. The reader deliberately does not depend on THREE so it can be tested in Node.
+  const { rig } = readRigFromGLB(bytes, { source: entry.species });
+  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const gltf = await loader.parseAsync(buf, '');
+  // Two facts from docs/stadium/HANDOFF.md that show up the moment they are ignored: vertices are authored
+  // in bone-local space so bounding volumes are garbage and parts vanish with camera angle, and some
+  // face-decal triangles are wound backwards because the game rendered with culling off.
+  gltf.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    o.frustumCulled = false;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m) m.side = THREE.DoubleSide;
+  });
+  // The authored rest, captured before any clip runs, so "rest pose" restores rather than approximates.
+  const rest = [];
+  gltf.scene.traverse((o) => {
+    rest.push([o, o.position.clone(), o.quaternion.clone(), o.scale.clone()]);
+  });
+
+  const assets = { entry, rig, gltf, rest, labels: clipLabels(entry) };
+  cache.set(entry.species, assets);
+  while (cache.size > CACHE_LIMIT) {
+    const [oldest, dropped] = cache.entries().next().value;
+    cache.delete(oldest);
+    if (dropped !== current) disposeAssets(dropped);
+  }
+  return assets;
+}
+
+function disposeAssets(assets) {
+  assets.gltf.scene.traverse((o) => {
+    if (o.geometry) o.geometry.dispose();
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m) m.dispose();
+  });
+}
+
+let loadToken = 0;
+async function selectSpecies(species) {
+  const entry = dex.find(e => e.species === species);
+  if (!entry) return;
+  const token = ++loadToken;
+  $('stageMsg').textContent = `Loading ${entry.name}…`;
+  $('stageMsg').style.display = '';
+  markSelectedTile(species, { scroll: true });
+
+  let assets;
+  try {
+    assets = await assetsFor(entry);
+  } catch (err) {
+    if (token !== loadToken) return;
+    $('stageMsg').textContent = String(err.message || err);
+    return;
+  }
+  if (token !== loadToken) return;   // a faster click while this one was fetching
+
+  if (current) modelRoot.remove(current.gltf.scene);
+  if (action) { action.stop(); action = null; }
+  current = assets;
+  currentClip = -1;
+  restorePose();
+  modelRoot.add(assets.gltf.scene);
+  current.mixer = new THREE.AnimationMixer(assets.gltf.scene);
+  frameCamera(assets.rig);
+  buildGhosts();
+  $('stageMsg').style.display = 'none';
+
+  describeSpecies();
+  buildClipList();
+  refreshSegments();
+  refreshTransport();
+
+  // Open on the species' own idle segment if it has one, and otherwise on the manifest's suggestion —
+  // which is a starting point to watch, not a decision. Naming it is a separate click.
+  const idle = getAnnotation(library, species)?.segments?.idle;
+  if (idle) auditionSegment('idle', idle);
+  else playClip(suggestedIdle(entry)?.index ?? 0, { autoplay: true, ends: 'loop' });
+}
+
+function restorePose() {
+  for (const [o, p, q, s] of current.rest) { o.position.copy(p); o.quaternion.copy(q); o.scale.copy(s); }
+  current.gltf.scene.updateMatrixWorld(true);
+}
+
+// --- ghosts: the start and end frames of the range, drawn as translucent copies --------------------
+//
+// Two independent choices. WHICH frames to show — the start, the end, or both. And WHERE to put them:
+// overlap leaves them in the model's own position, so you can watch how near the animation comes to
+// landing back on one of them, and offset pushes them aside so they do not sit inside it.
+//
+// Green is the start frame and amber the end, matching the range bar.
+const ghosts = { start: null, end: null, on: true, mode: 'overlap', which: 'start' };
+const GHOST_WHICH = ['start', 'end', 'both'];
+const GHOST_TINT = { start: 0x5fd08a, end: 0xd8a657 };
+const GHOST_SIDE = { start: -1, end: 1 };
+
+function clearGhosts() {
+  for (const which of ['start', 'end']) {
+    const g = ghosts[which];
+    if (!g) continue;
+    ghostRoot.remove(g.root);
+    // Geometry is SHARED with the live model by skeletonClone, so disposing it would empty the viewport.
+    // The one flat material is ours, and is the only thing here to free.
+    g.material.dispose();
+    ghosts[which] = null;
+  }
+}
+
+function buildGhosts() {
+  clearGhosts();
+  if (!ghosts.on || !current) return;
+  const u = current.rig.units;
+  const dx = Math.max(u.halfWidth * 2.4, u.height * 0.7, 0.05);
+  const wants = ghosts.which === 'both' ? ['start', 'end'] : [ghosts.which];
+  const specs = wants.map(w => [w, GHOST_TINT[w], ghosts.mode === 'offset' ? GHOST_SIDE[w] : 0]);
+  try {
+    for (const [which, tint, sign] of specs) {
+      const root = skeletonClone(current.gltf.scene);
+      // One flat translucent material for the whole ghost, rather than a tinted clone of each real one.
+      // A silhouette reads better than a faded copy of the model, and cloning node materials under WebGPU
+      // is the fragile step this avoids entirely.
+      const material = new THREE.MeshBasicMaterial({
+        color: tint, transparent: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide,
+      });
+      root.traverse((o) => {
+        if (!o.isMesh) return;
+        o.frustumCulled = false;
+        o.material = material;
+      });
+      root.position.set(sign * dx, 0, 0);
+      ghostRoot.add(root);
+      ghosts[which] = { root, material, mixer: new THREE.AnimationMixer(root), action: null };
+    }
+    poseGhosts();
+  } catch (err) {
+    clearGhosts();
+    ghosts.on = false;
+    $('ghostBtn').classList.remove('on');
+    showError(err);
+  }
+}
+
+/** Freeze each ghost on its end of the range. Called whenever the clip or the range changes. */
+function poseGhosts() {
+  if (!current || currentClip < 0) return;
+  const clip = current.gltf.animations?.[currentClip];
+  if (!clip) return;
+  const fps = fpsOf(currentClip);
+  for (const [which, frame] of [['start', play.from], ['end', play.to]]) {
+    const g = ghosts[which];
+    if (!g) continue;
+    if (g.action?.getClip() !== clip) {
+      g.mixer.stopAllAction();
+      g.action = g.mixer.clipAction(clip);
+      g.action.play();
+    }
+    g.action.time = Math.max(0, Math.min(clip.duration, frame / fps));
+    g.mixer.update(0);
+  }
+}
+
+/** Both of these name the state they are in and move on when clicked, so neither is an on/off highlight. */
+function refreshGhostButtons() {
+  const LABEL = { start: 'Start', end: 'End', both: 'Both' };
+  $('ghostBtn').classList.toggle('on', ghosts.on);
+  $('ghostModeBtn').textContent = ghosts.mode === 'overlap' ? 'Overlap' : 'Offset';
+  $('ghostModeBtn').title = ghosts.mode === 'overlap'
+    ? 'Ghosts stand where the model stands. Click to push them aside instead.'
+    : 'Ghosts stand aside from the model. Click to put them in its place instead.';
+  $('ghostPoseBtn').textContent = LABEL[ghosts.which];
+  $('ghostPoseBtn').title = `Showing the ${ghosts.which === 'both' ? 'start and end frames' : `${ghosts.which} frame`}.`
+    + ' Click for the next choice of start, end and both.';
+  $('ghostModeBtn').disabled = !ghosts.on;
+  $('ghostPoseBtn').disabled = !ghosts.on;
+}
+
+// None of these touch the camera. Where you put it is your business, and a toggle that moved it would
+// throw away an angle you had orbited to. Only loading a species frames anything.
+$('ghostBtn').addEventListener('click', () => {
+  ghosts.on = !ghosts.on;
+  refreshGhostButtons();
+  buildGhosts();
+});
+$('ghostModeBtn').addEventListener('click', () => {
+  ghosts.mode = ghosts.mode === 'overlap' ? 'offset' : 'overlap';
+  refreshGhostButtons();
+  buildGhosts();
+});
+$('ghostPoseBtn').addEventListener('click', () => {
+  ghosts.which = GHOST_WHICH[(GHOST_WHICH.indexOf(ghosts.which) + 1) % GHOST_WHICH.length];
+  refreshGhostButtons();
+  buildGhosts();
+});
+refreshGhostButtons();
+
+/** Framed from the rig's measured extent, because a skinned mesh's own bounding box cannot be trusted. */
+function frameCamera(rig) {
+  const u = rig.units;
+  const height = u.height || 1;
+  const span = Math.max(height, u.halfWidth * 2, 0.001);
+  const mid = (u.floorY + u.topY) / 2;
+  controls.target.set(0, mid, 0);
+  camera.near = span / 200;
+  camera.far = span * 200;
+  // Pulled back in offset mode, where the ghosts stand either side and would otherwise be off screen.
+  const wide = ghosts.on && ghosts.mode === 'offset' ? 2.1 : 1;
+  camera.position.set(span * 1.3 * wide, mid + height * 0.35, span * 2.0 * wide);
+  camera.updateProjectionMatrix();
+  controls.update();
+
+  if (grid) { scene.remove(grid); grid.dispose(); }
+  const extent = Math.max(1, Math.ceil(span * 2));
+  grid = new THREE.GridHelper(extent * 2, extent * 4, 0x2c3641, 0x1c232c);
+  scene.add(grid);
+
+  // Where the model's own lowest vertex sits. On 32 of the 151 that is nowhere near y=0, because y=0 is
+  // the battle platform anchor rather than the ground, and seeing that is half of classifying the species.
+  if (floorRing) { scene.remove(floorRing); floorRing.geometry.dispose(); floorRing.material.dispose(); }
+  const r = Math.max(span * 0.55, 0.05);
+  const pts = [];
+  for (let i = 0; i <= 64; i++) {
+    const t = (i / 64) * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(t) * r, u.floorY, Math.sin(t) * r));
+  }
+  floorRing = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0x5fd08a }),
+  );
+  scene.add(floorRing);
+}
+
+// --- the readouts ---------------------------------------------------------------------------------
+function describeSpecies() {
+  const { entry, rig } = current;
+  $('speciesName').textContent = `#${String(entry.dex).padStart(3, '0')} ${entry.name}`;
+  const a = getAnnotation(library, entry.species);
+  $('speciesSub').textContent = `${entry.species} is ${STATUS_LABELS[speciesStatus(a).state]}.`;
+
+  const u = rig.units;
+  const offset = u.height ? (u.floorY / u.height) * 100 : 0;
+  const significant = rig.chains.filter(c => c.massFraction > 0.02).length;
+  $('facts').textContent = [
+    `${rig.bones.length} bones, ${rig.chains.length} chains (${significant} over 2% of the mesh)`,
+    `${entry.tris} triangles, ${u.totalVertices} skinned vertices`,
+    `height ${u.height.toFixed(3)}, lowest vertex ${u.floorY.toFixed(3)} (${offset.toFixed(0)}% of height off y=0)`,
+    `${rig.clips.length} animations, rig ${rig.hash}`,
+  ].join('\n');
+
+  // The rig's own notes are the detection; these are the plain-English versions. Anything it noticed that
+  // is not covered here is shown verbatim rather than swallowed.
+  const warn = [];
+  const explained = [];
+  for (const n of rig.notes) {
+    if (n.includes('y=0')) {
+      explained.push(n);
+      warn.push(u.floorY > 0
+        ? `This model floats ${u.floorY.toFixed(3)} above the floor.`
+        : `This model sits ${Math.abs(u.floorY).toFixed(3)} below the floor.`);
+    } else if (n.includes('duplicated bone name')) {
+      explained.push(n);
+      warn.push(`Two bones are named ${rig.duplicateNames.join(', ')}. The second one is called`
+        + ` ${rig.duplicateNames[0]}#2 here.`);
+    }
+  }
+  for (const n of rig.notes) if (!explained.includes(n)) warn.push(n);
+  if (rigMismatch(a, rig)) {
+    warn.push('The model has changed since this species was annotated. Check it before trusting it.');
+  }
+  $('factWarn').textContent = warn.join('\n\n');
+}
+
+function buildClipList() {
+  const host = $('clips');
+  host.textContent = '';
+  const clips = current.labels;
+  const a = getAnnotation(library, current.entry.species);
+  // How many named segments come out of each clip, so a clip you have already mined says so.
+  const cut = new Map();
+  for (const [, seg] of segmentsOf(a)) cut.set(seg.clip, (cut.get(seg.clip) || 0) + 1);
+  const suggested = suggestedIdle(current.entry);
+  for (const c of clips) {
+    const el = document.createElement('div');
+    el.className = 'clip';
+    el.dataset.clip = String(c.index);
+    const n = cut.get(c.index) || 0;
+    const mark = n ? ` <span class="idle">${n} segment${n === 1 ? '' : 's'}</span>`
+      : (!cut.size && suggested && c.index === suggested.index ? ' <span class="idle">suggested</span>' : '');
+    el.innerHTML = `<span><span class="cn">${c.name}</span>${mark}`
+      + (c.note ? `<span class="note">${c.note}</span>` : '') + '</span>'
+      + `<span class="cd">${c.frames}f</span>`;
+    // Picking a whole clip out of the list always loops it: you are looking at an animation, not
+    // auditioning a transition, and inheriting `hold` from the last segment you played would be a surprise.
+    el.addEventListener('click', () => playClip(c.index, { autoplay: true, from: 0, to: null, ends: 'loop' }));
+    host.appendChild(el);
+  }
+  markSelectedClip();
+}
+
+function markSelectedClip() {
+  for (const el of $('clips').children) el.classList.toggle('sel', Number(el.dataset.clip) === currentClip);
+}
+
+/** Scrolling is on request, not automatic: filtering rebuilds the grid and would yank it on every keystroke. */
+function markSelectedTile(species, { scroll = false } = {}) {
+  for (const [key, el] of tiles) el.classList.toggle('sel', key === species);
+  if (scroll) tiles.get(species)?.scrollIntoView({ block: 'nearest' });
+}
+
+// --- playback -------------------------------------------------------------------------------------
+//
+// The page owns the clock rather than the mixer. Every frame it works out a frame number and writes it
+// into the action, then calls `mixer.update(0)` so nothing else advances anything. That is what makes a
+// segment and a whole clip the same code path: a range with an in point after its out point plays
+// backwards, and a range that holds simply stops at its end. Fighting THREE's own loop modes to express
+// the same four cases would be more code and less predictable.
+// `frame` is fractional on purpose. The mixer interpolates between keys, so any position between two
+// frames is a real pose; snapping is a scrubbing convenience, not a limit of the model.
+const play = { from: 0, to: 0, ends: 'loop', frame: 0, paused: false, segment: null, snap: true };
+
+function setSnap(on) {
+  play.snap = on;
+  $('snapBtn').classList.toggle('on', on);
+  $('snapBtn').title = on
+    ? 'The scrubber lands on whole frames. Click to scrub continuously between them.'
+    : 'The scrubber moves continuously between frames. Click to land on whole frames again.';
+  $('scrub').step = on ? '1' : 'any';
+  if (on && action) { play.frame = Math.round(play.frame); applyFrame(); }
+  refreshTransport();
+}
+$('snapBtn').addEventListener('click', () => setSnap(!play.snap));
+
+function playClip(index, { autoplay = false, from = 0, to = null, ends = null, segment = null } = {}) {
+  if (!current) return;
+  const clip = current.gltf.animations?.[index];
+  if (!clip) return;
+  if (action) action.stop();
+  restorePose();
+  currentClip = index;
+  action = current.mixer.clipAction(clip);
+  action.play();
+  const last = lastFrame(index);
+  play.from = Math.min(last, Math.max(0, from));
+  play.to = to === null ? last : Math.min(last, Math.max(0, to));
+  play.ends = ends || play.ends;
+  play.frame = play.from;
+  play.paused = !autoplay;
+  play.segment = segment;
+  $('scrub').max = String(last);
+  applyFrame();
+  // Rest pose tears the ghosts down, so playing again has to put them back rather than just re-pose them.
+  if (ghosts.on && !ghosts.start) buildGhosts(); else poseGhosts();
+  markSelectedClip();
+  refreshTransport();
+  refreshSegments();
+}
+
+const clipOf = (index) => current?.rig.clips[index] || null;
+/** Frame counts and rates are measured by pokemon-rig.js, so nothing here writes 30 down. */
+const lastFrame = (index) => Math.max(0, (clipOf(index)?.frames || 1) - 1);
+const fpsOf = (index) => clipOf(index)?.fps || 30;
+
+/** Write the current frame into the action. The mixer never advances time; this is the only writer. */
+function applyFrame() {
+  if (!action || !current) return;
+  const clip = action.getClip();
+  action.time = Math.max(0, Math.min(clip.duration, play.frame / fpsOf(currentClip)));
+  current.mixer.update(0);
+}
+
+function advance(dt) {
+  if (!action || play.paused) return;
+  const lo = Math.min(play.from, play.to), hi = Math.max(play.from, play.to);
+  const dir = play.to >= play.from ? 1 : -1;
+  play.frame += dt * fpsOf(currentClip) * Number($('speed').value) * dir;
+  if (play.frame > hi || play.frame < lo) {
+    if (play.ends === 'hold' || hi === lo) {
+      play.frame = dir > 0 ? hi : lo;
+      play.paused = true;
+    } else {
+      const span = hi - lo;
+      play.frame = lo + (((play.frame - lo) % span) + span) % span;
+    }
+  }
+  applyFrame();
+  $('scrub').value = String(play.frame);
+  refreshTransport();
+}
+
+function refreshTransport() {
+  const live = !!(current && action);
+  $('playBtn').disabled = !live;
+  $('restBtn').disabled = !current;
+  $('scrub').disabled = !live;
+  for (const id of ['setInBtn', 'setOutBtn', 'wholeBtn', 'markPoseBtn', 'stepBackBtn', 'stepFwdBtn']) $(id).disabled = !live;
+  $('playBtn').textContent = live && !play.paused ? 'Pause' : 'Play';
+  $('loopBtn').classList.toggle('on', play.ends === 'loop');
+  $('speedRead').textContent = `${Number($('speed').value).toFixed(2)}x`;
+  if (!live) {
+    $('timeRead').textContent = '—';
+    $('rangeRead').textContent = '—';
+    $('rangeFill').style.width = '0';
+    return;
+  }
+  const last = lastFrame(currentClip);
+  const name = current.labels[currentClip]?.name ?? `clip ${currentClip}`;
+  const at = play.snap ? Math.round(play.frame) : play.frame.toFixed(2);
+  $('timeRead').textContent = `${name}, frame ${at} of ${last}`;
+  const span = Math.abs(play.to - play.from) + 1;
+  const whole = play.from === 0 && play.to === last;
+
+  // The selected frames, drawn under the scrubber. Amber means the range runs backwards.
+  const lo = Math.min(play.from, play.to), hi = Math.max(play.from, play.to);
+  const pct = (f) => (last > 0 ? (f / last) * 100 : 0);
+  $('rangeFill').style.left = `${pct(lo)}%`;
+  $('rangeFill').style.width = `${Math.max(0.8, pct(hi) - pct(lo))}%`;
+  $('rangeFill').classList.toggle('back', play.to < play.from);
+  $('rangeRead').textContent = whole
+    ? `The whole of ${name}, all ${last + 1} frames.`
+    : `Frames ${play.from} to ${play.to} of ${name}, which is ${span} frames`
+      + `${play.to < play.from ? ' backwards' : ''}.`;
+}
+
+$('playBtn').addEventListener('click', () => {
+  if (!action) return;
+  // Pressing play on a held range that has run to its end starts it again rather than doing nothing.
+  // The destination is always `to`, whichever direction the range runs in.
+  if (play.paused && play.ends === 'hold' && Math.round(play.frame) === play.to) play.frame = play.from;
+  play.paused = !play.paused;
+  refreshTransport();
+});
+$('restBtn').addEventListener('click', () => {
+  if (!current) return;
+  if (action) { action.stop(); action = null; }
+  currentClip = -1;
+  play.segment = null;
+  restorePose();
+  clearGhosts();          // ghosts frozen on a range you have stopped watching only read as confusion
+  markSelectedClip();
+  refreshTransport();
+  refreshSegments();
+});
+$('scrub').addEventListener('input', () => {
+  if (!action) return;
+  play.paused = true;
+  play.frame = Number($('scrub').value);
+  applyFrame();
+  refreshTransport();
+});
+
+/** One frame at a time, which is the only way to find the exact frame a movement starts on. */
+function stepFrame(delta) {
+  if (!action) return;
+  play.paused = true;
+  // From a fractional position, step to the next whole frame in that direction rather than skipping one.
+  const here = delta > 0 ? Math.floor(play.frame) : Math.ceil(play.frame);
+  play.frame = Math.min(lastFrame(currentClip), Math.max(0, here + delta));
+  applyFrame();
+  $('scrub').value = String(play.frame);
+  refreshTransport();
+}
+$('stepBackBtn').addEventListener('click', () => stepFrame(-1));
+$('stepFwdBtn').addEventListener('click', () => stepFrame(1));
+
+$('speed').addEventListener('input', refreshTransport);
+$('loopBtn').addEventListener('click', () => {
+  play.ends = play.ends === 'loop' ? 'hold' : 'loop';
+  refreshTransport();
+});
+
+// --- the range, and naming it ----------------------------------------------------------------------
+$('setInBtn').addEventListener('click', () => { play.from = Math.round(play.frame); afterRangeEdit(); });
+$('setOutBtn').addEventListener('click', () => { play.to = Math.round(play.frame); afterRangeEdit(); });
+$('markPoseBtn').addEventListener('click', () => {
+  play.from = play.to = Math.round(play.frame);
+  play.ends = 'hold';
+  afterRangeEdit();
+});
+$('wholeBtn').addEventListener('click', () => {
+  play.from = 0;
+  play.to = lastFrame(currentClip);
+  afterRangeEdit();
+});
+
+/** The playhead stays where you left it: you are standing on the frame you just marked. */
+function afterRangeEdit() {
+  play.segment = null;
+  applyFrame();
+  poseGhosts();
+  refreshTransport();
+  refreshSegments();
+}
+
+// --- named segments, which are what this page saves -------------------------------------------------
+function annotationFor(species) {
+  return getAnnotation(library, species) || emptyAnnotation(species, current?.rig);
+}
+
+function refreshSegments() {
+  const host = $('segList');
+  host.textContent = '';
+  const entry = current?.entry;
+  if (!entry) { host.textContent = '—'; $('saveSegBtn').disabled = true; return; }
+  const a = getAnnotation(library, entry.species);
+  const segments = segmentsOf(a);
+
+  for (const [name, seg] of segments) {
+    const clip = clipOf(seg.clip);
+    const resolved = clip ? resolveSegment(seg, clip.frames) : null;
+    const clipName = current.labels[seg.clip]?.name ?? `clip ${seg.clip}`;
+    const el = document.createElement('div');
+    el.className = 'seg' + (play.segment === name ? ' sel' : '');
+    const label = document.createElement('span');
+    label.className = 'sname';
+    label.textContent = name;
+    // Read the kind off the resolved range, where an open end has already become a frame number.
+    const kind = segmentKind(resolved || seg) || 'transition';
+    const badge = document.createElement('span');
+    badge.className = 'skind ' + kind;
+    badge.textContent = kind;
+    badge.title = kind === 'state'
+      ? 'The creature can stay in this one.'
+      : 'This one runs out and leaves the creature somewhere else.';
+    const range = document.createElement('span');
+    range.className = 'srange';
+    // A segment can outlive the clip it names if the model is re-extracted, and saying so beats a row
+    // that reads like an ordinary range but plays nothing.
+    range.textContent = !resolved ? `clip ${seg.clip} is missing`
+      : `${clipName} ${resolved.from}-${resolved.to}${resolved.reversed ? ' back' : ''} ${resolved.ends}`
+        + (resolved.truncated ? ' clamped' : '');
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '×';
+    del.title = `Delete the segment called ${name}.`;
+    del.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (play.segment === name) play.segment = null;
+      commit(putAnnotation(library, removeSegment(annotationFor(entry.species), name)));
+    });
+    el.append(label, badge, range, del);
+    el.addEventListener('click', () => auditionSegment(name, seg));
+    host.appendChild(el);
+  }
+  if (!segments.length) host.textContent = 'Nothing named yet.';
+
+  // The manifest's guess stays a suggestion until somebody saves a segment called idle.
+  const hasIdle = segments.some(([n]) => n === 'idle');
+  const s = suggestedIdle(entry);
+  $('idleState').textContent = hasIdle ? ''
+    : 'No segment is named idle. That name is the pose this species stands in'
+      + (s ? `, and the manifest suggests clip ${s.index}.` : '.');
+  refreshSaveButton();
+  refreshSegmentNames();
+}
+
+function auditionSegment(name, seg) {
+  const clip = clipOf(seg.clip);
+  const resolved = clip ? resolveSegment(seg, clip.frames) : null;
+  if (!resolved) return;
+  // The name goes in first: playClip refreshes the Save button, which reads the field to decide whether
+  // it says Save or Update.
+  $('segName').value = name;
+  playClip(resolved.clip, {
+    autoplay: true, from: resolved.from, to: resolved.to, ends: resolved.ends, segment: name,
+  });
+}
+
+/**
+ * Names already used anywhere in the library, plus the shared vocabulary, so naming stays consistent
+ * without being constrained. A runtime asks every species for `idle`, so the spelling has to match.
+ */
+function refreshSegmentNames() {
+  const names = new Set(COMMON_STATES);
+  for (const a of Object.values(library.species || {})) for (const n of Object.keys(a.segments || {})) names.add(n);
+  const list = $('segNames');
+  list.textContent = '';
+  for (const n of [...names].sort()) {
+    const opt = document.createElement('option');
+    opt.value = n;
+    list.appendChild(opt);
+  }
+}
+
+$('segName').addEventListener('input', refreshSaveButton);
+
+/** Saving over a name that already exists is an edit, so the button says so rather than looking additive. */
+function refreshSaveButton() {
+  const name = $('segName').value.trim();
+  const exists = !!(current && getAnnotation(library, current.entry.species)?.segments?.[name]);
+  $('saveSegBtn').disabled = currentClip < 0 || !name;
+  $('saveSegBtn').textContent = exists ? 'Update' : 'Save';
+  $('saveSegBtn').title = exists
+    ? `Replace the segment called ${name} with the range above.`
+    : 'Save the range above under this name.';
+}
+
+$('saveSegBtn').addEventListener('click', () => {
+  const name = $('segName').value.trim();
+  if (!current || currentClip < 0 || !name) return;
+  const last = lastFrame(currentClip);
+  const whole = play.from === 0 && play.to === last;
+  const seg = whole
+    ? wholeClip(currentClip, play.ends)
+    : { clip: currentClip, from: play.from, to: play.to, ends: play.ends };
+  play.segment = name;
+  commit(putAnnotation(library, setSegment(annotationFor(current.entry.species), name, seg)));
+});
+
+function afterEdit() {
+  // Undo can be pressed before any species has finished loading, and the per-species panels would throw.
+  if (current) { refreshSegments(); buildClipList(); describeSpecies(); }
+  refreshBoard();
+  $('undoBtn').disabled = !history.past.length;
+  $('redoBtn').disabled = !history.future.length;
+}
+
+// --- the grid -------------------------------------------------------------------------------------
+function buildGrid() {
+  const host = $('grid');
+  host.textContent = '';
+  tiles.clear();
+  const text = $('filter').value.trim().toLowerCase();
+  const want = $('statusFilter').value;
+  let shown = 0;
+  for (const e of dex) {
+    const status = speciesStatus(library.species[e.species] || null).state;
+    if (want && status !== want) continue;
+    if (text && !e.name.toLowerCase().includes(text) && !e.species.includes(text)
+        && String(e.dex) !== text.replace(/^0+/, '')) continue;
+    const el = document.createElement('div');
+    el.className = `tile ${status}`;
+    el.title = `${e.name} — ${e.bones} bones, ${e.clips.length} animations, ${STATUS_LABELS[status]}`;
+    el.innerHTML = `<div class="num">${String(e.dex).padStart(3, '0')}</div>`
+      + `<div class="nm">${e.name}</div><div class="dot"></div>`;
+    el.addEventListener('click', () => selectSpecies(e.species).catch(showError));
+    host.appendChild(el);
+    tiles.set(e.species, el);
+    shown++;
+  }
+  if (!shown) host.innerHTML = '<p class="hint" style="grid-column: 1 / -1;">Nothing matches that filter.</p>';
+  if (current) markSelectedTile(current.entry.species);
+}
+
+function refreshBoard() {
+  const counts = labSummary(library, dex);
+  const touched = dex.length - counts.untouched;
+  $('progress').textContent = `${touched} of ${dex.length} species touched`
+    + (counts.done ? `, ${counts.done} marked done.` : '.');
+  buildGrid();
+}
+
+$('filter').addEventListener('input', buildGrid);
+$('statusFilter').addEventListener('change', buildGrid);
+
+// --- snapshots ------------------------------------------------------------------------------------
+$('snapshotBtn').addEventListener('click', async () => {
+  const name = snapshotFilename();
+  await store.flush();
+  try {
+    const res = await fetch(snapshotWriteURL(name), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(library),
+    });
+    const info = res.ok ? await res.json().catch(() => ({ ok: true })) : null;
+    $('fileNotes').textContent = info && info.ok !== false
+      ? `Snapshot written to ${info.path || name}.`
+      : `The snapshot did not write: ${info?.error || `HTTP ${res.status}`}.`;
+  } catch (err) {
+    $('fileNotes').textContent = `The snapshot did not write: ${err.message || err}.`;
+  }
+});
+
+// --- keys -----------------------------------------------------------------------------------------
+addEventListener('keydown', (ev) => {
+  // Undo works from anywhere, including a focused text box, which is where the browser's own undo lives
+  // and is not what somebody pressing it after saving a segment means.
+  const z = (ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z';
+  if (z) { ev.preventDefault(); (ev.shiftKey ? redo : undo)(); return; }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'y') { ev.preventDefault(); redo(); return; }
+  if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT') {
+    if (ev.key === 'Escape') ev.target.blur();
+    return;
+  }
+  if (ev.key === ' ') { ev.preventDefault(); $('playBtn').click(); }
+  else if (ev.key === 'ArrowLeft') { ev.preventDefault(); stepFrame(-1); }
+  else if (ev.key === 'ArrowRight') { ev.preventDefault(); stepFrame(1); }
+  else if (ev.key === 'i') { $('setInBtn').click(); }
+  else if (ev.key === 'o') { $('setOutBtn').click(); }
+  else if (ev.key === 'p') { $('markPoseBtn').click(); }
+  else if (ev.key === '/') { ev.preventDefault(); $('filter').focus(); }
+  else if (ev.key === '[' || ev.key === ']') {
+    const i = current ? dex.findIndex(e => e.species === current.entry.species) : -1;
+    const step = ev.key === ']' ? 1 : -1;
+    const next = dex[(i + step + dex.length) % dex.length];
+    if (next) selectSpecies(next.species).catch(showError);
+  }
+});
+
+// --- the loop -------------------------------------------------------------------------------------
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  advance(dt);
+  controls.update();
+  if (viewHelper) renderer.clear();
+  renderer.render(scene, camera);
+  if (viewHelper) {
+    try {
+      if (viewHelper.animating) viewHelper.update(dt);
+      viewHelper.render(renderer);
+    } catch (err) {
+      // Draw the scene normally from here on rather than failing every frame.
+      console.warn('[lab] the axis gizmo stopped drawing, so it is off:', err);
+      viewHelper = null;
+      renderer.autoClear = true;
+    }
+  }
+});
+
+refreshBoard();
+selectSpecies(dex[0].species).catch(showError);
+</script>
+</body>
+</html>
