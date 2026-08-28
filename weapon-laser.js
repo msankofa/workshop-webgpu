@@ -17,6 +17,13 @@
 // so that stays a mesh. It needs no raycast either: it is drawn to the full range with depth testing
 // on, so opaque geometry clips it exactly where the beam would stop.
 //
+// Its radius is a plain world measurement with nothing layered on top, so 0 means 0 and the beam is
+// hidden rather than drawn at zero scale. An earlier version also floored the radius in screen
+// pixels so the far end could not go sub-pixel; that floor was computed at the beam's midpoint,
+// which over a 120 m beam is 60 m away, so it swamped the whole sensible part of the radius slider —
+// 0 mm, 1 mm and 5 mm all drew the same 10 cm tube. A beam genuinely does thin out with distance;
+// that is what distance looks like, and it is not worth a control that overrides the control.
+//
 // Two things about the cone are load-bearing:
 //   * `penumbra` is never 0. three's cone falloff is `smoothstep(coneCos, penumbraCos, angleCos)`,
 //     and penumbra 0 makes those two edges equal, which is degenerate. It also anti-aliases a dot
@@ -40,8 +47,7 @@ export const WEAPON_LASER_DEFAULTS = Object.freeze({
   shadows: true,         // without it the dot also lands on whatever is behind the wall it hit
   shadowMapSize: 512,
   beamVisible: true,
-  beamWidth: 0.005,      // metres, before the pixel floor below
-  beamMinPixels: 1.5,
+  beamRadius: 0.0025,    // metres, and nothing overrides it: 0 means 0
   beamOpacity: 0.3,      // a beam you can see through: a solid rod reads as a laser POINTER prop
   rampRate: 40,          // faster than the flashlight: a diode has no filament to warm up
 });
@@ -57,23 +63,6 @@ export function tapKind(lastTapMs, nowMs, windowMs = DOUBLE_TAP_MS) {
   if (!Number.isFinite(last)) return 'single';
   const gap = now - last;
   return gap >= 0 && gap <= Math.max(0, Number(windowMs) || 0) ? 'double' : 'single';
-}
-
-// Metres per pixel, per metre of depth. Multiply by a distance to get the world size of one pixel
-// at that distance. Only the beam needs this; the dot is a light and has no drawn size to floor.
-export function metresPerPixel(fovYDeg, viewportHeight) {
-  const fov = Math.max(1, Math.min(179, Number(fovYDeg) || 50));
-  const height = Math.max(1, Number(viewportHeight) || 1);
-  return 2 * Math.tan(fov * Math.PI / 360) / height;
-}
-
-// The authored world size, or whatever `minPixels` costs at this depth — whichever is larger.
-export function screenSizeFloor(worldSize, distance, perPixel, minPixels) {
-  const world = Math.max(0, Number(worldSize) || 0);
-  const d = Math.max(0, Number(distance) || 0);
-  const mpp = Math.max(0, Number(perPixel) || 0);
-  const px = Math.max(0, Number(minPixels) || 0);
-  return Math.max(world, d * mpp * px);
 }
 
 // THREE.SpotLight.angle is the half-angle in radians. Clamped low enough to stay a dot and high
@@ -125,7 +114,6 @@ export function createWeaponLaser({ THREE, scene, options = null } = {}) {
   scene.add(beam);
 
   const _dir = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
-  const _mid = new THREE.Vector3(), _camera = new THREE.Vector3();
   let on = false, level = 0, placed = false;
 
   function applyColor() {
@@ -152,8 +140,8 @@ export function createWeaponLaser({ THREE, scene, options = null } = {}) {
   function toggle() { return setOn(!on); }
 
   // source: { muzzle, direction } in scene space, or null when there is nothing to mount to
-  // (a knife, a death, a menu). view: { cameraPosition, metresPerPixel }, for the beam width only.
-  function update(dt, source, view) {
+  // (a knife, a death, a menu).
+  function update(dt, source) {
     const usable = !!(source?.muzzle && source?.direction);
     level = rampToward(level, on && usable ? 1 : 0, dt, cfg.rampRate);
     spot.intensity = cfg.intensity * level;
@@ -174,23 +162,16 @@ export function createWeaponLaser({ THREE, scene, options = null } = {}) {
     spot.target.updateMatrixWorld();
     placed = true;
 
-    if (!cfg.beamVisible) {
+    // A zero radius is hidden, not drawn at zero scale: a degenerate mesh is still a draw call and
+    // still a singular matrix. This is the only place "0 mm" is decided, and it means nothing drawn.
+    const radius = Math.max(0, Number(cfg.beamRadius) || 0);
+    if (!cfg.beamVisible || radius <= 0) {
       if (beam.visible) beam.visible = false;
       return level;
     }
     beam.position.copy(spot.position);
     beam.quaternion.setFromUnitVectors(_up, _dir);
-    // Width is floored at the depth of the beam's own MIDPOINT: a 5 mm cylinder is a fraction of a
-    // pixel far away and shimmers along its length, and measuring at the far end would fatten the
-    // near half into a cone.
-    const cam = view?.cameraPosition;
-    let midDepth = 0;
-    if (cam) {
-      _camera.set(cam[0] ?? cam.x ?? 0, cam[1] ?? cam.y ?? 0, cam[2] ?? cam.z ?? 0);
-      midDepth = _camera.distanceTo(_mid.copy(spot.position).addScaledVector(_dir, cfg.range * 0.5));
-    }
-    const width = screenSizeFloor(cfg.beamWidth, midDepth, Number(view?.metresPerPixel) || 0, cfg.beamMinPixels);
-    beam.scale.set(width, cfg.range, width);
+    beam.scale.set(radius, cfg.range, radius);
     if (!beam.visible) beam.visible = true;
     return level;
   }

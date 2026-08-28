@@ -894,12 +894,16 @@ resolution. `laserShadows` ("Dot is blocked by cover") turns it off for one fewe
 **The beam is the one part a light cannot express** — no light source draws a visible column of air —
 so it stays a mesh: an additive cylinder down the bore, `depthWrite: false` and depth testing **on**,
 drawn to the full `range`. Opaque geometry clips it exactly where the beam would stop, which is the
-second reason no raycast is needed. Its drawn width is the **larger** of two exposed controls: `laserBeamWidth`,
-a thickness in metres that wins up close, and `laserBeamMinPixels`, a screen-pixel floor that takes
-over once the far end goes sub-pixel (`metresPerPixel`, `screenSizeFloor`). The floor is measured at
-the beam's own **midpoint** depth — a 5 mm cylinder is a fraction of a pixel at 40 m and shimmers
-along its length, while measuring at the far end would fatten the near half into a cone. Setting the
-floor to 0 lets the beam thin out with distance the way a real one does.
+second reason no raycast is needed. Its radius (`laserBeamRadius`) is a plain world
+measurement with nothing layered on top, so **0 means 0** — the beam is hidden, not drawn at zero
+scale, which would still be a draw call with a singular matrix. It thins out with distance, because
+that is what distance does.
+
+An earlier version also floored the radius in screen pixels so the far end could not go sub-pixel.
+That floor was computed at the beam's *midpoint*, which over a 120 m beam is 60 m away, so it swamped
+the entire sensible part of the slider: 0 mm, 1 mm and 5 mm all drew the same 10 cm tube, and "0 mm"
+did not mean no beam. A control that overrides the control is worse than the shimmer it prevents. The
+`metresPerPixel` / `screenSizeFloor` helpers went with it; `test-weapon-laser.mjs` keeps the bug out.
 
 The emitter rides `barrelDirection` off the same mount as the flashlight, so the dot and the reticle
 do not agree — the reticle is drawn from the ray the server fires, which leaves your eye. That
@@ -911,8 +915,8 @@ tap toggles the laser *and flips the flashlight back*, because the first tap of 
 moved it — the light blinks for a fraction of a second rather than every tap waiting on a timer to
 learn what it was. A third tap starts a fresh pair. Settings: `laserOn`, `laserBeam` (dot only when
 off), `laserHue` (`hueToHex`, a full wheel: 0 red, 1/3 green), `laserDotAngle` (the cone half-angle,
-so the dot holds a near-constant size on screen), `laserIntensity`, `laserBeamOpacity`, `laserBeamWidth`,
-`laserBeamMinPixels`, `laserRange`, `laserShadows`; `applyLaser()` pushes them through `configure`. Resident and intensity-switched like
+so the dot holds a near-constant size on screen), `laserIntensity`, `laserBeamOpacity`, `laserBeamRadius`,
+`laserRange`, `laserShadows`; `applyLaser()` pushes them through `configure`. Resident and intensity-switched like
 every other light on this page. Local only, like the flashlight. `updateWeaponLaser` runs in the
 frame's `fx` block. Node-tested: `test-weapon-laser.mjs`.
 

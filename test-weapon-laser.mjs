@@ -4,8 +4,7 @@
 import * as THREE from 'three';
 import { readFileSync } from 'node:fs';
 import {
-  createWeaponLaser, metresPerPixel, screenSizeFloor, dotAngleRad, hueToHex, tapKind,
-  WEAPON_LASER_DEFAULTS, DOUBLE_TAP_MS,
+  createWeaponLaser, dotAngleRad, hueToHex, tapKind, WEAPON_LASER_DEFAULTS, DOUBLE_TAP_MS,
 } from './weapon-laser.js';
 
 let pass = 0, fail = 0;
@@ -35,21 +34,6 @@ ok(hueToHex(1 / 3) === 0x00ff00, 'a third round is green');
 ok(hueToHex(2 / 3) === 0x0000ff, 'two thirds is blue');
 ok(hueToHex(1) === hueToHex(0) && hueToHex(-1 / 3) === hueToHex(2 / 3), 'the wheel wraps in both directions');
 
-// ---- the beam's screen-width floor ----
-{
-  const mpp = metresPerPixel(50, 900);
-  ok(mpp > 0 && near(mpp, 2 * Math.tan(50 * Math.PI / 360) / 900), 'metres per pixel is the vertical FOV over the viewport height');
-  ok(metresPerPixel(20, 900) < mpp, 'zooming in makes each pixel cover less world');
-  ok(metresPerPixel(50, 1800) < mpp, 'and so does a taller window');
-  ok(metresPerPixel(0, 0) > 0 && Number.isFinite(metresPerPixel(NaN, NaN)), 'nonsense inputs still give a finite scale');
-  ok(screenSizeFloor(0.005, 1, mpp, 1.5) === 0.005, 'up close the authored world width wins');
-  const wide = screenSizeFloor(0.005, 40, mpp, 1.5);
-  ok(wide > 0.005 && near(wide, 40 * mpp * 1.5), 'far away the beam is widened to exactly the requested pixel count');
-  ok(screenSizeFloor(0.005, 80, mpp, 1.5) > wide, 'twice as far is twice as wide in world units, so it holds still on screen');
-}
-ok(screenSizeFloor(0.01, 40, 0, 3) === 0.01, 'with no pixel scale the floor cannot apply');
-ok(screenSizeFloor(-1, -1, -1, -1) === 0, 'negatives are clamped rather than inverting the beam');
-
 // ---- the dot is a light ----
 const scene = new THREE.Scene();
 const laser = createWeaponLaser({ THREE, scene });
@@ -68,13 +52,12 @@ ok(laser.beam.isMesh && laser.beam.visible === false && laser.beam.frustumCulled
   'the beam is a mesh, starts hidden, and is never frustum-culled: it is re-scaled every frame');
 ok(laser.beam.material.depthWrite === false, 'the beam does not write depth, so it cannot occlude what is behind it');
 
-const view = { cameraPosition: [0, 1.5, 5], metresPerPixel: metresPerPixel(50, 900) };
 const source = { muzzle: [0, 1.5, 0], direction: [0, 0, -1] };
-laser.update(1 / 60, source, view);
+laser.update(1 / 60, source);
 ok(laser.spot.intensity === 0 && laser.beam.visible === false, 'switched off, a gun in hand lights nothing');
 
 laser.setOn(true);
-laser.update(1, source, view);
+laser.update(1, source);
 ok(laser.spot.intensity === WEAPON_LASER_DEFAULTS.intensity, 'switching on brings the dot up to its configured brightness');
 ok(near(laser.spot.position.z, 0) && near(laser.spot.position.y, 1.5), 'the emitter sits at the muzzle');
 ok(laser.spot.target.position.z < laser.spot.position.z, 'and aims down the bore');
@@ -82,47 +65,43 @@ ok(laser.beam.visible && near(laser.beam.scale.y, WEAPON_LASER_DEFAULTS.range),
   'the beam is drawn to the full range: depth testing clips it at whatever it runs into, so it needs no raycast');
 
 // Turning: everything follows the gun, not the camera.
-laser.update(1 / 60, { muzzle: [3, 1.5, 0], direction: [1, 0, 0] }, view);
+laser.update(1 / 60, { muzzle: [3, 1.5, 0], direction: [1, 0, 0] });
 ok(near(laser.spot.position.x, 3), 'the emitter tracks the muzzle each frame');
 ok(laser.spot.target.position.x > laser.spot.position.x, 'and re-aims with it');
 
-// The beam width is floored on screen; the dot is a light and has no drawn size to floor.
+// The beam radius is a plain world measurement that nothing overrides, so the slider means what it
+// says. The version this replaced also floored it in screen pixels at the beam's midpoint depth,
+// which at the default range swamped every sensible radius: 0 mm, 1 mm and 5 mm all drew a 10 cm
+// tube. That is the bug these checks exist to keep out.
 {
-  laser.configure({ range: 10 });
-  laser.update(1, source, view);
-  const nearBeam = laser.beam.scale.x;
-  laser.configure({ range: 200 });
-  laser.update(1, source, view);
-  ok(laser.beam.scale.x > nearBeam, 'a beam stretching further away is widened so its far end does not thin to nothing');
-  ok(near(laser.beam.scale.y, 200), 'while its length is the range');
-  laser.configure({ range: WEAPON_LASER_DEFAULTS.range });
-}
-
-// The two beam-width controls do different jobs: the world thickness wins up close, the pixel floor
-// wins far away, and the drawn width is whichever is larger.
-{
-  laser.configure({ beamWidth: 0.005, beamMinPixels: 1.5, range: WEAPON_LASER_DEFAULTS.range });
-  laser.update(1, source, view);
-  const floored = laser.beam.scale.x;
-  laser.configure({ beamMinPixels: 0 });
-  laser.update(1, source, view);
-  ok(laser.beam.scale.x === 0.005, 'with no pixel floor the beam is exactly its authored world thickness');
-  ok(floored > laser.beam.scale.x, 'and the floor was what had widened it at this range');
-  laser.configure({ beamWidth: 0.4 });
-  laser.update(1, source, view);
+  laser.configure({ beamRadius: 0.0025, range: WEAPON_LASER_DEFAULTS.range });
+  laser.update(1, source);
+  ok(laser.beam.scale.x === 0.0025, 'the drawn radius is exactly the configured radius');
+  laser.configure({ beamRadius: 0.4 });
+  laser.update(1, source);
   ok(laser.beam.scale.x === 0.4, 'a fat beam is drawn fat');
-  laser.configure({ beamMinPixels: 1.5 });
-  laser.update(1, source, view);
-  ok(laser.beam.scale.x === 0.4, 'and a world thickness that already beats the floor is left alone');
-  laser.configure({ beamWidth: WEAPON_LASER_DEFAULTS.beamWidth, beamMinPixels: WEAPON_LASER_DEFAULTS.beamMinPixels });
+  laser.configure({ range: 300 });
+  laser.update(1, source);
+  ok(laser.beam.scale.x === 0.4, 'and a longer beam is no thicker: distance changes nothing about the radius');
+  ok(near(laser.beam.scale.y, 300), 'only its length');
+  // 0 means 0. Not "0 plus whatever a floor decides", and not a zero-scale mesh still being drawn.
+  laser.configure({ beamRadius: 0 });
+  laser.update(1, source);
+  ok(laser.beam.visible === false, 'a zero radius draws no beam at all, rather than a degenerate one');
+  laser.configure({ beamRadius: -5 });
+  laser.update(1, source);
+  ok(laser.beam.visible === false, 'and a negative radius is not a beam turned inside out');
+  laser.configure({ beamRadius: WEAPON_LASER_DEFAULTS.beamRadius, range: WEAPON_LASER_DEFAULTS.range });
+  laser.update(1, source);
+  ok(laser.beam.visible === true, 'putting a radius back brings it straight back');
 }
 
 // Losing the mount fades rather than blinking.
-laser.update(1, source, view);
-laser.update(1 / 240, null, view);
+laser.update(1, source);
+laser.update(1 / 240, null);
 ok(laser.spot.intensity > 0 && laser.spot.intensity < WEAPON_LASER_DEFAULTS.intensity, 'one frame without a source has dimmed it, not cut it');
 ok(laser.beam.visible, 'and the beam is still there');
-laser.update(1, null, view);
+laser.update(1, null);
 ok(laser.spot.intensity === 0 && laser.beam.visible === false, 'and then it goes out');
 ok(laser.placed === true, 'the last placement is remembered, which is what let it fade in place');
 
@@ -131,15 +110,15 @@ laser.configure({ hue: 1 / 3, dotAngleDeg: 1, intensity: 90, range: 30, shadows:
 ok(laser.spot.color.getHex() === 0x00ff00 && laser.beam.material.color.getHex() === 0x00ff00, 'the hue reaches the light and the beam');
 ok(near(laser.spot.angle, dotAngleRad(1)) && laser.spot.distance === 30, 'the cone and the range are pushed through');
 ok(laser.spot.castShadow === false && laser.spot.shadow.camera.far === 30, 'shadows can be turned off, and the shadow camera follows the range');
-laser.update(1, source, view);
+laser.update(1, source);
 ok(laser.spot.intensity === 90 && laser.beam.visible === false, 'the beam can be turned off while the dot stays lit');
 ok(laser.toggle() === false, 'toggle flips the switch');
-laser.update(1, source, view);
+laser.update(1, source);
 ok(laser.spot.intensity === 0, 'and switching off puts the dot out');
 
 // A degenerate bore must not produce NaN in the light transform.
 laser.setOn(true);
-laser.update(1, { muzzle: [1, 2, 3], direction: [0, 0, 0] }, view);
+laser.update(1, { muzzle: [1, 2, 3], direction: [0, 0, 0] });
 ok(Number.isFinite(laser.spot.position.x) && Number.isFinite(laser.spot.target.position.x), 'a zero direction leaves the transform finite');
 
 laser.dispose();
@@ -150,10 +129,12 @@ ok((() => { try { createWeaponLaser({ THREE }); return false; } catch { return t
 // ---- wiring ----
 {
   const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
-  const markers = ['weapon-laser.js', 'createWeaponLaser(', 'updateWeaponLaser(', 'applyLaser(', 'tapKind(',
-    'lastLightTapMs', "'laserOn'", "'laserBeam'", "'laserShadows'", "'laserBeamWidth'",
-    "'laserBeamMinPixels'", 'metresPerPixel('];
+  const markers = ['weapon-laser.js', 'createWeaponLaser(', 'weaponLaser.update(', 'applyLaser(', 'tapKind(',
+    'lastLightTapMs', "'laserOn'", "'laserBeam'", "'laserShadows'", "'laserBeamRadius'"];
   for (const marker of markers) ok(html.includes(marker), `base-game.html wires ${marker}`);
+  // The whole point of the light-based dot: the laser costs no world query per frame.
+  const fx = html.slice(html.indexOf("frameProfiler.time('fx'"));
+  ok(!fx.slice(0, fx.indexOf('});')).includes('raycast'), 'the laser takes no ray of its own');
   // The whole point of the rebuild: the laser no longer costs a world query per frame.
   const body = html.slice(html.indexOf('function updateWeaponLaser'));
   ok(!body.slice(0, body.indexOf('\n}')).includes('raycast'), 'the laser takes no ray of its own');
