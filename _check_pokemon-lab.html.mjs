@@ -175,6 +175,22 @@ check('a slower load cannot overwrite a faster click', () => {
   assert(/token !== loadToken/.test(code), 'the load token is never compared, so it does nothing');
 });
 
+check('the grid has a fixed number of divisions, not a fixed spacing', () => {
+  // Spacing pinned at 0.5 made the LINE COUNT scale with the model: Moltres is 320 units across, which
+  // came to 2,560 divisions and 5,122 lines. Edge-on from below they pile into one band, each still
+  // spanning the screen.
+  const g = code.match(/new THREE\.GridHelper\([^)]*\)/)?.[0] ?? '';
+  assert(g, 'no GridHelper');
+  const divisions = g.split(',')[1]?.trim() ?? '';
+  assert(/^\d+$/.test(divisions), `grid divisions should be a constant, got "${divisions}"`);
+  assert(Number(divisions) <= 100, `${divisions} grid divisions is more than anyone can resolve`);
+});
+
+check('the skeleton overlay does not recompute a bounding volume nothing reads', () => {
+  const update = code.match(/function updateSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(!/computeBoundingSphere/.test(update), 'the overlay is frustumCulled = false, so nothing uses it');
+});
+
 check('the camera is framed from the measured rig, not from a bounding box', () => {
   assert(/frameCamera\(/.test(code), 'no camera framing');
   assert(!/setFromObject|Box3/.test(code),

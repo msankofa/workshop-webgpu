@@ -626,7 +626,8 @@ function updateSkeleton() {
   }
   joints.instanceMatrix.needsUpdate = true;
   lines.geometry.attributes.position.needsUpdate = true;
-  lines.geometry.computeBoundingSphere();
+  // No computeBoundingSphere: the overlay is frustumCulled = false, so nothing reads it and recomputing it
+  // every frame was two passes over every bone plus an allocation, for nothing.
   projectSkeleton(xyz);
   paintSkeleton();
 }
@@ -873,8 +874,12 @@ function frameCamera(rig) {
   controls.update();
 
   if (grid) { scene.remove(grid); grid.dispose(); }
+  // Fixed division COUNT with the spacing derived, not the other way round. Spacing pinned at 0.5 made the
+  // line count scale with the model: Moltres is 320 units across, which was 2,560 divisions and 5,122
+  // lines nobody could resolve. Seen edge-on from below they all pile into one band, each still spanning
+  // the screen, which is the worst case for line rasterisation.
   const extent = Math.max(1, Math.ceil(span * 2));
-  grid = new THREE.GridHelper(extent * 2, extent * 4, 0x2c3641, 0x1c232c);
+  grid = new THREE.GridHelper(extent * 2, 40, 0x2c3641, 0x1c232c);
   scene.add(grid);
 
   // Where the model's own lowest vertex sits. On 32 of the 151 that is nowhere near y=0, because y=0 is

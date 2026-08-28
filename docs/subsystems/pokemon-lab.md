@@ -425,6 +425,21 @@ nothing for a third of the dex, which suggests phase 3 will want a subtree gestu
 everything below it — since `descendants(rig, key)` already exists. Not built; the plan says two gestures
 and that is what is here. A test pins the Onix numbers so the problem cannot quietly go away.
 
+### The grid is sized, not subdivided
+
+`frameCamera` builds the grid with a **fixed division count and derived spacing**. It used to be the other
+way round — spacing pinned at 0.5 world units with the extent scaling from the model — which made the line
+count scale instead. Measured across the dex that reached 2,560 divisions and 5,122 lines on Moltres, with
+14 species over 1,000 divisions, at a spacing far below what anyone can resolve.
+
+That was reported as heavy lag when the camera drops below the grid, and the mechanism fits: seen edge-on,
+every one of those lines still spans the width of the screen and they all pile into one band. From the
+default view above, the same grid recedes and costs much less. **This is inferred from the geometry, not
+profiled.** If it persists, the next suspects are the transparent `DoubleSide` overdraw between the model
+and its ghosts, and the camera's 40,000:1 near-to-far ratio (`near = span / 200`, `far = span * 200`).
+
+A check pins the division count as a constant.
+
 ### What the panel reads
 
 `selectionInfo` returns the bones root-to-tip, the count, the **mass fraction** — how much of the model's
