@@ -23,12 +23,14 @@ inferred or eyeballed.
 | `pokemon-annotation.js` | The schema: what a person decided each part is. | shipped |
 | `pokemon-lab-io.js` | The one file, through `disk-store.js`, and the dex list. | shipped |
 | `pokemon-pose.js` | How far apart two poses are. Pure; not wired into the page. | shipped |
-| `pokemon-lab.html` | The page. | browse and segments shipped |
+| `pokemon-select.js` | Picking bones and chains: the gestures, and screen-space hit-testing. | shipped |
+| `pokemon-lab.html` | The page. | browse, segments and bone picking shipped |
 | `test-pokemon-rig.mjs` | 38 checks, mostly over all 151 models. | shipped |
 | `test-pokemon-annotation.mjs` | 62 checks, built against real rigs. | shipped |
 | `test-pokemon-lab-io.mjs` | 30 checks, including two cross-checks. | shipped |
 | `test-pokemon-pose.mjs` | 29 checks, four species. | shipped |
-| `_check_pokemon-lab.html.mjs` | 39 static checks on the page. | shipped |
+| `test-pokemon-select.mjs` | 20 checks, six species. | shipped |
+| `_check_pokemon-lab.html.mjs` | 47 static checks on the page. | shipped |
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
 
@@ -342,7 +344,8 @@ segment called `idle` — the facts-versus-decisions split working at its smalle
 suggestion can never reach the file on its own.
 
 Keys: space plays and pauses, the arrows step a frame, `i` and `o` set the start and the end, `p` marks the
-pose, `[` and `]` change species, `/` focuses the filter, and Ctrl+Z and Ctrl+Shift+Z undo and redo.
+pose, `b` shows and hides the skeleton, Escape clears the bone selection, `[` and `]` change species, `/`
+focuses the filter, and Ctrl+Z and Ctrl+Shift+Z undo and redo.
 
 ### The page owns the clock
 
@@ -356,6 +359,80 @@ every `mixer.update` call passes zero so the two clocks can never fight.
 Two model quirks from `docs/stadium/HANDOFF.md` are handled on load and show up immediately if they are
 not: `frustumCulled = false` (vertices are authored in bone-local space, so parts vanish with camera angle)
 and `DoubleSide` (some face decals are wound backwards because the game rendered with culling off).
+
+## The page: the skeleton and picking
+
+The overlay is an `InstancedMesh` of joints plus a `LineSegments` of parent-to-child links, both drawn with
+`depthTest: false` and a high `renderOrder`, because a rigger needs to see the bone inside the leg. Both
+are re-placed every frame from the live `Object3D` matrices, so the skeleton follows playback, the
+scrubber and the rest pose without knowing anything about them. The root joint is amber, selected bones
+green, the hovered one white.
+
+`frustumCulled = false` on the overlay for the same reason as the model: these meshes have garbage
+bounding volumes.
+
+### Bones are matched to objects by node index, not by name
+
+`boneObjects(rig, gltf)` walks `gltf.parser.associations`, which maps each `Object3D` back to its glTF node
+index. **Charmander, Charizard and Magmar each contain two bones sharing one name**, so a name lookup would
+attach the overlay to the wrong bone on exactly the models where being wrong matters most. A check forbids
+`.name` in that function.
+
+### Picking is screen-space, which is what makes it agree with the drawing
+
+Not a raycast. The overlay ignores depth, so a raycast would pick a different bone from the one the eye
+sees every time a joint sits behind a leg. `nearestPoint` takes the projected joints in CSS pixels and
+returns the nearest within 16px, breaking ties by camera depth so the one in front wins where two overlap.
+Joints behind the camera are excluded, because `project` wraps their sign and the hit would be nonsense.
+
+It is also forgiving in a way a small sphere is not, which matters on the rigs whose joints are a few
+pixels apart.
+
+A click that moved more than 4px from where the button went down is an orbit, not a pick. OrbitControls
+offers no "was that a drag" signal, so the distance is the only thing that can separate them.
+
+### One representation, two gestures
+
+Click a bone to toggle it; shift-click to toggle the whole chain it belongs to. Both go through
+`toggleKeys`, which **completes** a partly-present group rather than flipping each key — what a person
+means by clicking a chain they have already started one bone of. Only a wholly present group is removed.
+
+That is the same rule `toggleBones` applies when a selection becomes a part, and a test drives both through
+the same sequence and asserts they agree at every step. There is no mode flag and no second selection; a
+check forbids one appearing.
+
+### Two measured facts the plan did not have
+
+**The root bone is in no chain.** `extractChains` splits at branch points and the root is one, so it is an
+attachment rather than a link. That is exactly 151 bones dex-wide, one per species, and it is why
+`chainKeysOf` falls back to the bone alone rather than asserting.
+
+**The chain gesture buys much less than the plan assumed.** The plan justified it with "median 11
+significant chains beats median 42 bones", which is true as a count of things to *name*. But measured
+across the dex, **2,136 of 3,496 chains are a single bone and the median chain length is 1**:
+
+| Species | Bones | Chains | Longest chain |
+|---|---|---|---|
+| Onix | 40 | 39 | **1** |
+| Sandslash | 67 | 54 | 3 |
+| Pikachu | 37 | 18 | 4 |
+| Caterpie | 26 | 17 | 5 |
+| Squirtle | 30 | 14 | 6 |
+| Ekans | — | — | 23 |
+
+On Onix, clicking chains *is* clicking bones. The two-gesture bet holds for Squirtle and Ekans and does
+nothing for a third of the dex, which suggests phase 3 will want a subtree gesture — select a bone and
+everything below it — since `descendants(rig, key)` already exists. Not built; the plan says two gestures
+and that is what is here. A test pins the Onix numbers so the problem cannot quietly go away.
+
+### What the panel reads
+
+`selectionInfo` returns the bones root-to-tip, the count, the **mass fraction** — how much of the model's
+mesh the selection carries, which is the number that says whether a selection is a limb or a decoration —
+the chains it covers wholly and partly, and whether it forms one unbroken parent-to-child run.
+
+`unbroken` is reported, never enforced. A pair of ears is one part and two runs, so it is a hint here and a
+gate's business later.
 
 ### Snapping is a scrubbing convenience, not a limit
 
@@ -405,7 +482,8 @@ about a Stadium skeleton would agree with that assumption.
 
 `test-pokemon-rig.mjs` asserts, among other things, that all 151 read; bone counts match the manifest;
 every skeleton has exactly one root; the tree is acyclic and fully reachable; chains partition the
-skeleton with no bone in two and none in none; **2,674,046 rotation keys all decode to unit quaternions**
+skeleton with every non-root bone in exactly one and none in two (the root is in none, on all 151);
+**2,674,046 rotation keys all decode to unit quaternions**
 (guarding the normalized-int16 trap); and that no model uses a `matrix` node, so rest TRS is never a lie.
 
 `test-pokemon-annotation.mjs` asserts that the two selection gestures produce **identical** parts, that

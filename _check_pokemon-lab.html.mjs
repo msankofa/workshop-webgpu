@@ -318,6 +318,65 @@ check('the shared state names are offered, not enforced', () => {
   assert(/<input[^>]*id="segName"[^>]*list="segNames"/.test(markup), 'the name field must stay free text');
 });
 
+check('the skeleton is drawn over the mesh, or you cannot see the bone inside the leg', () => {
+  const build = code.match(/function buildSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(build, 'no buildSkeleton');
+  assert((build.match(/depthTest: false/g) || []).length >= 2, 'both the joints and the segments must ignore depth');
+  assert(/renderOrder/.test(build), 'the overlay must draw after the model');
+  assert(/frustumCulled = false/.test(build), 'these models have garbage bounding volumes, so culling must be off');
+});
+
+check('bones are picked in screen space, matching what is drawn', () => {
+  // A raycast would disagree with the picture every time a bone sits behind a leg, because the overlay
+  // ignores depth. Screen-space nearest is also forgiving where joints are a few pixels apart.
+  assert(/nearestPoint\(/.test(code), 'picking should go through pokemon-select.js');
+  assert(!/Raycaster/.test(code), 'the page should not be raycasting for bones');
+  const at = code.match(/function boneAt\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/getBoundingClientRect/.test(at), 'a hit must be measured against the canvas, not the page');
+});
+
+check('a click that moved the camera is not a pick', () => {
+  const click = code.match(/renderer\.domElement\.addEventListener\('click',[\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert(/Math\.hypot/.test(click) && /downAt/.test(click), 'an orbit drag would otherwise select a bone on release');
+});
+
+check('the two gestures share one selection, so there is no mode to be in', () => {
+  const click = code.match(/renderer\.domElement\.addEventListener\('click',[\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert(/toggleKeys\(/.test(click), 'both gestures must go through the one primitive');
+  assert(/shiftKey \? chainKeysOf/.test(click), 'shift should pick the chain and a plain click the bone');
+  assert(!/selectedChains|chainMode|selectionMode/.test(code), 'there must not be a second selection or a mode flag');
+});
+
+check('a selection does not survive a change of species', () => {
+  const select = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/skel\.selected = new Set\(\)/.test(select), 'bone keys mean nothing on the next skeleton');
+});
+
+check('the skeleton follows playback rather than being placed once', () => {
+  const loop = code.match(/renderer\.setAnimationLoop\([\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert(/updateSkeleton\(\)/.test(loop), 'the overlay must be re-placed every frame');
+  const update = code.match(/function updateSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/getWorldPosition/.test(update), 'positions must come from the live bone matrices');
+});
+
+check('the frame loop allocates nothing and looks nothing up by name', () => {
+  // Called every frame for up to 98 bones. A findIndex in here was O(n^2), and a clone per bone was
+  // garbage per frame.
+  const update = code.match(/function updateSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(update, 'no updateSkeleton');
+  assert(!/findIndex|\.find\(/.test(update), 'parent lookup must be precomputed, not searched');
+  assert(!/new THREE\.|\.clone\(\)/.test(update), 'the frame loop must not allocate');
+  assert(/parentOf/.test(update), 'parent indices should be built once a species');
+});
+
+check('bones are matched to objects by glTF node, not by name', () => {
+  // Charmander, Charizard and Magmar each contain two bones sharing one name.
+  const fn = code.match(/function boneObjects\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn, 'no boneObjects');
+  assert(/associations/.test(fn), 'the node index is the only safe key');
+  assert(!/\.name/.test(fn), 'a name lookup would attach the overlay to the wrong bone on three species');
+});
+
 console.log('\n--- how it reads ---');
 
 check('the UI text is in full sentences, not fragments', () => {

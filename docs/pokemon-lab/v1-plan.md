@@ -309,7 +309,7 @@ Each phase ends somewhere usable.
 | 0 | `pokemon-rig.js` + `pokemon-annotation.js` + tests, no UI | mechanical — porting verified code | shipped 2026-08-28 |
 | 1 | Browse: the 151 grid, model loading, clip playback | mechanical | shipped 2026-08-28 |
 | 1.5 | Segments: naming a frame range of a ROM clip | mechanical, but it changed the schema | shipped 2026-08-28 |
-| 2 | Skeleton view, chain and bone selection | mostly mechanical; the picker exists | not started |
+| 2 | Skeleton view, chain and bone selection | mostly mechanical; the picker exists | shipped 2026-08-29 |
 | 3 | Annotate: parts, types, mirror, the unaddressed list, both selection gestures | **the uncertain one** — this is the whole UX bet | not started |
 | 4 | Pose: clip frame to neutral, per-bone adjust | mechanical — port `stadium-stance.js` | not started |
 | 5 | Gates + dex board status | mechanical | not started |
@@ -318,6 +318,17 @@ Each phase ends somewhere usable.
 Phase 1 pulled `pokemon-lab-io.js` forward from its unnumbered place in the module table, because browse
 mode records which clip is the idle and that is authored work: it has to reach a file from the first
 version of the page rather than be retrofitted onto one that kept it in web storage.
+
+**Phase 2 found a hole in phase 3's bet.** The chain gesture is justified above by "median 11 significant
+chains beats median 42 bones", which is true as a count of things to *name*. But chains are mostly one
+bone long — **2,136 of 3,496 are a single bone, and the median chain length is 1**. Onix is 40 bones in 39
+chains, so clicking chains there is clicking bones; Sandslash's longest chain is 3. The gesture pays off on
+Squirtle (6) and Ekans (23) and does nothing for a large part of the dex.
+
+Phase 3 will most likely need a **third gesture: select a bone and everything below it**, which
+`descendants(rig, key)` already supports and which is the one that actually collapses a rig like Onix's.
+It is not built, because the plan says two gestures. A test in `test-pokemon-select.mjs` pins the Onix
+numbers so the problem cannot quietly disappear.
 
 **Phase 1.5 was not in the original plan.** It came out of noticing that the ROM clips are compound
 performances — Squirtle's withdraw is eight frames of pulling in and forty-four of sitting in the shell,
