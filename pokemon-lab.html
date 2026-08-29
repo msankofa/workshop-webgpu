@@ -196,6 +196,11 @@
         <input type="range" id="reach" min="0" max="12" step="1" value="4">
         <span class="mono" id="reachRead" style="flex:none;">4 bones</span>
       </div>
+      <div class="row">
+        <span style="color:#9aa4b0; font-size:11px;">Twist</span>
+        <input type="range" id="twistLimit" min="0" max="180" step="1" value="45">
+        <span class="mono" id="twistRead" style="flex:none;">45°</span>
+      </div>
       <div class="mono" id="poseRead">—</div>
       <div class="buttons">
         <button id="takeNeutralBtn" disabled>Save as neutral pose</button>
@@ -203,6 +208,8 @@
       </div>
       <p class="hint">Dragging a bone bends this many bones above it. At zero it bends every bone up to the
         root. If you have selected bones above the one you grab, those are bent instead.</p>
+      <p class="hint">Twist is how far a bone may turn about its own length, in degrees, measured against
+        its parent. It applies to dragging and to hanging, and at 180 nothing is limited.</p>
       <p class="hint">Turning Pose on stops the clip. Turning it off lets the clip take the bones back, so
         save the pose first if you want to keep it.</p>
 
@@ -332,7 +339,7 @@ import {
   resolveSegment, wholeClip, segmentKind, poseAt, COMMON_STATES, setNeutralBone, clearNeutral,
 } from './pokemon-annotation.js';
 import { toggleKeys, chainKeysOf, selectionInfo, nearestPoint } from './pokemon-select.js';
-import { chainUp, selectedReach, fabrik, segmentRotations } from './pokemon-ik.js';
+import { chainUp, selectedReach, fabrik, segmentRotations, limitRelativeTwist } from './pokemon-ik.js';
 import {
   buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness, boneRotations, boneOrder,
 } from './pokemon-hang.js';
@@ -905,6 +912,16 @@ function dragPose(ev) {
   const after = fabrik(before, target);
   const turns = segmentRotations(before, after);
 
+  // Each segment rotation is pure swing on its own, but consecutive ones are relative to the WORLD, so the
+  // turn of a bone against its parent can still come out as twist. Clamped down the chain, parent first.
+  const maxTwist = twistLimit();
+  if (maxTwist < Math.PI) {
+    for (let i = 1; i < turns.length; i++) {
+      const a = [before[i + 1][0] - before[i][0], before[i + 1][1] - before[i][1], before[i + 1][2] - before[i][2]];
+      turns[i] = limitRelativeTwist(turns[i - 1], turns[i], a, maxTwist);
+    }
+  }
+
   // Top-down: each bone's local rotation is relative to a parent this loop has already moved.
   for (let i = 0; i < turns.length; i++) {
     const o = objects[i];
@@ -979,7 +996,7 @@ function stepHangFrame(dt) {
     gravity: hang.gravity, drag: hang.drag, ground: hang.ground,
   });
   const now = hangPositions(hang.sim);
-  const turns = boneRotations(current.rig, hang.seed, now);
+  const turns = boneRotations(current.rig, hang.seed, now, { maxTwist: twistLimit() });
   const bones = current.rig.bones;
 
   // Root first, so a bone's parent is settled before its local rotation is worked out against it.
@@ -1020,8 +1037,16 @@ $('hangStiff').addEventListener('input', () => {
   refreshHang();
 });
 
+/** How far a bone may turn about its own length against its parent. Radians; pi means no limit. */
+function twistLimit() {
+  return Number($('twistLimit').value) * Math.PI / 180;
+}
+
 $('poseBtn').addEventListener('click', () => setPoseMode(!pose.on));
 $('reach').addEventListener('input', () => { pose.reach = Number($('reach').value); refreshPose(); });
+$('twistLimit').addEventListener('input', () => {
+  $('twistRead').textContent = `${$('twistLimit').value}°`;
+});
 
 $('takeNeutralBtn').addEventListener('click', () => {
   if (!current) return;

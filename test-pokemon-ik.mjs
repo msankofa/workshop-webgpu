@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import { readRigFromGLB } from './pokemon-rig.js';
 import {
   chainUp, selectedReach, fabrik, rotationBetween, segmentRotations, solveError, distance,
+  swingTwist, twistAngle, limitTwist, limitRelativeTwist, qmul, qconj,
 } from './pokemon-ik.js';
 
 const DIR = 'models/stadium';
@@ -144,6 +145,102 @@ check('one rotation comes back per segment, and none for the end', () => {
   const after = fabrik(before, [1, 2, 0]);
   eq(segmentRotations(before, after).length, before.length - 1, 'one a segment');
   eq(segmentRotations([[0, 0, 0]], [[0, 0, 0]]).length, 0, 'a single joint has no segment');
+});
+
+console.log('\n--- twist ---');
+
+const axisAngle = (a, rad) => {
+  const n = Math.hypot(...a), s = Math.sin(rad / 2);
+  return [a[0] / n * s, a[1] / n * s, a[2] / n * s, Math.cos(rad / 2)];
+};
+const deg = (r) => r * 180 / Math.PI;
+
+check('a pure twist about the axis reads as all twist and no swing', () => {
+  const axis = [0, 1, 0];
+  for (const d of [10, 90, 170, -60]) {
+    const q = axisAngle(axis, d * Math.PI / 180);
+    near(deg(twistAngle(q, axis)), d, 1e-6, `${d} degrees about the axis`);
+    const { swing } = swingTwist(q, axis);
+    near(Math.abs(swing[3]), 1, 1e-6, `${d}: swing should be nothing`);
+  }
+});
+
+check('a pure swing across the axis reads as no twist', () => {
+  const axis = [0, 1, 0];
+  for (const d of [15, 80, -120]) {
+    near(twistAngle(axisAngle([1, 0, 0], d * Math.PI / 180), axis), 0, 1e-6, `${d} degrees across the axis`);
+    near(twistAngle(axisAngle([0, 0, 1], d * Math.PI / 180), axis), 0, 1e-6, `${d} degrees across the other way`);
+  }
+});
+
+check('swing and twist multiply back into what they came from', () => {
+  const axis = [0.3, 1, -0.2];
+  for (const q of [axisAngle([1, 2, 3], 1.1), axisAngle([-1, 0.5, 2], 2.4), [0, 0, 0, 1]]) {
+    const { swing, twist } = swingTwist(q, axis);
+    const back = qmul(swing, twist);
+    const sign = back[3] * q[3] < 0 ? -1 : 1;      // a quaternion and its negation are one rotation
+    for (let i = 0; i < 4; i++) near(back[i] * sign, q[i], 1e-9, `component ${i}`);
+  }
+});
+
+check('a twist inside the limit is left exactly alone', () => {
+  const axis = [0, 0, 1];
+  const q = axisAngle(axis, 20 * Math.PI / 180);
+  const out = limitTwist(q, axis, 45 * Math.PI / 180);
+  for (let i = 0; i < 4; i++) near(out[i], q[i], 1e-12, `component ${i}`);
+});
+
+check('a twist past the limit is clamped to it, keeping its direction', () => {
+  const axis = [0, 0, 1];
+  for (const d of [90, 150, -100]) {
+    const out = limitTwist(axisAngle(axis, d * Math.PI / 180), axis, 45 * Math.PI / 180);
+    near(Math.abs(deg(twistAngle(out, axis))), 45, 1e-4, `${d} should clamp to 45`);
+    assert(Math.sign(twistAngle(out, axis)) === Math.sign(d), `${d} should keep its sign`);
+  }
+});
+
+check('clamping the twist does not disturb the swing', () => {
+  const axis = [0, 1, 0];
+  const q = qmul(axisAngle([1, 0, 0], 0.7), axisAngle(axis, 2.0));   // swing then twist
+  const out = limitTwist(q, axis, 0.3);
+  const a = swingTwist(q, axis).swing, b = swingTwist(out, axis).swing;
+  const sign = a[3] * b[3] < 0 ? -1 : 1;
+  for (let i = 0; i < 4; i++) near(b[i] * sign, a[i], 1e-6, `swing component ${i}`);
+});
+
+check('the limit is measured against the parent, not the world', () => {
+  // A whole arm turning as one is not a twisted elbow. Parent and child turned identically must survive
+  // any limit at all, including zero.
+  const axis = [0, 1, 0];
+  const together = axisAngle(axis, 2.5);
+  const out = limitRelativeTwist(together, together, axis, 0);
+  for (let i = 0; i < 4; i++) near(out[i], together[i], 1e-9, `component ${i}`);
+});
+
+check('a child twisting beyond its parent is brought back to the limit', () => {
+  const axis = [0, 1, 0];
+  const parent = axisAngle(axis, 0.4);
+  const child = qmul(parent, axisAngle(axis, 1.5));
+  const out = limitRelativeTwist(parent, child, axis, 0.5);
+  near(twistAngle(qmul(qconj(parent), out), axis), 0.5, 1e-6, 'relative twist should sit on the limit');
+});
+
+check('a degenerate axis limits nothing rather than producing rubbish', () => {
+  const q = axisAngle([1, 1, 1], 1.2);
+  for (const axis of [[0, 0, 0], [1e-30, 0, 0]]) {
+    const out = limitTwist(q, axis, 0.1);
+    for (const v of out) assert(Number.isFinite(v), `got ${v}`);
+    near(Math.hypot(...out), 1, 1e-9, 'still a unit quaternion');
+  }
+});
+
+check('every limited rotation is still a unit quaternion', () => {
+  const axis = [0.2, -1, 0.4];
+  for (let i = 0; i < 40; i++) {
+    const q = axisAngle([Math.sin(i), Math.cos(i * 1.7) + 0.1, Math.sin(i * 0.3) - 0.5], (i % 13) * 0.5 - 3);
+    const out = limitTwist(q, axis, (i % 7) * 0.4);
+    near(Math.hypot(...out), 1, 1e-9, `case ${i}`);
+  }
 });
 
 console.log('\n--- which bones answer a drag ---');

@@ -9,8 +9,9 @@ import { readRigFromGLB } from './pokemon-rig.js';
 import { readPose, rootPreMatrix } from './pokemon-pose.js';
 import {
   buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness,
-  extractRotation, boneRotations, boneOrder,
+  extractRotation, boneRotations, boneOrder, twistAxis,
 } from './pokemon-hang.js';
+import { twistAngle, qmul, qconj } from './pokemon-ik.js';
 
 const DIR = 'models/stadium';
 const FILES = { squirtle: '007_squirtle.glb', onix: '095_onix.glb', pikachu: '025_pikachu.glb' };
@@ -336,6 +337,64 @@ check('one rotation a bone, all of them unit quaternions, on three species', () 
       for (const v of q) assert(Number.isFinite(v), `${name}: got ${v}`);
     }
   }
+});
+
+check('a twist axis is the way the bone points, and is never a stray direction', () => {
+  for (const name of Object.keys(FILES)) {
+    const rig = rigOf(name);
+    const seed = restOf(rig);
+    const at = new Map(rig.bones.map((b, i) => [b.key, i]));
+    rig.bones.forEach((b, i) => {
+      const a = twistAxis(rig, seed, i, at);
+      for (const v of a) assert(Number.isFinite(v), `${name}: ${b.key} axis ${v}`);
+      const kids = (b.children || []).map(k => at.get(k)).filter(k => k !== undefined);
+      // A bone with one child must point at it. More than one, or none, has no single answer to check.
+      if (kids.length !== 1) return;
+      const k = kids[0];
+      const want = [seed[k * 3] - seed[i * 3], seed[k * 3 + 1] - seed[i * 3 + 1], seed[k * 3 + 2] - seed[i * 3 + 2]];
+      const lw = Math.hypot(...want), la = Math.hypot(...a);
+      if (lw < 1e-9 || la < 1e-9) return;
+      for (let c = 0; c < 3; c++) near(a[c] / la, want[c] / lw, 1e-9, `${name}: ${b.key} should point at its child`);
+    });
+  }
+});
+
+check('no bone twists past the limit, whatever the simulation does to it', () => {
+  const rig = rigOf('squirtle');
+  const seed = restOf(rig);
+  const at = new Map(rig.bones.map((b, i) => [b.key, i]));
+  const hang = buildHang(rig, seed);
+  // Held by the head and swung hard, which is what makes a chain wring itself out.
+  pinBone(hang, 0, seed[0] + rig.units.height, seed[1] + rig.units.height, seed[2]);
+  run(hang, 3, { ground: false });
+  const now = hangPositions(hang);
+
+  const max = 30 * Math.PI / 180;
+  const limited = boneRotations(rig, seed, now, { maxTwist: max });
+  let worst = 0, worstFree = 0;
+  const free = boneRotations(rig, seed, now, { maxTwist: Math.PI });
+  rig.bones.forEach((b, i) => {
+    const p = b.parent != null ? at.get(b.parent) : undefined;
+    if (p === undefined) return;
+    const axis = twistAxis(rig, seed, i, at);
+    if (Math.hypot(...axis) < 1e-9) return;
+    worst = Math.max(worst, Math.abs(twistAngle(qmul(qconj(limited[p]), limited[i]), axis)));
+    worstFree = Math.max(worstFree, Math.abs(twistAngle(qmul(qconj(free[p]), free[i]), axis)));
+  });
+  assert(worst <= max + 1e-4, `a bone twisted ${(worst * 180 / Math.PI).toFixed(1)} degrees past a 30 degree limit`);
+  assert(worstFree > max, `unlimited it only reached ${(worstFree * 180 / Math.PI).toFixed(1)} degrees, so the test proves nothing`);
+});
+
+check('the limit off is the same answer as no limit', () => {
+  const rig = rigOf('pikachu');
+  const seed = restOf(rig);
+  const hang = buildHang(rig, seed);
+  pinBone(hang, 2, seed[6], seed[7] + rig.units.height * 0.4, seed[8]);
+  run(hang, 1, { ground: false });
+  const now = hangPositions(hang);
+  const a = boneRotations(rig, seed, now);                       // default is pi
+  const b = boneRotations(rig, seed, now, { maxTwist: Math.PI });
+  a.forEach((q, i) => q.forEach((v, c) => near(v, b[i][c], 1e-12, `bone ${i} component ${c}`)));
 });
 
 check('bone order puts every parent before its child, which rig.bones does not promise', () => {

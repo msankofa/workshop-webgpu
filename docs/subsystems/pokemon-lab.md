@@ -32,9 +32,9 @@ inferred or eyeballed.
 | `test-pokemon-lab-io.mjs` | 30 checks, including two cross-checks. | shipped |
 | `test-pokemon-pose.mjs` | 29 checks, four species. | shipped |
 | `test-pokemon-select.mjs` | 20 checks, six species. | shipped |
-| `test-pokemon-ik.mjs` | 20 checks: the solver as geometry, chains against real rigs. | shipped |
-| `test-pokemon-hang.mjs` | 19 checks: the physics as physics, the rotation fit against known rotations. | shipped |
-| `_check_pokemon-lab.html.mjs` | 60 static checks on the page. | shipped |
+| `test-pokemon-ik.mjs` | 30 checks: the solver as geometry, twist, chains against real rigs. | shipped |
+| `test-pokemon-hang.mjs` | 22 checks: the physics as physics, the rotation fit against known rotations. | shipped |
+| `_check_pokemon-lab.html.mjs` | 61 static checks on the page. | shipped |
 
 `ragdoll.js` and its 31 tests are **reused unchanged**. The only new physics here is the body definition.
 | `pokemon-gates.js` | Per-class validation. | not started |
@@ -565,7 +565,34 @@ Bones are settled root-first via `boneOrder`, because **`rig.bones` is sorted by
 whatever the exporter wrote — which does not promise a parent before its child. A test asserts that
 ordering on three species.
 
-### What it cannot do
+### Twist, which is the one angular limit that needs no anatomy
+
+A cone limit has to know which joint is a knee. A **twist** limit does not: the axis is simply the direction
+the bone points, so it works on any skeleton today.
+
+It is also the one a positional solver cannot see. Turning a single-child bone about its own length moves
+nothing — the child sits on the axis being turned about — so no arrangement of distance constraints can
+resist it, and nothing would stop a forearm rotating like a drill. It has to be clamped where rotations are
+handed back to the mesh, which is both places that do that: the drag and the hang, from one **Twist**
+slider in degrees.
+
+`swingTwist(q, axis)` splits a rotation into the part about the axis and the part across it, `q = swing *
+twist`. `limitTwist` clamps the twist and leaves the swing exactly alone. `limitRelativeTwist` does it
+**against the parent**, because a whole arm swinging as one is not a twisted elbow, and clamping against
+the world would fight the shoulder every time the body turned. All three are in `pokemon-ik.js` and shared.
+
+`twistAxis` takes the direction toward the bone's child, averaged over normalised directions where there is
+more than one. Two symmetric children — a hip with a leg either side — average to nothing and have no
+meaningful long axis, so it falls back to the direction from the parent, and skips the limit entirely if
+that is degenerate too.
+
+The IK drag needs this even though `rotationBetween` produces pure swing: each segment rotation is pure
+swing *relative to the world*, so the turn of a bone against its parent can still come out as twist.
+Clamped down the chain, parent first.
+
+180° means no limit, and a check pins the slider's range there.
+
+### What it still cannot do
 
 No cone limits. `ragdoll.js` stops a knee bending backwards because it knows which joint is a knee; nothing
 here knows that until the parts are annotated. Braces resist **all** folding equally, so a hanging creature

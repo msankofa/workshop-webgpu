@@ -426,6 +426,18 @@ check('a pose reaches the file, and records the whole stance rather than the edi
   assert(/current\.rig\.bones\.entries\(\)/.test(take), 'every bone, not only the ones that moved');
 });
 
+check('the twist limit reaches both the drag and the hang, from one control', () => {
+  // A positional solver cannot see twist -- turning a single-child bone about its own length moves nothing
+  // -- so it has to be clamped where rotations are handed back, in both places that do that.
+  assert(/function twistLimit\(/.test(code), 'no shared twist limit');
+  const drag = code.match(/function dragPose\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/limitRelativeTwist\(/.test(drag), 'the drag must clamp twist down the chain');
+  const step = code.match(/function stepHangFrame\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/maxTwist: twistLimit\(\)/.test(step), 'hanging must pass the same limit through');
+  const html = markup.match(/<input[^>]*id="twistLimit"[^>]*>/)?.[0] ?? '';
+  assert(/max="180"/.test(html), 'the slider must reach 180, which is where nothing is limited');
+});
+
 check('hanging reuses the tested ragdoll rather than a second physics solver', () => {
   assert(/from '\.\/pokemon-hang\.js'/.test(code), 'the page should not carry its own Verlet loop');
   assert(!/prev\.[xyz]|integrate\(/.test(code), 'no integration in the page');
@@ -437,7 +449,7 @@ check('the hang fit is measured from the seeded pose, not from the last frame', 
   // seed world rotations are captured once and everything is measured against them.
   const step = code.match(/function stepHangFrame\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(step, 'no stepHangFrame');
-  assert(/boneRotations\(current\.rig, hang\.seed, now\)/.test(step), 'the fit must run seed to now');
+  assert(/boneRotations\(current\.rig, hang\.seed, now[,)]/.test(step), 'the fit must run seed to now');
   assert(/hang\.seedQuat\[i\]/.test(step), 'and be applied to the seeded world rotation');
   assert(/for \(const i of hang\.order\)/.test(step),
     'bones must be settled root-first, since rig.bones is ordered by glTF node index');

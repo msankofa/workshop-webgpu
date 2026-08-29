@@ -168,6 +168,77 @@ export function rotationBetween(from, to) {
   return [q[0] / n, q[1] / n, q[2] / n, q[3] / n];
 }
 
+// ===================== twist =====================
+//
+// Twist is rotation about a bone's OWN length. It is the one angular limit that needs no anatomy: the axis
+// is just the direction the bone points, so it can be enforced on any skeleton, where a cone limit first
+// has to know which joint is a knee.
+//
+// It is also the one a positional solver cannot see. Twisting a bone with a single child moves nothing --
+// the child sits on the axis being turned about -- so no arrangement of distance constraints can resist it,
+// and nothing stops a forearm rotating like a drill. The place it becomes visible is where rotations are
+// handed back to the mesh, which is where it is clamped.
+
+export const qmul = (a, b) => [
+  a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+  a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+  a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+  a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+];
+
+export const qconj = (q) => [-q[0], -q[1], -q[2], q[3]];
+
+/**
+ * Split a rotation into the part about `axis` and the part across it.
+ *
+ * `q = swing * twist`. The twist is the projection of the quaternion's vector part onto the axis, put back
+ * on the unit sphere; the swing is whatever is left. Degenerate when the rotation is a half turn across the
+ * axis, where the projection vanishes and there is genuinely no twist to name -- that returns no twist
+ * rather than an arbitrary one.
+ */
+export function swingTwist(q, axis) {
+  const a = normalize(axis);
+  if (!length(a)) return { swing: q.slice(), twist: [0, 0, 0, 1] };
+  const d = q[0] * a[0] + q[1] * a[1] + q[2] * a[2];
+  let t = [a[0] * d, a[1] * d, a[2] * d, q[3]];
+  const n = Math.hypot(t[0], t[1], t[2], t[3]);
+  t = n < 1e-9 ? [0, 0, 0, 1] : [t[0] / n, t[1] / n, t[2] / n, t[3] / n];
+  // A quaternion and its negation are the same rotation; keep w positive so the angle reads in (-pi, pi].
+  if (t[3] < 0) t = [-t[0], -t[1], -t[2], -t[3]];
+  return { swing: qmul(q, qconj(t)), twist: t };
+}
+
+/** How far a rotation twists about an axis, signed, in radians. */
+export function twistAngle(q, axis) {
+  const a = normalize(axis);
+  const { twist } = swingTwist(q, axis);
+  return 2 * Math.atan2(twist[0] * a[0] + twist[1] * a[1] + twist[2] * a[2], twist[3]);
+}
+
+/** The same rotation with its twist about `axis` clamped to `maxRadians`. Swing is untouched. */
+export function limitTwist(q, axis, maxRadians) {
+  const a = normalize(axis);
+  if (!length(a) || !(maxRadians >= 0)) return q.slice();
+  const { swing, twist } = swingTwist(q, axis);
+  const half = Math.atan2(twist[0] * a[0] + twist[1] * a[1] + twist[2] * a[2], twist[3]);
+  const maxHalf = maxRadians / 2;
+  if (Math.abs(half) <= maxHalf) return q.slice();
+  const s = Math.sin(Math.sign(half) * maxHalf), c = Math.cos(maxHalf);
+  return qmul(swing, [a[0] * s, a[1] * s, a[2] * s, c]);
+}
+
+/**
+ * A child's rotation corrected so it twists no more than `maxRadians` beyond its parent's.
+ *
+ * The limit is on the RELATIVE turn: a whole arm swinging as one is not a twisted elbow, and clamping
+ * against the world would fight the shoulder every time the body turned.
+ */
+export function limitRelativeTwist(parentQ, childQ, axis, maxRadians) {
+  const rel = qmul(qconj(parentQ), childQ);
+  const clamped = limitTwist(rel, axis, maxRadians);
+  return qmul(parentQ, clamped);
+}
+
 /**
  * The per-bone rotations a solve implies, one for every segment, in chain order.
  *

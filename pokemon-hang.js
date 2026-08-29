@@ -17,6 +17,7 @@
 // tail. That is a limitation of having no annotation yet, not of the solver.
 
 import { stepRagdoll } from './ragdoll.js';
+import { limitRelativeTwist } from './pokemon-ik.js';
 
 /**
  * A ragdoll for one rig, seeded from the pose it is in.
@@ -183,10 +184,11 @@ export function extractRotation(m, q0 = [0, 0, 0, 1], iterations = 128) {
  * frame to frame rather than flipping. Most bones in these rigs have one child, so this is the common case
  * and not a corner one.
  */
-export function boneRotations(rig, seed, now) {
+export function boneRotations(rig, seed, now, { maxTwist = Math.PI } = {}) {
   const bones = rig.bones;
   const at = new Map(bones.map((b, i) => [b.key, i]));
   const out = new Array(bones.length).fill(null);
+  const limit = maxTwist < Math.PI - 1e-6;
 
   // Root first, so a leaf always finds its parent's answer already computed. Depths are measured once
   // rather than inside the comparator, which would walk the tree on every comparison.
@@ -213,9 +215,34 @@ export function boneRotations(rig, seed, now) {
       for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) m[c][r] += (b[r] / lb) * (a[c] / la);
     }
     const p = bones[i].parent != null ? at.get(bones[i].parent) : undefined;
-    out[i] = extractRotation(m, (p !== undefined && out[p]) || [0, 0, 0, 1]);
+    const parent = (p !== undefined && out[p]) || [0, 0, 0, 1];
+    let q = extractRotation(m, parent);
+    // Clamped against the PARENT, not the world: an arm swinging as one is not a twisted elbow.
+    if (limit && p !== undefined) q = limitRelativeTwist(parent, q, twistAxis(rig, seed, i, at), maxTwist);
+    out[i] = q;
   }
   return out;
+}
+
+/**
+ * The direction a bone points, which is the axis it can twist about.
+ *
+ * Toward its child, averaged over normalised child directions where there is more than one. Two symmetric
+ * children -- a hip with a leg on each side -- average to nothing and have no meaningful long axis, so it
+ * falls back to the direction from the parent, and skips the limit entirely if that is degenerate too.
+ */
+export function twistAxis(rig, seed, i, at = new Map(rig.bones.map((b, k) => [b.key, k]))) {
+  const kids = (rig.bones[i].children || []).map(k => at.get(k)).filter(k => k !== undefined);
+  let x = 0, y = 0, z = 0;
+  for (const k of kids) {
+    const dx = seed[k * 3] - seed[i * 3], dy = seed[k * 3 + 1] - seed[i * 3 + 1], dz = seed[k * 3 + 2] - seed[i * 3 + 2];
+    const d = Math.hypot(dx, dy, dz);
+    if (d > 1e-12) { x += dx / d; y += dy / d; z += dz / d; }
+  }
+  if (Math.hypot(x, y, z) > 1e-3) return [x, y, z];
+  const p = rig.bones[i].parent != null ? at.get(rig.bones[i].parent) : undefined;
+  if (p === undefined) return [0, 0, 0];
+  return [seed[i * 3] - seed[p * 3], seed[i * 3 + 1] - seed[p * 3 + 1], seed[i * 3 + 2] - seed[p * 3 + 2]];
 }
 
 /**
