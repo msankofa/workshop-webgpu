@@ -136,6 +136,21 @@
                line-height: 1; flex: none; }
   .part .del:hover { color: #e07a7a; }
 
+  .limb { border: 1px solid #232a33; border-radius: 5px; padding: 4px 6px; margin: 5px 0; }
+  .limb.sel { border-color: #3f5a4a; background: #151d19; }
+  .limb .lhead { display: flex; align-items: baseline; gap: 6px; cursor: pointer; }
+  .limb .lid { font: 11px ui-monospace, monospace; color: #cfd6dd; flex: none; }
+  .limb.sel .lid { color: #9fe0b8; }
+  .limb .lval { font: 10px ui-monospace, monospace; color: #6b7480; flex: 1;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .limb .lctl { display: flex; gap: 4px; margin-top: 4px; }
+  .limb .lctl select { flex: 1; min-width: 0; }
+  .limb .lctl button { flex: none; }
+  .limb .lctl input[type=number] { width: 42px; flex: none; box-sizing: border-box;
+                                   background: #171d25; color: #cfd6dd; border: 1px solid #2f3742;
+                                   border-radius: 4px; padding: 3px 4px;
+                                   font: 11px ui-monospace, monospace; }
+
   .mono { font: 11px/1.6 ui-monospace, monospace; color: #8b95a2; white-space: pre-wrap; }
   .hint { color: #6b7480; font-size: 10.5px; margin: 4px 0 0; }
   #tip { position: fixed; z-index: 40; max-width: 300px; display: none; pointer-events: none;
@@ -238,8 +253,12 @@
         <button id="setHeadBtn" disabled data-tip="Make the selected bones the head.">Head</button>
         <button id="setContactBtn" disabled data-tip="Say the selected bones touch the ground. Press it again to take them off."
                 data-more="Contacts are not only feet. A Caterpie's are belly segments and a Voltorb's is one point on a sphere, and a walker needs them wherever they are.">Contact</button>
+        <button id="addLimbBtn" disabled data-tip="Make the selected bones a new limb."
+                data-more="Its side is read from where the bones sit: these models face +z, so the creature's own left is +x. Change it if the reading is wrong.">New limb</button>
       </div>
       <div id="partsRead" class="mono">—</div>
+      <div id="limbList"></div>
+      <div id="partsWarn" class="warn"></div>
 
       <h3 data-tip="Bones in no part at all, the biggest first."
           data-more="Not a to-do list. A bone nothing has been said about is decoration, which is a complete answer; this is here so you can see what you are defaulting rather than find out later.">Unaddressed</h3>
@@ -473,8 +492,9 @@ import {
 import {
   emptyAnnotation, getAnnotation, putAnnotation, setSegment, removeSegment, segmentsOf,
   resolveSegment, wholeClip, segmentKind, poseAt, COMMON_STATES, setNeutralBone, clearNeutral,
-  LOCOMOTION, POSTURES, setLocomotion, setRoot, setSpine, setHead, setContacts, toggleContact,
-  unaddressed, annotationStamp,
+  LOCOMOTION, POSTURES, APPENDAGE_TYPES, SIDES, setLocomotion, setRoot, setSpine, setHead,
+  setContacts, toggleContact, addAppendage, updateAppendage, removeAppendage, declareMirror,
+  suggestMirror, suggestSide, flipSide, claimedBones, validateAnnotation, unaddressed, annotationStamp,
 } from './pokemon-annotation.js';
 import { toggleKeys, chainKeysOf, selectionInfo, nearestPoint, pointsInRect } from './pokemon-select.js';
 import { chainUp, selectedReach, fabrik, segmentRotations, limitRelative, qmul, qconj } from './pokemon-ik.js';
@@ -709,8 +729,9 @@ async function selectSpecies(species) {
   skel.selected = new Set();
   skel.hover = -1;
   // Bone keys repeat across species, so last species' contacts would colour this one's joints until the
-  // panel caught up.
+  // panel caught up, and its mirror note would be read as this one's.
   contactBones = new Set();
+  mirrorNote = '';
   buildSkeleton();
   refreshSelection();
   // Posing, the ragdoll and the drive mask are per-species too: none may carry onto the next skeleton.
@@ -1428,11 +1449,26 @@ $('setHeadBtn').addEventListener('click', () => editParts((a, rig) => setHead(a,
 // every other multi-bone gesture on this page follows.
 $('setContactBtn').addEventListener('click', () => editParts((a, rig) => toggleContact(a, rig, [...skel.selected])));
 
+// A limb is made from the selection, and its side is READ from where its bones sit rather than asked for:
+// these models face +z with y up, so the creature's own left is +x. A wrong reading is one dropdown away.
+$('addLimbBtn').addEventListener('click', () => editParts((a, rig) => {
+  const chain = [...skel.selected];
+  return addAppendage(a, rig, { type: 'other', side: suggestSide(rig, chain), chain });
+}));
+
 /** Cheap enough for a hover. The full render is `refreshParts`, which only runs on an edit. */
 function refreshPartButtons(info) {
   const n = info?.count ?? 0;
   $('setRootBtn').disabled = n !== 1;
-  for (const id of ['setSpineBtn', 'setHeadBtn', 'setContactBtn']) $(id).disabled = !n;
+  for (const id of ['setSpineBtn', 'setHeadBtn', 'setContactBtn', 'addLimbBtn']) $(id).disabled = !n;
+  // Which limb the selection currently IS, so pressing Take on one is never a surprise. The list is only
+  // rebuilt on an edit, and hovering a bone is not one, so these two follow the selection here instead.
+  for (const [id, el] of limbRows) {
+    const chain = limbChains.get(id) || [];
+    el.classList.toggle('sel', chain.length === n && n > 0 && chain.every(b => skel.selected.has(b)));
+    const take = el.querySelector('.ltake');
+    if (take) take.disabled = !n;
+  }
 }
 
 /** How many bones and how much of the model, which is what says a part is a limb and not a spike. */
@@ -1452,9 +1488,147 @@ function refreshParts() {
   $('posture').disabled = !current || a?.locomotion !== 'walker';
   $('posture').value = a?.posture || '';
   renderPartRows(a);
+  renderLimbs(a);
   renderUnaddressed(a);
+  renderPartWarnings(a);
   contactBones = new Set(a?.parts?.contacts || []);
   paintSkeleton();
+}
+
+// The row element and the bones of each limb, so a selection change can re-mark the list without
+// rebuilding it -- the list is rebuilt on an edit, and hovering a bone is not one.
+const limbRows = new Map();
+const limbChains = new Map();
+
+function renderLimbs(a) {
+  const host = $('limbList');
+  host.textContent = '';
+  limbRows.clear();
+  limbChains.clear();
+  if (!current) return;
+  const limbs = a?.parts?.appendages || [];
+  for (const ap of limbs) {
+    const el = limbRow(ap, limbs);
+    limbRows.set(ap.id, el);
+    limbChains.set(ap.id, ap.chain || []);
+    host.append(el);
+  }
+  refreshPartButtons(current ? selectionInfo(current.rig, skel.selected) : null);
+}
+
+function limbRow(ap, limbs) {
+  const el = document.createElement('div');
+  el.className = 'limb';
+
+  const head = document.createElement('div');
+  head.className = 'lhead';
+  head.dataset.tip = 'Put this limb\'s bones in the selection.';
+  const id = document.createElement('span');
+  id.className = 'lid';
+  id.textContent = ap.id;
+  const val = document.createElement('span');
+  val.className = 'lval';
+  val.textContent = ap.chain?.length ? describeBones(ap.chain) : 'no bones yet';
+  const del = document.createElement('button');
+  del.className = 'del';
+  del.textContent = '×';
+  del.dataset.tip = 'Remove this limb. The bones themselves are untouched.';
+  del.addEventListener('click', (ev) => { ev.stopPropagation(); editParts(x => removeAppendage(x, ap.id)); });
+  head.append(id, val, del);
+  head.addEventListener('click', () => selectBones(ap.chain || []));
+
+  const ctl = document.createElement('div');
+  ctl.className = 'lctl';
+  ctl.append(
+    dropdown(APPENDAGE_TYPES, ap.type, 'What kind of limb this is. A hint to a solver, not a rule.',
+      v => editParts((x, rig) => updateAppendage(x, rig, ap.id, { type: v }))),
+    dropdown(SIDES, ap.side, 'Which side of the body it is on.',
+      v => editParts((x, rig) => updateAppendage(x, rig, ap.id, { side: v }))),
+  );
+  const row = document.createElement('input');
+  row.type = 'number';
+  row.min = '0';
+  row.max = '9';
+  row.value = String(ap.row ?? 0);
+  row.dataset.tip = 'Which pair of legs this is: 0 at the front.';
+  row.dataset.more = 'It is what tells a quadruped\'s front legs from its back ones, and it means nothing on a creature with one pair.';
+  row.addEventListener('change', () => {
+    const n = Math.max(0, Math.min(9, Math.round(Number(row.value) || 0)));
+    editParts((x, rig) => updateAppendage(x, rig, ap.id, { row: n }));
+  });
+  const take = document.createElement('button');
+  take.className = 'ltake';
+  take.textContent = 'Take';
+  take.disabled = !skel.selected.size;
+  take.dataset.tip = 'Make the selected bones this limb\'s bones.';
+  take.addEventListener('click', () => editParts((x, rig) => updateAppendage(x, rig, ap.id, { chain: [...skel.selected] })));
+  ctl.append(row, take);
+
+  const pair = document.createElement('div');
+  pair.className = 'lctl';
+  const others = limbs.filter(o => o.id !== ap.id);
+  const mirror = document.createElement('select');
+  mirror.dataset.tip = 'Which limb is this one\'s opposite number.';
+  mirror.dataset.more = 'A declared pair, never a computed one. Symmetry is a guess; saying which limb answers which is a fact, and it is what halves the work.';
+  mirror.append(new Option('No mirror', ''));
+  for (const o of others) mirror.append(new Option(o.id, o.id));
+  mirror.value = ap.mirror || '';
+  mirror.addEventListener('change', () => editParts(x => declareMirror(x, ap.id, mirror.value || null)));
+  const other = document.createElement('button');
+  other.textContent = 'Other side';
+  other.disabled = !ap.chain?.length;
+  other.dataset.tip = 'Build the matching limb on the other side and pair the two.';
+  other.dataset.more = 'Matched on mirrored rest geometry rather than on the bone tree, because two mirrored limbs are routinely built from different numbers of bones. Any bone it could not match is reported rather than guessed at.';
+  other.addEventListener('click', () => mirrorLimb(ap));
+  pair.append(mirror, other);
+
+  el.append(head, ctl, pair);
+  return el;
+}
+
+/** A dropdown over one of the module's vocabularies. */
+function dropdown(values, value, tip, onChange) {
+  const el = document.createElement('select');
+  el.dataset.tip = tip;
+  for (const v of values) el.append(new Option(v[0].toUpperCase() + v.slice(1), v));
+  el.value = value;
+  el.addEventListener('change', () => onChange(el.value));
+  return el;
+}
+
+// What the last mirror actually managed, kept until the next one. A suggestion that silently missed three
+// bones is the failure mode worth seeing.
+let mirrorNote = '';
+
+function mirrorLimb(ap) {
+  if (!current || !ap.chain?.length) return;
+  const a = annotationFor(current.entry.species);
+  // Everything already spoken for is off limits, or a mirror can quietly steal the spine.
+  const exclude = [...claimedBones(a)].filter(b => !ap.chain.includes(b));
+  const s = suggestMirror(current.rig, ap.chain, { exclude });
+  if (!s.chain.length) {
+    mirrorNote = `Nothing on the other side matched ${ap.id}. Select those bones and make a limb of them.`;
+    renderPartWarnings(getAnnotation(library, current.entry.species));
+    return;
+  }
+  // Set before the edit, because committing re-renders the panel and would show the previous note.
+  mirrorNote = `${s.chain.length} of ${ap.chain.length} bones matched ${ap.id}, worst `
+    + `${(s.worst * 100).toFixed(1)}% of body height`
+    + (s.misses.length ? `. No match for ${s.misses.join(', ')}.` : '.');
+  editParts((before, rig) => {
+    const made = addAppendage(before, rig, {
+      type: ap.type, side: flipSide(ap.side), row: ap.row, chain: s.chain,
+    });
+    return declareMirror(made, ap.id, made.parts.appendages[made.parts.appendages.length - 1].id);
+  });
+}
+
+function renderPartWarnings(a) {
+  const host = $('partsWarn');
+  if (!current || !a) { host.textContent = mirrorNote && current ? mirrorNote : ''; return; }
+  const { findings } = validateAnnotation(a, current.rig);
+  const errors = findings.filter(f => f.level === 'error').map(f => f.text);
+  host.textContent = [...errors, mirrorNote].filter(Boolean).join('\n');
 }
 
 function renderPartRows(a) {

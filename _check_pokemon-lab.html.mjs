@@ -426,7 +426,11 @@ check('the classes offered are the module\'s own, not a second list to drift fro
   // exported arrays, so adding a locomotion class in one place adds it everywhere.
   const build = code.match(/for \(const \[id, values, blank\][\s\S]*?\n\}/)?.[0] ?? '';
   assert(build.includes('LOCOMOTION') && build.includes('POSTURES'), 'the selects must be built from the module');
-  assert(!/<option value="(walker|biped)"/.test(markup), 'the vocabularies must not be written out in the markup');
+  for (const name of ['APPENDAGE_TYPES', 'SIDES']) {
+    assert(new RegExp(`dropdown\\(${name},`).test(code), `the limb ${name} dropdown must come from the module`);
+  }
+  assert(!/<option value="(walker|biped|leg|wing)"/.test(markup),
+    'the vocabularies must not be written out in the markup');
 });
 
 check('every edit to a part goes through one function, and a no-op is not an edit', () => {
@@ -442,6 +446,42 @@ check('every edit to a part goes through one function, and a no-op is not an edi
     const line = code.slice(code.lastIndexOf('\n', m.index) + 1, code.indexOf('\n', m.index));
     assert(line.includes('editParts('), `${m[1]} is called outside editParts: ${line.trim()}`);
   }
+});
+
+check('a new limb reads its side rather than asking or assuming', () => {
+  const add = code.match(/addLimbBtn'\)\.addEventListener\([\s\S]*?\n\}\)\);/)?.[0] ?? '';
+  assert(add.length > 100, `the New limb handler is ${add.length} chars, so this is reading the wrong slice`);
+  assert(/suggestSide\(/.test(add), 'the side is a measurement these models support, not a question');
+  // The type is NOT guessed: most of the dex is legs, but writing "leg" into a file as author:hand would
+  // record a decision nobody made.
+  assert(/type: 'other'/.test(add), 'a new limb must not claim to be a kind nobody chose');
+});
+
+check('a mirror is declared through the module, never assigned by hand', () => {
+  const fn = code.match(/function mirrorLimb\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn.length > 300, `mirrorLimb is ${fn.length} chars, so this is reading the wrong slice`);
+  assert(/claimedBones\(/.test(fn), 'the suggestion must not be free to take a bone another part claimed');
+  assert(/flipSide\(/.test(fn), 'the other side of a limb is the other side');
+  assert(/declareMirror\(/.test(fn), 'the pair must be declared, so it is reciprocal by construction');
+  assert(/misses/.test(fn), 'a suggestion that missed bones must say so rather than look complete');
+  assert(!/\.mirror = /.test(code), 'nothing here may set a mirror directly — declareMirror keeps both ends');
+});
+
+check('what the annotation gets structurally wrong is on screen, not swallowed', () => {
+  const fn = code.match(/function renderPartWarnings\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn.length > 150, `renderPartWarnings is ${fn.length} chars, so this is reading the wrong slice`);
+  assert(/validateAnnotation\(/.test(fn), 'the module already knows what is broken; the page must show it');
+  assert(/findings/.test(fn) && /level === 'error'/.test(fn), 'validateAnnotation returns a report, not a list');
+});
+
+check('the limb list follows the selection without being rebuilt', () => {
+  // Rebuilding it on hover would throw away a dropdown mid-open and re-render on every pointer move.
+  const fn = code.match(/function refreshPartButtons\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn.length > 200, `refreshPartButtons is ${fn.length} chars, so this is reading the wrong slice`);
+  assert(/limbRows/.test(fn) && /ltake/.test(fn), 'Take and the highlight must track the selection here');
+  const sel = code.match(/function refreshSelection\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/refreshPartButtons\(/.test(sel) && !/renderLimbs\(/.test(sel),
+    'a hover must reach the cheap path only');
 });
 
 check('a posture is offered only where it means something', () => {

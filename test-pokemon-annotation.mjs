@@ -16,7 +16,7 @@ import {
   SEGMENT_ENDS, setDone,
   segmentKind, statesOf, transitionsOf, poseAt, COMMON_STATES,
   claimedBones, unaddressed, contactsOf, bodyContacts, appendagesOfType,
-  validateAnnotation, isChain, suggestMirror,
+  validateAnnotation, isChain, suggestMirror, suggestSide, flipSide, SIDES,
   emptyLibrary, getAnnotation, putAnnotation, annotatedSpecies, annotationStamp, resolveAnnotation,
 } from './pokemon-annotation.js';
 
@@ -267,6 +267,60 @@ check('the mirror suggestion reports misses rather than inventing matches', () =
   const s = suggestMirror(rig, chain, { maxDistance: 0.0001 });
   assert(s.chain.length === 0, 'an impossible tolerance still produced matches');
   assert(s.misses.length === chain.length, `${s.misses.length} misses reported for ${chain.length} bones`);
+});
+
+check('a limb and its mirror are suggested opposite sides, and the middle is neither', () => {
+  // The fact underneath: these models stand on y = 0 and face +z, so with y up the creature's own left
+  // is +x. What is being tested is that the two ends of a mirrored pair never land on the same letter,
+  // which is the only property the pairing depends on.
+  for (const slug of ['rattata', 'squirtle', 'pikachu', 'sandslash']) {
+    const { rig } = rigOf(slug);
+    const chain = legChain(rig);
+    const s = suggestMirror(rig, chain);
+    if (!s.chain.length) continue;
+    const here = suggestSide(rig, chain), there = suggestSide(rig, s.chain);
+    assert(here !== 'C' && there !== 'C', `${slug}: a limb read as centre (${here}/${there})`);
+    assert(here === flipSide(there), `${slug}: both sides read as ${here}`);
+  }
+  const { rig } = rigOf('rattata');
+  assert(suggestSide(rig, [rig.root]) === 'C', 'the root is not on the centreline');
+  assert(suggestSide(rig, []) === 'C', 'nothing at all has no side');
+});
+
+check('flipping a side is its own inverse, and centre has no other side', () => {
+  assert(flipSide('L') === 'R' && flipSide('R') === 'L', 'L and R must swap');
+  assert(flipSide('C') === 'C', 'centre has no other side to offer');
+  for (const s of SIDES) assert(flipSide(flipSide(s)) === s, `flipping ${s} twice changed it`);
+});
+
+check('the whole mirror gesture leaves a valid annotation, not just a valid suggestion', () => {
+  // The sequence the page's "Other side" button performs: suggest against everything not already spoken
+  // for, add the limb on the opposite side, declare the pair. Composing three correct calls wrongly is
+  // its own way to corrupt a file, so the composition is what is asserted.
+  for (const slug of ['rattata', 'squirtle', 'sandslash']) {
+    const { rig } = rigOf(slug);
+    const chain = legChain(rig);
+    let a = emptyAnnotation('x', rig);
+    a = setSpine(a, rig, [rig.root]);
+    a = addAppendage(a, rig, { type: 'leg', side: suggestSide(rig, chain), chain });
+    const src = a.parts.appendages[0];
+
+    const exclude = [...claimedBones(a)].filter(b => !src.chain.includes(b));
+    const s = suggestMirror(rig, src.chain, { exclude });
+    assert(s.chain.length, `${slug}: nothing matched`);
+    assert(!s.chain.some(b => exclude.includes(b)), `${slug}: the mirror took a bone another part had claimed`);
+
+    a = addAppendage(a, rig, { type: src.type, side: flipSide(src.side), row: src.row, chain: s.chain });
+    const made = a.parts.appendages[a.parts.appendages.length - 1];
+    a = declareMirror(a, src.id, made.id);
+
+    const pair = a.parts.appendages;
+    assert(pair[0].mirror === pair[1].id && pair[1].mirror === pair[0].id, `${slug}: the pair is not reciprocal`);
+    assert(pair[0].side === flipSide(pair[1].side), `${slug}: both limbs on side ${pair[0].side}`);
+    assert(pair[0].id !== pair[1].id, `${slug}: both limbs took the same id`);
+    const { errors, findings } = validateAnnotation(a, rig);
+    assert(!errors, `${slug}: ${findings.filter(f => f.level === 'error').map(f => f.text).join('; ')}`);
+  }
 });
 
 check('a midline bone has no honest mirror', () => {

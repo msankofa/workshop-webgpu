@@ -465,6 +465,73 @@ nothing for a third of the dex. That measurement is why there are now two more w
 **Below** button, which takes a bone and everything under it through `descendants(rig, key)`, and the
 alt-drag box above. A test pins the Onix numbers so the problem cannot quietly come back.
 
+## Annotating: saying what each bone is
+
+Phase 3. The schema and every edit to it are `pokemon-annotation.js`; the page is wiring, and every part
+edit goes through one `editParts(fn)` so none of them can skip the history or the save.
+
+**Selection first, then a button says what the selection is.** There is no mode in which clicking a bone
+quietly edits a part, which is the same reason picking has no mode. Clicking a named part in the panel
+puts its bones back in the selection, which closes the loop without inventing a second gesture: correct
+the bones, press the button again.
+
+`editParts` compares `annotationStamp` before and after and drops a no-op. Pressing Spine on the bones
+that are already the spine is not an edit, and an undo stack full of those is one you cannot find
+anything in.
+
+### The vocabularies are the module's
+
+Both class dropdowns and both limb dropdowns are built from `LOCOMOTION`, `POSTURES`, `APPENDAGE_TYPES`
+and `SIDES` rather than from `<option>` lists in the markup, so the words the UI offers cannot drift from
+the words the file accepts. A check forbids writing any of them out by hand.
+
+Posture is offered only for a walker, because `setLocomotion` drops it for anything else — carrying a
+stale posture would misreport the body plan.
+
+### Contacts are toggled, and coloured
+
+Contacts follow the same complete-or-remove rule as every other multi-bone gesture here, and they are
+**orange in the overlay**. They are what the gates measure against the floor, and a part that lives only
+in a list is one you forget you set. They are also not only feet: a Caterpie's are belly segments and a
+Voltorb's is one point on a sphere.
+
+### A limb reads its own side
+
+These models stand on y = 0 and **face +z**, so with y up the creature's own left is +x. That is a
+documented fact about the export, not a guess, so `suggestSide` proposes L, R or C from where a limb's
+mesh actually sits and the New limb button uses it. What is a judgement is how near the middle counts as
+centre, which is why the deadband is a parameter and why the dropdown is right there.
+
+The **type is not** guessed. Most of the dex is legs, but writing `leg` into a file as `author: "hand"`
+records a decision nobody made, so a new limb starts as `other`.
+
+### Other side
+
+`suggestMirror` matches on mirrored rest geometry rather than on the bone tree, because two mirrored
+limbs are routinely built from different numbers of bones. The page excludes every bone already claimed
+by another part, or a mirror could quietly steal the spine, and it reports what it could not match rather
+than letting a partial answer look complete.
+
+The pair itself goes through `declareMirror`, which is reciprocal by construction — a check forbids the
+page assigning `.mirror` directly, since a one-way reference fails validation on somebody else's machine.
+A Node test drives the whole gesture on three species and asserts the result validates, because composing
+three correct calls wrongly is its own way to corrupt a file.
+
+### What is unaddressed, and what is broken
+
+The unaddressed list is **derived, never stored**. A stored to-do list goes stale the moment a part
+changes, and the file would then carry a second answer to a question the parts already answer. An
+unaddressed bone is decoration by default and that is a complete answer; the list exists so you can see
+what you are defaulting.
+
+`validateAnnotation`'s errors are printed under the limb list — a bone in two limbs, a limb that skips a
+joint, a name no bone has. The module already knows what is broken; the page's only job is not to swallow
+it.
+
+The limb list is rebuilt on an edit, and hovering a bone is not one. Which limb the selection currently
+**is**, and whether Take can do anything, follow the selection through the cheap path instead — a rebuild
+on every pointer move would throw away a dropdown mid-open.
+
 ## Posing: drag a bone, the chain above it answers
 
 `pokemon-ik.js` is FABRIK — forward and backward reaching inverse kinematics. Positional and iterative, so

@@ -1,7 +1,7 @@
 # Pokémon Lab v1 — the tarmac
 
-**Status:** authored 2026-08-27. Phase 0 (the two pure modules) and phase 1 (browse) are shipped as of
-2026-08-28; phases 2 to 6 are not started. See the build-order table at the bottom.
+**Status:** authored 2026-08-27. Phases 0, 1 and 1.5 shipped 2026-08-28; phases 2 and 3 shipped
+2026-08-29. Phases 4 to 6 are not started. See the build-order table at the bottom.
 
 v1 is the surface everything else lands on: browse all 151 Stadium models, watch the animations that
 shipped with them, read the skeleton, say what every part of it is, set the pose it stands in, and save
@@ -310,7 +310,7 @@ Each phase ends somewhere usable.
 | 1 | Browse: the 151 grid, model loading, clip playback | mechanical | shipped 2026-08-28 |
 | 1.5 | Segments: naming a frame range of a ROM clip | mechanical, but it changed the schema | shipped 2026-08-28 |
 | 2 | Skeleton view, chain and bone selection | mostly mechanical; the picker exists | shipped 2026-08-29 |
-| 3 | Annotate: parts, types, mirror, the unaddressed list, both selection gestures | **the uncertain one** — this is the whole UX bet | not started |
+| 3 | Annotate: parts, types, mirror, the unaddressed list, both selection gestures | **the uncertain one** — this is the whole UX bet | shipped 2026-08-29 |
 | 4 | Pose: clip frame to neutral, per-bone adjust | mechanical — port `stadium-stance.js` | not started |
 | 5 | Gates + dex board status | mechanical | not started |
 | 6 | `pokemon-lab-runtime.js` + a Node test proving base-game's import path | mechanical | not started |

@@ -543,6 +543,37 @@ export function isChain(rig, bones) {
  * geometry rather than the node graph, because bone origins in these files are not anatomical and two
  * mirrored limbs are routinely built from different numbers of bones.
  */
+/**
+ * Which side of the body a group of bones sits on, from where its mesh actually is.
+ *
+ * A SUGGESTION, like `suggestMirror` below, and it is here rather than in `pokemon-rig.js` because that
+ * module holds only facts. The fact it rests on is documented: these models stand on y = 0 and face +z,
+ * so with y up the creature's own left is +x. What is a judgement is how near the middle counts as
+ * centre, which is why `deadband` is a parameter and why nothing here writes itself into a file.
+ *
+ * The mean is unweighted. Weighting by vertex count would be defensible, but every bone of a limb is on
+ * the same side of the body, so it would not change an answer.
+ */
+export function suggestSide(rig, bones, { deadband = 0.01 } = {}) {
+  const scale = rig?.units?.height || 1;
+  let sum = 0, n = 0;
+  for (const b of bones || []) {
+    const g = rig.geometry.get(b);
+    const m = rig.byKey.get(b)?.restWorld;
+    const x = g ? g.centroid.x : (m ? m[12] : null);
+    if (x == null) continue;
+    sum += x; n++;
+  }
+  if (!n) return 'C';
+  const mean = sum / n / scale;
+  return Math.abs(mean) < deadband ? 'C' : (mean > 0 ? 'L' : 'R');
+}
+
+/** The other side of a side. Centre has no other side, and says so rather than picking one. */
+export function flipSide(side) {
+  return side === 'L' ? 'R' : side === 'R' ? 'L' : 'C';
+}
+
 export function suggestMirror(rig, bones, { exclude = [], maxDistance = 0.25 } = {}) {
   const skip = new Set([...bones, ...exclude]);
   const scale = rig.units.height || 1;
