@@ -40,7 +40,8 @@ inferred or eyeballed.
 | `test-pokemon-drive.mjs` | 18 checks: the mask, its fit to real clips, and the partial ragdoll as physics. | shipped |
 | `_check_pokemon-lab.html.mjs` | 98 static checks on the page. | shipped |
 | `pokemon-gates.js` | Per-class validation. | not started |
-| `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
+| `pokemon-lab-runtime.js` | The `base-game.html` import contract. | shipped |
+| `test-pokemon-lab-runtime.mjs` | 10 checks: the import path end to end, in Node. | shipped |
 
 `ragdoll.js` is reused, and its 31 tests still pass untouched. Its cone solver gained an optional `min` and
 an optional per-cone `stiffness` for the bend limit below; both default to the old behaviour, so the bot
@@ -1055,7 +1056,26 @@ matched **by the three-digit dex prefix**, never by name — the files spell nam
 (`Farfetchd`, `Mr-Mime`). The Play cry button fetches and decodes the buffer once per species (a failed
 load is retried, not cached), then plays it through the controller's newly exported `playBufferAt` — the
 same panner chain positional SFX use — at the annotated head's position, or the mean of all bone
-positions when no head has been annotated. Both listings retry on demand — a press with an empty cry
+positions when no head has been annotated. **Every audio distance is scaled to the species**: the models
+are 9 to 147 units tall (median 52, measured across the dex) and the camera frames at about 2.4 spans,
+while the controller's numbers and the cry's panner profile were written for metres — the first cut had
+the orb placed inside the creature and the cry inaudible past the skin. `syncAudioScale()` calls
+`envAudio.setWorldScale(span / 1.8)` on every species load, and the cry's `refDistance`/`maxDistance`
+are `2 × span` / `100 × span`. **Cry variation** is four controls and a draw: pitch (±12 semitones), speed (25–400%), a Reversed toggle
+and a Variation amount. A press takes the sliders' values, wanders from them by up to ±12 semitones and
+half-to-double speed scaled by Variation, and plays through `playBufferAt` with `playbackRate` for speed
+and `pitchRatio` for pitch (the controller's worklet keeps them independent). Reversed is a per-species
+`AudioBuffer` built once by copying the samples backwards. What a press actually used is written next to
+the button. Beyond those: **bass** (a ±24 dB shelf under 180 Hz — meant to be derived from body size or
+age one day, with the slider still winning), **vibrato** (an LFO into the source's `detune`, rate and
+semitone depth), **tremolo** (an LFO into a gain, rate and depth), **fade** (attack and release ramps timed
+to the slice), **stutter** (the opening slice of the trimmed cry N times back to back, then the whole
+cry, all delayed in played seconds so it follows the speed) and **trim** (start and end percent). The
+effects are built by `cryChain` through `playBufferAt`'s `insert` hook, per slice; echo and reverb were
+deliberately left out as environment effects rather than personality. Not saved per species yet; the
+annotation file has no field for it. The Music section's
+Falloff slider is the controller's `attenuation` effect
+(0–200, started at 40 here). Both listings retry on demand — a press with an empty cry
 map re-fetches, as does play with an empty playlist — so a page loaded before a server restart heals
 without a reload. The Cry section's volume row is the shared SFX volume (the per-origin saved settings
 every viewer reads), and moving it also unmutes SFX and master: a mute saved by another tool would
@@ -1063,6 +1083,51 @@ otherwise silence cries with nothing on this page saying so, and the click handl
 plays into a muted mixer. Bones, not the mesh bounding box, because the mesh bounding
 volumes on these models are garbage (vertices are authored bone-local). Orbiting the camera pans and
 attenuates the cry.
+
+## `pokemon-lab-runtime.js` — the seam a game reads through
+
+The whole contract between the annotation work and anything that moves a creature, and the thinnest file
+in the subsystem — thin because `pokemon-rig.js` already measures the model and `pokemon-annotation.js`
+already knows how to turn bone names into node ids. This adds the loading and nothing else.
+
+```js
+import { loadLab, rigFor, applyNeutral } from './pokemon-lab-runtime.js';
+
+const lab = await loadLab(fetch);                 // one static JSON
+const out = rigFor(lab, '025_pikachu', gltfBytes);
+// out.locomotion, out.root, out.spine, out.contacts, out.appendages, out.segments, out.facts
+applyNeutral(out, (node, trs) => place(node, trs));
+```
+
+Three rules, and they are the reason this file exists rather than a game importing the lab directly:
+
+- **No `serve.py`.** The lab is fetched as a plain static JSON. A game that needed the workshop's Python
+  server running would not ship.
+- **No lab UI.** Nothing here imports `disk-store.js` or the page.
+- **No THREE.** It hands back glTF **node ids** and lets the caller drive its own scene graph. Returning
+  Object3Ds would pick the caller's renderer for them; node ids resolve equally well through
+  `gltf.parser.associations` or a raw glTF walk. The neutral pose reaches a scene graph through a
+  `set(node, trs)` callback, which is what keeps THREE out.
+
+A test asserts the import list is exactly those two pure modules, so the rules cannot erode.
+
+### What it is tolerant about, and what it is not
+
+**Loading throws.** A 404 or a file from a future version is an error, because a game that silently
+renders unannotated creatures is one where nobody notices for a week.
+
+**Everything after loading is tolerant.** An unannotated species comes back in the same *shape* with
+empty parts rather than as `null`, so a caller never branches on whether the file happened to mention it
+— `annotated` says which it was. A model re-exported since the annotation was made sets `staleRig` and
+still hands back what it has: only the caller knows whether a creature standing wrong is worse than no
+creature at all.
+
+`missingParts(resolved)` lists which of the five things are empty. It is **not a gate** — it applies no
+per-class rule. That a walker has no legs is a fact a caller can act on; whether that makes the
+annotation wrong is `pokemon-gates.js`'s question.
+
+`rigFor` takes either the GLB bytes or a rig already read from them, since a game that has loaded the
+model anyway should not pay to parse it twice. A test drives both routes and asserts they agree.
 
 ## Tests
 
@@ -1103,6 +1168,34 @@ One of its checks is there because the selection box shipped invisible. Assignin
 though it works — right for `#stageMsg`, whose stylesheet value is `flex`, and wrong for the four ids
 hidden by default. The check reads the stylesheet for those ids and forbids showing them with `''`.
 
+## The panel
+
+The Lab dresses its panel with **`workshop-panel-theme.js`**, the same module the bot viewer, base game,
+aircraft studio and code map use. It re-scopes the environment viewer's inspector rules to any panel root
+and reads the palette that viewer's Theme tab saves to `pcw:uiTheme`, so a theme picked there carries
+here. Nothing about the panel's look is written in this page.
+
+Layout is the established one: a fixed right-edge `#ctrl` with a `.panel-head` (title, `.hint`, and the
+`⌄` / `⌃` / `–` head buttons), a `.panel-tabs` strip, and a `.panel-body` scroller holding one
+`.tab-host` per tab. Sections are `createSection()` cards; expand-all and collapse-all go through
+`setAllSectionsCollapsed()` scoped to the **active tab**, because opening everything would blow open six
+tabs nobody is looking at. Collapsing the panel is the theme's own `.collapsed`, which shrinks the dock to
+its header bar and frees the whole viewport.
+
+Seven tabs: Dex, Species, Annotate, Pose, Animation, Audio, Map.
+
+### The markup stays flat; the panel is assembled at boot
+
+The controls are written in the page as two plain `<aside>` blocks separated by `<h3>` headings, because
+that is far easier to read and to diff than three thousand lines of `createElement`. `buildSections()`
+takes each heading and everything up to the next heading and **moves those nodes** into a section under
+its tab. Nothing is recreated, so every `$('id')` in the rest of the file still finds the element it
+always found, and the heading is kept (hidden) so its text stays the section's name.
+
+`SECTION_PLAN` is keyed on heading text rather than on order or index. A heading renamed in the markup is
+reported rather than silently landing its controls on the wrong tab, and a check asserts the plan and the
+markup name exactly the same set.
+
 ## The Map tab
 
 `tools/filesystem-map.html` with `?scope=pokemon`, in an iframe. That page already draws a filesystem the
@@ -1118,21 +1211,17 @@ is nothing to share, disable or fight over. The Lab's render loop returns early 
 iframe is created on first click and hidden rather than removed, so coming back does not re-scan the repo
 and re-settle the layout.
 
-### The side columns fold
+### Show the frame before loading it
 
-Both side columns collapse, from the two buttons at the right of the tab strip. A collapsed column is a
-zero-width grid track *and* `display: none`, so it is out of the layout rather than squeezed to nothing;
-the buttons that bring it back live in the tab strip, which is always there, so the column does not have
-to keep a handle on screen.
+The map sizes its renderer from its own `window.innerWidth` at boot. An iframe that is still
+`display: none` reports zero, and WebGPU does not refuse a zero-width surface politely — it creates an
+invalid `depthBuffer` and `colorBuffer`, and then every render pass built on them fails, once a frame,
+until the device stops reporting. So the tab shows the frame first and waits one `requestAnimationFrame`
+before setting `src`.
 
-**Selecting the map folds both**, since it wants the width and carries its own panels. The state you had
-is remembered on the way in and restored on the way out, so browse always looks the way you left it, and
-the remembered state is cleared once used — otherwise the second visit would restore a stale one.
-
-Nothing is authored by this, so it is not saved anywhere: a reload opens with both columns showing. The
-track transition is asynchronous, so the `ResizeObserver` is what actually drives the canvas while the
-columns move; `applyPanes` calls `resize()` directly only for the case where there is no transition to
-observe.
+The tool clamps its own size too, through `viewW()`/`viewH()` at both the boot sizing and `onResize`,
+because being embedded means it can legitimately be in a frame that is not laid out yet — and the same
+clamp covers the resize the iframe fires when the tab is switched away and it goes `display: none`.
 
 ### Scope is rules, not a list
 

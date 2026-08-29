@@ -313,7 +313,7 @@ Each phase ends somewhere usable.
 | 3 | Annotate: parts, types, mirror, the unaddressed list, both selection gestures | **the uncertain one** — this is the whole UX bet | shipped 2026-08-29 |
 | 4 | Pose: clip frame to neutral, per-bone adjust | mechanical — port `stadium-stance.js` | not started |
 | 5 | Gates + dex board status | mechanical | not started |
-| 6 | `pokemon-lab-runtime.js` + a Node test proving base-game's import path | mechanical | not started |
+| 6 | `pokemon-lab-runtime.js` + a Node test proving base-game's import path | mechanical | shipped 2026-08-30 |
 
 Phase 1 pulled `pokemon-lab-io.js` forward from its unnumbered place in the module table, because browse
 mode records which clip is the idle and that is authored work: it has to reach a file from the first
