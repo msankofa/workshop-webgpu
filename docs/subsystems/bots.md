@@ -1814,7 +1814,7 @@ routing its real hitscan kills through `applyDeathImpulse` and its `applyExplosi
 | `shoot-house.js` | Adapter exposes `bounds` for the shoot-house static nav-grid bake. |
 | `multiplayer.js` | `GhostRenderer`'s capsule-ghost path renders a smooth (tick()-driven) fall-over death pose for any `alive:false` player/bot pose; `instanceBots` option drives the Phase 4 instanced body pool + per-bot `botBodyStyle` color. |
 | `body-part-batches.js` | Phase 4 instanced-render pool for bot bodies: one `InstancedMesh` per shared body geometry, per-instance color; driven by `createProceduralPlayerBody`'s `flush()`. Node-tested (`test-body-part-batches.mjs`). |
-| `ragdoll.js` | Pure Verlet ragdoll solver (16-particle humanoid, proportions from `player-procedural-body.js`) with passive angular cone limits + `seedRagdollFromJoints` — Node-tested (`test-ragdoll.mjs`), THREE-free. Solver done; death-pose wiring (step B) pending. |
+| `ragdoll.js` | Pure Verlet ragdoll solver (16-particle humanoid, proportions from `player-procedural-body.js`) with passive angular cone limits + `seedRagdollFromJoints` — Node-tested (`test-ragdoll.mjs`), THREE-free. Solver done; death-pose wiring (step B) pending. A cone may also carry `min` (two-sided range, for a joint whose rest pose is already bent) and `stiffness` (relaxation, for a body with a cone on every joint); the five cones here set neither, so both are inert for bots. Added for `pokemon-hang.js`. |
 | `player-procedural-body.js` | `setRagdollPose(P)` poses the rig from 16 ragdoll joints instead of IK/gait (step A) — mesh + instanced; mesh path unchanged when unused. |
 | `ragdoll-body.js` | Bridge: `RAGDOLL_JOINT_MAP` + `ragdollFromBody` (seed a ragdoll from a live rig) + `applyDeathImpulse`. One source of truth for the body↔ragdoll mapping; shared by the viewer, bot-viewer, and (later) the game. |
 | `ragdoll-viewer.html` | Standalone harness: stand-in ragdolls (drop/punch/blast + physics sliders) **and** a real-body flop demo (Spawn body → Kill) validating `setRagdollPose`. Not part of the game's module graph. |
@@ -9973,3 +9973,42 @@ All Node-tested; none has had a before/after `?prof=1` browser measurement yet.
   Pooled objects from before a toggle drain naturally. Scales with rounds in flight, not bots.
 - **`?rboxlod` stays default 0** per the standing sign-off note; gear merge subsumes most of what
   its bucket-count reduction bought while keeping the authored seg=3 look.
+
+## The brain as a module: `bot-brain.js` (2026-08-27)
+
+The v3 brain now exists as a server-safe module, generated from the harness rather than copied by
+hand: `tools/bot-brain-gen/` walks the call graph from `updateBotSentry`, `selectBotTarget`,
+`createBotActor` and the register pair, stops at the effect systems (voice, FX, mounts, wounds,
+drones, debug, damage application) and writes the 160 surviving functions (~3,100 lines) into
+`createBotBrain({ world, hooks, settings })` verbatim, with every module-scope declaration they
+touch lifted alongside. Nothing in the harness changed; v3 still runs its inline copy. It exists
+for Base Game NPCs (`docs/superpowers/plans/2026-08-27-base-game-npc-bots.md`), whose server has
+no THREE and no `mapCollider`.
+
+What the module replaces, and only this:
+
+- `mapCollider.raycast` and `groundHeight` become `world.raycast` / `world.heightAt`; on the Base
+  Game server those are `worldOccluder(room)` and `sim.heightAt`, the bullet's own ray and the
+  unbounded source.
+- `THREE.Vector3` becomes a 15-method `Vec3`; `THREE.MathUtils.degToRad` is shimmed; a debug LOS
+  line lands in a Proxy sink.
+- The 30 cut functions are `hooks.<name>` with no-op defaults. `fireBotShot` is the one that
+  matters: the host fires (Base Game: the player trigger) and spends the round from
+  `brain.ammoFor(bot)`; the harness ammo model stays inside the brain so reload timing is the
+  harness's, and the host may overwrite `bot.ammoByWeapon` from its own store each tick.
+- Two `PATCHES` on verbatim bodies: `rebuildFrameEnemyLists` and `combatEntityById` also read
+  `worldEntities`, the host's non-bot bodies (players), partitioned by `team` rather than hostile
+  to all like the harness's dummies.
+
+Host surface (hand-written, at the bottom of the generated file): `spawn({ team, roleId,
+weaponId, at })`, `remove`, `stepAll(dt, now)` (v3's `updateAllBots` minus rendering, physics
+and squads), `damaged(target, attacker, amount, now)` (v3's `applyBotDamage` minus wounds/FX;
+the host has already changed `health`), `killed`, `revived`, `setWorldEntities`, `bound()` for
+hooks, `ammoFor`. The bot record is `createBrainBot`'s plain capsule; the brain writes
+`velocity`, `yaw` and stance, the host moves the body and reads them back as intent.
+
+`test-bot-brain.mjs`: two teams on a flat 120 m arena with a whole-arena grid, vis field and
+corner map; both sides aim and fire only across teams, a bot dropped to 12 hp flees, heals and
+seeks again, a killed bot is dropped by every observer. Not yet exercised headless: cover
+(there are no crests on flat ground), grenades (`refreshGrenadeThreats` is a hook), squads,
+medic, sidearm swaps, and the harness stride at 40+ bots.

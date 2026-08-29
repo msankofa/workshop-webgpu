@@ -197,9 +197,14 @@
         <span class="mono" id="reachRead" style="flex:none;">4 bones</span>
       </div>
       <div class="row">
-        <span style="color:#9aa4b0; font-size:11px;">Twist</span>
+        <span style="color:#9aa4b0; font-size:11px; min-width:34px;">Twist</span>
         <input type="range" id="twistLimit" min="0" max="180" step="1" value="45">
         <span class="mono" id="twistRead" style="flex:none;">45°</span>
+      </div>
+      <div class="row">
+        <span style="color:#9aa4b0; font-size:11px; min-width:34px;">Bend</span>
+        <input type="range" id="bendLimit" min="0" max="180" step="1" value="60">
+        <span class="mono" id="bendRead" style="flex:none;">60°</span>
       </div>
       <div class="mono" id="poseRead">—</div>
       <div class="buttons">
@@ -208,8 +213,11 @@
       </div>
       <p class="hint">Dragging a bone bends this many bones above it. At zero it bends every bone up to the
         root. If you have selected bones above the one you grab, those are bent instead.</p>
-      <p class="hint">Twist is how far a bone may turn about its own length, in degrees, measured against
-        its parent. It applies to dragging and to hanging, and at 180 nothing is limited.</p>
+      <p class="hint">Twist is how far a bone may turn about its own length. Bend is how far it may turn
+        across it, which is the joint opening and closing. Both are measured against the parent bone and
+        against the pose the movement started from, and at 180 nothing is limited.</p>
+      <p class="hint">Bending is limited exactly while you drag. While the creature hangs it is a pull rather
+        than a wall, so a joint can pass the limit during a hard swing and is drawn back after.</p>
       <p class="hint">Turning Pose on stops the clip. Turning it off lets the clip take the bones back, so
         save the pose first if you want to keep it.</p>
 
@@ -339,9 +347,9 @@ import {
   resolveSegment, wholeClip, segmentKind, poseAt, COMMON_STATES, setNeutralBone, clearNeutral,
 } from './pokemon-annotation.js';
 import { toggleKeys, chainKeysOf, selectionInfo, nearestPoint } from './pokemon-select.js';
-import { chainUp, selectedReach, fabrik, segmentRotations, limitRelativeTwist } from './pokemon-ik.js';
+import { chainUp, selectedReach, fabrik, segmentRotations, limitRelative, qmul, qconj } from './pokemon-ik.js';
 import {
-  buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness, boneRotations, boneOrder,
+  buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness, setBend, boneRotations, boneOrder,
 } from './pokemon-hang.js';
 import { describeStatus } from './disk-store.js';
 import {
@@ -806,6 +814,7 @@ addEventListener('pointerup', () => {
   pose.bone = -1;
   pose.chain = [];
   pose.objects = [];
+  pose.seedQ = pose.seedPos = null;                      // the next grab starts measuring from where it lands
   controls.enabled = true;
   refreshPose();
 });
@@ -838,6 +847,7 @@ function clearSelection() {
 // is whatever is visibly green in the viewport.
 const pose = {
   on: false, reach: 4, bone: -1, chain: [], objects: [],
+  seedQ: null, seedPos: null,                            // the pose at the grab, for the angular limits
   plane: new THREE.Plane(), grab: new THREE.Vector3(),
 };
 const _ray = new THREE.Raycaster();
@@ -896,6 +906,12 @@ function beginPose(index, ev) {
   if (pose.objects.some(o => !o)) { pose.chain = []; pose.objects = []; pose.bone = -1; refreshPose(); return false; }
   pose.bone = index;
 
+  // The pose at the moment of the grab, which is what the angular limits are measured against. Without it
+  // they could only see one pointer move's worth of turn, which at sixty frames a second is nothing -- a
+  // limit on the rate, not on the range, and dragging slowly went anywhere it liked.
+  pose.seedQ = pose.objects.map((o) => { const q = o.getWorldQuaternion(new THREE.Quaternion()); return [q.x, q.y, q.z, q.w]; });
+  pose.seedPos = pose.chain.map(k => { const i = at.get(k); return [skel.xyz[i * 3], skel.xyz[i * 3 + 1], skel.xyz[i * 3 + 2]]; });
+
   pose.grab.set(skel.xyz[index * 3], skel.xyz[index * 3 + 1], skel.xyz[index * 3 + 2]);
   // Drag on the plane through the bone that faces the camera, which is where the pointer already is.
   pose.plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(_dir).negate(), pose.grab);
@@ -912,16 +928,6 @@ function dragPose(ev) {
   const after = fabrik(before, target);
   const turns = segmentRotations(before, after);
 
-  // Each segment rotation is pure swing on its own, but consecutive ones are relative to the WORLD, so the
-  // turn of a bone against its parent can still come out as twist. Clamped down the chain, parent first.
-  const maxTwist = twistLimit();
-  if (maxTwist < Math.PI) {
-    for (let i = 1; i < turns.length; i++) {
-      const a = [before[i + 1][0] - before[i][0], before[i + 1][1] - before[i][1], before[i + 1][2] - before[i][2]];
-      turns[i] = limitRelativeTwist(turns[i - 1], turns[i], a, maxTwist);
-    }
-  }
-
   // Top-down: each bone's local rotation is relative to a parent this loop has already moved.
   for (let i = 0; i < turns.length; i++) {
     const o = objects[i];
@@ -936,7 +942,38 @@ function dragPose(ev) {
     // per chain bone per pointer move.
     o.updateWorldMatrix(false, false);
   }
+  limitChain();
   updateSkeleton();
+}
+
+/**
+ * Pull every bone in the dragged chain back inside its angular limits.
+ *
+ * A separate pass rather than a correction to `turns`, because what is bounded is the turn ACCUMULATED
+ * since the grab, and `turns` only carries this pointer move. Each bone is measured against its parent's
+ * already-corrected total, parent first, about the direction the bone pointed when it was grabbed -- the
+ * frame a relative rotation is expressed in.
+ */
+function limitChain() {
+  const maxSwing = bendLimit(), maxTwist = twistLimit();
+  if (maxSwing >= Math.PI && maxTwist >= Math.PI) return;
+  const { objects, seedQ, seedPos } = pose;
+  if (!seedQ || seedQ.length !== objects.length) return;
+
+  let parent = [0, 0, 0, 1];                            // the bone above the chain never moved
+  for (let i = 0; i < objects.length - 1; i++) {
+    const o = objects[i];
+    o.getWorldQuaternion(_q);
+    const total = qmul([_q.x, _q.y, _q.z, _q.w], qconj(seedQ[i]));
+    const axis = [seedPos[i + 1][0] - seedPos[i][0], seedPos[i + 1][1] - seedPos[i][1], seedPos[i + 1][2] - seedPos[i][2]];
+    const fixed = limitRelative(parent, total, axis, { maxSwing, maxTwist });
+    const [x, y, z, w] = qmul(fixed, seedQ[i]);
+    _q.set(x, y, z, w);
+    if (o.parent) { o.parent.getWorldQuaternion(_qp); _q.premultiply(_qp.invert()); }
+    o.quaternion.copy(_q);
+    o.updateWorldMatrix(false, false);
+    parent = fixed;
+  }
 }
 
 // --- hanging: the whole body, under gravity ---------------------------------------------------------
@@ -959,7 +996,7 @@ function startHang() {
   // rig.bones is ordered by glTF node index, which does not promise a parent before its child, and the
   // apply loop settles each bone against its parent.
   hang.order = boneOrder(current.rig);
-  hang.sim = buildHang(current.rig, hang.seed, { stiffness: hang.stiff });
+  hang.sim = buildHang(current.rig, hang.seed, { stiffness: hang.stiff, maxBend: bendLimit() });
   refreshHang();
 }
 
@@ -996,7 +1033,7 @@ function stepHangFrame(dt) {
     gravity: hang.gravity, drag: hang.drag, ground: hang.ground,
   });
   const now = hangPositions(hang.sim);
-  const turns = boneRotations(current.rig, hang.seed, now, { maxTwist: twistLimit() });
+  const turns = boneRotations(current.rig, hang.seed, now, { maxTwist: twistLimit(), maxBend: bendLimit() });
   const bones = current.rig.bones;
 
   // Root first, so a bone's parent is settled before its local rotation is worked out against it.
@@ -1042,10 +1079,19 @@ function twistLimit() {
   return Number($('twistLimit').value) * Math.PI / 180;
 }
 
+/** How far a bone may turn across its own length against its parent. Radians; pi means no limit. */
+function bendLimit() {
+  return Number($('bendLimit').value) * Math.PI / 180;
+}
+
 $('poseBtn').addEventListener('click', () => setPoseMode(!pose.on));
 $('reach').addEventListener('input', () => { pose.reach = Number($('reach').value); refreshPose(); });
 $('twistLimit').addEventListener('input', () => {
   $('twistRead').textContent = `${$('twistLimit').value}°`;
+});
+$('bendLimit').addEventListener('input', () => {
+  $('bendRead').textContent = `${$('bendLimit').value}°`;
+  if (hang.sim) setBend(hang.sim, bendLimit());          // live, so it does not need a rebuild
 });
 
 $('takeNeutralBtn').addEventListener('click', () => {

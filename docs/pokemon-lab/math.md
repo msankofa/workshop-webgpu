@@ -420,6 +420,83 @@ original sentence was not.
 
 ---
 
+## 6b. Angular limits: what each half can promise
+
+Added 2026-08-29. A bone's turn against its parent splits into two parts by the bone's own long axis, and
+they are limited separately because they are enforceable to different standards.
+
+### The decomposition
+
+`q = swing · twist`, with the twist the projection of the quaternion's vector part onto the axis, put back
+on the unit sphere, and the swing whatever remains. **Twist** is rotation about the bone's length. **Swing**
+(the *bend*) is rotation across it.
+
+Both are measured against the parent's turn, `rel = parent⁻¹ · child`, and both are measured from the pose
+the movement started in. `rel` is expressed in the frame *before* the parent moved, which is why the axis
+used is the bone's direction in the **seeded** pose and not its current one.
+
+A bone with no usable long axis — two symmetric children average to nothing — has no twist to name. There
+the bend limit bounds the whole turn and the twist limit stands aside. Bounding by the twist limit instead
+would be a hip clamped to a forearm's allowance for no reason visible on the model.
+
+### What each is worth
+
+| | Visible to a positional solver? | Enforcement |
+|---|---|---|
+| twist | **No.** Turning a one-child bone about its own length moves nothing — the child sits on the axis. | Clamped where rotations are handed to the mesh. Exact. |
+| bend | **Yes.** Bending moves the child off the parent's line. | Clamped on the way to the mesh (exact) *and* pulled in the simulation (soft). |
+
+The simulation half is honest about being soft: joints do leave the range during a hard swing and are drawn
+back afterwards. Measured on Squirtle at a 15° limit, swung by one bone through a circle a body-height wide
+for three seconds and then left for six: **two of 28 joints** settled outside the range, worst 35°, with
+1.6% worst bone stretch. What is *drawn* never leaves the range at any moment.
+
+### Two results that went against the obvious guess
+
+**Measured — an angle limit written as a distance is blind where a joint is straight.** The law of cosines
+maps the angle `θ` at the middle of a three-bone run to the span `d` across it, so an angle range is a
+distance range, which the existing brace could have carried at no cost. But
+
+```
+dd/dθ = la · lb · sin(θ) / d        → 0 as θ → π
+```
+
+so the span stops responding to the angle exactly where the run is straight. Spines and tails are straight.
+A 10° limit written this way left a joint bent 20°. Replaced with a two-sided cone, which is non-degenerate
+there.
+
+**Measured — weaker correction passes settle better.** Each bone is the child of one cone and the pivot of
+the next, and a full projection fights both its neighbours and the hard length constraints that run after
+it. Squirtle, 15° limit, joints settling outside it out of 28:
+
+| relaxation | joints over | worst | worst stretch |
+|---|---|---|---|
+| 1.0 | — | diverged | diverged |
+| 0.25 | 6 | 36° | 4.2% |
+| 0.1 | 3 | 32° | 2.1% |
+| **0.05** | **2** | **35°** | **1.6%** |
+| 0.02 | 2 | 21° | 1.1% |
+
+0.05 is what shipped. `probe_bend.mjs` re-derives the table on three species.
+
+### A measurement that was wrong before it was right
+
+The first pass at these figures reported joints violating a 60° limit by 40°+, and blamed the solver. They
+were cones built on **bones with no length** — Pikachu has one 0.001 units long on a 22-unit body — whose
+"angle" is pure direction noise. The threshold that excludes them is relative to body height, because the
+dex runs 9 to 320 units tall and an absolute epsilon would pass on Onix and fail on something small. A test
+pins it on all three rigs.
+
+The same pass also produced a table that was not even monotonic in the setting. It was sampling one frame
+of a chaotic swing and reporting where in the circle the sample happened to land, not what the limit did.
+
+### What is still not limited
+
+Neither half knows which **way** a joint should bend. A knee opening backwards is the same angle as a knee
+opening forwards. That needs the parts named, which is phase 3.
+
+---
+
 ## 7. The other measured quantities
 
 Numbers the lab relies on elsewhere, all **measured**, all in `pokemon-rig.js`.

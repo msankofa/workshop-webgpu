@@ -32,11 +32,13 @@ inferred or eyeballed.
 | `test-pokemon-lab-io.mjs` | 30 checks, including two cross-checks. | shipped |
 | `test-pokemon-pose.mjs` | 29 checks, four species. | shipped |
 | `test-pokemon-select.mjs` | 20 checks, six species. | shipped |
-| `test-pokemon-ik.mjs` | 30 checks: the solver as geometry, twist, chains against real rigs. | shipped |
-| `test-pokemon-hang.mjs` | 22 checks: the physics as physics, the rotation fit against known rotations. | shipped |
-| `_check_pokemon-lab.html.mjs` | 61 static checks on the page. | shipped |
+| `test-pokemon-ik.mjs` | 38 checks: the solver as geometry, twist and bend, chains against real rigs. | shipped |
+| `test-pokemon-hang.mjs` | 27 checks: the physics as physics, the rotation fit against known rotations. | shipped |
+| `_check_pokemon-lab.html.mjs` | 63 static checks on the page. | shipped |
 
-`ragdoll.js` and its 31 tests are **reused unchanged**. The only new physics here is the body definition.
+`ragdoll.js` is reused, and its 31 tests still pass untouched. Its cone solver gained an optional `min` and
+an optional per-cone `stiffness` for the bend limit below; both default to the old behaviour, so the bot
+ragdoll's five cones — which set neither — behave exactly as before.
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
 
@@ -517,22 +519,28 @@ move something plausible-looking in an implausible way.
 
 ## Hanging: pick it up and let gravity have it
 
-`pokemon-hang.js` builds a ragdoll out of a rig and steps it with **`ragdoll.js`, unchanged**. That solver's
-core — `stepRagdoll`, `integrate`, `solveConstraints`, `collideGround` — touches only `rd.particles` and
+`pokemon-hang.js` builds a ragdoll out of a rig and steps it with **`ragdoll.js`**. That solver's core —
+`stepRagdoll`, `integrate`, `solveConstraints`, `collideGround` — touches only `rd.particles` and
 `rd.constraints` and knows nothing about humanoids; only its `createRagdoll` is welded to a 16-joint body.
 So this builds the same shape of object from a Pokémon skeleton and inherits a Verlet solver that already
-has 31 tests. Nothing about the physics was rewritten.
+has 31 tests. No integrator or constraint kind was rewritten; the only change to that file is the two
+optional cone fields described under the bend limit below.
 
-Two constraint kinds, both derived from the skeleton with **no anatomy needed**:
+Three constraint kinds, all derived from the skeleton with **no anatomy needed**:
 
 | Kind | Between | Does |
 |---|---|---|
 | bone | parent and child, at its current length | stops stretching — on its own this is a rope |
-| brace | bone and **grandparent**, at its current distance | folding shortens that distance and the constraint pushes back |
+| brace | bone and **grandparent**, at its current distance, soft | folding shortens that distance and the constraint pushes back |
+| hinge | a two-sided angle range at the middle of every three-bone run | the bend limit — see below |
 
 Braces are ordered **before** bones in the constraint list, because the solver runs it in order every
 iteration and whatever comes last has the final say. Interleaved, the braces pulled bones 2.5% out of
-length.
+length. Hinges are not in that list at all; they are cones, solved by angle rather than by distance.
+
+`setStiffness` finds braces by a `kind` tag rather than by their current stiffness. Reading the value back
+meant that setting the slider to exactly 1 made a brace indistinguishable from a bone link, and it never
+moved again.
 
 Everything is scaled to body height — gravity, joint radius, the zero-length brace threshold. These models
 run from 9 to 320 units tall, so a constant tuned on one is wrong on most. `ragdoll.js`'s own default of 25
@@ -592,12 +600,62 @@ Clamped down the chain, parent first.
 
 180° means no limit, and a check pins the slider's range there.
 
+### Bend, the other half, and why it is enforced twice
+
+**Bend** is rotation *across* the bone's axis — the joint opening and closing — and it is the complement of
+twist in the same decomposition. One **Bend** slider, also in degrees, also measured against the parent and
+against the pose the movement started from. `limitAngle` clamps a whole turn, `limitSwing` clamps only the
+part across an axis, and `limitRelative` does both halves at once against a parent; a bone with no usable
+long axis falls back to `limitAngle`, because there the whole turn *is* bend and there is no twist to name.
+
+Unlike twist, bend **moves joints**, so the simulation can hold it — and has to, or the particles would fold
+through the body while the drawn pose pretended otherwise. So it is enforced in two places with two
+different strengths, and the difference is worth being plain about:
+
+| Where | How | What it promises |
+|---|---|---|
+| On the way to the mesh, `boneRotations` | `limitRelative`, clamped outright | Exact. Nothing is ever *drawn* past the limit. |
+| In the simulation, `ragdoll.js` cones | soft, relaxed per pass | A pull. Joints do pass the limit mid-swing and are drawn back. |
+
+The physical half is a two-sided angle range on every three-bone run, seeded from the angle each joint
+started at. That is `ragdoll.js`'s existing cone solver, which repositions the child on a cone at a fixed
+radius and so changes an angle without touching either bone length. It gained an optional `min` (its five
+built-in cones set only a max, since a knee may straighten all the way) and an optional per-cone
+`stiffness`. Both default to the old behaviour, so the bot ragdoll is unchanged.
+
+Two things were measured rather than assumed here, and both went against the obvious guess:
+
+**Writing the limit as a distance does not work.** The law of cosines turns an angle at the middle joint
+into a distance across it, which the existing brace could have carried for free. But `d(span)/d(theta)` is
+`la·lb·sin(theta)/d`, which goes to **zero at π** — the span stops responding to the angle exactly where a
+joint is straight. Spines and tails are straight, so the joints most in need of a limit were the ones it
+could not see: a 10° limit left a joint bent 20°.
+
+**Weaker correction passes settle better.** `BEND_RELAXATION` is 0.05, not 1. A body with a cone on every
+joint has each bone as the child of one and the pivot of the next, and full projections fight both each
+other and the length constraints that run after them. Measured on Squirtle at a 15° limit: at 0.25, six of
+28 joints settled outside the limit with 4.2% stretch; at 0.05, two, with 1.6%. At 1 it diverged outright.
+`probe_bend.mjs` re-derives the table.
+
+Both limits measure from the **grab**, not from one pointer move. `dragPose` re-reads bone positions every
+move, so the turn it computes is a single frame's worth; clamping that bounded how *fast* a bone could turn
+rather than how far, and dragging slowly went wherever it liked. `beginPose` now records `pose.seedQ` and
+`pose.seedPos`, and `limitChain` runs as its own pass afterwards, each bone measured against its parent's
+already-corrected total.
+
 ### What it still cannot do
 
-No cone limits. `ragdoll.js` stops a knee bending backwards because it knows which joint is a knee; nothing
-here knows that until the parts are annotated. Braces resist **all** folding equally, so a hanging creature
+No limit knows which *way* a joint bends. A knee opening backwards is the same angle as a knee opening
+forwards, so both are allowed; the bend limit stops a skeleton folding through itself, it does not make it
+fold correctly. `ragdoll.js` can do better only because it knows which joint is a knee, and nothing here
+knows that until the parts are annotated. Braces still resist **all** folding equally, so a hanging creature
 reads as uniformly stiff — a neck resists exactly as much as a tail. That is the cost of having no
 annotation yet, not a limit of the solver, and it is the strongest argument for phase 3.
+
+Cones are skipped where either bone is shorter than a thousandth of body height. These rigs are full of
+bones sitting on their parent — Pikachu has one 0.001 units long on a 22-unit body — and a cone built on one
+reports wild angles that are pure direction noise. A whole measuring pass blamed the solver for violations
+that were never real before this was found, so a test pins it on all three rigs.
 
 Hanging, posing and playback all own the bones, so turning Hang on stops the other two and disables the
 transport. `hang.sim` being non-null *is* the on state; a separate flag would be the same fact twice.

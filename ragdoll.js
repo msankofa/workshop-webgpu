@@ -181,7 +181,10 @@ export function createRagdoll(opts = {}) {
   return { particles, index, constraints, bones, limits, _acc: 0 };
 }
 
-// ---- passive cone limits: clamp a joint only when it exceeds its swing, length-preserving ----
+// ---- passive cone limits: clamp a joint only when it leaves its swing range, length-preserving ----
+// `min` is optional and defaults to no lower bound, which is what a knee or an elbow wants — they may
+// straighten all the way. A joint whose rest pose is already bent (pokemon-hang builds these from arbitrary
+// skeletons) sets both, so it is held in a band around where it started rather than pushed toward straight.
 function solveCones(rd) {
   const P = rd.particles;
   for (const c of rd.limits.cones) {
@@ -192,15 +195,21 @@ function solveCones(rd) {
     const bl = Math.hypot(bx, by, bz); if (bl < 1e-6) continue;
     let cosA = (axx * bx + axy * by + axz * bz) / bl;
     cosA = cosA > 1 ? 1 : (cosA < -1 ? -1 : cosA);
-    if (Math.acos(cosA) <= c.max) continue;
+    const angle = Math.acos(cosA);
+    const want = angle > c.max ? c.max : (c.min != null && angle < c.min ? c.min : null);
+    if (want === null) continue;
     let px = bx / bl - axx * cosA, py = by / bl - axy * cosA, pz = bz / bl - axz * cosA;
     let pl = Math.hypot(px, py, pz);
     if (pl < 1e-6) { px = axy; py = -axx; pz = 0; pl = Math.hypot(px, py, pz) || 1; } // opposite: any ⟂
     px /= pl; py /= pl; pz /= pl;
-    const cm = Math.cos(c.max), sm = Math.sin(c.max);
-    child.x = pivot.x + (axx * cm + px * sm) * bl;
-    child.y = pivot.y + (axy * cm + py * sm) * bl;
-    child.z = pivot.z + (axz * cm + pz * sm) * bl;
+    const cm = Math.cos(want), sm = Math.sin(want);
+    // Relaxation. A body with a cone on every joint has each bone as the child of one and the pivot of the
+    // next, so full projections fight each other down the chain and pump energy in; measured on a 40-bone
+    // Onix that diverged outright. Under 1 the pass under-corrects and the iterations converge instead.
+    const k = c.stiffness ?? 1;
+    child.x += ((pivot.x + (axx * cm + px * sm) * bl) - child.x) * k;
+    child.y += ((pivot.y + (axy * cm + py * sm) * bl) - child.y) * k;
+    child.z += ((pivot.z + (axz * cm + pz * sm) * bl) - child.z) * k;
   }
 }
 
@@ -224,7 +233,8 @@ function solveConstraints(rd, iterations) {
   const P = rd.particles;
   const doLimits = rd.limits && rd.limits.enabled;
   for (let it = 0; it < iterations; it++) {
-    // Cone limits first (swing-only) so the distance pass below has the last word on bone lengths.
+    // Cone limits first (swing-only) so the distance pass below has the last word on bone lengths. Running
+    // them last instead was measured on three rigs at four limits and helped nothing.
     if (doLimits) solveCones(rd);
     for (const c of rd.constraints) {
       const a = P[c.a], b = P[c.b];

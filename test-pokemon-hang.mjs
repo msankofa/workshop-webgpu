@@ -8,10 +8,10 @@ import fs from 'node:fs';
 import { readRigFromGLB } from './pokemon-rig.js';
 import { readPose, rootPreMatrix } from './pokemon-pose.js';
 import {
-  buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness,
+  buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness, setBend, bendStrain,
   extractRotation, boneRotations, boneOrder, twistAxis,
 } from './pokemon-hang.js';
-import { twistAngle, qmul, qconj } from './pokemon-ik.js';
+import { twistAngle, swingAngle, qmul, qconj } from './pokemon-ik.js';
 
 const DIR = 'models/stadium';
 const FILES = { squirtle: '007_squirtle.glb', onix: '095_onix.glb', pikachu: '025_pikachu.glb' };
@@ -383,6 +383,105 @@ check('no bone twists past the limit, whatever the simulation does to it', () =>
   });
   assert(worst <= max + 1e-4, `a bone twisted ${(worst * 180 / Math.PI).toFixed(1)} degrees past a 30 degree limit`);
   assert(worstFree > max, `unlimited it only reached ${(worstFree * 180 / Math.PI).toFixed(1)} degrees, so the test proves nothing`);
+});
+
+console.log('\n--- the bend limit ---');
+
+check('no bone is DRAWN bent past the limit, whatever the simulation does to it', () => {
+  // The exact half of the limit. The simulation below is a pull rather than a wall, but what is handed to
+  // the mesh is clamped outright, so this is what a person actually sees.
+  const rig = rigOf('squirtle');
+  const seed = restOf(rig);
+  const at = new Map(rig.bones.map((b, i) => [b.key, i]));
+  const hang = buildHang(rig, seed, { maxBend: Math.PI });      // limit OFF in the physics on purpose
+  pinBone(hang, 0, seed[0] + rig.units.height, seed[1] + rig.units.height, seed[2]);
+  run(hang, 3, { ground: false });
+  const now = hangPositions(hang);
+
+  const max = 25 * Math.PI / 180;
+  const limited = boneRotations(rig, seed, now, { maxBend: max });
+  const free = boneRotations(rig, seed, now, {});
+  let worst = 0, worstFree = 0;
+  rig.bones.forEach((b, i) => {
+    const p = b.parent != null ? at.get(b.parent) : undefined;
+    if (p === undefined) return;
+    const axis = twistAxis(rig, seed, i, at);
+    worst = Math.max(worst, swingAngle(qmul(qconj(limited[p]), limited[i]), axis));
+    worstFree = Math.max(worstFree, swingAngle(qmul(qconj(free[p]), free[i]), axis));
+  });
+  assert(worst <= max + 1e-4, `a bone was drawn ${(worst * 180 / Math.PI).toFixed(1)} degrees past a 25 degree limit`);
+  assert(worstFree > max, `unlimited it only reached ${(worstFree * 180 / Math.PI).toFixed(1)} degrees, so the test proves nothing`);
+});
+
+check('a cone is never built on a bone with no length, on any of the three rigs', () => {
+  // The bug this pins down cost a whole measuring pass. Pikachu has a bone 0.001 units long on a 22-unit
+  // body; a cone built on it reports wild angles that are pure direction noise, and the numbers blamed the
+  // solver for violations that were never real. The threshold has to be relative -- the dex is 9 to 320
+  // units tall -- so an absolute epsilon would pass here and fail on something small.
+  for (const name of ['squirtle', 'onix', 'pikachu']) {
+    const rig = rigOf(name);
+    const seed = restOf(rig);
+    const hang = buildHang(rig, seed, { maxBend: 1 });
+    const span = (i, j) => Math.hypot(seed[i * 3] - seed[j * 3], seed[i * 3 + 1] - seed[j * 3 + 1], seed[i * 3 + 2] - seed[j * 3 + 2]);
+    assert(hang.limits.cones.length > 0, `${name}: no cones at all`);
+    for (const c of hang.limits.cones) {
+      const a = span(c.root, c.pivot), b = span(c.pivot, c.child);
+      assert(Math.min(a, b) > rig.units.height * 1e-3,
+        `${name}: a cone on bones ${a.toFixed(4)} and ${b.toFixed(4)} long, body height ${rig.units.height.toFixed(1)}`);
+    }
+  }
+});
+
+check('the bend limit brings a swung body back inside itself once it settles', () => {
+  // The physics half, and it is a PULL: during a hard swing joints do pass the limit. What is claimed here
+  // is only what was measured -- that letting go and waiting brings them back.
+  const rig = rigOf('squirtle');
+  const seed = restOf(rig);
+  const max = 20 * Math.PI / 180;
+  const swing = (hang) => {
+    const R = rig.units.height * 0.5;
+    for (let k = 0; k < 180; k++) {
+      pinBone(hang, 1, seed[3] + Math.cos(k * 0.06) * R - R, seed[4] + Math.sin(k * 0.06) * R, seed[5]);
+      stepHang(hang, 1 / 60, { ground: false });
+    }
+    for (let k = 0; k < 360; k++) stepHang(hang, 1 / 60, { ground: false });
+  };
+  const limited = buildHang(rig, seed, { maxBend: max });
+  const free = buildHang(rig, seed, { maxBend: Math.PI });
+  swing(limited); swing(free);
+  const a = bendStrain(limited), b = bendStrain(free);
+  assert(b[0] > max, `unlimited it only bent ${(b[0] * 180 / Math.PI).toFixed(1)} degrees, so the test proves nothing`);
+  assert(a[0] < b[0], `limited ${(a[0] * 180 / Math.PI).toFixed(1)} vs free ${(b[0] * 180 / Math.PI).toFixed(1)} degrees`);
+  const over = a.filter(v => v > max + 1e-3).length;
+  assert(over <= 2, `${over} of ${a.length} joints settled outside the limit`);
+});
+
+check('the limit is live, so the slider does not need the body rebuilt', () => {
+  const rig = rigOf('squirtle');
+  const hang = buildHang(rig, restOf(rig), { maxBend: Math.PI });
+  assert(!hang.limits.enabled, 'no limit means the solver should not even run the pass');
+  setBend(hang, 0.5);
+  assert(hang.limits.enabled, 'setting a limit must turn the pass on');
+  for (const c of hang.limits.cones) {
+    assert(c.max - c.min <= 1.0 + 1e-9, 'the band should be the limit either side of where it started');
+    assert(c.min <= c.rest && c.rest <= c.max, 'the pose it was seeded in must be inside its own limit');
+  }
+  setBend(hang, Math.PI);
+  assert(!hang.limits.enabled, 'putting it back to pi must turn the pass off again');
+});
+
+check('stiffness stays adjustable after being set to one', () => {
+  // Braces used to be found by having a stiffness under 1, so setting the slider to exactly 1 made them
+  // indistinguishable from bone links and they never moved again.
+  const rig = rigOf('squirtle');
+  const hang = buildHang(rig, restOf(rig), { stiffness: 0.4 });
+  const braces = hang.constraints.filter(c => c.kind === 'brace');
+  assert(braces.length > 0, 'no braces to test');
+  setStiffness(hang, 1);
+  assert(braces.every(c => c.stiffness === 1), 'the slider did not reach them');
+  setStiffness(hang, 0.3);
+  assert(braces.every(c => c.stiffness === 0.3), 'they got stuck at one');
+  assert(hang.constraints.every(c => c.kind === 'brace' || c.stiffness === 1), 'bone links must stay rigid');
 });
 
 check('the limit off is the same answer as no limit', () => {

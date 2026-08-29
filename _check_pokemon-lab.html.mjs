@@ -426,16 +426,40 @@ check('a pose reaches the file, and records the whole stance rather than the edi
   assert(/current\.rig\.bones\.entries\(\)/.test(take), 'every bone, not only the ones that moved');
 });
 
-check('the twist limit reaches both the drag and the hang, from one control', () => {
+check('both angular limits reach the drag and the hang, from one control each', () => {
   // A positional solver cannot see twist -- turning a single-child bone about its own length moves nothing
   // -- so it has to be clamped where rotations are handed back, in both places that do that.
   assert(/function twistLimit\(/.test(code), 'no shared twist limit');
+  assert(/function bendLimit\(/.test(code), 'no shared bend limit');
   const drag = code.match(/function dragPose\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/limitRelativeTwist\(/.test(drag), 'the drag must clamp twist down the chain');
+  assert(/limitChain\(\)/.test(drag), 'the drag must clamp the chain');
   const step = code.match(/function stepHangFrame\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/maxTwist: twistLimit\(\)/.test(step), 'hanging must pass the same limit through');
-  const html = markup.match(/<input[^>]*id="twistLimit"[^>]*>/)?.[0] ?? '';
-  assert(/max="180"/.test(html), 'the slider must reach 180, which is where nothing is limited');
+  assert(/maxTwist: twistLimit\(\)/.test(step), 'hanging must pass the twist limit through');
+  assert(/maxBend: bendLimit\(\)/.test(step), 'hanging must pass the bend limit through');
+  for (const id of ['twistLimit', 'bendLimit']) {
+    const html = markup.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`))?.[0] ?? '';
+    assert(/max="180"/.test(html), `${id} must reach 180, which is where nothing is limited`);
+  }
+});
+
+check('the angular limits measure from the grab, not from one pointer move', () => {
+  // `before` is re-read every move, so the turn it carries is a single frame's worth. Clamping THAT bounds
+  // how fast a bone may turn and not how far -- dragging slowly went wherever it liked.
+  const begin = code.match(/function beginPose\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/pose\.seedQ = /.test(begin) && /pose\.seedPos = /.test(begin), 'the grab must record the pose it started from');
+  const limit = code.match(/function limitChain\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/qconj\(seedQ\[i\]\)/.test(limit), 'the turn must be measured against the seeded rotation');
+  assert(/seedPos\[i \+ 1\]/.test(limit), 'the axis must be the direction the bone pointed when it was grabbed');
+  assert(/parent = fixed/.test(limit), 'each bone measures against its parent AFTER the parent was corrected');
+  assert(/pose\.seedQ = pose\.seedPos = null/.test(code), 'letting go must forget the seed');
+});
+
+check('the bend limit is enforced in the simulation, not only on the way to the mesh', () => {
+  // Bend, unlike twist, moves joints, so the physics can hold it. Leaving it to the rotation pass alone
+  // would let the particles fold through the body while the drawn pose pretended otherwise.
+  const start = code.match(/function startHang\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/maxBend: bendLimit\(\)/.test(start), 'the hang must be built with the limit');
+  assert(/setBend\(hang\.sim, bendLimit\(\)\)/.test(code), 'the slider must be live, like stiffness');
 });
 
 check('hanging reuses the tested ragdoll rather than a second physics solver', () => {

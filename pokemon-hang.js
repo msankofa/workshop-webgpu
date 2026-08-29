@@ -5,19 +5,35 @@
 // its `createRagdoll` is welded to a 16-joint body. So this module builds the same shape of object out of a
 // Pokemon rig and hands it to a Verlet solver that is already tested.
 //
-// Two constraint kinds, both derived from the skeleton with no anatomy needed:
+// Three constraint kinds, all derived from the skeleton with no anatomy needed:
 //
 //   bone    parent to child, at its current length. Stops stretching. On its own this is a ROPE.
-//   brace   bone to GRANDPARENT, at its current distance. Folding a joint shortens that distance and the
-//           constraint pushes back, which is the resistance that stops a skeleton collapsing on itself.
+//   brace   bone to GRANDPARENT, at its current distance, SOFT. Folding a joint shortens that distance and
+//           the constraint pushes back, which is the resistance that stops a skeleton collapsing on itself.
+//   hinge   a two-sided angle range at the middle joint of every three-bone run. This is the bend limit,
+//           and it is `ragdoll.js`'s cone solver, which repositions the child on a cone about the parent
+//           bone at a fixed radius, so it changes the angle without touching either length.
 //
-// What is deliberately missing is cone limits. `ragdoll.js` can stop a knee bending backwards because it
-// knows which joint is a knee; nothing here knows that until the parts are annotated. Braces resist all
-// folding equally, so a hanging creature reads as uniformly stiff -- a neck resists exactly as much as a
-// tail. That is a limitation of having no annotation yet, not of the solver.
+// Writing that limit as a distance instead -- the law of cosines turns an angle at the middle joint into a
+// distance across it, which the existing brace could have carried -- was tried and measured and does not
+// work. The distance stops responding to the angle exactly where a joint is STRAIGHT, since d/dtheta of the
+// span is la*lb*sin(theta)/d and that goes to zero at pi. Spines and tails are straight, so the joints most
+// in need of a limit were the ones it could not see: a ten-degree limit left a joint bent twenty.
+//
+// What is still missing is a limit that knows which WAY a joint bends. A knee opening backwards is the same
+// angle as a knee opening forwards, so both are allowed until the parts are annotated. The bend limit stops
+// a skeleton folding through itself; it does not make it fold correctly.
 
 import { stepRagdoll } from './ragdoll.js';
-import { limitRelativeTwist } from './pokemon-ik.js';
+import { limitRelative } from './pokemon-ik.js';
+
+// How much of each bend correction one solver pass applies.
+//
+// Measured across three rigs, four limits and four values, and the ranking is the opposite of the obvious
+// one: WEAKER passes leave a better settled pose. At 0.25 a fifteen-degree limit left six of Squirtle's
+// twenty-eight joints outside it; at 0.05, two, with a third of the stretch. Strong corrections fight the
+// length constraints that run after them and each other, and the compromise they reach is worse.
+const BEND_RELAXATION = 0.05;
 
 /**
  * A ragdoll for one rig, seeded from the pose it is in.
@@ -28,7 +44,7 @@ import { limitRelativeTwist } from './pokemon-ik.js';
  * Gravity, radius and every length are RELATIVE TO BODY HEIGHT. These models run from 9 to 320 units tall,
  * so a constant tuned on one of them is wrong on most of them.
  */
-export function buildHang(rig, positions, { stiffness = 0.4 } = {}) {
+export function buildHang(rig, positions, { stiffness = 0.4, maxBend = Math.PI } = {}) {
   const bones = rig.bones;
   const height = rig.units.height || 1;
   const particles = bones.map((b, i) => {
@@ -46,6 +62,7 @@ export function buildHang(rig, positions, { stiffness = 0.4 } = {}) {
   // comes last has the final say. Interleaved, the braces were pulling bones 2.5% out of length.
   const braces = [];
   const links = [];
+  const hinges = [];
   for (let i = 0; i < bones.length; i++) {
     const p = bones[i].parent != null ? at.get(bones[i].parent) : undefined;
     if (p === undefined) continue;
@@ -56,16 +73,64 @@ export function buildHang(rig, positions, { stiffness = 0.4 } = {}) {
     const g = bones[p].parent != null ? at.get(bones[p].parent) : undefined;
     if (g === undefined) continue;
     const d = span(g, i);
-    if (d > height * 1e-4) braces.push({ a: g, b: i, min: d, max: d, stiffness });
-  }
-  const constraints = [...braces, ...links];
+    if (d <= height * 1e-4) continue;
+    braces.push({ a: g, b: i, min: d, max: d, stiffness, kind: 'brace' });
 
-  return {
-    particles, constraints, index: Object.fromEntries(at), bones: [],
-    limits: { enabled: false, cones: [] }, _acc: 0,
+    // BOTH bones need a length, or the angle between them is noise. These rigs are full of bones sitting on
+    // their parent -- Pikachu has one 0.001 units long on a 22-unit body -- and a cone built on one reports
+    // wild angles it was never really holding, which is what a whole measuring pass first blamed on the
+    // solver. The threshold is relative to body height, since the dex runs 9 to 320 units tall.
+    if (span(g, p) <= height * 1e-3 || span(p, i) <= height * 1e-3) continue;
+    hinges.push({
+      root: g, pivot: p, child: i, min: 0, max: Math.PI,
+      rest: turnAngle(particles, g, p, i), stiffness: BEND_RELAXATION,
+    });
+  }
+  const hang = {
+    particles, constraints: [...braces, ...links],
+    index: Object.fromEntries(at), bones: [],
+    limits: { enabled: false, cones: hinges }, _acc: 0,
     height, floor: rig.units.floorY,
     seed: Float64Array.from(positions),
   };
+  setBend(hang, maxBend);
+  return hang;
+}
+
+/**
+ * How far a joint is turned away from STRAIGHT, in radians: the angle between the parent bone and the child
+ * bone, zero when they are in line. This is the quantity `ragdoll.js`'s cone solver bounds.
+ */
+function turnAngle(P, root, pivot, child) {
+  const ax = P[pivot].pos.x - P[root].pos.x, ay = P[pivot].pos.y - P[root].pos.y, az = P[pivot].pos.z - P[root].pos.z;
+  const bx = P[child].pos.x - P[pivot].pos.x, by = P[child].pos.y - P[pivot].pos.y, bz = P[child].pos.z - P[pivot].pos.z;
+  const al = Math.hypot(ax, ay, az), bl = Math.hypot(bx, by, bz);
+  if (al < 1e-12 || bl < 1e-12) return 0;
+  const c = (ax * bx + ay * by + az * bz) / (al * bl);
+  return Math.acos(c > 1 ? 1 : c < -1 ? -1 : c);
+}
+
+/**
+ * How far every joint may bend away from the pose it was seeded in, in radians. Pi means no limit.
+ *
+ * Live, like the stiffness slider: only the two numbers on each cone change, so nothing is rebuilt and the
+ * simulation keeps its state.
+ */
+export function setBend(hang, maxBend = Math.PI) {
+  const off = !(maxBend >= 0) || maxBend >= Math.PI;
+  hang.limits.enabled = !off;
+  for (const c of hang.limits.cones) {
+    c.min = off ? 0 : Math.max(0, c.rest - maxBend);
+    c.max = off ? Math.PI : Math.min(Math.PI, c.rest + maxBend);
+  }
+  return hang;
+}
+
+/** How far each joint has actually bent from its seeded angle, in radians, worst first. A readout. */
+export function bendStrain(hang) {
+  return hang.limits.cones
+    .map(c => Math.abs(turnAngle(hang.particles, c.root, c.pivot, c.child) - c.rest))
+    .sort((a, b) => b - a);
 }
 
 /** Hold one bone at a point. A pinned particle also loses its mass, or its constraints half-correct. */
@@ -105,9 +170,14 @@ export function hangPositions(hang, out = new Float64Array(hang.particles.length
   return out;
 }
 
-/** Set every brace's stiffness at once, so the slider is live rather than needing a rebuild. */
+/**
+ * Set every brace's stiffness at once, so the slider is live rather than needing a rebuild.
+ *
+ * Braces are found by their tag, not by their current stiffness. Reading the value back meant that setting
+ * the slider to exactly 1 made a brace indistinguishable from a bone link, and it never moved again.
+ */
 export function setStiffness(hang, stiffness) {
-  for (const c of hang.constraints) if (c.stiffness !== 1) c.stiffness = stiffness;
+  for (const c of hang.constraints) if (c.kind === 'brace') c.stiffness = stiffness;
 }
 
 // ===================== particles back to bone rotations =====================
@@ -184,11 +254,11 @@ export function extractRotation(m, q0 = [0, 0, 0, 1], iterations = 128) {
  * frame to frame rather than flipping. Most bones in these rigs have one child, so this is the common case
  * and not a corner one.
  */
-export function boneRotations(rig, seed, now, { maxTwist = Math.PI } = {}) {
+export function boneRotations(rig, seed, now, { maxTwist = Math.PI, maxBend = Math.PI } = {}) {
   const bones = rig.bones;
   const at = new Map(bones.map((b, i) => [b.key, i]));
   const out = new Array(bones.length).fill(null);
-  const limit = maxTwist < Math.PI - 1e-6;
+  const limit = maxTwist < Math.PI - 1e-6 || maxBend < Math.PI - 1e-6;
 
   // Root first, so a leaf always finds its parent's answer already computed. Depths are measured once
   // rather than inside the comparator, which would walk the tree on every comparison.
@@ -217,8 +287,12 @@ export function boneRotations(rig, seed, now, { maxTwist = Math.PI } = {}) {
     const p = bones[i].parent != null ? at.get(bones[i].parent) : undefined;
     const parent = (p !== undefined && out[p]) || [0, 0, 0, 1];
     let q = extractRotation(m, parent);
-    // Clamped against the PARENT, not the world: an arm swinging as one is not a twisted elbow.
-    if (limit && p !== undefined) q = limitRelativeTwist(parent, q, twistAxis(rig, seed, i, at), maxTwist);
+    // Clamped against the PARENT, not the world: an arm swinging as one is not a twisted elbow. The bend
+    // half is already held by the hinges in the simulation; this keeps the mesh with the particles rather
+    // than being the only thing enforcing it.
+    if (limit && p !== undefined) {
+      q = limitRelative(parent, q, twistAxis(rig, seed, i, at), { maxTwist, maxSwing: maxBend });
+    }
     out[i] = q;
   }
   return out;

@@ -168,16 +168,19 @@ export function rotationBetween(from, to) {
   return [q[0] / n, q[1] / n, q[2] / n, q[3] / n];
 }
 
-// ===================== twist =====================
+// ===================== angular limits =====================
 //
-// Twist is rotation about a bone's OWN length. It is the one angular limit that needs no anatomy: the axis
-// is just the direction the bone points, so it can be enforced on any skeleton, where a cone limit first
-// has to know which joint is a knee.
+// How far a bone may turn AGAINST ITS NEIGHBOURS. Two independent halves, split by the bone's own long axis:
 //
-// It is also the one a positional solver cannot see. Twisting a bone with a single child moves nothing --
-// the child sits on the axis being turned about -- so no arrangement of distance constraints can resist it,
-// and nothing stops a forearm rotating like a drill. The place it becomes visible is where rotations are
-// handed back to the mesh, which is where it is clamped.
+//   twist   rotation about the bone's own length. Needs no anatomy -- the axis is just where the bone points
+//           -- and a positional solver cannot see it at all, since turning a one-child bone about its own
+//           length moves nothing. Nothing else stops a forearm rotating like a drill.
+//   bend    rotation ACROSS that axis, which is the joint opening and closing. This one is visible to
+//           positions, so the hang constrains it in the simulation as well as here.
+//
+// Both are measured relative to the PARENT and relative to the pose the movement STARTED from, so what is
+// bounded is how far the body has been bent out of shape, not how fast. A cone limit that knows a knee only
+// bends one way still needs the parts named; this is what can be enforced without that.
 
 export const qmul = (a, b) => [
   a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
@@ -227,16 +230,73 @@ export function limitTwist(q, axis, maxRadians) {
   return qmul(swing, [a[0] * s, a[1] * s, a[2] * s, c]);
 }
 
+/** How far a rotation turns, in radians, always the short way round, in [0, pi]. */
+export function angleOf(q) {
+  return 2 * Math.atan2(Math.hypot(q[0], q[1], q[2]), Math.abs(q[3]));
+}
+
 /**
- * A child's rotation corrected so it twists no more than `maxRadians` beyond its parent's.
+ * The same rotation about the same axis, turned no further than `maxRadians`.
+ *
+ * Needs no axis argument, so this is what a bone with no usable long axis falls back to -- two symmetric
+ * children, or a bone sitting on top of its parent. A limit on the whole turn is cruder than splitting it,
+ * but it is defined everywhere, where the split is not.
+ */
+export function limitAngle(q, maxRadians) {
+  if (!(maxRadians >= 0)) return q.slice();
+  // A quaternion and its negation are the same rotation; take the short way so the angle reads in [0, pi].
+  let [x, y, z, w] = q[3] < 0 ? [-q[0], -q[1], -q[2], -q[3]] : q;
+  const s = Math.hypot(x, y, z);
+  const half = Math.atan2(s, w);
+  const maxHalf = maxRadians / 2;
+  if (half <= maxHalf) return [x, y, z, w];
+  if (s < 1e-12) return [0, 0, 0, 1];
+  const k = Math.sin(maxHalf) / s;
+  return [x * k, y * k, z * k, Math.cos(maxHalf)];
+}
+
+/** How far a rotation bends across `axis`, in radians. The twist about the axis is not counted. */
+export function swingAngle(q, axis) {
+  const a = normalize(axis);
+  return length(a) ? angleOf(swingTwist(q, a).swing) : angleOf(q);
+}
+
+/** The same rotation with its bend across `axis` clamped to `maxRadians`. Twist is untouched. */
+export function limitSwing(q, axis, maxRadians) {
+  const a = normalize(axis);
+  if (!length(a)) return limitAngle(q, maxRadians);
+  const { swing, twist } = swingTwist(q, a);
+  return qmul(limitAngle(swing, maxRadians), twist);
+}
+
+/**
+ * A child's rotation corrected so it turns no further than allowed against its parent's.
  *
  * The limit is on the RELATIVE turn: a whole arm swinging as one is not a twisted elbow, and clamping
- * against the world would fight the shoulder every time the body turned.
+ * against the world would fight the shoulder every time the body turned. Both rotations are deltas from
+ * some shared starting pose, and `axis` is the bone's direction in THAT pose, because the relative turn
+ * `conj(parent) * child` is expressed in the frame before the parent moved.
+ */
+export function limitRelative(parentQ, childQ, axis, { maxSwing = Math.PI, maxTwist = Math.PI } = {}) {
+  const rel = qmul(qconj(parentQ), childQ);
+  const a = normalize(axis);
+  // A bone with no long axis -- two symmetric children, or sitting on its parent -- has no twist to name,
+  // so the whole turn is bend and only `maxSwing` applies. Bounding it by `maxTwist` instead would be a
+  // hip clamped to a forearm's allowance for no reason anyone could point at on the model.
+  if (!length(a)) return qmul(parentQ, limitAngle(rel, maxSwing));
+  const { swing, twist } = swingTwist(rel, a);
+  return qmul(parentQ, qmul(limitAngle(swing, maxSwing), limitTwist(twist, a, maxTwist)));
+}
+
+/**
+ * `limitRelative` with only the twist bounded.
+ *
+ * Kept separate rather than delegating, because the two disagree on a bone with no usable axis: there is no
+ * twist to name there, so this leaves the bone alone where the general form falls back to bounding the
+ * whole turn -- which would be a bend limit wearing a twist limit's name.
  */
 export function limitRelativeTwist(parentQ, childQ, axis, maxRadians) {
-  const rel = qmul(qconj(parentQ), childQ);
-  const clamped = limitTwist(rel, axis, maxRadians);
-  return qmul(parentQ, clamped);
+  return qmul(parentQ, limitTwist(qmul(qconj(parentQ), childQ), axis, maxRadians));
 }
 
 /**

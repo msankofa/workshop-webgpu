@@ -9,6 +9,7 @@ import { readRigFromGLB } from './pokemon-rig.js';
 import {
   chainUp, selectedReach, fabrik, rotationBetween, segmentRotations, solveError, distance,
   swingTwist, twistAngle, limitTwist, limitRelativeTwist, qmul, qconj,
+  angleOf, limitAngle, swingAngle, limitSwing, limitRelative,
 } from './pokemon-ik.js';
 
 const DIR = 'models/stadium';
@@ -239,6 +240,81 @@ check('every limited rotation is still a unit quaternion', () => {
   for (let i = 0; i < 40; i++) {
     const q = axisAngle([Math.sin(i), Math.cos(i * 1.7) + 0.1, Math.sin(i * 0.3) - 0.5], (i % 13) * 0.5 - 3);
     const out = limitTwist(q, axis, (i % 7) * 0.4);
+    near(Math.hypot(...out), 1, 1e-9, `case ${i}`);
+  }
+});
+
+console.log('\n--- bend ---');
+
+check('the angle of a rotation is what it was built with, whichever way round it is written', () => {
+  for (const d of [0, 30, 90, 179]) {
+    const q = axisAngle([1, 2, -0.5], d * Math.PI / 180);
+    near(deg(angleOf(q)), d, 1e-9, `${d} degrees`);
+    near(deg(angleOf(q.map(v => -v))), d, 1e-9, `${d} degrees, negated`);
+  }
+});
+
+check('a turn inside the limit is left exactly alone, and one past it lands on the limit', () => {
+  const q = axisAngle([0, 1, 0], 20 * Math.PI / 180);
+  for (let i = 0; i < 4; i++) near(limitAngle(q, 0.9)[i], q[i], 1e-12, `component ${i}`);
+  for (const d of [60, 120, 179]) {
+    const out = limitAngle(axisAngle([1, -2, 3], d * Math.PI / 180), 0.7);
+    near(angleOf(out), 0.7, 1e-9, `${d} degrees should clamp`);
+    near(Math.hypot(...out), 1, 1e-12, `${d} degrees should stay a unit quaternion`);
+  }
+});
+
+check('clamping a turn keeps the axis it was turning about', () => {
+  const axis = [0.3, -1, 0.8], n = Math.hypot(...axis);
+  const out = limitAngle(axisAngle(axis, 2.4), 0.5);
+  const s = Math.hypot(out[0], out[1], out[2]);
+  for (let i = 0; i < 3; i++) near(out[i] / s, axis[i] / n, 1e-9, `axis component ${i}`);
+});
+
+check('clamping the bend does not disturb the twist', () => {
+  // The mirror of the twist test above, and the reason the two are worth splitting at all: a bend limit
+  // that quietly untwisted the bone would be a different constraint wearing this one's name.
+  const axis = [0, 1, 0];
+  const q = qmul(axisAngle([1, 0, 0], 1.4), axisAngle(axis, 0.9));    // swing then twist
+  const out = limitSwing(q, axis, 0.3);
+  near(twistAngle(out, axis), twistAngle(q, axis), 1e-6, 'the twist should survive');
+  near(swingAngle(out, axis), 0.3, 1e-6, 'the bend should sit on the limit');
+});
+
+check('bending and twisting are limited independently', () => {
+  const axis = [0, 0, 1];
+  const q = qmul(axisAngle([0, 1, 0], 2.0), axisAngle(axis, 1.6));    // both well past both limits
+  const out = qmul(qconj([0, 0, 0, 1]), limitRelative([0, 0, 0, 1], q, axis, { maxSwing: 0.4, maxTwist: 0.2 }));
+  near(swingAngle(out, axis), 0.4, 1e-6, 'bend on its own limit');
+  near(Math.abs(twistAngle(out, axis)), 0.2, 1e-6, 'twist on its own limit');
+});
+
+check('a bend limit is measured against the parent, not the world', () => {
+  // The same argument as for twist: a whole limb swinging as one is not a bent joint.
+  const together = axisAngle([1, 1, 0], 2.5);
+  const out = limitRelative(together, together, [0, 1, 0], { maxSwing: 0, maxTwist: 0 });
+  for (let i = 0; i < 4; i++) near(out[i], together[i], 1e-9, `component ${i}`);
+});
+
+check('a bone with no usable axis is still bounded, since there the whole turn is bend', () => {
+  // Two symmetric children average to nothing, and there is no long axis to call anything twist about.
+  // The twist limit has to stand aside there; the bend limit is the one that still means something.
+  const q = axisAngle([1, 1, 1], 2.2);
+  for (const axis of [[0, 0, 0], [1e-30, 0, 0]]) {
+    const out = limitRelative([0, 0, 0, 1], q, axis, { maxSwing: 0.5, maxTwist: 0.01 });
+    near(angleOf(out), 0.5, 1e-9, 'bounded by the bend limit');
+    for (const v of out) assert(Number.isFinite(v), `got ${v}`);
+  }
+  // And the twist-only form leaves it alone entirely rather than bending it by another name.
+  const same = limitRelativeTwist([0, 0, 0, 1], q, [0, 0, 0], 0.01);
+  for (let i = 0; i < 4; i++) near(same[i], q[i], 1e-12, `twist-only component ${i}`);
+});
+
+check('every bend-limited rotation is still a unit quaternion', () => {
+  const axis = [0.2, -1, 0.4];
+  for (let i = 0; i < 40; i++) {
+    const q = axisAngle([Math.sin(i), Math.cos(i * 1.7) + 0.1, Math.sin(i * 0.3) - 0.5], (i % 13) * 0.5 - 3);
+    const out = limitRelative(axisAngle([1, 0, 0], i * 0.1), q, axis, { maxSwing: (i % 5) * 0.6, maxTwist: (i % 7) * 0.4 });
     near(Math.hypot(...out), 1, 1e-9, `case ${i}`);
   }
 });
