@@ -28,6 +28,7 @@ const DEFAULT_CONFIG = Object.freeze({
   groundAcceleration: 38,
   airAcceleration: 10,
   groundDeceleration: 30,
+  slopeSlideDeceleration: 0,
   gravity: 26,
   jumpSpeed: 8,
   slopeLimitDegrees: 50,
@@ -108,6 +109,9 @@ function sanitizedConfig(next) {
   if (!(config.fixedHz >= 30 && config.fixedHz <= 240)) throw new RangeError('fixedHz must be in [30, 240]');
   if (!(config.maxCatchUpSteps >= 1)) throw new RangeError('maxCatchUpSteps must be positive');
   if (!(config.maxMicrostepDistance > 0)) throw new RangeError('maxMicrostepDistance must be positive');
+  if (config.groundDeceleration < 0 || config.slopeSlideDeceleration < 0) {
+    throw new RangeError('ground and slope-slide deceleration must not be negative');
+  }
   if (!(config.floatDepth > 0)) throw new RangeError('floatDepth must be positive');
   if (!(config.floatHeightFraction > 0 && config.floatHeightFraction < 1)) throw new RangeError('floatHeightFraction must be in (0, 1)');
   if (config.buoyancy < 0 || config.waterDrag < 0) throw new RangeError('buoyancy and waterDrag must not be negative');
@@ -175,6 +179,7 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       capsule: taller, velocity: [0, 0, 0],
       slopeLimitCos: Math.cos(cfg.slopeLimitDegrees * Math.PI / 180),
       iterations: cfg.collisionIterations,
+      walkableVerticalResolution: true,
     });
     return Math.abs(probe.capsule.start[1] - taller.start[1]) < 1e-4 && !probe.ceiling;
   }
@@ -228,6 +233,7 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       velocity: candidateVelocity,
       slopeLimitCos: Math.cos(cfg.slopeLimitDegrees * Math.PI / 180),
       iterations: cfg.collisionIterations,
+      walkableVerticalResolution: true,
     });
   }
 
@@ -246,15 +252,21 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
   const CLIMB_RISE_FLOOR = 0.05;      // absolute (m/s): floating-point noise on a flat surface
 
   function trySnapDown(capsule, wasGrounded, candidateVelocity, alreadyGrounded) {
-    if (swimming || (!wasGrounded && !alreadyGrounded) || cfg.snapDistance <= 0) {
+    if (swimming || cfg.snapDistance <= 0) {
       return { capsule, grounded: alreadyGrounded, surface: null };
     }
     const foot = capsuleFoot(capsule);
     const skin = 0.05;
+    const slopeLimitCos = Math.cos(cfg.slopeLimitDegrees * Math.PI / 180);
+    // A mesh slope touches the round lower cap before its axis-aligned foot point reaches the ray.
+    // Probe far enough to retain that correctly seated support near the configured slope limit.
+    const maxSupportOffset = slopeLimitCos > EPSILON
+      ? capsule.radius * (1 / slopeLimitCos - 1)
+      : capsule.radius;
     const hit = worldQuery.groundProbe({
       origin: [foot[0], foot[1] + skin, foot[2]],
-      maxDistance: cfg.snapDistance + skin,
-      slopeLimitCos: Math.cos(cfg.slopeLimitDegrees * Math.PI / 180),
+      maxDistance: cfg.snapDistance + skin + maxSupportOffset,
+      slopeLimitCos,
     });
     if (!hit) return { capsule, grounded: alreadyGrounded, surface: null };
     // Rising faster than the slope under the foot can explain: a jump, a launch off a crest, a
@@ -263,7 +275,12 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     if (candidateVelocity[1] > rising * CLIMB_RISE_SLACK + CLIMB_RISE_FLOOR) {
       return { capsule, grounded: alreadyGrounded, surface: null };
     }
-    const drop = foot[1] - hit.point[1];
+    // A ray-backed mesh probe requires the capsule cap to be tangent to the local plane. Snapping
+    // the foot to hitY embeds the cap, so depenetration pushes it downhill again on every tick.
+    const supportOffset = hit.capsuleSupport
+      ? capsule.radius * (1 / Math.max(hit.normal[1], EPSILON) - 1)
+      : 0;
+    const drop = foot[1] - (hit.point[1] + supportOffset);
     if (drop < -skin || drop > cfg.snapDistance + EPSILON) return { capsule, grounded: alreadyGrounded, surface: null };
     translateCapsule(capsule, [0, -drop, 0]);
     candidateVelocity[1] = Math.max(0, candidateVelocity[1]);
@@ -341,6 +358,12 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     surface = grounded ? surfaceIdentity(resolvedSurface) : null;
     if (grounded && velocity[1] < 0) velocity[1] = 0;
     if (ceiling && velocity[1] > 0) velocity[1] = 0;
+    const slopeLimitCos = Math.cos(cfg.slopeLimitDegrees * Math.PI / 180);
+    const steepSurface = !grounded && allContacts.some(contact => {
+      const ny = contact.normal?.[1];
+      return Number.isFinite(ny) && ny > EPSILON && ny < slopeLimitCos;
+    });
+    return { steepSurface };
   }
 
   function fixedStep(dt) {
@@ -404,7 +427,15 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
       }
       if (!grounded) velocity[1] -= cfg.gravity * dt;
     }
-    moveAndCollide([velocity[0] * dt, velocity[1] * dt, velocity[2] * dt]);
+    const collision = moveAndCollide([velocity[0] * dt, velocity[1] * dt, velocity[2] * dt]);
+    if (collision.steepSurface && cfg.slopeSlideDeceleration > 0) {
+      const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
+      if (speed > EPSILON) {
+        const next = Math.max(0, speed - cfg.slopeSlideDeceleration * dt);
+        const scale = next / speed;
+        velocity[0] *= scale; velocity[1] *= scale; velocity[2] *= scale;
+      }
+    }
     simulatedSteps++;
   }
 

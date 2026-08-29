@@ -1,0 +1,1 @@
+updateBotSentry,selectBotTarget,createBotActor,bindBotActor,commitBotActor,withBotActor,rebuildFrameEnemyLists,rebuildBotHash,botThinkStride,sidearmForRole,poseStanceFor,recordAllyHit,invalidateTargetMemoryAfterDeath,beginBotHealthRetreat

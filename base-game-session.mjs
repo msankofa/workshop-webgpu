@@ -9,7 +9,7 @@ import {
   pickBaseGameSharedWorld,
   sanitizeBaseGamePlayerState,
   sanitizeBaseGameTickInput,
-  sanitizeBaseGameWorldPatch,
+  sanitizeBaseGameWorldPatch, sanitizeBaseGameNpcRequest,
   terrainConfigNeedsProject,
   terrainConfigProjectHash,
   withTerrainProject,
@@ -166,6 +166,14 @@ export function connectBaseGameSession({
       const clean = sanitizeBaseGameWorldPatch(patch);
       if (!Object.keys(clean).length) return false;
       ws.send(JSON.stringify({ type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION, patch: clean }));
+      return true;
+    },
+    // Owner-only: add or clear NPC bots. `{ action: 'spawn'|'clear', team, count, role, at }`.
+    sendNpc(request) {
+      if (!owner || ws?.readyState !== WebSocketImpl.OPEN) return false;
+      const clean = sanitizeBaseGameNpcRequest(request);
+      if (!clean) return false;
+      ws.send(JSON.stringify({ type: 'base:npc', protocol: BASE_GAME_PROTOCOL_VERSION, ...clean }));
       return true;
     },
     // Queues one simulation tick for delivery. Returns false for a malformed or non-consecutive tick.

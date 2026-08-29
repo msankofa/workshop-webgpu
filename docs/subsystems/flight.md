@@ -853,6 +853,10 @@ Fixing it changes what AA does to you, so it is a balance decision rather than a
 
 ## Not built yet
 
+Base Game now flies the `drone` airframe and a registered `uav` airframe as player gadgets through
+`base-game-drones.js` (see `base-game.md`, "Drones"); that is the first consumer of `flight-model.js`
+outside this demo, and `setHeightSource` is how it sees Base Game ground.
+
 Flare audio is synthesised into buffers at startup rather than played as oscillators, so it can go
 through the positional voice pool — a bandit defending itself two kilometres away has to sound two
 kilometres away. Burning flares are one shared hiss keyed to how many are alight nearby rather than

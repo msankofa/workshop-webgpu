@@ -299,6 +299,68 @@
 
   /* ── UMAP tab ───────────────────────── */
   #vtab-umap.active { color: #a78bfa; border-bottom-color: #a78bfa; }
+  #vtab-bbc.active  { color: #ff9f43; border-bottom-color: #ff9f43; }
+
+  /* ── BBC archive tab ─────────────────────────────────── */
+  #bbc-area { display: none; flex-direction: column; height: 100%; overflow: hidden; }
+  #bbc-area.visible { display: flex; }
+  #bbc-controls {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 10px 12px; border-bottom: 1px solid #1c1c33; background: #0b0b18;
+  }
+  #bbc-query {
+    flex: 1; min-width: 180px; background: #05050f; border: 1px solid #26264a;
+    color: #ccd; font: inherit; font-size: 12px; padding: 6px 9px; outline: none;
+  }
+  #bbc-query:focus { border-color: #ff9f43; }
+  #bbc-controls select, #bbc-controls button {
+    background: #12122a; border: 1px solid #26264a; color: #aab; font: inherit;
+    font-size: 11px; padding: 6px 9px; cursor: pointer;
+  }
+  #bbc-controls button:hover { border-color: #ff9f43; color: #ff9f43; }
+  #bbc-search-btn { color: #ff9f43; border-color: #ff9f4355; }
+  #bbc-controls label { font-size: 11px; color: #667; display: flex; align-items: center; gap: 5px; }
+  #bbc-note {
+    padding: 6px 12px; font-size: 10px; color: #667; border-bottom: 1px solid #1c1c33;
+    background: #08080f;
+  }
+  #bbc-note b { color: #889; font-weight: normal; }
+  #bbc-status { padding: 8px 12px; font-size: 11px; color: #778; }
+  #bbc-results {
+    flex: 1; overflow-y: auto; padding: 0 12px 14px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 8px;
+    align-content: start;
+  }
+  .bbc-card {
+    background: #0d0d1c; border: 1px solid #1c1c33; padding: 9px 10px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .bbc-card:hover { border-color: #ff9f4344; background: #101022; }
+  .bbc-card.playing { border-color: #ff9f43; background: #1c1206; }
+  .bbc-card.saved { border-color: #0f85; }
+  .bbc-desc { font-size: 11px; color: #ccd; line-height: 1.35; }
+  .bbc-meta { font-size: 10px; color: #667; display: flex; gap: 8px; flex-wrap: wrap; }
+  .bbc-meta .hot { color: #ff9f43; }
+  .bbc-tags { font-size: 9px; color: #556; }
+  .bbc-actions { display: flex; gap: 5px; align-items: center; }
+  .bbc-actions button {
+    background: #12122a; border: 1px solid #26264a; color: #aab;
+    font: inherit; font-size: 10px; padding: 4px 8px; cursor: pointer;
+  }
+  .bbc-actions button:hover { border-color: #ff9f43; color: #ff9f43; }
+  .bbc-actions button:disabled { opacity: 0.45; cursor: default; border-color: #26264a; color: #667; }
+  .bbc-actions .bbc-prog { flex: 1; height: 3px; background: #1c1c33; }
+  .bbc-actions .bbc-prog i { display: block; height: 100%; width: 0; background: #ff9f43; }
+  #bbc-more { margin: 0 12px 14px; }
+
+  /* Environment rows in the assign picker */
+  .ep-section {
+    font-size: 10px; color: #667; letter-spacing: 0.12em;
+    margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid #1c1c33;
+  }
+  .ep-section:first-child { margin-top: 0; }
+  .ep-row.env.mine { border-color: #ff9f4399; background: #1a1206; color: #ffd0a0; }
+  .ep-layers { font-size: 9px; color: #778; padding: 2px 0 6px 26px; }
   #umap-area { flex: 1; display: none; overflow: hidden; position: relative; }
   #umap-area.visible { display: flex; }
   #umap-canvas { flex: 1; display: block; cursor: crosshair; }
@@ -358,12 +420,40 @@
       <button class="vtab" id="vtab-favs">★ FAVORITES <span class="tab-badge" id="fav-count">0</span></button>
       <button class="vtab" id="vtab-assets">+ ASSETS <span class="tab-badge" id="asset-count">0</span></button>
       <button class="vtab" id="vtab-umap">◎ UMAP</button>
+      <button class="vtab" id="vtab-bbc">BBC SOUNDS</button>
     </div>
     <div id="grid-area">
       <div id="empty">Click OPEN FOLDER and select your SFX directory.<span>Requires Chrome or Edge</span></div>
       <div id="folder-title"></div>
       <div id="sound-grid"></div>
     </div>
+    <div id="bbc-area">
+      <div id="bbc-controls">
+        <input id="bbc-query" type="text" placeholder="search: wind, birds, river, rain, fire..." />
+        <select id="bbc-minlen" title="Minimum duration">
+          <option value="0">any length</option>
+          <option value="10">10s+</option>
+          <option value="30">30s+</option>
+          <option value="60" selected>1 min+</option>
+          <option value="180">3 min+</option>
+        </select>
+        <select id="bbc-format" title="Download format">
+          <option value="mp3" selected>mp3 (smaller file)</option>
+          <option value="wav">wav (best quality)</option>
+        </select>
+        <label><input id="bbc-stereo" type="checkbox" checked /> stereo only</label>
+        <button id="bbc-search-btn">SEARCH</button>
+      </div>
+      <div id="bbc-note">
+        <b>The BBC's free sound library</b> - about 33,000 recordings. Free to use in personal
+        projects, but not in anything you sell. Downloads are saved to <b>sfx/bbc/</b> and work like
+        any other sound in here.
+      </div>
+      <div id="bbc-status">Type what you want and press Enter.</div>
+      <div id="bbc-results"></div>
+      <button id="bbc-more" style="display:none">LOAD MORE</button>
+    </div>
+
     <div id="umap-area">
       <canvas id="umap-canvas"></canvas>
       <div id="umap-legend">
@@ -381,6 +471,17 @@
 // events in exact sync with what environment-audio.js loads and environment-viewer.html
 // fires. Requires serving over http (python serve.py), not file://.
 import { SOUND_EVENT_DEFS as SOUND_EVENTS } from './sound-events.js';
+// Ambience slots (looping beds and located emitters) and the BBC archive client. The archive's
+// search API and media CDN both send `Access-Control-Allow-Origin: *`, so these calls go straight
+// from the page -- there is no serve.py proxy and no API key.
+import {
+  SOUND_ENVIRONMENT_DEFS, soundEnvironmentById, environmentLayerPath,
+  normalizeEnvironmentMap, MAX_ENVIRONMENT_LAYERS,
+} from './sound-environments.js';
+import {
+  searchBbcSfx, filterResults, mediaUrl, suggestFileName,
+  formatDuration, formatBytes, BBC_PAGE_SIZE,
+} from './bbc-sfx-api.js';
 
 // ── State ────────────────────────────────────────────────
 let folders       = {};   // { "Root/SubFolder": [FileHandle, ...] }
@@ -388,6 +489,8 @@ let rootHandle    = null;
 let favorites     = new Set();   // relative keys "SubFolder/file.wav"
 let assets        = new Set();   // same format
 let soundMap      = {};          // { eventId: source relative key }
+let environmentMap = {};         // { envId: { layers: [{path, source, gain, loop}] } }
+const BBC_FOLDER  = 'bbc';       // downloads land here, inside the picked sfx/ root
 let playAllActive = false;
 let loopActive    = false;
 let currentAudio  = null;
@@ -636,8 +739,10 @@ async function loadSoundMap() {
       if (!events[ev.id]) return;
       soundMap[ev.id] = sources[ev.id] || '';
     });
+    environmentMap = normalizeEnvironmentMap(data.environments);
   } catch {
     soundMap = {};
+    environmentMap = {};
   }
 }
 
@@ -651,7 +756,10 @@ async function saveSoundMap() {
     if (soundMap[ev.id]) sources[ev.id] = soundMap[ev.id];
   });
 
+  // `environments` is additive: environment-audio.js reads only `events`, so an older loader
+  // ignores this key rather than choking on it.
   const payload = { version: 1, events, sources };
+  if (Object.keys(environmentMap).length) payload.environments = environmentMap;
   const fh = await rootHandle.getFileHandle('sound-map.json', { create: true });
   const w = await fh.createWritable();
   await w.write(JSON.stringify(payload, null, 2) + '\n');
@@ -707,15 +815,20 @@ function refreshCardEventBadge(card) {
   if (!key || !plusBtn) return;
 
   const eventIds = eventIdsForKey(key);
-  const labels = eventIds
-    .map(id => soundEventById(id)?.label || id)
-    .sort();
+  const envIds = SOUND_ENVIRONMENT_DEFS
+    .filter(env => layerIndexForSource(env.id, key) >= 0)
+    .map(env => env.id);
+  const labels = [
+    ...eventIds.map(id => soundEventById(id)?.label || id),
+    ...envIds.map(id => soundEnvironmentById(id)?.label || id),
+  ].sort();
 
-  plusBtn.classList.toggle('event-assigned', eventIds.length > 0);
-  plusBtn.classList.toggle('in-assets', eventIds.length > 0);
+  const total = eventIds.length + envIds.length;
+  plusBtn.classList.toggle('event-assigned', total > 0);
+  plusBtn.classList.toggle('in-assets', total > 0);
 
-  if (eventIds.length > 0) {
-    plusBtn.innerHTML = eventIds.length > 1 ? `&#8853;${eventIds.length}` : '&#8853;';
+  if (total > 0) {
+    plusBtn.innerHTML = total > 1 ? `&#8853;${total}` : '&#8853;';
     plusBtn.title = `Assigned to: ${labels.join(', ')}`;
   } else {
     plusBtn.textContent = '+';
@@ -782,6 +895,75 @@ async function unassignEvent(eventId) {
   showStatus(`Unassigned ${soundEventById(eventId)?.label || eventId}`, 1800);
 }
 
+// ── Environment (ambience) assignment ─────────────────────
+function environmentLayers(envId) {
+  return environmentMap[envId]?.layers ?? [];
+}
+
+function layerIndexForSource(envId, srcKey) {
+  return environmentLayers(envId).findIndex(layer => layer.source === srcKey);
+}
+
+async function writeEnvironmentLayer(fh, destPath) {
+  const assetsDir = await rootHandle.getDirectoryHandle('assets', { create: true });
+  const envDir = await assetsDir.getDirectoryHandle('env', { create: true });
+  const dest = await envDir.getFileHandle(destPath.split('/').pop(), { create: true });
+  const w = await dest.createWritable();
+  await w.write(await (await fh.getFile()).arrayBuffer());
+  await w.close();
+}
+
+async function deleteEnvironmentLayerFile(path) {
+  try {
+    const assetsDir = await rootHandle.getDirectoryHandle('assets');
+    const envDir = await assetsDir.getDirectoryHandle('env');
+    await envDir.removeEntry(path.split('/').pop());
+  } catch {
+    // Missing files are harmless; sound-map.json is the source of truth.
+  }
+}
+
+async function addEnvironmentLayer(envId, fh, srcKey) {
+  const layers = environmentLayers(envId);
+  if (layers.length >= MAX_ENVIRONMENT_LAYERS) {
+    showStatus(`${soundEnvironmentById(envId)?.label || envId} already has ${MAX_ENVIRONMENT_LAYERS} sounds`, 2600);
+    return;
+  }
+  const path = environmentLayerPath(envId, fh.name);
+  await writeEnvironmentLayer(fh, path);
+  environmentMap[envId] = { layers: [...layers, { path, source: srcKey, gain: 1, loop: true }] };
+  assets.add(srcKey);
+  await saveSoundMap();
+  await saveSet('assets', assets);
+  updateCounts();
+  refreshCardsForKeys(srcKey);
+  publishSfxUpdate({ type: 'environment-updated', environmentId: envId });
+  showStatus(`Added to ${soundEnvironmentById(envId)?.label || envId}`, 1800);
+}
+
+async function removeEnvironmentLayer(envId, index) {
+  const layers = environmentLayers(envId);
+  const layer = layers[index];
+  if (!layer) return;
+  const rest = layers.filter((_, i) => i !== index);
+  if (rest.length) environmentMap[envId] = { layers: rest };
+  else delete environmentMap[envId];
+  await deleteEnvironmentLayerFile(layer.path);
+  if (layer.source && !isKeyUsedByOtherEvent(layer.source) && !isKeyUsedByEnvironment(layer.source)) {
+    assets.delete(layer.source);
+  }
+  await saveSoundMap();
+  await saveSet('assets', assets);
+  updateCounts();
+  refreshCardsForKeys(layer.source || '');
+  publishSfxUpdate({ type: 'environment-updated', environmentId: envId });
+  showStatus(`Removed from ${soundEnvironmentById(envId)?.label || envId}`, 1800);
+}
+
+function isKeyUsedByEnvironment(key) {
+  return Object.values(environmentMap).some(env => env.layers.some(layer => layer.source === key));
+}
+
 function showEventPicker(card, fh, folderPath) {
   const srcKey = relKey(folderPath, fh.name);
   const overlay = document.createElement('div');
@@ -805,6 +987,11 @@ function showEventPicker(card, fh, folderPath) {
 
   function renderRows() {
     rows.innerHTML = '';
+
+    const eventHdr = document.createElement('div');
+    eventHdr.className = 'ep-section';
+    eventHdr.textContent = 'GAME EVENTS';
+    rows.appendChild(eventHdr);
 
     SOUND_EVENTS.forEach(ev => {
       const assigned = hasEventAssignment(ev.id);
@@ -846,6 +1033,60 @@ function showEventPicker(card, fh, folderPath) {
       });
 
       rows.appendChild(button);
+    });
+
+    // Ambience slots hold several layers, so a click here appends rather than replaces.
+    let lastKind = null;
+    SOUND_ENVIRONMENT_DEFS.forEach(env => {
+      if (env.kind !== lastKind) {
+        lastKind = env.kind;
+        const hdr = document.createElement('div');
+        hdr.className = 'ep-section';
+        hdr.textContent = env.kind === 'ambience' ? 'BACKGROUND SOUND (loops while you are there)' : 'SOUND COMING FROM A PLACE';
+        rows.appendChild(hdr);
+      }
+
+      const layers = environmentLayers(env.id);
+      const mineIndex = layerIndexForSource(env.id, srcKey);
+      const mine = mineIndex >= 0;
+      const full = layers.length >= MAX_ENVIRONMENT_LAYERS && !mine;
+      const button = document.createElement('button');
+      button.className = `ep-row env${mine ? ' mine' : ''}${full ? ' taken' : ''}`;
+      button.type = 'button';
+
+      let status = env.hint;
+      if (mine) status = 'Added - click to remove';
+      else if (full) status = `Full - ${MAX_ENVIRONMENT_LAYERS} sounds already`;
+      else if (layers.length) status = `${layers.length} sound${layers.length === 1 ? '' : 's'} here - click to add another`;
+
+      button.innerHTML = `
+        <span class="ep-icon">${mine ? '&#10003;' : full ? '&#9889;' : '&#9675;'}</span>
+        <span class="ep-main">
+          <span class="ep-label">${escapeHtml(env.label)}</span>
+          <span class="ep-status">${escapeHtml(status)}</span>
+        </span>
+      `;
+
+      button.addEventListener('click', async e => {
+        e.stopPropagation();
+        try {
+          if (mine) await removeEnvironmentLayer(env.id, mineIndex);
+          else if (!full) await addEnvironmentLayer(env.id, fh, srcKey);
+          refreshCardEventBadge(card);
+          renderRows();
+        } catch (err) {
+          showStatus('Assign failed: ' + err.message);
+        }
+      });
+
+      rows.appendChild(button);
+
+      if (layers.length) {
+        const list = document.createElement('div');
+        list.className = 'ep-layers';
+        list.textContent = layers.map(l => l.source || l.path.split('/').pop()).join(' + ');
+        rows.appendChild(list);
+      }
     });
   }
 
@@ -892,11 +1133,15 @@ function switchTab(tab) {
 
   const gridArea = document.getElementById('grid-area');
   const umapArea = document.getElementById('umap-area');
+  const bbcArea  = document.getElementById('bbc-area');
   const isUmap   = tab === 'umap';
-  gridArea.style.display = isUmap ? 'none' : '';
+  const isBbc    = tab === 'bbc';
+  gridArea.style.display = (isUmap || isBbc) ? 'none' : '';
   umapArea.classList.toggle('visible', isUmap);
+  bbcArea.classList.toggle('visible', isBbc);
 
   if (isUmap) { initUmapTab(); return; }
+  if (isBbc) { bbcQuery.focus(); return; }
 
   emptyDiv.style.display = 'none';
   folderTitle.style.display = 'block';
@@ -1080,8 +1325,13 @@ function stopCurrent() {
   if (currentObjURL) { URL.revokeObjectURL(currentObjURL); currentObjURL = null; }
   if (currentCard) {
     currentCard.classList.remove('playing');
-    currentCard.querySelector('.play-btn').textContent = '▶';
-    currentCard.querySelector('.progress-bar').style.width = '0%';
+    // Library cards and archive cards have different transport markup; reset whichever this is.
+    const playBtn = currentCard.querySelector('.play-btn');
+    if (playBtn) playBtn.textContent = '▶';
+    const bbcBtn = currentCard.querySelector('.bbc-play');
+    if (bbcBtn) bbcBtn.textContent = '▶ PLAY';
+    const bar = currentCard.querySelector('.progress-bar, .bbc-prog i');
+    if (bar) bar.style.width = '0%';
     currentCard = null;
   }
   nowPlaying.textContent = '';
@@ -1239,6 +1489,7 @@ let umapPlot     = null;
 let umapReady    = false;  // data loaded at least once for current root
 
 document.getElementById('vtab-umap').addEventListener('click', () => switchTab('umap'));
+document.getElementById('vtab-bbc').addEventListener('click',  () => switchTab('bbc'));
 document.getElementById('leg-all').addEventListener('click', () => {
   if (!umapPlot) return;
   umapPlot.filter = null;
@@ -1512,9 +1763,197 @@ class UmapPlot {
 }
 
 // ── Auto-restore last session on page load ────────────────
+// ── BBC archive tab ───────────────────────────────────────
+// Search results are auditioned by streaming straight from the BBC CDN; nothing touches the disk
+// until DOWNLOAD, which writes into sfx/bbc/ and rescans so the file becomes an ordinary library
+// sound. From there the existing favourite/assign/UMAP paths work on it with no special casing.
+const bbcQuery    = document.getElementById('bbc-query');
+const bbcMinLen   = document.getElementById('bbc-minlen');
+const bbcFormat   = document.getElementById('bbc-format');
+const bbcStereo   = document.getElementById('bbc-stereo');
+const bbcResults  = document.getElementById('bbc-results');
+const bbcStatusEl = document.getElementById('bbc-status');
+const bbcMoreBtn  = document.getElementById('bbc-more');
+
+let bbcRows = [];
+let bbcFrom = 0;
+let bbcTotal = 0;
+let bbcBusy = false;
+let bbcAbort = null;
+
+function bbcStatus(text) { bbcStatusEl.textContent = text; }
+
+function bbcCriteria() {
+  return {
+    minSeconds: Number(bbcMinLen.value) || 0,
+    stereoOnly: bbcStereo.checked,
+    format: bbcFormat.value === 'wav' ? 'wav' : 'mp3',
+  };
+}
+
+async function runBbcSearch({ append = false } = {}) {
+  const query = bbcQuery.value.trim();
+  if (!query) { bbcStatus('Type something to search for.'); return; }
+  if (bbcBusy) return;
+  bbcBusy = true;
+  bbcAbort?.abort();
+  bbcAbort = new AbortController();
+  if (!append) { bbcFrom = 0; bbcRows = []; bbcResults.innerHTML = ''; }
+  bbcStatus(append ? 'Loading more...' : 'Searching...');
+  bbcMoreBtn.style.display = 'none';
+
+  try {
+    const page = await searchBbcSfx(
+      { query, from: bbcFrom, size: BBC_PAGE_SIZE },
+      { signal: bbcAbort.signal }
+    );
+    bbcTotal = page.total;
+    bbcFrom += BBC_PAGE_SIZE;
+    const { minSeconds, stereoOnly } = bbcCriteria();
+    const kept = filterResults(page.results, { minSeconds, stereoOnly });
+    bbcRows.push(...kept);
+    for (const row of kept) bbcResults.appendChild(createBbcCard(row));
+
+    const dropped = page.results.length - kept.length;
+    // The archive ignores its own duration filter, so narrowing happens here -- say so rather than
+    // letting a page of 24 quietly render as three cards.
+    bbcStatus(
+      `${bbcTotal.toLocaleString()} found · showing ${bbcRows.length}` +
+      (dropped ? ` · ${dropped} hidden by your filters` : '')
+    );
+    bbcMoreBtn.style.display = bbcFrom < bbcTotal ? '' : 'none';
+    if (!bbcRows.length && bbcFrom < bbcTotal) bbcStatus(`${bbcTotal.toLocaleString()} found, but none so far match your filters. Press LOAD MORE, or change them.`);
+  } catch (err) {
+    if (err.name !== 'AbortError') bbcStatus('Search failed: ' + err.message);
+  } finally {
+    bbcBusy = false;
+  }
+}
+
+function createBbcCard(row) {
+  const card = document.createElement('div');
+  card.className = 'bbc-card';
+  card.dataset.bbcId = row.id;
+  const { format } = bbcCriteria();
+  const bytes = format === 'wav' ? row.wavBytes : row.mp3Bytes;
+  const place = [row.locationText, row.continent].filter(Boolean)[0] || '';
+
+  card.innerHTML = `
+    <div class="bbc-desc">${escapeHtml(row.description)}</div>
+    <div class="bbc-meta">
+      <span class="hot">${formatDuration(row.seconds)}</span>
+      <span>${row.channels === 2 ? 'stereo' : `${row.channels}ch`}</span>
+      <span>${row.sampleRate ? `${Math.round(row.sampleRate / 1000)}kHz` : ''}</span>
+      <span>${formatBytes(bytes)}</span>
+      ${place ? `<span>${escapeHtml(place)}</span>` : ''}
+    </div>
+    ${row.tags.length ? `<div class="bbc-tags">${escapeHtml(row.tags.slice(0, 8).join(' · '))}</div>` : ''}
+    <div class="bbc-actions">
+      <button class="bbc-play">▶ PLAY</button>
+      <div class="bbc-prog"><i></i></div>
+      <button class="bbc-get">⬇ DOWNLOAD</button>
+    </div>
+  `;
+
+  const playBtn = card.querySelector('.bbc-play');
+  const getBtn  = card.querySelector('.bbc-get');
+  const prog    = card.querySelector('.bbc-prog i');
+
+  playBtn.addEventListener('click', () => {
+    if (card.classList.contains('playing')) { stopCurrent(); return; }
+    playBbcPreview(card, row);
+  });
+
+  getBtn.addEventListener('click', async () => {
+    if (!rootHandle) { showStatus('Open the sfx/ folder first (OPEN FOLDER)'); return; }
+    getBtn.disabled = true;
+    const originalText = getBtn.textContent;
+    try {
+      const name = await downloadBbcSound(row, bbcCriteria().format, fraction => {
+        prog.style.width = `${Math.round(fraction * 100)}%`;
+      });
+      card.classList.add('saved');
+      getBtn.textContent = '✓ SAVED';
+      showStatus(`Saved ${name} → ${BBC_FOLDER}/`, 3000);
+    } catch (err) {
+      getBtn.disabled = false;
+      getBtn.textContent = originalText;
+      showStatus('Download failed: ' + err.message);
+    } finally {
+      prog.style.width = '0%';
+    }
+  });
+
+  return card;
+}
+
+// Auditions stream from the CDN. They reuse the shared transport state so the ← → / SPC keys and
+// the volume slider behave exactly as they do for local files.
+function playBbcPreview(card, row) {
+  stopCurrent();
+  const audio = new Audio(mediaUrl(row.id, 'mp3'));   // always mp3 for preview: 10x smaller
+  audio.volume = volume;
+  audio.loop = loopActive;
+  currentAudio = audio;
+  currentCard = card;
+  card.classList.add('playing');
+  const playBtn = card.querySelector('.bbc-play');
+  playBtn.textContent = '■ STOP';
+  nowPlaying.textContent = '♪ ' + row.description;
+  const prog = card.querySelector('.bbc-prog i');
+  audio.addEventListener('timeupdate', () => {
+    if (audio.duration) prog.style.width = (audio.currentTime / audio.duration * 100) + '%';
+  });
+  audio.addEventListener('ended', () => stopCurrent());
+  audio.addEventListener('error', () => { showStatus('Could not play that one'); stopCurrent(); });
+  audio.play().catch(() => showStatus('Click anywhere on the page once, then try again'));
+}
+
+async function downloadBbcSound(row, format, onProgress) {
+  const name = suggestFileName(row, format);
+  const dir = await rootHandle.getDirectoryHandle(BBC_FOLDER, { create: true });
+
+  const response = await fetch(mediaUrl(row.id, format));
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+  // Stream so a 90 MB wav reports progress instead of hanging on one opaque await.
+  const total = Number(response.headers.get('content-length')) || (format === 'wav' ? row.wavBytes : row.mp3Bytes);
+  const dest = await dir.getFileHandle(name, { create: true });
+  const writable = await dest.createWritable();
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      await writable.write(value);
+      received += value.length;
+      if (total) onProgress?.(Math.min(1, received / total));
+    }
+  } else {
+    await writable.write(await response.arrayBuffer());
+  }
+  await writable.close();
+
+  // Register the new file so the sidebar, UMAP and assign flows see it without a reload.
+  const folderPath = `${rootHandle.name}/${BBC_FOLDER}`;
+  const handle = await dir.getFileHandle(name);
+  folders[folderPath] = folders[folderPath] || [];
+  if (!folders[folderPath].some(existing => existing.name === name)) folders[folderPath].push(handle);
+  buildSidebar();
+  return name;
+}
+
+document.getElementById('bbc-search-btn').addEventListener('click', () => runBbcSearch());
+bbcMoreBtn.addEventListener('click', () => runBbcSearch({ append: true }));
+bbcQuery.addEventListener('keydown', e => { if (e.key === 'Enter') runBbcSearch(); });
+for (const control of [bbcMinLen, bbcStereo, bbcFormat]) {
+  control.addEventListener('change', () => { if (bbcRows.length) runBbcSearch(); });
+}
+
 async function loadRootHandle(handle) {
   rootHandle = handle;
-  folders = {}; favorites = new Set(); assets = new Set(); soundMap = {};
+  folders = {}; favorites = new Set(); assets = new Set(); soundMap = {}; environmentMap = {};
   umapReady = false;
   showStatus('Loading…', 0);
   await scanDir(rootHandle, rootHandle.name);

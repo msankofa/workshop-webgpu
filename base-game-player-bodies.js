@@ -13,6 +13,7 @@ import { stepStanceWeights } from './bot-stance.js';
 import { BASE_GAME_STANCES } from './base-game-protocol.mjs';
 import { LOCOMOTION_DEFAULTS } from './body-locomotion.js';
 import { BOT_BODIES, composeBot } from './bot-body-versions.js';
+import { SKIN_TONES, HAIR_COLORS } from './bot-face.js';
 import { SOLDIER_ROLE_DESIGNS, buildSoldierDesign } from './bot-body-design.js';
 import { AIM_BLEND_DEFAULTS, solveAimBlend, stepAimChannels, newAimChannels, stepRecoil, wrapAngle } from './bot-aim-blend.js';
 import { BODY_HOLD_DEFAULTS, stowedWeaponIds } from './weapon-mount.js';
@@ -24,6 +25,8 @@ export const BASE_GAME_AIM_BLEND = Object.freeze({
   ...AIM_BLEND_DEFAULTS, enabled: true, torsoEnabled: true, headEnabled: true, trimEnabled: true, recoilEnabled: true,
 });
 export const BASE_GAME_AIM_DISTANCE = 30;   // m along the look ray a remote's aim point is placed
+// Side tints for NPC bodies: bot-viewer-v3's alpha (green) and bravo (red) accents as HSL.
+export const BASE_GAME_TEAM_TINTS = Object.freeze({ 1: { h: 0.41, s: 0.55, l: 0.5 }, 2: { h: 0.01, s: 0.62, l: 0.55 } });
 export const BASE_GAME_WEAPON_ACTIONS = Object.freeze({ idle: 0, reload: 1, fire: 2, holster: 3, draw: 4, throw: 5 });
 
 // Appearance choices offered to pages: every bot body version, then the human soldier role kits.
@@ -33,11 +36,20 @@ export const BASE_GAME_BODY_DESIGNS = Object.freeze([
   ...Object.keys(SOLDIER_ROLE_DESIGNS).map((role) => ({ key: SOLDIER_KEY + role, label: `soldier ${role}` })),
 ]);
 
-function composeDesign(key) {
+function composeDesign(key, appearance = null) {
   if (key === 'default') return null;
   if (key.startsWith(SOLDIER_KEY)) return buildSoldierDesign(key.slice(SOLDIER_KEY.length));
+  // A face on the wire puts a human head on the body with that expression (bot-face.js); the
+  // authored heads stay for bodies without one.
+  if (appearance) return composeBot(key, 'human', { expression: appearance.expression });
   return composeBot(key, key === 'human' ? 'human' : 'as authored');
 }
+// Skin and hair are per-body tints the rig keeps out of the team tint (player-procedural-body.js).
+function styleFor(appearance) {
+  if (!appearance) return {};
+  return { skin: SKIN_TONES[appearance.skin] ?? SKIN_TONES.tan, hair: HAIR_COLORS[appearance.hair] ?? HAIR_COLORS.brown };
+}
+const appearanceKey = (a) => (a ? `${a.skin}/${a.hair}/${a.expression}` : '');
 
 export const BASE_GAME_BODY_MODES = Object.freeze(['off', 'thirdPerson', 'lowerBody']);
 
@@ -134,16 +146,16 @@ export function createBaseGamePlayerBodies({
   const _velocity = { x: 0, y: 0, z: 0 };
   const _local = [0, 0, 0];
 
-  function makeBody(rigMode, style, instanced, modelKey = designKey) {
+  function makeBody(rigMode, style, instanced, modelKey = designKey, appearance = null) {
     const support = createBodySupportAdapter({ worldQuery, worldCoordinates });
     const body = createProceduralPlayerBody({
       THREE,
       scene,
       terrainHeight: support.terrainHeight,
       mode: rigMode,
-      style,
+      style: { ...styleFor(appearance), ...style },
       batches: instanced ? batches : null,
-      design: composeDesign(modelKey),
+      design: composeDesign(modelKey, appearance),
       ...LOCOMOTION_OPTIONS,
     });
     applyMovementTuningTo(body, movementTuning);
@@ -470,6 +482,71 @@ export function createBaseGamePlayerBodies({
       weaponSystem.updateMount(w.mount, dt, f);
       w.mount.visible = body.group.visible !== false;
     }
+    // A gadget held overhead: both hands up over the head, the way bot-viewer's heal pose drives
+    // the arms directly. Read one frame late by the IK like every arm target. Released the frame
+    // the gadget goes away; a mount that follows takes the hands over anyway.
+    if (sample.overhead && !w.mount) {
+      const head = body.joints?.head;
+      if (head) {
+        const yaw = record.heading ?? 0;   // NOT motion.visualYaw: that carries the rig's yaw+PI facing spin
+        const rx = Math.cos(yaw), rz = -Math.sin(yaw);        // body right
+        const fx = -Math.sin(yaw), fz = -Math.cos(yaw);       // body forward
+        const hold = overheadHoldFor(sample.overhead, sample.overheadPhase, _holdTmp);
+        _overL.set(head.position.x - rx * hold.spread + fx * hold.fwd, head.position.y + hold.up, head.position.z - rz * hold.spread + fz * hold.fwd);
+        _overR.set(head.position.x + rx * hold.spread + fx * hold.fwd, head.position.y + hold.up, head.position.z + rz * hold.spread + fz * hold.fwd);
+        body.setArmTarget('left', { position: _overL, weight: 1 });
+        body.setArmTarget('right', { position: _overR, weight: 1 });
+        record.overheadOn = true;
+      }
+    } else if (record.overheadOn) {
+      body.setArmTarget('left', null);
+      body.setArmTarget('right', null);
+      record.overheadOn = false;
+    }
+  }
+  // Where the hands go, relative to the head joint, per gadget: the quad by its hull sides, the
+  // UAV by its pod. Metres; `up` is above the head joint, which sits at the skull's centre.
+  const OVERHEAD_HOLD = {
+    quad: { spread: 0.21, up: 0.30, fwd: 0.06 },
+    uav: { spread: 0.16, up: 0.30, fwd: 0.06 },
+  };
+  const _overL = new THREE.Vector3(), _overR = new THREE.Vector3();
+  const _holdTmp = { spread: 0, up: 0, fwd: 0 };
+  // The throw, as hand offsets from the head over its 0..1 phase: wind up behind the head, heave
+  // forward, release at 0.5 (where the server lets the drone go), follow through and settle. The
+  // reload: hands down to the hip, a pause there (the next one coming out), back up overhead.
+  const THROW_KEYS = [[0, 0.06, 0.30], [0.32, -0.30, 0.02], [0.5, 0.58, 0.28], [0.7, 0.62, 0.05], [1, 0.30, -0.30]];   // [phase, fwd, up]
+  const RELOAD_KEYS = [[0, 0.06, 0.30], [0.25, 0.18, -0.95], [0.72, 0.18, -0.95], [1, 0.06, 0.30]];
+  function keyed(keys, t, out) {
+    const p = Math.max(0, Math.min(1, t));
+    for (let i = 1; i < keys.length; i++) {
+      if (p <= keys[i][0]) {
+        const a = keys[i - 1], b = keys[i], u = (p - a[0]) / Math.max(1e-6, b[0] - a[0]);
+        const e = u * u * (3 - 2 * u);
+        out.fwd = a[1] + (b[1] - a[1]) * e; out.up = a[2] + (b[2] - a[2]) * e; return out;
+      }
+    }
+    out.fwd = keys[keys.length - 1][1]; out.up = keys[keys.length - 1][2]; return out;
+  }
+  function overheadHoldFor(kind, phase, out) {
+    const base = OVERHEAD_HOLD[kind] ?? OVERHEAD_HOLD.quad;
+    out.spread = base.spread; out.fwd = base.fwd; out.up = base.up;
+    if (Number.isFinite(phase?.throw)) { keyed(THROW_KEYS, phase.throw, out); out.spread = base.spread * (phase.throw > 0.5 ? 1.6 : 1); }
+    else if (Number.isFinite(phase?.reload)) { keyed(RELOAD_KEYS, phase.reload, out); out.spread = base.spread * 1.3; }
+    return out;
+  }
+  // The point between the solved hands (render-local) and the body's facing, for whatever is held
+  // there; null when that body is not drawn.
+  function heldAnchor(id, out = [0, 0, 0]) {
+    const record = id === 'local' ? local : remotes.get(id);
+    const body = record?.body;
+    const j = body?.joints;
+    if (!record?.overheadOn || !j?.leftHand || !j?.rightHand || body.group.visible === false) return null;
+    out[0] = (j.leftHand.position.x + j.rightHand.position.x) * 0.5;
+    out[1] = (j.leftHand.position.y + j.rightHand.position.y) * 0.5;
+    out[2] = (j.leftHand.position.z + j.rightHand.position.z) * 0.5;
+    out.yaw = record.heading ?? 0;
+    return out;
   }
 
   // A stowed gun is drawn only when the body is: in first person the local rig is masked away, and
@@ -529,14 +606,18 @@ export function createBaseGamePlayerBodies({
   function updateRemote(dt, id, sample) {
     let record = remotes.get(id);
     const model = BASE_GAME_BODY_DESIGNS.some(entry => entry.key === sample.bodyModel) ? sample.bodyModel : 'default';
-    if (record && record.bodyModel !== model) {
+    const face = sample.appearance ? appearanceKey(sample.appearance) : '';
+    if (record && (record.bodyModel !== model || (record.face ?? '') !== face)) {
       releaseRemote(id);
       record = null;
     }
     if (!record) {
-      record = makeBody('remote', {}, !!batches, model);
+      record = makeBody('remote', {}, !!batches, model, sample.appearance ?? null);
+      record.face = face;
+      // NPCs read by side; players keep their identity hue (they are all one side today).
+      const teamTint = sample.npc ? BASE_GAME_TEAM_TINTS[sample.team] : null;
       const color = remotePlayerColor(id);
-      record.body.setTint?.({ h: color.getHSL({}).h, s: 0.62, l: 0.56 });
+      record.body.setTint?.(teamTint ?? { h: color.getHSL({}).h, s: 0.62, l: 0.56 });
       remotes.set(id, record);
     }
     record.touched = true;
@@ -609,6 +690,7 @@ export function createBaseGamePlayerBodies({
     },
     setLocalAim,
     localReload,
+    heldAnchor,
     flushWeapons,
     get localWeapon() { return local?.weapon ?? null; },
     get localMount() { return local?.weapon.mount ?? null; },

@@ -80,10 +80,19 @@ function makeDomeUniforms(state) {
 }
 
 // 256² sun (warm disc + corona) or 512² moon (glow + shaded sphere + maria).
+// Drawing is split out so a live colour change can repaint the SAME canvas in place
+// (texture.needsUpdate re-uploads; no dispose, so it cannot race the WebGPU submit).
 function makeSkySunTexture(color, { moon }) {
-  const S = moon ? 512 : 256;
-  const cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const cv = document.createElement('canvas'); cv.width = cv.height = moon ? 512 : 256;
+  paintSkyDiscCanvas(cv, color, moon);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.userData.proceduralSkyTexture = true; tex.colorSpace = THREE.SRGBColorSpace; tex.needsUpdate = true;
+  return tex;
+}
+function paintSkyDiscCanvas(cv, color, moon) {
+  const S = cv.width;
   const g = cv.getContext('2d');
+  g.clearRect(0, 0, S, S);
   const cx = S / 2, cy = S / 2;
   if (moon) {
     const R = S * 0.3;
@@ -114,9 +123,6 @@ function makeSkySunTexture(color, { moon }) {
     disc.addColorStop(0, '#ffffff'); disc.addColorStop(0.5, color); disc.addColorStop(1, hexA(color, 0.85));
     g.fillStyle = disc; g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.fill();
   }
-  const tex = new THREE.CanvasTexture(cv);
-  tex.userData.proceduralSkyTexture = true; tex.colorSpace = THREE.SRGBColorSpace; tex.needsUpdate = true;
-  return tex;
 }
 
 export function createSky({ scene, camera, size, palette: overrides, sunDir, parts = {} }) {
@@ -212,9 +218,10 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
         milkyGas = milkyWayGroup.userData.gas || null;
       }
     }
-    // celestial bodies (night/dusk only — gate on milkyWay flag as the night marker)
+    // celestial bodies (night/dusk only — gate on milkyWay flag as the night marker).
+    // palette.bodies === true keeps bodies when a palette turns the Milky Way off alone.
     bodiesGroup = null;
-    if (parts.bodies !== false && palette.milkyWay) {
+    if (parts.bodies !== false && (palette.milkyWay || palette.bodies === true)) {
       bodiesGroup = createCelestialBodies(generateCelestialBodies(radius, palette, makeRng((seed ^ 0xc0de) >>> 0)),
         { resScale: palette.bodyResolution ?? 1, faceMode: 'fixed' });
       bodiesGroup.userData.setStableLayering?.(stableCelestialLayering);
@@ -229,6 +236,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     const tex = makeSkySunTexture(color, { moon });
     const m = new MeshBasicNodeMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
     m.fog = false;
+    m.opacity = (moon ? palette.moonOpacity : palette.sunOpacity) ?? 1;
     const spr = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), m);
     spr.renderOrder = -995;   // frontmost sky layer: in front of stars (-997) and bodies (-996)
     spr.frustumCulled = false; // large scale + far position can false-cull the disc at the view edge
@@ -248,7 +256,9 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
   }
 
   function placeDisc(spr, d) {
-    const p = sunSpritePlacement([d.x, d.y, d.z], radius, { ...palette, celestialType: spr.userData.moon ? 'moon' : 'sun' });
+    // The moon disc may size independently (palette.moonSize); it falls back to the shared sunSize.
+    const size = spr.userData.moon ? (palette.moonSize ?? palette.sunSize) : palette.sunSize;
+    const p = sunSpritePlacement([d.x, d.y, d.z], radius, { ...palette, sunSize: size, celestialType: spr.userData.moon ? 'moon' : 'sun' });
     spr.position.set(p.position.x, p.position.y, p.position.z);
     spr.scale.set(p.scale, p.scale, 1);
     faceOrigin(spr);   // discs are meshes now; orient toward the camera at the new position
@@ -346,6 +356,12 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     setStarOpacity(v) { palette.starOpacity = v; if (starsPoints && starsPoints.material._uOpacity) starsPoints.material._uOpacity.value = v; },
     setStarColor(hex) { palette.starColor = hex; if (starsPoints && starsPoints.material._uColor) starsPoints.material._uColor.value.set(hex); },
     setSunSize(v) { palette.sunSize = v; placeSun(); },
+    setMoonSize(v) { palette.moonSize = v; placeSun(); },
+    // Disc colour repaints the existing canvas + re-uploads (needsUpdate) — no dispose, no rebuild.
+    setSunColor(hex) { palette.sun = hex; if (sunSprite) { paintSkyDiscCanvas(sunSprite.material.map.image, hex, false); sunSprite.material.map.needsUpdate = true; } },
+    setMoonColor(hex) { palette.moonColor = hex; if (moonSprite) { paintSkyDiscCanvas(moonSprite.material.map.image, hex, true); moonSprite.material.map.needsUpdate = true; } },
+    setSunOpacity(v) { palette.sunOpacity = v; if (sunSprite) sunSprite.material.opacity = v; },
+    setMoonOpacity(v) { palette.moonOpacity = v; if (moonSprite) moonSprite.material.opacity = v; },
     setMilkyWayIntensity(v) { palette.milkyWayIntensity = v; if (milkyGas && milkyGas.material._uIntensity) milkyGas.material._uIntensity.value = v; },
     // New sky: re-roll every generator from a fresh base seed. Unlike the controls above this
     // DOES rebuild (the seed changes generated geometry), which is safe here because it's a

@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import { MeshNormalNodeMaterial } from 'three/webgpu';
-import { Fn, float, vec3, mix as tslMix, clamp as tslClamp, select } from 'three/tsl';
+import { Fn, float, vec3, mix as tslMix, clamp as tslClamp, select, uniform as tslUniform } from 'three/tsl';
 import { createTerrainSystem } from './terrain-system.js';
 import { createSource } from './terrain-source.js';
 import { createHeightfieldWorldQueryProvider } from './world-query-heightfield-provider.js';
@@ -13,7 +13,7 @@ import { createChunkMeshWorldQueryProvider } from './world-query-chunk-mesh-prov
 import { globalToRenderLocal } from './world-coordinates.js';
 import { createTerrainClipmap } from './terrain-clipmap.js';
 import { createChunkBatcher } from './terrain-chunk-batches.js';
-import { createStreamedSplatMaterial, syncStreamedSplatCoverage, updateStreamedSplat } from './terrain-splat-streamed.js';
+import { createStreamedSplatMaterial, syncStreamedSplatCoverage, updateStreamedSplat, createSplatSampleNode } from './terrain-splat-streamed.js';
 import { createLodCoverage } from './terrain-lod-coverage.js';
 import { createSeaDepthMap } from './terrain-sea-depth.js';
 import { createFieldScheduler, FIELD_PRIORITY } from './terrain-field-scheduler.js';
@@ -255,6 +255,7 @@ export function createBaseGameTerrain({
     return out;
   }
   const hideStaleHeightfield = chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode;
+  const alwaysShow = () => false;   // hoisted: the cascade hide-rule is constant
   // Per frame: coverage ramps follow residency; origins follow the player; uniforms follow both.
   // The present-set rebuild iterates every resident chunk, so it runs only when residency changed,
   // a window recentred, or a ramp is still animating — not on every quiet frame.
@@ -262,10 +263,12 @@ export function createBaseGameTerrain({
     let touched = false;
     const moved = coverExact.recentre(globalPosition[0], globalPosition[2]);
     if (residencyChanged || moved || coverExact.animating) { coverExact.update(presentKeys(system, hideStaleHeightfield), dt); touched = true; }
-    cascade.forEach((c, i) => {
+    // A plain loop, not forEach: this runs every frame and the callback closes over three locals,
+    // so forEach allocates a closure per frame even when the cascade is empty.
+    for (let i = 0; i < cascade.length; i++) {
       const m2 = coverLevels[i].recentre(globalPosition[0], globalPosition[2]);
-      if (residencyChanged || m2 || coverLevels[i].animating) { coverLevels[i].update(presentKeys(c.system, () => false), dt); touched = true; }
-    });
+      if (residencyChanged || m2 || coverLevels[i].animating) { coverLevels[i].update(presentKeys(cascade[i].system, alwaysShow), dt); touched = true; }
+    }
     if (touched) for (const m of splatInstances.values()) syncStreamedSplatCoverage(m);
   }
   // Chunks draw through BatchedMesh pools (terrain-chunk-batches.js): one scene object per ~256
@@ -460,6 +463,20 @@ export function createBaseGameTerrain({
   let residencyRevision = 0;
   // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
   let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
+  // What the ground actually looks like, for anything planted ON it. The vertex tint is only what
+  // shows when ground textures are off, so this follows that toggle rather than assuming either.
+  const uGroundSea = tslUniform(seaLevel);
+  const uGroundSplatMix = tslUniform(0);
+  // Built on first use, by which point the ground textures have normally arrived; a consumer that
+  // needs the real maps waits on `groundColorReady` rather than racing the load.
+  let splatGround = null;
+  let groundNode = null;
+  function syncGroundColor() {
+    uGroundSea.value = seaLevel;
+    const cfg = splatMaterial?.userData?.streamedSplat?.cfg ?? null;
+    if (cfg) splatGround?.sync(cfg);
+    uGroundSplatMix.value = (splatEnabled && splatTextures) ? 1 : 0;
+  }
   const TINT = TERRAIN_TINT;
   function colorizeGeometry(geo, force = false) {
     if (geo.getAttribute('color') && !force) return;
@@ -505,6 +522,7 @@ export function createBaseGameTerrain({
   let installedTotal = 0;
   let lastResident = 0;
   const perSecond = { installs: 0, window: 0, rate: 0 };
+  const frameCostOut = { installMs: 0, foldMs: 0, fieldMs: 0, installCount: 0, colorizeMs: 0, batchMs: 0, colliderMs: 0 };
 
   // `budget` is shared across the near system and every cascade level, so one frame's fold-in is
   // bounded overall rather than per-system. Returns true when chunks were left unfolded.
@@ -629,6 +647,7 @@ export function createBaseGameTerrain({
   function setSeaLevel(level) {
     if (!Number.isFinite(level) || level === seaLevel) return false;
     seaLevel = level;
+    uGroundSea.value = seaLevel;
     tileCover.setSeaLevel(level);
     fieldWindow()?.clear();          // cover was derived against the old waterline
     recolorAll();
@@ -682,6 +701,8 @@ export function createBaseGameTerrain({
     setSplatMaterial(material, textures = null) {
       splatMaterial = material ?? null;
       splatTextures = textures;
+      // Averages come from the loaded textures; the placeholder set carries them too.
+      syncGroundColor();
       tileCover.setSplatCfg(material?.userData?.streamedSplat?.cfg ?? null);
       fieldWindow()?.clear();        // cover is reconciled against these weights
       for (const m of splatInstances.values()) m.dispose();
@@ -693,7 +714,26 @@ export function createBaseGameTerrain({
     get lodCoverage() { return { exact: coverExact, levels: coverLevels }; },
     setSplatWater,
     setSplatRain,
-    setSplatEnabled(value) { splatEnabled = !!value; applyMaterials(); },
+    setSplatEnabled(value) { splatEnabled = !!value; syncGroundColor(); applyMaterials(); },
+    // The ground colour under a point, in the frame grass wants: global height in, vec3 out. Built
+    // once and cached, because a consumer bakes it into a shader graph.
+    groundColorNode() {
+      if (!groundNode) {
+        splatGround = createSplatSampleNode(splatTextures, splatMaterial?.userData?.streamedSplat?.cfg);
+        syncGroundColor();
+        groundNode = Fn(([x, z, yGlobal, normalY]) => {
+          const tint = terrainTintNode(yGlobal.sub(uGroundSea), normalY);
+          return tslMix(tint, splatGround.node(x, z, yGlobal, normalY), uGroundSplatMix);
+        });
+      }
+      return groundNode;
+    },
+    // True once the ground's real appearance is knowable: textures loaded, or textures off, in
+    // which case the vertex tint IS what the ground shows.
+    get groundColorReady() { return !!splatTextures || !splatEnabled; },
+    get groundColorSamplesTextures() { return !!splatGround?.ready; },
+    setGroundColorMip(v) { splatGround?.setMip(v); },
+    syncGroundColor,
     get splatMaterial() { return splatMaterial; },
     get splatEnabled() { return splatEnabled; },
     get clipmap() { return clipmap; },
@@ -758,6 +798,8 @@ export function createBaseGameTerrain({
       if (clipmap) clipmap.setSource(system.source, system.source.descriptor);
       for (const c of cascade) c.system.setSource(next);
       seaLevel = system.source?.descriptor?.seaLevel ?? 0;
+      uGroundSea.value = seaLevel;
+      tileCover.setSeaLevel(seaLevel);   // cover is derived against the waterline, and the swap moved it
       seaDepth.setSource(system.source);
       fieldWindow()?.setSource(system.source, system.source.descriptor);
       contactWindow()?.setSource(system.source, system.source.descriptor);
@@ -845,12 +887,14 @@ export function createBaseGameTerrain({
       return changed;
     },
 
-    // Per-frame cost split, cheap enough to read every frame (stats is not).
+    // Per-frame cost split, cheap enough to read every frame (stats is not). One object, mutated:
+    // the page reads this every frame and a fresh literal is per-frame garbage. Copy it (the
+    // performance capture does) rather than holding the reference.
     get frameCost() {
-      return {
-        installMs: lastInstallMs, foldMs: lastFoldMs, fieldMs: lastFieldMs, installCount: lastInstallCount,
-        colorizeMs: lastColorizeMs, batchMs: lastBatchMs, colliderMs: lastColliderMs,
-      };
+      frameCostOut.installMs = lastInstallMs; frameCostOut.foldMs = lastFoldMs; frameCostOut.fieldMs = lastFieldMs;
+      frameCostOut.installCount = lastInstallCount; frameCostOut.colorizeMs = lastColorizeMs;
+      frameCostOut.batchMs = lastBatchMs; frameCostOut.colliderMs = lastColliderMs;
+      return frameCostOut;
     },
 
     // Performance-record block: identifies the source, residency, queues, draws and timing.

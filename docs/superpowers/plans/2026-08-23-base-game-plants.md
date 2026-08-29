@@ -331,6 +331,15 @@ ground textures already use, and each layer independently toggleable, saved and 
 
 ### F6 — Trees (forest layer)
 
+**SUPERSEDED 2026-08-27 by `2026-08-27-base-game-trees.md`.** A comparison of the three existing
+tree implementations against this phase found it right about the wiring and silent about the risk:
+it derives LOD from `farExtent` (6.1 km, or 0 with far LOD off), inherits a billboard rung that has
+no bake path on procedural terrain, uses `coverTree` as a zero-veto so slope and moisture never
+thin the forest, keeps `treeCountForChunk`'s window-relative density (which breaks its own F8
+determinism test), and says nothing about shadows, wind, the water mirror or the draw-call budget.
+The section below is kept as written for provenance; build from the dedicated plan.
+
+
 - `createForestPalette` bake at startup (variants × species), `forest-gpu.js` renderer, records from
   `placementRecords(chunks, params, heightAt, biomeAt)` — the facade's `biomeAt` and
   `treeDensityAt`, passed as `params.treeDensityAt` so `placementsForChunk()` dart-throws candidates

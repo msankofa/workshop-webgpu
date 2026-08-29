@@ -115,15 +115,12 @@ export const PALETTE = {
   bhot(l) { const v = 1 - Math.min(1, Math.max(0, (l - 0.03) * 1.12)); return [v, v, v]; },
 };
 
-export function createVisionComposite(renderer, scene, camera) {
-  const pp = new PostProcessing(renderer);
-  // renderOutput is applied here by hand, so the pipeline must not apply it again on the way out —
-  // otherwise RGB mode would not match the plain render it is supposed to be identical to
-  pp.outputColorTransform = false;
-  const scenePass = pass(scene, camera);
-  const color = renderOutput(scenePass.getTextureNode());
-
-  const output = Fn(() => {
+// The palette as a node, for a page that already owns its pipeline (base-game has one for depth of
+// field, and a second pipeline would mean a second scene pass). `color` must be display-referred —
+// renderOutput already applied — which is also why the pipeline it goes into must have
+// outputColorTransform off. Returns a vec4.
+export function visionNode(color) {
+  return Fn(() => {
     const rgb = color.rgb;
     const l = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
     // sensor noise: a hash of the pixel and the frame, low amplitude, so a still scene still crawls
@@ -144,7 +141,15 @@ export function createVisionComposite(renderer, scene, camera) {
         select(uMode.lessThan(2.5), whot, bhot)));
     return vec4(out, 1.0);
   })();
-  pp.outputNode = output;
+}
+
+export function createVisionComposite(renderer, scene, camera) {
+  const pp = new PostProcessing(renderer);
+  // renderOutput is applied by hand inside the node, so the pipeline must not apply it again on the
+  // way out — otherwise RGB mode would not match the plain render it is supposed to be identical to.
+  pp.outputColorTransform = false;
+  const scenePass = pass(scene, camera);
+  pp.outputNode = visionNode(renderOutput(scenePass.getTextureNode()));
 
   return {
     setMode: setVisionMode,

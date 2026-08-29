@@ -49,6 +49,9 @@ Three new files sit between the terrain and the generators:
 | `flora-field.js` | What grows where. `coverAt(biome, moisture, weights, { height, seaLevel, normalY })` -> `{ grass, plant, tree }` in 0..1: the biome states the ambition (`BIOME_GRASS`/`BIOME_PLANTS`, and `BIOME_TREE_DENSITY` for trees), and `terrain-splat-streamed.js`'s `splatWeights` vetoes it, so nothing grows on ground the terrain is painting as rock, sand or snow. Slope and the waterline are hard gates; moisture thins each layer by its own amount. `createTileCover()` runs it once per texel as a field tile commits and publishes three u8 channels, so a blade reads one number instead of re-running the classifier per candidate — and there is no TSL twin of this math to drift. Pure, no three.js. |
 | `flora-chunks.js` | The windowed chunk lifecycle placement runs on: desired-set diff from a camera cell, clear/build queues, per-frame chunk and millisecond budgets, `rebuildAll`. Lifted from the copy inline in `environment-viewer.html` (`syncPlantsToFocus`/`processPlantBuildQueue`, `:5584`-`5650`), which exists there three times over. Adds `setReadyTest(fn)`: a chunk whose field has not streamed is deferred and retried, never built against a default. Pure, no three.js. |
 | `base-game-flora.js` | The page-facing layer owner. Holds the terrain's field windows, builds the injected TSL samplers, and owns the one `createComputeGrass` instance. |
+| `base-game-trees.js` | Where Base Game's trees stand (tree plan T1). Placement only — no three.js and no renderer: a `flora-chunks` host, `placementRecords` per chunk, and records kept in GLOBAL coordinates so a render-origin rebase can move where a tree draws but never which trees exist. `setListeners({onChunk,onClear})` is how the renderer hears about a chunk arriving or leaving; `placementParams` is what the palette bakes against. See "Trees in Base Game" below. |
+| `base-game-forest.js` | The drawn half (tree plan T2). Owns the `createBaseGameTrees` instance, bakes the palette, and drives `forest-gpu.js`: render-origin subtraction on upload, a reported capacity budget, per-LOD-rung distances and switches, canopy sway, palette disposal on rebake, and the ported procedural bark colour node. Trunk height is `terrain.groundHeight` — the collision surface, not the coarse placement field. |
+| `bench-base-game-forest.mjs` | Not a test. Reports what a Base Game forest costs headless: trees standing vs asked, draws, triangles per rung, palette bake, and the cost of `forest-gpu`'s full rescan-and-re-upload on a chunk mutation. |
 
 **Grass in Base Game runs `grass-compute.js` in neither of its existing modes.** It is not the
 closed-form `terrain-field` twin (Base Game's ground is a streamed v5/analytic source) and not
@@ -92,17 +95,67 @@ Two constraints worth knowing before changing this:
   cell, so the panel's 0-60 blades/m^2 slider is honest across its whole range. The stock
   `Kmax: 64` used elsewhere caps at 16/m^2, which silently flattened three quarters of that
   slider before 2026-08-26.
-- **Blades take the colour of the ground they stand on.** `base-game-terrain.js` exports the tint
-  its own vertices use in two forms: `terrainTintAt` (CPU, the only implementation
-  `colorizeGeometry` has) and `terrainTintNode` (the TSL twin), over shared `TERRAIN_TINT` and
-  `TERRAIN_TINT_BANDS` so the palette and the band edges cannot land in one and not the other.
-  Flora builds `groundColorNode` from it — height from the blade, slope from a central difference
+- **Blades take the colour of the ground they stand on** -- the colour it is ACTUALLY showing.
+  `terrain.groundColorNode()` blends two sources by the ground-textures toggle: the streamed splat
+  layers' average albedo (`createSplatAverageNode`, the GPU twin of `splatWeights` folded into the
+  per-layer averages `loadStreamedSplatTextures` already computes) when textures are on, and the
+  vertex tint (`terrainTintNode`, twin of `terrainTintAt`, over shared `TERRAIN_TINT` and
+  `TERRAIN_TINT_BANDS`) when they are off. Two earlier versions of this were wrong and both are
+  worth remembering: the first tinted toward the vertex tint unconditionally, which is the colour
+  the terrain does NOT show by default; the second used the layers' AVERAGE colour, justified by the
+  material fading to that average past `fadeFar` -- but `fadeFar` is 1400 m and grass reaches 200 m,
+  so the terrain is at full detail everywhere grass exists and the average is never what is on
+  screen. `createSplatSampleNode` reads the actual maps at the blade's world position, tiled by
+  `tileMeters` exactly as the material tiles them, at an explicit mip (`grassGroundTintMip`, default
+  4) because a compute kernel has no derivatives and one full-detail sample per blade is per-texel
+  noise rather than the local ground colour. With no maps loaded it falls back to the averages at
+  the same arity, so the graph does not depend on load order. Flora builds `groundColorNode` from it — height from the blade, slope from a central difference
   on the coarse window — and grass-compute evaluates it ONCE PER SURVIVING BLADE in the cull,
   packing the result into the instance record's three spare floats (`rec1.yzw`, previously zeroes)
   rather than recomputing per vertex per frame. The material then mixes toward it by
   `grassGroundTint` at the root and `grassGroundTintFar` at the draw edge, which is what stops the
-  radius ending on a visible line. Both are live setters; neither forces a recull, because the
+  radius ending on a visible line. `grassGroundTintReach` is how far up the blade the root tint
+  carries, as `1 - smoothstep(0, reach, t)` to match grass-look's `rootShade`; the first version
+  used a full-length linear ramp, which left a blade's midpoint half ground-coloured and washed the
+  field out rather than seating it. All three are live setters; none forces a recull, because the
   colour is already in the record.
+- **Grass waits for the ground textures before it builds.** They load in the background, the grass
+  graph is built exactly once, and a graph built too early would tint from the fallback for the
+  whole session. `build()` holds while `terrain.groundColorReady` is false, bounded at 600 frames so
+  a failed texture load cannot stop grass forever -- and with textures off the vertex tint IS what
+  the ground shows, so `groundColorReady` is true immediately. `stats.groundSamplesTextures` says
+  which of the two it ended up on.
+- **Nothing here jumps on a floating-origin rebase.** Placement hashes add `uCellOriginX/Z` so they
+  key off a GLOBAL cell, and the material samples wind, cloud and coverage at `baseWorld` rather
+  than the render-local base. Before this, crossing a rebase re-rolled every blade's jitter, yaw and
+  height in one frame. `setWorldOrigin` is what flora pushes on every origin sync.
+- **`setShadowRungs([...])`** — a LOD rung whose near edge is past the shadow camera rasterises into
+  a map it cannot appear in. Defaults to all-true, so env-viewer is unchanged; Base Game derives it
+  from `rig.dirLight.shadow.camera.right`, which at 90 m stops LOD2 (140-260 m) casting.
+- **`dispose()` frees the storage buffers.** Storage attributes have no dispose event and
+  `ComputeNode.dispose()` frees pipelines and bind groups but not buffers, so the old teardown left
+  the instance, counter and indirect buffers alive for the renderer's lifetime.
+  `renderer._attributes.delete` is the same path geometry teardown uses; it is private API on a
+  pinned build, so every call is guarded and a renderer without it still disposes cleanly.
+- **Two budgets, both visible, neither silent.** The instance buffer (`grassBufferMB`, 96 MB = 3M
+  blades) bounds how many blades can EXIST; the thread budget (`grassDispatchBudgetM`, 8M) bounds
+  how many candidates a recull may TEST. They are different limits: radius and density both
+  multiply into the dispatch as `side^2 x perCell`, so radius 600 at 128 blades/m^2 is ~86M threads,
+  which hangs rather than degrades. Over the thread budget the effective blades-per-cell is thinned
+  (high slots drop, the rest stay where they are) and `stats.dispatchClamped` says so; over the
+  buffer, the field truncates at the far edge and `stats.truncating` says so. The Plants panel
+  prints both. Slider ranges are 5-600 m and 0-128 blades/m^2, and
+  `test-grass-compute.mjs` asserts the implementation ceilings cover them -- the invariant that was
+  broken when the panel offered 0-60 against a 16/m^2 ceiling.
+- **`expectedBlades(radius, density, cullStart)`** is the area integral of the edge fade, not
+  `pi*r^2*d`: keep probability falls linearly from 1 at `cullStart` to 0 at the radius, which works
+  out to 0.813 of the disc at the default `cullStart = 0.8r`. It is still an UPPER bound, since
+  biome cover and the water gate thin further and neither is knowable on the CPU.
+- **The edge fade is `keepRand > edge`**, with `edge` ramping 0 to 1 across `cullStart -> radius`
+  and `keepRand` fixed per (cell, slot). So density thins linearly over the band and a blade appears
+  exactly once as you approach it rather than flickering. Blades thin but do NOT shrink: the
+  height-collapse fade (`grassFadeKeep`) belongs to the CPU `grass.js` path, not this one.
+  `grassCullStart` is a panel slider (0 = auto, meaning 80% of the radius).
 - **The buffer is budgeted, not worst-cased.** `CAP` used to be `maxInstances(maxRadius, ...)` —
   every cell in the window full — which at radius 200 and 64 blades/m^2 is 331 MB for a field the
   cull gradient never fills. `opts.maxInstances` caps it instead (`grassBufferMB`, default 96 MB =
@@ -131,6 +184,161 @@ emission.
 Tests: `test-flora-field.mjs`, `test-flora-chunks.mjs`, `test-base-game-flora.mjs`, `test-flora-tsl-build.mjs`. The blades
 themselves need a GPU, so the last one covers the wiring — window references, the clamps, the
 render-origin boundary, and that the injected graphs build and are validated.
+
+### Trees in Base Game (`base-game-trees.js`)
+
+Plan: `docs/superpowers/plans/2026-08-27-base-game-trees.md`, which supersedes F6 of the plants
+plan. The comparison behind it is
+`docs/superpowers/specs/2026-08-27-tree-implementation-comparison.md`. T1 (placement) and T2 (the
+renderer, `base-game-forest.js`) are shipped. Shadows and the water mirror are T3.
+
+Three things differ from how `environment-viewer.html` drives the same modules, and each is a
+correctness fix rather than a preference:
+
+- **Density is per hectare, and the per-chunk count is a pure function of the chunk.**
+  `forest-placement.js`'s `treeCountForChunk` computes `count / targetChunkCount`, and env-viewer
+  passes the live resident window as `targetChunkCount` — which makes the forest a function of the
+  viewer's draw radius. Base Game passes `count = treesPerHectare * chunkArea / 10000` with
+  `targetChunkCount: 1`, so two peers with different draw distances stand in the same forest. This
+  is what makes the layer replicable without sending a single instance.
+- **`coverTree` is the accept probability, not a veto.** The plants plan dart-threw against
+  `treeDensityAt` (the biome term alone) and used the cover channel only to reject zeros. Because
+  `coverTree` already carries `treeDensityForBiome x groundWelcome x slopeGate x moistureFactor`,
+  using it directly as the dart-throw probability makes slope, ground material and dryness *thin*
+  the forest into terrain it dislikes instead of stopping it on a line. On the analytic test
+  terrain that thins the forest to about 14% of the requested count, so `stats.requestedTrees` and
+  `stats.coverThinning` report the shortfall — a trees-per-hectare slider would otherwise be off by
+  a factor of seven with nothing on screen to say why.
+- **Every placement param is written out and asserted finite.** All three of
+  `forest-placement.js`'s NaN traps are silent: an undefined `waterLevel`/`shoreMargin` makes the
+  sum NaN, every `height >= NaN` false, and the forest **empty**; an undefined `skew` makes
+  `Math.exp(skew * 1.5)` NaN and poisons every scale. `assertPlacementParams` throws instead.
+
+`TREE_IDENTITY_KEYS` is the split that matters online: density, seed offset, chunk size, placement
+pattern, cluster shape, species/diversity, size pipeline and shore margin change which trees exist
+and are shared; draw radius, chunk budgets and everything visual stay local.
+
+Test: `test-base-game-trees.mjs` (44). Two of its claims are mutation-verified rather than merely
+green — restoring the window-relative density fails the cross-radius agreement check, and turning
+the cover gate back into a binary veto fails the thinning check. An earlier version of the gradient
+assertion compared cover under a tree against cover at nearby offsets; that passes under a veto too
+(clustered placement alone produces the ratio), so it was replaced by the count-based measurement,
+which does not.
+
+### The renderer in Base Game (`base-game-forest.js`)
+
+`forest-gpu.js` is reused unchanged in spirit, with four additive changes that default to the
+donor's behaviour so `environment-viewer.html` is untouched:
+
+- `setWorldOrigin(x, y, z)` — records are global, the instance buffer is render-local, and the
+  cull compares against a render-local camera. Setting it marks a rebuild rather than editing the
+  buffer, because the heights have to be re-sampled against the new origin anyway.
+- `setLodEnabled([...])` — per-rung visibility, folded into `syncRenderParts`'s existing part mask
+  through a mesh-to-rung map `[0,0,0,1,1,2,2,3]`. A disabled rung's trees vanish rather than
+  falling back, which is the point: it isolates that rung's raster cost. The cull still runs over
+  the full `V*CAP` and still writes every rung's indirect count, so a rung toggle measures
+  **raster cost only**.
+- `stats.droppedInstances`/`truncating`/`capacity` — the donor warned once ever, so a second
+  overflow looked clean. The stat is per rebuild.
+- **`summary` is the per-frame read; `stats` is not.** `stats`'s getter runs `computeCullEstimate`
+  over every live instance and allocates three objects — 0.21 ms a frame at a draw radius the
+  sliders reach. `summary` neither scans nor allocates. `summary.cullEstimates` counts how often
+  the scan ran, so "the frame loop does not scan" is an invariant a test can hold rather than a
+  convention.
+- **`dispose()` frees the storage buffers.** Storage attributes have no dispose event and
+  `ComputeNode.dispose()` frees pipelines and bind groups but not buffers, so every rebuild leaked
+  the source, draw, count, atomic and 8-per-variant indirect buffers — about 2 MB at 12 variants,
+  on a slider. Now freed through the same guarded `renderer._attributes.delete` path
+  `grass-compute.js` uses. This fixes `environment-viewer.html`'s `rebuildForestGPU` too.
+- `leafSway` — an optional canopy sway ported from `bot-trees.js`. The graph is only built when a
+  host passes the option, so a host that does not keeps its time-independent material.
+
+Two things `base-game-forest.js` does that env-viewer does not: it disposes the baked palette
+geometries on a rebake (env-viewer never frees them), and it derives the placement window from the
+draw radius at construction as well as in `apply()`. Its `stats` is filled cheaply every frame;
+`sampleDetail()` fills the per-rung counts and the triangle estimate and is called only by the
+panel readout (every 15 frames) and by a capture.
+
+**Trees per hectare is a rebuild-class slider.** Changing it is an identity change, so
+`trees.apply` calls `rebuildAll`, which re-queues every resident chunk. Wired to `input` it
+re-queued 49 chunks a drag frame against a one-chunk-a-frame budget, so the forest emptied for the
+length of the drag; it uses `addCommitRange` like the other rebuild sliders. Grass density is a
+setter, which is why `addRange` is right there and wrong here.
+
+**Known cost: the meshes duplicate their geometry.** `drawMesh` clones the palette geometry per
+mesh, and a variant's branches are drawn at three rungs, so **24.7 MB reaches the GPU where 13.5 MB
+is distinct**. The fix is to share one set of `BufferAttribute` objects rather than cloning; it is
+open, deferred on severity rather than on any obstacle. An earlier version of this paragraph called
+sharing unsafe because three.js's WebGPU `Geometries` deletes every attribute of a disposed geometry
+— true in general, but not here, since forest-gpu creates and disposes all 96 geometries together.
+See `F-04` in the audit below.
+
+**The forest builds off the frame loop.** 3 species x 4 variants is 12 variants, 96 meshes and **84
+distinct materials** — `forest-gpu.js` compiles each variant's slot offset into its `positionNode`,
+so no two variants can share one. WebGPU creates a pipeline per material per pass, lazily, on the
+first frame each mesh draws, and `syncRenderParts` reveals a variant only once it has records — so
+the compiles arrive scattered across a session as chunks stream in. `base-game-forest.js` therefore
+kicks the build off rather than awaiting it: bake, construct, force every mesh visible, run
+`renderer.compileAsync(warmGroup, camera, scene)`, restore the mask, and only then add to the scene.
+A teardown mid-build is invalidated by a token instead of adding dead meshes to a scene.
+
+**Instancing note.** The instancing is real on the instance axis — a tree costs almost nothing per
+tree — but the draw count is `variants x rungs` and does not move with the tree count: **84 draws
+for 56 visible instances** at defaults. A variant is hidden only when it has no records anywhere in
+the window, so rungs with zero survivors still submit. Cutting `variantsPerSpecies` is the cheapest
+lever on both draws and materials, and it has a slider beside Species; the two multiply into the
+variant count, so that control reads out the product (variants, and the draws they cost) rather than
+its own number. Both are commit-on-release, because either rebakes the palette.
+
+**Tree shape is three level-0 multipliers, not one scale.** `treeMaxSize` scales a whole tree;
+`treeTrunkHeight`, `treeTrunkWidth` and `treeLeafSize` change its proportions. Height and width
+multiply `length[0]` and `radius[0]` of the generator's per-level arrays, so the trunk moves while
+the branches keep their own lengths. `base-game-forest.js` rebuilds the species table with
+`buildSpecies(params, rngFrom(seed))` - deterministic, so it reproduces exactly the table
+`createForestPalette` would have built - scales level 0, and passes it as `params.speciesTable`.
+Placement never sees that table and only ever needs the species count, so this cannot move a tree.
+`trees.js` leaves `radius` unset in `toOptions`, which is why it now exports `TREE_DEFAULTS`: the
+width multiplier needs the generator's own table rather than a copy of those four numbers.
+
+One coupling worth knowing: `trees.js` divides gnarliness and the growth force by branch radius, so
+a thicker trunk wanders and bends slightly less. The tree changes height by about 1% as a result.
+That is the generator, not the slider, and the test bounds it at 5% rather than asserting it away.
+
+**The audit of this layer is `docs/superpowers/reviews/2026-08-28-base-game-trees-audit.md`** — 24
+findings with cause, effect, solution, result, code locations, severity and status, in a structure
+built to be machine-read, and browsable at `audit-viewer.html`. Nine are fixed; the rest are open,
+deferred or unverified, and the visual rubric has not been run at all.
+
+**Measured, headless, on the analytic terrain** (`bench-base-game-forest.mjs`, 3 species x 4
+variants = 12 variants, 96 m chunks):
+
+| | defaults (45/ha, 260 m) | dense (200/ha) | wide (600 m) |
+|---|---|---|---|
+| trees standing / asked | 271 / 2032 | 1207 / 9032 | 1234 / 9331 |
+| chunks resident | 49 | 49 | 225 |
+| draws | 84 | 84 | 84 |
+| triangles | 526k | 2851k | 2785k |
+| full rescan + re-upload | 0.04 ms | 0.19 ms | 0.18 ms |
+| idle `forest.update()` | 0.004 ms | 0.007 ms | 0.003 ms |
+| geometry uploaded / distinct | 24.7 / 13.5 MB | same | same |
+
+Two conclusions the plan left open:
+
+- **The rescan does not need replacing.** T2 was told to measure `rebuild()`'s full rescan before
+  writing an incremental slot-range upload. At 0.04-0.19 ms per chunk mutation, budgeted to one
+  chunk a frame, the incremental path buys nothing. Not written.
+- **Branch geometry never decimates.** Per variant the mean is 5618 branch triangles, 7546 leaf,
+  3254 leaf-shadow, 3240 coarse-leaf — and `forest-gpu.js` draws the *same* `variant.branches`
+  geometry at LOD0, LOD1 and LOD2. So the "coarse" rung is 5618 + 3240 = 8858 triangles, 63% of it
+  undecimated trunk. Only the leaves get cheaper with distance. That is a donor property, and it is
+  the first thing to look at when T3 prices the LOD rungs.
+
+Test: `test-base-game-forest.mjs` (37), driving the real modules headless — `forest-gpu.js`
+constructs without a device, so the origin subtraction, the capacity budget, the rung toggles, the
+clamps and the palette disposal are all checked against the shipped code rather than a mirror of
+it. Six mutations were run against it and each failed the expected assertion; the height-source
+mutation is the informative one: sampling the 8 m placement field instead of the collision surface
+moves a trunk by up to **4.07 m**.
 
 ### Consumers outside `environment-viewer.html`
 

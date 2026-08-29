@@ -34,6 +34,32 @@ simulate(controller, 1.5);
 ok(controller.grounded && near(controller.getPosition()[1], 0), 'player settles on the origin floor through the shared BVH provider');
 ok(controller.surface?.providerId === 'traversal-lab-static', 'grounded controller exposes a terrain-agnostic surface identity hook');
 
+// A ray to a sloped triangle finds the point under the capsule axis, not the tangent point of its
+// round lower cap. Repeatedly snapping the foot to that ray point used to embed the capsule and make
+// BVH depenetration push it downhill every tick -- even with exactly zero velocity.
+{
+  const resting = createBaseGamePlayerController({ worldQuery, spawn: [28, 7, -3.5] });
+  simulate(resting, 2);
+  const before = resting.getPosition();
+  simulate(resting, 10);
+  const after = resting.getPosition();
+  const drift = Math.hypot(after[0] - before[0], after[2] - before[2]);
+  ok(resting.grounded && drift < 1e-5, 'idle capsule remains fixed on a walkable BVH slope');
+  ok(Math.hypot(...resting.getVelocity()) < 1e-8, 'walkable-slope rest has exactly zero residual velocity');
+}
+
+// Ground braking is authored controller behavior, not a cosmetic panel value.
+function speedAfterBraking(deceleration) {
+  const current = createBaseGamePlayerController({ worldQuery, spawn: lab.layout.spawn });
+  simulate(current, 1);
+  simulate(current, 1, { moveX: 0, moveZ: 1, yaw: 0 });
+  current.configure({ groundDeceleration: deceleration });
+  simulate(current, 0.1, { moveX: 0, moveZ: 0, yaw: 0 });
+  const v = current.getVelocity();
+  return Math.hypot(v[0], v[2]);
+}
+ok(speedAfterBraking(100) < speedAfterBraking(5), 'ground-braking configuration controls release stopping distance');
+
 const startZ = controller.getPosition()[2];
 // Expressed against the configured walk speed, not a magic distance: retuning the walk must not
 // silently turn this into a test of nothing.
@@ -258,6 +284,17 @@ for (const degrees of [0, 5, 15, 30, 45, 49]) {
   ok(climb(degrees, { sprint: true }).ungrounded === 0, `sprinting up a ${degrees} deg slope never loses the ground`);
 }
 {
+  const slide = friction => {
+    const current = createBaseGamePlayerController({
+      worldQuery: rampWorld(60), spawn: [2, 7, 0],
+      config: { slopeLimitDegrees: 50, slopeSlideDeceleration: friction },
+    });
+    for (let step = 0; step < 90; step++) current.stepOnce({ moveX: 0, moveZ: 0, yaw: 0 });
+    return Math.abs(current.getPosition()[0] - 2);
+  };
+  ok(slide(40) < slide(0) * 0.75, 'steep-slope friction materially reduces over-limit sliding');
+}
+{
   // The threshold has to keep the cases it was guarding. A jump still leaves the ground...
   const jumped = climb(15, { steps: 380, from: 260, jumpAt: 260 });
   ok(jumped.ungrounded > 20, 'a jump taken while climbing still puts the player in the air');
@@ -394,6 +431,10 @@ for (const marker of [
   'firstPerson ? settings.fpCameraSideOffset : settings.cameraSideOffset,',
   'createBaseGameWaterSim',
   'waterSurfaceAt: (x, z, t) => waterSim.heightAt(x, z, t)',
+  'playerGroundDeceleration',
+  'playerSlopeSlideDeceleration',
+  "addRange(playerSec, 'playerGroundDeceleration'",
+  "addRange(playerSec, 'playerSlopeSlideDeceleration'",
 ]) ok(html.includes(marker), `base-game.html integrates ${marker}`);
 
 view.dispose();

@@ -131,6 +131,10 @@ const LEAF_SHAPE = [
   [0.48, 0.22],
 ];
 
+// The generator defaults, for callers that scale one level rather than replacing the table.
+// Read-only by contract: the arrays are shared with DEFAULTS.
+export const TREE_DEFAULTS = Object.freeze({ ...DEFAULTS });
+
 export class Tree extends THREE.Group {
   constructor(options = {}) {
     super();
@@ -168,6 +172,7 @@ export class Tree extends THREE.Group {
     });
 
     this.branchesMesh = new THREE.Mesh(new THREE.BufferGeometry(), this.branchMat);
+    this.branchLodGeometries = [];
     // Leaves split into two meshes so a fraction (leaves.shadowFraction) can cast
     // shadows while the rest skip the muddy, expensive shadow pass.
     this.leavesMesh = new THREE.Mesh(new THREE.BufferGeometry(), this.leafMat);
@@ -202,6 +207,18 @@ export class Tree extends THREE.Group {
     const o = this.options;
     this.rng = makeRNG(o.seed);
     this.branch = { verts: [], normals: [], uvs: [], indices: [] };
+    const lodSpecs = Array.isArray(o.branchLods) ? o.branchLods : [];
+    while (this.branchLodGeometries.length < lodSpecs.length) {
+      this.branchLodGeometries.push(new THREE.BufferGeometry());
+    }
+    while (this.branchLodGeometries.length > lodSpecs.length) {
+      this.branchLodGeometries.pop().dispose();
+    }
+    this._branchLodStreams = lodSpecs.map(spec => ({
+      data: { verts: [], normals: [], uvs: [], indices: [] },
+      sectionStride: Math.max(1, Math.round(spec?.sectionStride ?? 1)),
+      segmentScale: Math.max(0.1, Math.min(1, Number(spec?.segmentScale) || 1)),
+    }));
     this.leaf = { verts: [], normals: [], uvs: [], indices: [] };
     this.leafShadow = { verts: [], normals: [], uvs: [], indices: [] };
     // Separate stream for the cast/no-cast decision so changing shadowFraction
@@ -213,6 +230,9 @@ export class Tree extends THREE.Group {
     while (this.queue.length) this._generateBranch(this.queue.shift());
 
     this._commit(this.branchesMesh.geometry, this.branch);
+    for (let i = 0; i < this._branchLodStreams.length; i++) {
+      this._commit(this.branchLodGeometries[i], this._branchLodStreams[i].data);
+    }
     this._commit(this.leavesMesh.geometry, this.leaf);
     this._commit(this.leavesShadowMesh.geometry, this.leafShadow);
   }
@@ -233,11 +253,19 @@ export class Tree extends THREE.Group {
   // ---- build one branch's tube, then spawn its children or leaves ----
   _generateBranch(branch, leavesOnly = false) {
     const o = this.options;
-    const segs = branch.segmentCount;
-    const vertsPerRing = segs + 1; // +1 duplicated seam vertex for clean UV wrap
     // terminal = bears leaves instead of children; needed up here because its tip pinches shut
     const terminal = branch.level >= o.levels || at(o.children, branch.level) <= 0;
-    const indexOffset = leavesOnly ? 0 : this.branch.verts.length / 3;
+    // Every stream follows the same section/RNG walk. LOD streams merely skip emitted rings and
+    // circumference vertices, so branch centre-lines, child origins and leaf placement stay exact.
+    const branchBuilds = leavesOnly ? [] : [
+      { data: this.branch, sectionStride: 1, segmentScale: 1 },
+      ...this._branchLodStreams,
+    ].map(build => ({
+      ...build,
+      segs: Math.max(3, Math.round(branch.segmentCount * build.segmentScale)),
+      indexOffset: build.data.verts.length / 3,
+      ringCount: 0,
+    }));
 
     const orientation = branch.orientation.clone();
     const origin = branch.origin.clone();
@@ -259,21 +287,24 @@ export class Tree extends THREE.Group {
 
       _q.setFromEuler(orientation);
       const vCoord = i * sectionLength * (o.bark.vScale || 0.4);
-      if (!leavesOnly) {
+      for (const build of branchBuilds) {
+        if (i !== 0 && i !== branch.sectionCount && i % build.sectionStride !== 0) continue;
+        const { data, segs } = build;
         for (let j = 0; j < segs; j++) {
           const a = (2 * Math.PI * j) / segs;
           _dir.set(Math.cos(a), 0, Math.sin(a)).applyQuaternion(_q);
           _v.copy(_dir).multiplyScalar(radius).add(origin);
-          this.branch.verts.push(_v.x, _v.y, _v.z);
-          this.branch.normals.push(_dir.x, _dir.y, _dir.z);
-          this.branch.uvs.push((j / segs) * wrapsX, vCoord);
+          data.verts.push(_v.x, _v.y, _v.z);
+          data.normals.push(_dir.x, _dir.y, _dir.z);
+          data.uvs.push((j / segs) * wrapsX, vCoord);
         }
         // seam vertex (duplicate of j=0) at u = wrapsX
         _dir.set(1, 0, 0).applyQuaternion(_q);
         _v.copy(_dir).multiplyScalar(radius).add(origin);
-        this.branch.verts.push(_v.x, _v.y, _v.z);
-        this.branch.normals.push(_dir.x, _dir.y, _dir.z);
-        this.branch.uvs.push(wrapsX, vCoord);
+        data.verts.push(_v.x, _v.y, _v.z);
+        data.normals.push(_dir.x, _dir.y, _dir.z);
+        data.uvs.push(wrapsX, vCoord);
+        build.ringCount++;
       }
 
       sections.push({ origin: origin.clone(), orientation: orientation.clone(), radius });
@@ -301,22 +332,22 @@ export class Tree extends THREE.Group {
       orientation.setFromQuaternion(_qs);
     }
 
-    // skin the tube: two triangles per quad between consecutive rings
-    if (!leavesOnly) {
-      for (let i = 0; i < branch.sectionCount; i++) {
+    // Skin every emitted stream: two triangles per quad between consecutive retained rings.
+    for (const build of branchBuilds) {
+      const { data, segs, indexOffset, ringCount } = build;
+      const vertsPerRing = segs + 1;
+      for (let i = 0; i < ringCount - 1; i++) {
         for (let j = 0; j < segs; j++) {
           const a = indexOffset + i * vertsPerRing + j;
           const b = a + 1;
           const c = a + vertsPerRing;
           const d = c + 1;
-          this.branch.indices.push(a, c, b, b, c, d);
+          data.indices.push(a, c, b, b, c, d);
         }
       }
-      // An open tube end reads as a cut pipe through the FrontSide bark. Terminal tips already
-      // pinch shut above, so what is left is the trunk/intermediate tips and the trunk's base.
       const tip = sections[sections.length - 1];
-      if (tip.radius > TIP_RADIUS * 2) this._capRing(tip, segs, 1);
-      if (branch.level === 0) this._capRing(sections[0], segs, -1);
+      if (tip.radius > TIP_RADIUS * 2) this._capRing(tip, segs, 1, data);
+      if (branch.level === 0) this._capRing(sections[0], segs, -1, data);
     }
 
     const leafMinLevel = Math.max(1, Math.floor(o.levels * (1 - (o.leaves.spread || 0))));
@@ -332,26 +363,26 @@ export class Tree extends THREE.Group {
   // Close one end of a tube with a triangle fan. `outward` is +1 for the growth-direction end
   // and -1 for the base, and only sets the winding and the flat normal. Uses its own ring of
   // vertices rather than the wall's so the cap shades as a disc instead of as more bark.
-  _capRing(section, segs, outward) {
-    const base = this.branch.verts.length / 3;
+  _capRing(section, segs, outward, data = this.branch) {
+    const base = data.verts.length / 3;
     _q.setFromEuler(section.orientation);
     _capN.set(0, outward, 0).applyQuaternion(_q);
     for (let j = 0; j < segs; j++) {
       const a = (2 * Math.PI * j) / segs;
       _dir.set(Math.cos(a), 0, Math.sin(a)).applyQuaternion(_q);
       _v.copy(_dir).multiplyScalar(section.radius).add(section.origin);
-      this.branch.verts.push(_v.x, _v.y, _v.z);
-      this.branch.normals.push(_capN.x, _capN.y, _capN.z);
-      this.branch.uvs.push(0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5);
+      data.verts.push(_v.x, _v.y, _v.z);
+      data.normals.push(_capN.x, _capN.y, _capN.z);
+      data.uvs.push(0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5);
     }
-    this.branch.verts.push(section.origin.x, section.origin.y, section.origin.z);
-    this.branch.normals.push(_capN.x, _capN.y, _capN.z);
-    this.branch.uvs.push(0.5, 0.5);
+    data.verts.push(section.origin.x, section.origin.y, section.origin.z);
+    data.normals.push(_capN.x, _capN.y, _capN.z);
+    data.uvs.push(0.5, 0.5);
     const centre = base + segs;
     for (let j = 0; j < segs; j++) {
       const a = base + j, b = base + ((j + 1) % segs);
-      if (outward > 0) this.branch.indices.push(a, centre, b);
-      else this.branch.indices.push(a, b, centre);
+      if (outward > 0) data.indices.push(a, centre, b);
+      else data.indices.push(a, b, centre);
     }
   }
 
@@ -513,6 +544,7 @@ export class Tree extends THREE.Group {
 
   dispose() {
     this.branchesMesh.geometry.dispose();
+    for (const geometry of this.branchLodGeometries) geometry.dispose();
     this.leavesMesh.geometry.dispose();
     this.leavesShadowMesh.geometry.dispose();
     this.branchMat.dispose();

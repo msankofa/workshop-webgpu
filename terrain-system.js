@@ -142,6 +142,7 @@ class TerrainSystem {
     this.source = resolveSource(options.source);   // null => hard-coded terrain-field.js (Environment Viewer compat)
     this.lastSourceError = null;
     this.installMsPending = 0;      // out-of-frame worker install cost, drained by takeInstallCost()
+    this.installCostOut = { ms: 0, count: 0 };   // reused by takeInstallCost(); see there
     this.installCountPending = 0;
     this.group = new THREE.Group();
     this.group.name = 'TerrainChunks';
@@ -169,9 +170,11 @@ class TerrainSystem {
     this.centerChunkZ = null;
     this.targetKeys = new Set();
     this.activeChunkCache = [];
+    this.activeChunkCacheDirty = true;
+    this.activeChunkRefreshes = 0;   // observable, so "the loop does not rebuild this" is testable
     this.buildQueue = [];
     this.buildQueueIndex = 0;
-    this.chunkingSig = null;
+    this.sigChunkSize = null; this.sigRenderRadius = null;
 
     // Async (worker) build state.
     this.worker = null;
@@ -229,10 +232,10 @@ class TerrainSystem {
     return { kind: d.kind, key: d.key, version: d.sourceVersion, algorithmVersion: d.algorithmVersion, lod: this.params.lod | 0, bounds: d.bounds };
   }
 
-  // Swap the source. Bumps the epoch so in-flight results are dropped, but keeps
-  // every complete chunk (marked stale) until its same-key replacement is ready,
-  // so the ground never has a hole during the swap. Rebuilds run under the
-  // existing per-update budget.
+  // Swap the source. Bumps the epoch so in-flight results are dropped, and restreams: the resident
+  // chunks are the wrong ground, so they leave at once and the far LOD shows the new world while
+  // rebuilds run under the existing per-update budget. `restream({ drop: false })` is the older
+  // keep-until-replaced behaviour, and nothing calls it.
   setSource(source) {
     this.source = resolveSource(source);
     this.restream();
@@ -274,7 +277,7 @@ class TerrainSystem {
       this.chunks.clear();
       this.targetKeys.clear();
       this.workerChanged = true;
-      this.refreshActiveChunkCache();
+      this.activeChunkCacheDirty = true;
     } else {
       for (const chunk of this.chunks.values()) chunk.stale = true;
     }
@@ -303,7 +306,11 @@ class TerrainSystem {
     return Math.max(0, this.buildQueue.length - this.buildQueueIndex) + this.inFlight.size;
   }
 
+  // Lazy: rebuilding this eagerly cost one array of N objects per chunk arrival AND once more per
+  // update, for a getter most hosts never read (Base Game reads it only for the tile-bounds debug
+  // view). Marked dirty instead, built on the read that wants it.
   get activeChunks() {
+    if (this.activeChunkCacheDirty) this.refreshActiveChunkCache();
     return this.activeChunkCache;
   }
 
@@ -327,6 +334,7 @@ class TerrainSystem {
     this.centerChunkZ = null;
     this.targetKeys.clear();
     this.activeChunkCache = [];
+    this.activeChunkCacheDirty = true;
     this.buildQueue = [];
     this.buildQueueIndex = 0;
     this.update(this.centerX, this.centerZ);
@@ -346,13 +354,13 @@ class TerrainSystem {
     // Recompute when the center chunk moves, when nothing is loaded yet, or when a
     // chunking-relevant param changed at runtime (renderRadius/chunkSize)
     // without the center moving — otherwise such changes would be silently ignored.
-    const chunkingSig = `${chunkSize}|${this.params.renderRadius}`;
-    const sigChanged = chunkingSig !== this.chunkingSig;
+    // Numbers, not a joined string: this runs every frame and a template literal allocates.
+    const sigChanged = chunkSize !== this.sigChunkSize || this.params.renderRadius !== this.sigRenderRadius;
 
     if (centerChunkX !== this.centerChunkX || centerChunkZ !== this.centerChunkZ || this.targetKeys.size === 0 || sigChanged) {
       this.centerChunkX = centerChunkX;
       this.centerChunkZ = centerChunkZ;
-      this.chunkingSig = chunkingSig;
+      this.sigChunkSize = chunkSize; this.sigRenderRadius = this.params.renderRadius;
       this.targetKeys = this.getTargetKeys(centerChunkX, centerChunkZ, radius);
       if (this.renderMode === 'instanced') this.updateInstancedTerrain();
       this.buildQueue = this.getMissingKeysSorted(centerX, centerZ);
@@ -395,9 +403,13 @@ class TerrainSystem {
       this.buildQueueIndex = 0;
       const maxUnloads = Math.max(1, Math.floor(this.params.maxUnloadsPerUpdate));
       let unloads = 0;
-      for (const [key, chunk] of this.chunks) {
+      // Keys, not entries: this walks every resident chunk every quiet frame, and iterating a
+      // Map's entries allocates a [key, value] pair per chunk.
+      for (const key of this.chunks.keys()) {
         if (this.targetKeys.has(key)) continue;
+        const chunk = this.chunks.get(key);
         this.disposeChunk(chunk);
+        if (this.primaryMesh === chunk.mesh) this.primaryMesh = null;
         this.chunks.delete(key);
         changed = true;
         unloads++;
@@ -405,14 +417,18 @@ class TerrainSystem {
       }
     }
 
-    const first = this.chunks.values().next().value || null;
-    this.primaryMesh = first && first.mesh ? first.mesh : null;
+    // installChunk/addChunk maintain this as chunks arrive, so a quiet frame has nothing to
+    // re-pick and the Map iterator it used to allocate is skipped.
+    if (changed || !this.primaryMesh) {
+      const first = this.chunks.values().next().value || null;
+      this.primaryMesh = first && first.mesh ? first.mesh : null;
+    }
 
     // Fold in chunks that the worker finished between frames, so the host (which
     // keys decoration/octree rebuilds off update()'s return) reacts to them.
     const result = changed || this.workerChanged;
     this.workerChanged = false;
-    if (result) this.refreshActiveChunkCache();
+    if (result) this.activeChunkCacheDirty = true;
     return result;
   }
 
@@ -475,12 +491,14 @@ class TerrainSystem {
     }
   }
 
-  // Drains the out-of-frame install cost since the last call.
+  // Drains the out-of-frame install cost since the last call. The result object is reused: this is
+  // read once per system per frame, so a fresh literal is per-frame garbage. Read it, do not hold it.
   takeInstallCost() {
-    const ms = this.installMsPending, n = this.installCountPending;
+    this.installCostOut.ms = this.installMsPending;
+    this.installCostOut.count = this.installCountPending;
     this.installMsPending = 0;
     this.installCountPending = 0;
-    return { ms, count: n };
+    return this.installCostOut;
   }
 
   onWorkerChunkInner(data) {
@@ -506,7 +524,7 @@ class TerrainSystem {
       : this.chunkFromArrays(data.key, ix * chunkSize, iz * chunkSize, chunkSize, data);
     this.installChunk(chunk);
     this.workerChanged = true;
-    this.refreshActiveChunkCache();
+    this.activeChunkCacheDirty = true;
   }
 
   getTargetKeys(centerChunkX, centerChunkZ, radius) {
@@ -753,6 +771,8 @@ class TerrainSystem {
   }
 
   refreshActiveChunkCache() {
+    this.activeChunkCacheDirty = false;
+    this.activeChunkRefreshes++;
     this.activeChunkCache = [...this.chunks.values()].filter((chunk) => this.targetKeys.has(chunk.key)).map((chunk) => {
       const data = chunk.meta;
       return {

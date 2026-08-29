@@ -9,6 +9,8 @@ sound files to game events. No build step; everything is plain ES modules served
 |---|---|
 | `environment-audio.js` | The runtime controller. Owns its own Web Audio graph (master→sfx gain, HRTF panners), music playback with effects, settings persistence, and the SFX/music folder loaders. Created once in `environment-viewer.html` as `envAudio`. |
 | `sound-events.js` | The single source of truth for event ids. `SOUND_EVENT_DEFS` = `[{id,label}]`; `SOUND_EVENTS` = id array; `soundEventById()`. Both the controller and `sfx-browser.html` import this so their event lists can never drift. |
+| `bbc-sfx-api.js` | Client for the BBC Sound Effects archive: query building, response normalization, client-side duration/channel filtering, media URLs and download naming. Pure except `searchBbcSfx`, whose `fetch` is injected. Node-tested in `test-bbc-sfx-api.mjs` (`--live` adds one real call). |
+| `sound-environments.js` | The ambience registry — looping `ambience` beds and positional `location` emitters, each holding up to `MAX_ENVIRONMENT_LAYERS` layers. Same single-source-of-truth contract as `sound-events.js`. Nothing plays these yet. |
 | `sfx-browser.html` | Standalone assignment tool. Browses a folder of audio files (`.wav`/`.mp3`/`.ogg`/`.m4a`/`.aac`/`.flac`/`.opus`/`.webm`) and binds them to event ids, writing `assets/<eventId><ext>` (source extension preserved) + `sound-map.json`. Imports `SOUND_EVENT_DEFS` (module script — serve over http). |
 | `sfx/` | The canonical in-repo sound library both tools point at. See `sfx/README.md`. |
 | `asset-paths.js` | `getFileByKey(dirHandle, relPath)`, `extensionOf()` — path helpers over File System Access handles. |
@@ -163,6 +165,33 @@ change (`lastPlaylistKey`), so the active-row highlight (`state.currentTrackPath
   instead of a directory handle, so it needs no picker and no permission. This is what
   `bot-viewer-v2.html` selects at startup; the environment viewer's Audio tab does not expose it
   yet (its Music source control still offers Game/Folder only).
+
+## Pulling sounds from the BBC archive
+
+`sfx-browser.html`'s **BBC SOUNDS** tab searches the BBC Sound Effects archive in-page. Both the
+search API and the media CDN send `Access-Control-Allow-Origin: *`, so there is no `serve.py` proxy
+and no API key. Playing streams from the CDN; DOWNLOAD writes into `sfx/bbc/` and registers the
+handle so the file behaves like any other library sound with no reload.
+
+Two things about the API worth knowing before touching `bbc-sfx-api.js`:
+
+- Its `criteria` object must be sent **whole** — a partial one is rejected — which is why
+  `buildSearchBody()` always emits every key.
+- It accepts a `durations` criterion and then **ignores** it (`["0-5"]` returns the same 2,061 wind
+  results as no filter), so length and channel narrowing happen client-side in `filterResults()`.
+
+The archive is RemArc-licensed: personal, educational and research use, not general commercial use.
+
+## Ambience slots (`sound-environments.js`)
+
+A second registry beside `sound-events.js`, for looping background sound rather than one-shots. Each slot is an
+`ambience` (chosen by world condition) or a `location` (positional emitter) and holds up to four
+layers, each `{path, source, gain, loop}`. `sfx-browser.html` writes them into a new `environments`
+key in `sound-map.json`; `normalizeEnvironmentMap()` drops unknown ids and malformed layers on the
+way back in. The key is additive — `environment-audio.js` reads only `events` and ignores it.
+
+**No runtime consumes these yet.** The editor and the data format exist; picking a bed from time of
+day, terrain and weather and crossfading it is the next job.
 
 ## Wiring in `base-game.html`
 

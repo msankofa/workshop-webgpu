@@ -110,7 +110,12 @@ export function createChunkMeshWorldQueryProvider({
         _box.min.addScalar(-capsule.radius - 0.5); _box.max.addScalar(capsule.radius + 0.5);
         if (!_box.intersectsBox(entry.box)) continue;
         scratchContacts.length = 0;
-        const r = entry.collider.resolveCapsule(capsule, velocity, { slopeLimitY: query.slopeLimitCos, iterations: query.iterations, contacts: scratchContacts });
+        const r = entry.collider.resolveCapsule(capsule, velocity, {
+          slopeLimitY: query.slopeLimitCos,
+          iterations: query.iterations,
+          contacts: scratchContacts,
+          walkableVerticalResolution: query.walkableVerticalResolution === true,
+        });
         grounded = grounded || r.grounded;
         ceiling = ceiling || r.ceiling;
         for (const c of scratchContacts) contacts.push({ ...c, colliderId: key, surfaceType: 'terrain' });

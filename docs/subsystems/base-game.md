@@ -82,6 +82,8 @@ or server room logic.
 ## Frame order
 
 1. Reject a reentrant frame with `frameProfiler.markDropped()`.
+1b. Hold the frame if the **frame cap** says it is early — see below. The order matters: the
+   busy check comes first, so a frame held by the cap is never counted as a dropped one.
 2. In Player mode, sample input, hand it to the session (online) and run bounded 120 Hz fixed
    simulation steps through the prediction wrapper (online) or the controller directly (Solo), then
    interpolate the global player position; when paused or in Orbit debug mode, send neutral input
@@ -282,6 +284,33 @@ continue calling `flushDisposals()` after render from inside its serialized fram
 The bottom-left HUD reports FPS, worst frame in the current sampling window, draw calls, triangles,
 dropped/reentrant frames, and current Solo/room/connection status. Renderer counters are copied
 immediately after render so later async work cannot expose counters from a different frame.
+
+## The frame cap
+
+`frameCap` is `unlimited`, `60`, `45` or `30`, at the top of the Performance Capture section because
+it changes the numbers that section records — and it is recorded with them, in `settingsAtStart`.
+It is local: nothing about how fast one player draws belongs on the wire.
+
+The animation loop still fires at the display's rate. A held frame returns before any work, so the
+cap costs one comparison, and the next frame that does run simply gets a longer `dt` — which the
+fixed-step simulation absorbs without a change, and which `Math.min(0.1, …)` was already bounding.
+
+Three details are the whole implementation, and each is a way a naive cap goes wrong:
+
+- **The deadline is an absolute grid**, `next += period`, not "now plus a period". The latter adds
+  each frame's own arrival lateness to the following gap, so a cap settles a little under the rate
+  it names and keeps sliding.
+- **Half a display frame of slack.** A vsync arrives a fraction of a millisecond early as often as
+  not; holding it means waiting a whole refresh for the next one, and a 60 cap on a 60 Hz screen
+  runs at 30. The display's own rate is tracked as an EMA of the gap between loop calls, and the
+  slack is half of it or half the cap period, whichever is smaller.
+- **Only a plausible gap feeds that average.** Samples over 100 ms are a tab switch, a shader
+  compile or a breakpoint, not a refresh rate. Left in, one of them drags the average into the
+  seconds and the cap is effectively off for as long as the average takes to decay.
+
+A stall resyncs rather than firing every missed frame back to back. Coverage is
+`test-base-game-frame-cap.mjs` (17 checks), which extracts the function from the page and drives it
+against simulated 60/45/144 Hz displays with jitter.
 
 ## Performance captures
 
@@ -1393,7 +1422,7 @@ empties the hands. With empty hands and stock left, R runs the reload action for
 player state carries `gadgets` and `gadgetReady`; remotes play both motions from `action` and
 `actionTick` against their replicated `tick`; the local body plays them from the key edge so the
 arms move on the press. Solo runs the same timers in `stepGadgetHands`/`stepSoloDrones`. The UAV
-flies as the plane but draws as the `recon` model at its authored size, with the chase distance sized to it.
+flies as the plane but draws as the `recon` model at its authored size (2.01 m span), and the chase distance is **measured in wingspans off the drawn mesh**, not hand-authored: `CHASE[kind].spans` × the mesh's own bounding box, with the sim's `up = 0.26` and `ahead = 1.6` fractions of that distance. The UAV's 2.26 spans is the sim's own plane framing (`chaseDist` 26 m / 11.5 m span), so the wing fills the same share of the screen the sim's plane does. A hand-authored distance went stale the moment the UAV's `meshScale` changed and put the camera 43% too far back; measuring the mesh is what stops that recurring.
 
 **Proof the physics are the sim's** (`test-base-game-drones.mjs`, "bit for bit"): the sim's own
 `makeFlyer('plane')` and the base-game drone under the stick, fed one identical 60 s script (pull,
@@ -1457,7 +1486,8 @@ that too, which is why a room lagged with only a handful of bots. The brain was 
 was 12 ms or more, or a gap between wake-ups passed 50 ms; set `BASE_GAME_PROF=1` to print it
 every second while NPCs exist. That line is what to paste when a session feels laggy: a long
 `clients` phase is the controller/world cost, a long `think` is the brain or a bake, a long gap
-is something else on the event loop.
+is something else on the event loop. The audit of this work, with the open items (`npcAccuracy`
+unwired, Solo bots, rig cost unmeasured), is `docs/superpowers/reviews/2026-08-28-base-game-npc-bots-audit.md`.
 
 **Protocol 14.** Player entries carry `team` (players 1, enemy NPCs 2), `npc`, `appearance`
 (`{ skin, hair, expression }`, names from `bot-face.js`'s tables). Shared keys `npcRespawn`,

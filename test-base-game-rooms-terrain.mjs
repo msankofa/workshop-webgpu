@@ -257,9 +257,17 @@ console.log('\n[7] volumetric room: server builds chunk collision around players
   }
   const sp = client.controller.getPosition(), cp = predicted.getPosition();
   const dist = Math.hypot(sp[0] - cp[0], sp[1] - cp[1], sp[2] - cp[2]);
+  const supportHit = sim.worldQuery.raycast({ origin: [sp[0], sp[1] + 2, sp[2]], direction: [0, -1, 0], maxDistance: 5 });
+  const supportDegrees = supportHit ? Math.acos(Math.max(-1, Math.min(1, supportHit.normal[1]))) * 180 / Math.PI : Infinity;
+  const supportWalkable = supportDegrees <= client.controller.config.slopeLimitDegrees + 1e-6;
+  const supportOffset = supportHit && supportHit.normal[1] > 0
+    ? client.controller.config.radius * (1 / supportHit.normal[1] - 1)
+    : 0;
+  const supportGap = supportHit ? sp[1] - supportHit.point[1] : Infinity;
   ok(client.lastConsumedTick === 720, `server consumed all ${client.lastConsumedTick} ticks`);
   ok(sp[0] > 30, `travelled ${sp[0].toFixed(1)} m across a chunk seam on the volume`);
-  ok(client.controller.grounded && Math.abs(sp[1] - src.surfaceYAt(sp[0], sp[2])) < 3, `server player stands on the volume (grounded ${client.controller.grounded}, y ${sp[1].toFixed(2)} vs surface ${src.surfaceYAt(sp[0], sp[2]).toFixed(2)})`);
+  ok(!!supportHit && Math.abs(supportGap - supportOffset) < 0.5 && (client.controller.grounded || !supportWalkable),
+    `server player remains on 3D volume support (grounded ${client.controller.grounded}, support ${supportDegrees.toFixed(1)} deg, gap ${supportGap.toFixed(2)} m)`);
   ok(dist < 1e-6, `server and predicted client agree to ${dist.toExponential(2)} m`);
   ok(sim.volume.chunkCount <= 49, `collision footprint stays bounded (${sim.volume.chunkCount} chunks, ${sim.volume.stats.buildMsTotal.toFixed(0)} ms of builds)`);
   const deep = sim.killPlaneYAt(sp[0], sp[2]);

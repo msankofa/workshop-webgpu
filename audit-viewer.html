@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Audit viewer</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1b212c; --line: #262d38; --text: #c9d3df;
+    --muted: #7d8b9c; --accent: #4fc3f7; --warn: #ffb74d; --bad: #ff6b6b; --good: #6bcf8f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.5 ui-monospace, Consolas, monospace; }
+  #app { display: grid; grid-template-columns: 380px 1fr; grid-template-rows: auto 1fr; height: 100%; }
+  header { grid-column: 1 / -1; padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 15px; margin: 0 0 8px; color: #fff; }
+  h1 .sub { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .rollup { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--panel2); font-size: 11px; white-space: nowrap; }
+  .pill b { color: #fff; }
+  .pill.sev-high, .badge.sev-high { border-color: var(--bad); color: var(--bad); }
+  .pill.sev-medium, .badge.sev-medium { border-color: var(--warn); color: var(--warn); }
+  .pill.sev-low, .badge.sev-low { border-color: var(--accent); color: var(--accent); }
+  .pill.sev-info, .badge.sev-info { border-color: var(--muted); color: var(--muted); }
+  .pill.status-fixed, .badge.status-fixed { border-color: var(--good); color: var(--good); }
+  .pill.status-open, .badge.status-open { border-color: var(--bad); color: var(--bad); }
+  .pill.status-deferred, .badge.status-deferred { border-color: var(--warn); color: var(--warn); }
+  .pill.status-unverified, .badge.status-unverified { border-color: var(--muted); color: var(--muted); }
+  #incomplete { margin-top: 8px; padding: 7px 10px; border: 1px solid var(--warn); border-radius: 6px;
+    background: #3a2a12; color: var(--warn); font-size: 12px; display: none; }
+  #incomplete.show { display: block; }
+  #incomplete b { color: #fff; }
+  aside { border-right: 1px solid var(--line); background: var(--panel); overflow-y: auto;
+    display: flex; flex-direction: column; }
+  #filters { padding: 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+  #filters input[type=search] { width: 100%; background: #0d1117; color: var(--text); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 8px; font: inherit; }
+  .filterrow { display: flex; flex-direction: column; gap: 3px; }
+  .filterrow label { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .filterrow select { background: #0d1117; color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+    padding: 4px 6px; font: inherit; }
+  #resultCount { font-size: 11px; color: var(--muted); padding: 6px 10px; }
+  #list { flex: 1; overflow-y: auto; }
+  .row { padding: 8px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .row:hover { background: var(--panel2); }
+  .row.sel { background: #23405a; }
+  .row .rid { color: var(--muted); font-size: 11px; }
+  .row .rtitle { color: #fff; font-size: 12px; margin: 2px 0 5px; }
+  .row .rbadges { display: flex; gap: 5px; flex-wrap: wrap; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--line);
+    font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+  main { overflow-y: auto; padding: 20px 26px; }
+  .empty { color: var(--muted); padding: 30px; text-align: center; }
+  #prose h2, #prose h1 { color: #fff; font-size: 14px; margin: 20px 0 8px; }
+  #prose h1:first-child { margin-top: 0; }
+  #prose p { margin: 0 0 10px; color: var(--text); }
+  #prose ul { margin: 0 0 10px; padding-left: 20px; }
+  #prose table { border-collapse: collapse; margin: 0 0 14px; font-size: 12px; }
+  #prose th, #prose td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; }
+  #prose th { background: var(--panel2); color: #fff; }
+  code { background: #0d1117; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--accent); }
+  .findhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+  .findhead h2 { color: #fff; font-size: 17px; margin: 0; }
+  .findhead .rid { color: var(--muted); }
+  .metarow { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 18px; }
+  .sec { margin: 0 0 18px; }
+  .sec h3 { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--accent);
+    margin: 0 0 6px; }
+  .sec p { margin: 0 0 8px; }
+  .loc { border: 1px solid var(--line); border-radius: 5px; padding: 7px 10px; margin-bottom: 6px;
+    background: var(--panel2); }
+  .loc .path { color: #fff; }
+  .loc .role { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 10px; font-size: 12px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-word; }
+  .yn-true { color: var(--good); }
+  .yn-false { color: var(--bad); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1 id="docTitle">Audit viewer <span class="sub" id="docSub"></span></h1>
+    <div class="rollup" id="rollup"></div>
+    <div id="incomplete"></div>
+  </header>
+  <aside>
+    <div id="filters">
+      <input type="search" id="q" placeholder="Search title and body…">
+      <div class="filterrow"><label for="f-severity">Severity</label><select id="f-severity"><option value="">All</option></select></div>
+      <div class="filterrow"><label for="f-status">Status</label><select id="f-status"><option value="">All</option></select></div>
+      <div class="filterrow"><label for="f-kind">Kind</label><select id="f-kind"><option value="">All</option></select></div>
+      <div class="filterrow"><label for="f-introduced_by">Introduced by</label><select id="f-introduced_by"><option value="">All</option></select></div>
+      <div class="filterrow"><label for="f-runs">Runs</label><select id="f-runs"><option value="">All</option></select></div>
+    </div>
+    <div id="resultCount"></div>
+    <div id="list"></div>
+  </aside>
+  <main id="main">
+    <div id="prose"></div>
+    <div id="finding" style="display:none"></div>
+    <div class="empty" id="empty" style="display:none">No findings match the current filters.</div>
+  </main>
+</div>
+<script type="module">
+import { parseAuditDoc } from './audit-doc.js';
+
+const DEFAULT_DOC = 'docs/superpowers/reviews/2026-08-28-base-game-trees-audit.md';
+const FILTER_FIELDS = ['severity', 'status', 'kind', 'introduced_by', 'runs'];
+
+const params = new URLSearchParams(location.search);
+const docPath = params.get('doc') || DEFAULT_DOC;
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function inlineMd(s) {
+  return escapeHtml(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+function renderTable(lines) {
+  const rows = lines.filter(l => !/^\|[\s:|-]+\|$/.test(l)).map(l => l.split('|').slice(1, -1).map(c => c.trim()));
+  if (!rows.length) return '';
+  const [head, ...body] = rows;
+  const th = head.map(h => `<th>${inlineMd(h)}</th>`).join('');
+  const tr = body.map(r => `<tr>${r.map(c => `<td>${inlineMd(c)}</td>`).join('')}</tr>`).join('');
+  return `<table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>`;
+}
+function renderBlock(text) {
+  const normalized = String(text ?? '').replace(/\r\n/g, '\n');
+  return normalized.split(/\n\s*\n/).filter(b => b.trim()).map(block => {
+    const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length && lines.every(l => l.startsWith('|'))) return renderTable(lines);
+    if (lines.length && lines.every(l => /^[-*]\s+/.test(l))) {
+      return '<ul>' + lines.map(l => `<li>${inlineMd(l.replace(/^[-*]\s+/, ''))}</li>`).join('') + '</ul>';
+    }
+    return `<p>${inlineMd(block.trim()).replace(/\n/g, ' ')}</p>`;
+  }).join('');
+}
+
+function fieldOptions(findings, field) {
+  return Array.from(new Set(findings.map(f => f[field]).filter(v => v !== undefined && v !== null && v !== ''))).sort();
+}
+
+function matchesFilters(f, active, q) {
+  for (const field of FILTER_FIELDS) {
+    if (active[field] && f[field] !== active[field]) return false;
+  }
+  if (q) {
+    const haystack = [f.id, f.title, f.cause, f.effect, f.solution, f.result].filter(Boolean).join(' ').toLowerCase();
+    if (!haystack.includes(q)) return false;
+  }
+  return true;
+}
+
+function syncUrl(active, q) {
+  const p = new URLSearchParams();
+  if (params.get('doc')) p.set('doc', docPath);
+  for (const field of FILTER_FIELDS) if (active[field]) p.set(field, active[field]);
+  if (q) p.set('q', q);
+  const search = p.toString();
+  const url = location.pathname + (search ? '?' + search : '') + location.hash;
+  history.replaceState(null, '', url);
+}
+
+function renderRollup(meta, findings) {
+  const total = meta.findings ?? findings.length;
+  const sevCounts = meta.severity_counts || tally(findings, 'severity');
+  const statusCounts = meta.status_counts || tally(findings, 'status');
+  const pills = [`<span class="pill"><b>${total}</b> findings</span>`];
+  for (const [k, v] of Object.entries(sevCounts)) pills.push(`<span class="pill sev-${k}">${k}: <b>${v}</b></span>`);
+  for (const [k, v] of Object.entries(statusCounts)) pills.push(`<span class="pill status-${k}">${k}: <b>${v}</b></span>`);
+  document.getElementById('rollup').innerHTML = pills.join('');
+
+  const incomplete = document.getElementById('incomplete');
+  const notRun = meta.steps_not_run, partial = meta.steps_partial;
+  const bits = [];
+  if (Array.isArray(notRun) && notRun.length) bits.push(`Step${notRun.length > 1 ? 's' : ''} <b>${notRun.join(', ')}</b> not run`);
+  if (Array.isArray(partial) && partial.length) bits.push(`step${partial.length > 1 ? 's' : ''} <b>${partial.join(', ')}</b> partial`);
+  if (bits.length) {
+    incomplete.innerHTML = 'This audit is incomplete — ' + bits.join('; ') + '.';
+    incomplete.classList.add('show');
+  }
+}
+function tally(findings, field) {
+  const t = {};
+  for (const f of findings) if (f[field]) t[f[field]] = (t[f[field]] || 0) + 1;
+  return t;
+}
+
+function renderProse(prose) {
+  const el = document.getElementById('prose');
+  el.innerHTML = prose.map(sec => {
+    const tag = sec.level === 1 ? 'h1' : sec.level === 2 ? 'h2' : null;
+    const heading = tag && sec.heading ? `<${tag}>${escapeHtml(sec.heading)}</${tag}>` : '';
+    return heading + renderBlock(sec.text);
+  }).join('');
+}
+
+function locHtml(loc) {
+  const parts = [escapeHtml(loc.file || '?')];
+  if (loc.line !== undefined) parts.push(':' + escapeHtml(String(loc.line)));
+  const symbol = loc.symbol ? ` — <code>${escapeHtml(String(loc.symbol))}</code>` : '';
+  const role = loc.role ? `<div class="role">${escapeHtml(String(loc.role))}</div>` : '';
+  return `<div class="loc"><div class="path">${parts.join('')}${symbol}</div>${role}</div>`;
+}
+
+const KNOWN_FIELDS = new Set(['id', 'title', 'severity', 'status', 'kind', 'introduced_by', 'runs',
+  'locations', 'verified_by', 'mutation_tested', 'measured', 'cause', 'effect', 'solution', 'result']);
+
+function extraFieldsHtml(f) {
+  const extras = Object.keys(f).filter(k => !KNOWN_FIELDS.has(k));
+  if (!extras.length) return '';
+  const rows = extras.map(k => {
+    const v = f[k];
+    const shown = Array.isArray(v) ? v.join(', ') : typeof v === 'object' && v !== null
+      ? Object.entries(v).map(([kk, vv]) => `${kk}: ${vv}`).join('; ') : String(v);
+    return `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(shown)}</dd>`;
+  }).join('');
+  return `<div class="sec"><h3>Other fields</h3><dl class="kv">${rows}</dl></div>`;
+}
+
+function renderFinding(f) {
+  document.getElementById('prose').style.display = 'none';
+  const el = document.getElementById('finding');
+  el.style.display = '';
+  const badges = ['severity', 'status', 'kind', 'introduced_by', 'runs']
+    .filter(k => f[k] !== undefined)
+    .map(k => `<span class="badge ${k === 'severity' || k === 'status' ? k + '-' + f[k] : ''}">${escapeHtml(String(f[k]))}</span>`)
+    .join('');
+
+  const locations = (f.locations || []).map(locHtml).join('') || '<div class="empty" style="padding:6px 0">No locations recorded.</div>';
+
+  const measured = f.measured && typeof f.measured === 'object'
+    ? '<dl class="kv">' + Object.entries(f.measured).map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v))}</dd>`).join('') + '</dl>'
+    : '<div class="empty" style="padding:6px 0">Not measured.</div>';
+
+  const mt = f.mutation_tested;
+  const mtHtml = mt === undefined ? '—' : `<span class="yn-${mt}">${mt ? 'yes' : 'no'}</span>`;
+
+  el.innerHTML = `
+    <div class="findhead"><span class="rid">${escapeHtml(f.id || '')}</span><h2>${escapeHtml(f.title || '(untitled)')}</h2></div>
+    <div class="metarow">${badges}</div>
+    <div class="sec"><h3>Cause</h3>${renderBlock(f.cause) || '<p class="empty">—</p>'}</div>
+    <div class="sec"><h3>Effect</h3>${renderBlock(f.effect) || '<p class="empty">—</p>'}</div>
+    <div class="sec"><h3>Solution</h3>${renderBlock(f.solution) || '<p class="empty">—</p>'}</div>
+    <div class="sec"><h3>Result</h3>${renderBlock(f.result) || '<p class="empty">—</p>'}</div>
+    <div class="sec"><h3>Locations</h3>${locations}</div>
+    <div class="sec"><h3>Measured</h3>${measured}</div>
+    <div class="sec"><h3>Verification</h3><dl class="kv">
+      <dt>verified_by</dt><dd>${escapeHtml(f.verified_by || '—')}</dd>
+      <dt>mutation_tested</dt><dd>${mtHtml}</dd>
+    </dl></div>
+    ${extraFieldsHtml(f)}
+  `;
+}
+
+function showProse() {
+  document.getElementById('finding').style.display = 'none';
+  document.getElementById('prose').style.display = '';
+}
+
+async function main() {
+  document.getElementById('docSub').textContent = docPath;
+  let text;
+  try {
+    const res = await fetch(docPath);
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    text = await res.text();
+  } catch (err) {
+    document.getElementById('rollup').innerHTML = `<span class="pill" style="border-color:var(--bad);color:var(--bad)">Failed to load ${escapeHtml(docPath)}: ${escapeHtml(err.message)}</span>`;
+    return;
+  }
+
+  const { meta, findings, prose } = parseAuditDoc(text);
+  if (meta.title) document.getElementById('docTitle').innerHTML = `${escapeHtml(meta.title)} <span class="sub">${escapeHtml(docPath)}</span>`;
+
+  renderRollup(meta, findings);
+  renderProse(prose);
+
+  for (const field of FILTER_FIELDS) {
+    const sel = document.getElementById('f-' + field);
+    for (const v of fieldOptions(findings, field)) {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = v;
+      sel.appendChild(opt);
+    }
+    if (params.get(field)) sel.value = params.get(field);
+  }
+  const qInput = document.getElementById('q');
+  qInput.value = params.get('q') || '';
+
+  let selectedId = (location.hash || '').replace(/^#/, '') || null;
+
+  function activeFilters() {
+    const active = {};
+    for (const field of FILTER_FIELDS) {
+      const v = document.getElementById('f-' + field).value;
+      if (v) active[field] = v;
+    }
+    return active;
+  }
+
+  function renderList() {
+    const active = activeFilters();
+    const q = qInput.value.trim().toLowerCase();
+    syncUrl(active, q);
+    const filtered = findings.filter(f => matchesFilters(f, active, q));
+    document.getElementById('resultCount').textContent = `${filtered.length} of ${findings.length} findings`;
+    const list = document.getElementById('list');
+    document.getElementById('empty').style.display = filtered.length ? 'none' : '';
+    list.innerHTML = filtered.map(f => `
+      <div class="row${f.id === selectedId ? ' sel' : ''}" data-id="${escapeHtml(f.id)}">
+        <div class="rid">${escapeHtml(f.id)}</div>
+        <div class="rtitle">${escapeHtml(f.title || '(untitled)')}</div>
+        <div class="rbadges">
+          <span class="badge sev-${f.severity}">${escapeHtml(f.severity || '?')}</span>
+          <span class="badge status-${f.status}">${escapeHtml(f.status || '?')}</span>
+        </div>
+      </div>`).join('');
+    for (const row of list.querySelectorAll('.row')) {
+      row.addEventListener('click', () => selectFinding(row.dataset.id));
+    }
+  }
+
+  function selectFinding(id) {
+    selectedId = id;
+    location.hash = id;
+    const f = findings.find(x => x.id === id);
+    if (f) renderFinding(f); else showProse();
+    for (const row of document.querySelectorAll('.row')) row.classList.toggle('sel', row.dataset.id === id);
+  }
+
+  for (const field of FILTER_FIELDS) document.getElementById('f-' + field).addEventListener('change', renderList);
+  qInput.addEventListener('input', renderList);
+  window.addEventListener('hashchange', () => {
+    const id = (location.hash || '').replace(/^#/, '');
+    if (id) selectFinding(id); else { selectedId = null; showProse(); renderList(); }
+  });
+
+  renderList();
+  if (selectedId) selectFinding(selectedId); else showProse();
+}
+
+main();
+</script>
+</body>
+</html>

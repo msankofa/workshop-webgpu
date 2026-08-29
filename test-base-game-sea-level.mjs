@@ -10,6 +10,7 @@ import { normalizeProject, migrateProjectToUnbounded, PROJECT_APP } from './terr
 import { sanitizeBaseGameTerrainConfig, sanitizeBaseGameWorldPatch, waveOptionsFromWorld, BASE_GAME_SHARED_KEYS } from './base-game-protocol.mjs';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
+import { BIOME_INDEX } from './terrain-biome-point.js';
 import { createBaseGameTerrain } from './base-game-terrain.js';
 import { createBaseGameRoomService } from './server/base-game-rooms.js';
 import { createSource } from './terrain-source.js';
@@ -71,6 +72,18 @@ console.log('\n[3] terrain facade: sea level, tint bands, spawn, live change');
   terrain.setSource(v5Descriptor(project(12)));
   ok(terrain.seaLevel === 12, 'a source swap takes the new sea level');
   ok(terrain.seaDepth.coverage === 0, 'the sea-depth map restarts on a swap');
+  // Observing the cost, not a value that correlates with it: plains at 6 m grow grass under the old
+  // waterline and drown under the new one, so this fails if the swap leaves the old sea level behind.
+  {
+    const plains = BIOME_INDEX.plains;
+    const derive = height => {
+      const texels = 4, n = texels * texels;
+      const tile = { heights: new Float32Array(n).fill(height), biomeIds: new Uint8Array(n).fill(plains), moisture: new Float32Array(n).fill(0.6), texels, step: 8 };
+      terrain.tileCover.derive(tile);
+      return tile.coverGrass[0];
+    };
+    ok(derive(20) > 0 && derive(6) === 0, `a source swap moves the waterline cover is derived against (dry ${derive(20)}, drowned ${derive(6)})`);
+  }
   terrain.dispose();
 }
 

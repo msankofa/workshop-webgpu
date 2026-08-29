@@ -103,6 +103,20 @@ console.log('\n[4] turning the sea off is a shared decision');
   ok(room.water.enabled === true, 'and fill it again');
 }
 
+console.log('\n[5] player physics controls are authoritative room rules');
+{
+  service.handle(ws, { type: 'base:set_world', protocol: P, patch: { playerGroundDeceleration: 73, playerSlopeSlideDeceleration: 19 } });
+  const client = room.clients.values().next().value;
+  ok(client.controller.config.groundDeceleration === 73 && client.controller.config.slopeSlideDeceleration === 19,
+    'owner physics patch configures the server controller');
+  const snapshot = ws.last('base:snapshot');
+  ok(snapshot.world.playerGroundDeceleration === 73 && snapshot.world.playerSlopeSlideDeceleration === 19,
+    'the authoritative values return in snapshots for client prediction');
+  const sanitized = sanitizeBaseGameWorldPatch({ playerGroundDeceleration: 1e6, playerSlopeSlideDeceleration: -4 });
+  ok(sanitized.playerGroundDeceleration === 100 && sanitized.playerSlopeSlideDeceleration === 0,
+    'player physics controls use the same bounds as the in-game sliders');
+}
+
 service.dispose?.();
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);
 process.exit(failures === 0 ? 0 : 1);

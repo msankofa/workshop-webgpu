@@ -51,44 +51,87 @@ function leafOptsFor(sp, params, texSet, spIdx) {
 // params + master seed the placement uses (so species match placementRecords). texSet:
 // the active texture set (or null) — drives leaf shape (quad vs simple) and bark vScale,
 // so the palette must be rebaked when texMode changes.
-export function createForestPalette({ createTree, params, masterSeed, variantsPerSpecies = 4, texSet = null }) {
+function createPaletteState({ createTree, params, masterSeed, variantsPerSpecies = 4, texSet = null }) {
   const gen = createTree({ seed: 1 });
   // An authored species table (from buildSpeciesFromFamilies) takes over when present;
   // its entries are full trees.js opts objects too, so nothing else below needs to change.
   const species = params.speciesTable || buildSpecies(params, rngFrom(masterSeed));
   const variants = [];
-  for (let s = 0; s < species.length; s++) {
-    const sp = species[s];
-    const leafOpts = leafOptsFor(sp, params, texSet, s);
-    const barkOpts = { ...sp.bark };
-    if (texSet && texSet.barkVScale !== undefined) barkOpts.vScale = texSet.barkVScale;
-    for (let v = 0; v < variantsPerSpecies; v++) {
-      const seed = Math.floor(rngFrom(masterSeed + s * 977 + v * 131).next() * 0xffffffff) >>> 0;
-      gen.regenerate({ ...sp, seed, leaves: leafOpts, bark: barkOpts });
-      const branchesGeo = bakeFlatColor(gen.branchesMesh.geometry, sp.bark.color);
-      const leavesGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
-      const shadowGeo = bakeFlatColor(gen.leavesShadowMesh.geometry, sp.leaves.tint);
+  return { gen, species, variants, params, masterSeed, variantsPerSpecies, texSet };
+}
 
-      const ratio = Math.max(0.05, Math.min(1.0, params.coarseLeafRatio ?? 0.25));
-      const sizeMult = Math.max(1.0, params.coarseLeafSizeMult ?? 2.5);
-      const coarseLeafOpts = {
-        ...leafOpts,
-        count: Math.max(1, Math.round(leafOpts.count * ratio)),
-        size: leafOpts.size * sizeMult,
-        shadowFraction: 0,
-      };
-      gen.regenerateLeaves(coarseLeafOpts);
-      const leavesCoarseGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
+function bakeVariant(state, s, v) {
+  const { gen, species, variants, params, masterSeed, texSet } = state;
+  const sp = species[s];
+  const leafOpts = leafOptsFor(sp, params, texSet, s);
+  const barkOpts = { ...sp.bark };
+  if (texSet && texSet.barkVScale !== undefined) barkOpts.vScale = texSet.barkVScale;
+  const seed = Math.floor(rngFrom(masterSeed + s * 977 + v * 131).next() * 0xffffffff) >>> 0;
+  gen.regenerate({ ...sp, seed, leaves: leafOpts, bark: barkOpts, branchLods: params.branchLods ?? [] });
+  const branchesGeo = bakeFlatColor(gen.branchesMesh.geometry, sp.bark.color);
+  const branchesLod1Geo = gen.branchLodGeometries[0]
+    ? bakeFlatColor(gen.branchLodGeometries[0], sp.bark.color) : null;
+  const branchesLod2Geo = gen.branchLodGeometries[1]
+    ? bakeFlatColor(gen.branchLodGeometries[1], sp.bark.color) : null;
+  const leavesGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
+  const shadowGeo = bakeFlatColor(gen.leavesShadowMesh.geometry, sp.leaves.tint);
 
-      variants.push({
-        speciesIdx: s,
-        variant: v,
-        branches: branchesGeo,
-        leaves: leavesGeo,
-        shadow: shadowGeo,
-        leavesCoarse: leavesCoarseGeo,
-      });
+  const ratio = Math.max(0.05, Math.min(1.0, params.coarseLeafRatio ?? 0.25));
+  const sizeMult = Math.max(1.0, params.coarseLeafSizeMult ?? 2.5);
+  const coarseLeafOpts = {
+    ...leafOpts,
+    count: Math.max(1, Math.round(leafOpts.count * ratio)),
+    size: leafOpts.size * sizeMult,
+    shadowFraction: 0,
+  };
+  gen.regenerateLeaves(coarseLeafOpts);
+  const leavesCoarseGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
+
+  variants.push({
+    speciesIdx: s,
+    variant: v,
+    branches: branchesGeo,
+    branchesLod1: branchesLod1Geo,
+    branchesLod2: branchesLod2Geo,
+    leaves: leavesGeo,
+    shadow: shadowGeo,
+    leavesCoarse: leavesCoarseGeo,
+  });
+}
+
+function finishPalette(state) {
+  return {
+    variants: state.variants,
+    variantsPerSpecies: state.variantsPerSpecies,
+    speciesCount: state.species.length,
+  };
+}
+
+export function createForestPalette(opts) {
+  const state = createPaletteState(opts);
+  for (let s = 0; s < state.species.length; s++) {
+    for (let v = 0; v < state.variantsPerSpecies; v++) bakeVariant(state, s, v);
+  }
+  return finishPalette(state);
+}
+
+// Base Game enables trees at runtime, so baking the entire palette in the caller's frame creates a
+// visible hitch. This twin keeps the synchronous API for existing hosts and yields between variants.
+// `shouldContinue` lets a host abort a stale bake after disable/rebuild without finishing dead work.
+export async function createForestPaletteAsync(opts, {
+  yieldFn = async () => {},
+  shouldContinue = () => true,
+} = {}) {
+  const state = createPaletteState(opts);
+  const total = state.species.length * state.variantsPerSpecies;
+  let built = 0;
+  for (let s = 0; s < state.species.length; s++) {
+    for (let v = 0; v < state.variantsPerSpecies; v++) {
+      if (!shouldContinue()) return null;
+      bakeVariant(state, s, v);
+      built++;
+      if (built < total) await yieldFn();
     }
   }
-  return { variants, variantsPerSpecies, speciesCount: species.length };
+  return shouldContinue() ? finishPalette(state) : null;
 }

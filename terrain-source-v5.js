@@ -203,9 +203,26 @@ export function createV5Source(descriptorLike) {
   // True where the heightfield is not the real ground: the density surface lies deeper below it
   // than the warp alone can move it (a carved cave mouth), so a heightfield collider would float.
   const warpReach = density.warp_strength_surface + density.warp_strength_global + 2;
-  function holeAt(x, z) {
+  // The hole test only needs to know whether rock exists above h - warpReach, so the scan stops
+  // there instead of at y_min; and since every collider query asks this several times per step
+  // for a body that barely moved, answers are cached per half-metre cell (holes are cave mouths,
+  // metres wide, so the cell never straddles one meaningfully). Uncached: ~60 density samples.
+  const HOLE_CELL = 0.5, HOLE_CACHE_MAX = 1 << 16;
+  const holeCache = new Map();
+  function holeAtUncached(x, z) {
     const h = heightAt(x, z);
-    return surfaceYAt(x, z, h) < h - warpReach;
+    const floor = Math.max(density.y_min, h - warpReach);
+    for (let y = h + VOLUME_TOP_MARGIN; y >= floor; y -= SURFACE_SCAN_STEP) if (densityAt(x, y, z, h) >= 0) return false;
+    return densityAt(x, floor, z, h) < 0;
+  }
+  function holeAt(x, z) {
+    const key = Math.round(x / HOLE_CELL) * 1048576 + Math.round(z / HOLE_CELL);
+    let v = holeCache.get(key);
+    if (v === undefined) {
+      if (holeCache.size >= HOLE_CACHE_MAX) holeCache.clear();
+      v = holeAtUncached(x, z); holeCache.set(key, v);
+    }
+    return v;
   }
 
   // Marching cubes over one tile column: samples at the tile's XZ grid (apron included), rows

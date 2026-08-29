@@ -213,7 +213,7 @@ export function createDrone(kind, from, { ownerId = null, team = 0, def = null, 
 }
 
 // Steer toward a waypoint at `alt` above the drone's own ground, holding cruise speed.
-function cruiseTo(d, wx, wz, alt, dt, speed = d.def.speed, turn = d.def.turn) {
+export function cruiseTo(d, wx, wz, alt, dt, speed = d.def.speed, turn = d.def.turn) {
   const dx = wx - d.p[0], dz = wz - d.p[2];
   const flat = Math.hypot(dx, dz);
   const altErr = (d.groundY + alt) - d.p[1];
@@ -240,7 +240,7 @@ function cruiseTo(d, wx, wz, alt, dt, speed = d.def.speed, turn = d.def.turn) {
 // Multirotor translation: the commanded velocity points straight at the goal and may be zero, which
 // is what lets the bomber stop over a target and sit in its operator's hands. First-order approach,
 // because a quad still has mass — it just has no turn radius. Returns the distance to the goal.
-function hoverTo(d, x, y, z, dt, maxSpeed = d.def.hoverSpeed, gain = 1.6) {
+export function hoverTo(d, x, y, z, dt, maxSpeed = d.def.hoverSpeed, gain = 1.6) {
   const dx = x - d.p[0], dy = y - d.p[1], dz = z - d.p[2];
   const dist = Math.hypot(dx, dy, dz);
   const want = Math.min(maxSpeed, dist * gain);
@@ -255,7 +255,7 @@ function hoverTo(d, x, y, z, dt, maxSpeed = d.def.hoverSpeed, gain = 1.6) {
 
 const HEADING_SPEED = 0.5;   // below this there is no travel direction to read a heading from
 
-function advance(d, dt) {
+export function advance(d, dt) {
   d.p[0] += d.v[0] * dt; d.p[1] += d.v[1] * dt; d.p[2] += d.v[2] * dt;
   const sp = vlen(d.v);
   // `faceYaw` is a commanded heading for the states where the drone is holding a pose relative to a
@@ -307,7 +307,7 @@ export function stepBotDrone(d, dt, world = {}) {
   return out;
 }
 
-function setState(d, state) { if (d.state !== state) { d.state = state; d.stateT = 0; } }
+export function setState(d, state) { if (d.state !== state) { d.state = state; d.stateT = 0; } }
 
 // Dead stick: nobody is flying it any more. Two ways that goes, because a drone that loses its pilot
 // and a drone that loses a rotor do not fall the same way.
@@ -353,7 +353,7 @@ function setReattack(d, target) {
 
 // Fly a circle around a point instead of at it. Anything that "holds station" uses this: a drone
 // that cruises straight at its own operator is on a collision course with him twice a lap.
-function orbitAround(d, cx, cz, radius, alt, dt, speed = d.def.speed) {
+export function orbitAround(d, cx, cz, radius, alt, dt, speed = d.def.speed) {
   const ang = Math.atan2(d.p[2] - cz, d.p[0] - cx) + d.orbitSign * (d.def.orbitLeadRad ?? 0.45);
   return cruiseTo(d, cx + Math.cos(ang) * radius, cz + Math.sin(ang) * radius, alt, dt, speed);
 }

@@ -89,6 +89,7 @@ ok(WORLD_QUERY_CONTRACT_VERSION === 2, 'world-query contract is versioned');
   const ground = world.groundProbe({ origin: [0, 20, 0], maxDistance: 30, slopeLimitCos: 0.5 });
   ok(ground?.providerId === 'walkable-lower' && ground.walkable, 'ground probe skips nearer non-walkable surface and finds lower floor');
   ok(near(ground.point[1], 4), 'ground probe returns complete 3D hit position');
+  ok(ground.capsuleSupport === true, 'ray-backed ground probes identify mesh-shaped capsule support');
 }
 
 {

@@ -271,7 +271,11 @@ export function createWorldQueryService() {
         if (!hit || hit.walkable === false || !hit.normal) continue;
         const upDot = hit.normal[0] * q.up[0] + hit.normal[1] * q.up[1] + hit.normal[2] * q.up[2];
         if (upDot + EPSILON < q.slopeLimitCos) continue;
-        hits.push({ ...hit, walkable: true, upDot });
+        // A ray against a triangle finds the point below the capsule axis, while a capsule rests
+        // with its round lower cap tangent to that triangle. Direct groundProbe providers own their
+        // seating model; ray fallbacks need capsule-aware seating unless explicitly overridden.
+        const capsuleSupport = hit.capsuleSupport ?? method !== 'groundProbe';
+        hits.push({ ...hit, walkable: true, upDot, capsuleSupport });
       }
     }
     hits.sort(compareHits);

@@ -80,6 +80,14 @@ export function createBaseGamePrediction({
         // stance would never reach the relay AND never reach local prediction.
         stance: Number.isInteger(input.stance) ? input.stance : 0,
         jump: !!input.jump,
+        // The weapon and drone channels ride the same tick. They were not copied here before, so
+        // online the server never saw a slot change, a trigger, or the drone stick (found 2026-08-27).
+        slot: Number.isInteger(input.slot) ? input.slot : 0,
+        aim: !!input.aim,
+        fire: !!input.fire,
+        reload: !!input.reload,
+        throw: !!input.throw,
+        drone: input.drone ?? null,
         position: null,
       };
       controller.stepOnce({ tick: entry.tick, moveX: entry.moveX, moveZ: entry.moveZ, yaw: entry.yaw, sprint: entry.sprint, crouch: entry.crouch, stance: entry.stance }, entry.jump);

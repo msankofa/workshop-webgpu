@@ -53,6 +53,8 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 | `disk-store.js` | A JSON document backed by a file on disk. GETs it, POSTs it back through a `serve.py` route, debounced autosave with serialised writes, and `localStorage` kept only as a fallback cache. Both sides are injected, so it is fully Node-tested (`test-disk-store.mjs`). | 160 |
 | `server-tool.py` | Local stdlib-only HTTP controller for starting/stopping `serve.py` and `server/server.js`, polling status, and capturing per-process logs. | 244 |
 | `server-tool.html` | Browser dashboard served by `server-tool.py`; exposes Start/Restart/Stop/Clear controls, useful launch links, and live logs for each managed server. | 296 |
+| `audit-doc.js` | Pure parser (no DOM, no deps) for the `improve-webgpu` audit-doc shape — frontmatter + `## F-NN` findings + prose. Node-testable by design. | 175 |
+| `audit-viewer.html` | Browsable UI for audit-doc files: rollup header (counts, `steps_not_run`/`steps_partial`), filterable/searchable finding list, per-finding detail with deep-linking. | 300 |
 | `tools/filesystem-map.html` | Standalone holographic 3D **node-link** map of the repo filesystem — WebGPURenderer + TSL `PostProcessing`/`bloom`/`dof` (repo convention, not the WebGL EffectComposer addons; DOF via three's own `dof()` TSL node reading the scene pass's real depth buffer, not the hand-rolled CoC pass from `demos/sdf-bug-v2.html` that inspired it — that demo raymarches and has no depth buffer to read). Directories are laid out with a Coulomb-repulsion + Hooke-spring simulation in 3D (organic volumetric clustering, not a flat ring/grid), damped rather than cooling-scheduled so it can also run live or be scoped to an `active[]` subset; each folder's files are scattered onto a Fibonacci sphere stored as a *local offset* from its hub (so a moving hub carries its files for free), never entering the O(n²) physics themselves. Node materials are opaque (not additive) with real depth writes so dense clusters stay legible instead of clipping to a white blob; tone mapping is ACES; fog is linear and tied to camera range, not layout radius. The Render/DOF/Layout/Style HUD panel (collapsible, like Filters) exposes live sliders for exposure/bloom/DOF focus-distance-focal-length-bokeh (with an auto-focus-on-orbit-target option) and edge length, a "live rearrange" toggle, shuffle/re-layout buttons, and toggles for node size (file size vs. uniform) and color (extension vs. relative/absolute file age). A separate Growth Timeline panel replays the repo's construction in chronological order using each file's creation time (`ctime` — best-effort, not authoritative; see `/api/fs-scan` below) as its "birth": directories reveal and physically emerge from their already-active parent as playback crosses their birth time, restricting `forceStep()` to the currently-active subset so the graph visibly reorganizes as it grows, not just reveals at pre-settled positions. Clicking a node smoothly flies the camera to focus on it (position+target lerp composes with `OrbitControls.update()` since it re-derives its spherical state from `camera.position` each call). Filters by file extension, modified-date range, and name; fetches `GET /api/fs-scan` live, no manifest to regenerate. | 830 |
 
 ## Public API
@@ -575,6 +577,58 @@ shades slopes directionally, flattens water, and (with `shaded: false`) emits th
 verbatim. It also checks `overlayColorizer` returns a valid `[r,g,b]` 0..255 + `shaded` flag for every
 `MAP_OVERLAYS` id and that the water/grass/material layers track their underlying data (30 assertions).
 The browser wrappers (`bakeMapCanvas`, `createWorldMapOverlay`) are canvas/DOM-dependent and untested.
+
+`test-audit-doc.mjs` (repo root, `node test-audit-doc.mjs`, same manual-`check`/`section` style) parses
+the real `2026-08-28-base-game-trees-audit.md` document and checks the frontmatter fields, all 21
+findings' ids/vocab membership/four-section presence, several finding-specific field shapes (nested
+`measured` maps, an inline array, a quoted value with an embedded colon, an extra non-schema field),
+`parseYamlBlock`'s scalar/structural rules directly, and a battery of malformed-input cases (no
+frontmatter, a finding with no yaml fence, a finding missing some of its four sections, a heading that
+only looks like a finding id) that must degrade to `undefined`/empty rather than throw (54 checks).
+
+## Audit viewer (`audit-doc.js` + `audit-viewer.html`)
+
+A browsable viewer for `improve-webgpu` audit documents, built against the parse contract each such
+document states in its own "About this document" section (see
+`docs/superpowers/reviews/2026-08-28-base-game-trees-audit.md`), not against that one document — a
+future audit written to the same shape needs no viewer changes.
+
+**`audit-doc.js`** exports `parseAuditDoc(markdownText) -> { meta, findings, prose }` and
+`parseYamlBlock(text)` (the hand-rolled YAML reader it's built on, also exported for direct testing).
+`meta` is the `---`-fenced frontmatter. `findings` is one entry per `## F-NN — Title` heading in
+heading order, each `{ id, title, severity, status, kind, introduced_by, runs, locations, verified_by,
+mutation_tested, measured, cause, effect, solution, result, ...anyOtherYamlFields }` — `cause`/`effect`/
+`solution`/`result` come from that finding's four `###` subsections, everything else from its first
+fenced ` ```yaml ` block (spread first, so a field the schema doesn't name — `blocked_on`,
+`rows_at_risk`, `prior_art` all appear in the real document — survives into the object rather than
+being silently dropped). `prose` is every other `#`/`##` section in document order (`{ level, heading,
+text }`), including the un-numbered intro and "About this document" itself, so the viewer can show them
+without a separate code path. The YAML reader covers exactly what these documents use — top-level
+scalars, one level of nested maps (recursion actually allows more, which costs nothing and covers
+`severity_counts`/`status_counts`/`kind_counts`), lists of maps (`locations`), and inline arrays
+(`steps_partial: [2, 5, 6]`, `rows_at_risk: [...]`) — deliberately not a general YAML parser. Every
+lookup degrades to `undefined` (or an empty array/object) instead of throwing, so a finding with a
+missing yaml fence or only some of its four subsections still parses.
+
+**`audit-viewer.html`** fetches `?doc=<path>` (default the tree audit above), parses it, and renders:
+a rollup header (total findings, severity/status pill counts from `meta.severity_counts`/
+`status_counts` when present, else tallied from the findings themselves) with a dedicated orange
+banner for `meta.steps_not_run`/`steps_partial` when either is non-empty: this is the fact the audit is
+built to surface and the banner is why the rollup header exists at all. A left rail holds a
+text search (title + cause/effect/solution/result) and five filter selects — severity, status, kind,
+introduced_by, runs — whose `<option>` lists are built from `fieldOptions()` reading the actual parsed
+findings, never a hardcoded vocabulary, so a value the current document doesn't use never appears and a
+new one the next document introduces is never hidden. The finding list shows id/title/severity/status
+per row; selecting one sets `location.hash` to its id (deep-linking) and renders Cause/Effect/Solution/
+Result as separate labelled sections, `locations` as `file:line — symbol` plus its `role`, and a
+Verification block for `verified_by`/`mutation_tested`, plus an "Other fields" block for anything not
+in the known schema. With nothing selected the main panel shows `prose` instead, so the document's own
+intro is visible before a reader picks a finding. All markdown text (prose and the four narrative
+sections) goes through `escapeHtml` first, then a tiny inline pass for `` `code` `` and `**bold**`, plus
+a block-level pass for bullet lists and pipe tables in prose — not a general markdown renderer, and
+never raw `innerHTML` from unescaped source text. Filter/search state and the doc path live in the URL
+query string (`history.replaceState`, no `localStorage`), so a filtered/searched view is itself
+shareable as a link.
 
 
 ## Inspector layout (2026-07-18)

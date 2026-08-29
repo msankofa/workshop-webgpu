@@ -1163,6 +1163,18 @@ One local key deliberately overrides a shared one. `weatherWindFollowsWaves` mak
 sea without needing permission to write a shared key — and the wind slider's readout says which
 heading is actually in force.
 
+## The stellar sky in the shared world (2026-08-27)
+
+The procedural night sky follows the `weatherSeed` argument: the generators are deterministic, so no
+body is ever sent — five keys are owner-owned and every client rolls the identical sky from them.
+`skySeed`, `skyPlanetCount`, `skyMoonCount`, `skyBodyScale` and `skyMilkyWay` are shared because the
+planets are landmarks two players in one room should both stand under; star count/brightness/color,
+Milky Way density/brightness, the sun and moon disc color/size/opacity, and `skyBodyResolution` (a
+bake-cost knob) stay local — the protocol's own rule of shared *amount*, local *look*. As with
+weather, this is state carriage only: the server clamps and echoes the keys but nothing in movement
+reads them. On the page these keys rebuild sky geometry, so `applySkySettings()` diffs them
+(a snapshot restating the world never rebuilds) and their sliders commit on release, never on drag.
+
 ## Base Game articulated hit authority (protocol 10, 2026-08-24)
 
 Base Game rooms now keep locomotion and damage geometry separate. The predicting client and room
@@ -1184,3 +1196,7 @@ the OnRender relay/server and browser assets must be deployed together.
 `test-base-game-shared-keys.mjs` checks that the protocol's `NUMBER_LIMITS` and `base-game.html`'s agree
 for every shared key. They are two separate tables clamping the same numbers — one on the wire, one when
 loading a save — and a disagreement silently rewrites a legal local value on the first patch.
+
+**Remote samples are reused.** `createBaseGameRemotePlayers().update` fills one `sampleScratch` object per
+record in place instead of allocating a sample and two arrays per body per frame; consumers read it
+within the frame and must not keep it (audit F-03, 2026-08-28).

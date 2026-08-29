@@ -17,7 +17,6 @@
 
 import * as THREE from 'three';
 import { Fn, float, vec2, uniform, select, mix, length } from 'three/tsl';
-import { terrainTintNode } from './base-game-terrain.js';
 
 export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   grassEnabled: true,
@@ -30,19 +29,41 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   grassStyle: 'streaks',
   grassVerticalOffset: -0.05,  // bias low, never high
   grassCoverGate: 1,           // how hard scalar cover thins the field (0 = ignore cover)
-  grassKmax: 256,              // blades per 2 m cell; the density ceiling is this / cellSize^2
+  grassKmax: 512,              // blades per 2 m cell; the density ceiling is this / cellSize^2
   // The ceiling the radius slider can reach. Height comes from the contact window close in and the
   // 2 km placement window past it, so the limit is this number and the buffer budget, not a window.
-  grassMaxRadius: 200,
+  grassMaxRadius: 600,
   // Instance-buffer budget in MB at 32 bytes a blade. Sizing for the theoretical worst case (every
   // cell full out to grassMaxRadius) would be 331 MB for a field the cull gradient never fills.
   grassBufferMB: 96,
+  // Millions of candidate threads a recull may dispatch. Radius and density both multiply into it,
+  // so the far corner of the two sliders is a hang without a ceiling; over it, the field thins and
+  // says so rather than stalling.
+  grassDispatchBudgetM: 8,
   grassNearFade: 10,           // metres over which height crosses from the contact to the placement window
   // Blades take the colour of the ground they stand on: at the root, and everywhere at the draw
   // edge, so the field dissolves into the terrain rather than ending on a line.
   grassGroundTint: 0.5,
   grassGroundTintFar: 1,
+  // How far up the blade the root tint reaches. grass-look's rootShade uses smoothstep(0, 0.35, t)
+  // for the same job, and a full-length linear ramp washes the whole blade instead of its base.
+  grassGroundTintReach: 0.35,
+  // Mip the ground textures are read at, per blade. 0 is per-texel noise; a few levels up is the
+  // local average over roughly a blade's footprint, which is what blending wants.
+  grassGroundTintMip: 4,
 });
+
+// Blades a full disc holds once the edge fade has thinned it. Keep probability falls linearly from
+// 1 at cullStart to 0 at the radius, so this is the area integral of that, not pi*r^2. It is still
+// an UPPER bound: biome cover and the water gate thin further, and neither is knowable on the CPU.
+export function expectedBlades(radius, density, cullStart) {
+  const r = Math.max(0, radius), d = Math.max(0, density);
+  if (!r || !d) return 0;
+  const c = Math.max(0, Math.min(cullStart || r * 0.8, r));
+  const band = r - c;
+  const outer = band > 1e-6 ? (2 * Math.PI / band) * (r * (r * r - c * c) / 2 - (r ** 3 - c ** 3) / 3) : 0;
+  return Math.round((Math.PI * c * c + outer) * d);
+}
 
 // How far from the player a square window can be trusted. Half the extent, less the half tile the
 // origin can be snapped away by (`desiredOrigin` rounds to whole tiles), so the answer holds
@@ -65,7 +86,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   let enabled = false, active = false, built = false;
   let maxRadius = 0;
   const stats = { enabled: false, built: false, radius: 0, requestedRadius: 0, maxRadius: 0, density: 0,
-    requestedDensity: 0, maxDensity: 0, capacity: 0, dispatch: 0, expected: 0, truncating: false,
+    requestedDensity: 0, maxDensity: 0, capacity: 0, dispatch: 0, expected: 0, truncating: false, dispatchClamped: false,
     reculls: 0, skippedReculls: 0, coverage: 0, lastError: null };
 
   // Global = render-local + origin. One vec3 uniform, mutated on rebase; the graph never rebuilds.
@@ -73,7 +94,6 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   const uCamXZ = uniform(new injectedTHREE.Vector2());
   let uNearEnd = null, uFadeBand = null;
   const HEIGHT_MISSING = -1e6;                 // sentinel: the window had nothing at this xz
-  const uSeaLevel = uniform(0);                // the tint bands sit on it, and it can move
   const originScratch = [0, 0, 0];        // getOrigin() allocates without one, and this runs per frame
   function readOrigin() {
     return worldCoordinates?.getOrigin?.(originScratch) ?? originScratch;
@@ -81,6 +101,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   function syncOrigin() {
     const o = readOrigin();
     uRenderOrigin.value.set(o[0], o[1], o[2]);
+    // Placement hashes and world-space samples add this back, so a rebase does not re-roll the field.
+    grass?.setWorldOrigin?.(o[0], o[2]);
   }
   syncOrigin();
 
@@ -125,10 +147,14 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
           return float(1).sub(uCoverGate).add(cover.mul(uCoverGate)).clamp(0, 1);
         })
       : null;
-    // The ground colour a blade should read as: exactly the bands the terrain colours its own
-    // vertices with. Height comes back global; the slope is a central difference on the coarse
-    // window, which is all the rock term needs, and it runs once per SURVIVING blade in the cull.
-    const groundColorNode = far ? Fn(([x, z, y]) => {
+    // The ground colour a blade should read as. Terrain owns it, because what the ground actually
+    // shows is the splat textures' average when ground textures are on and the vertex tint when
+    // they are off -- the earlier version of this tinted toward the tint either way, which is the
+    // colour the terrain is NOT showing by default. Slope is a central difference on the coarse
+    // window, and this runs once per SURVIVING blade in the cull.
+    const groundColor = terrain.groundColorNode?.() ?? null;
+    terrain.setGroundColorMip?.(cfg.grassGroundTintMip);
+    const groundColorNode = (far && groundColor) ? Fn(([x, z, y]) => {
       const g = vec2(x, z).add(originXZ);
       const yGlobal = y.add(uRenderOrigin.y);
       const p = float(field.post);
@@ -136,17 +162,23 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       const hz1 = far(vec2(g.x, g.y.add(p)), yGlobal), hz0 = far(vec2(g.x, g.y.sub(p)), yGlobal);
       const dx = hx1.sub(hx0).div(p.mul(2)), dz = hz1.sub(hz0).div(p.mul(2));
       const normalY = float(1).div(dx.mul(dx).add(dz.mul(dz)).add(1).sqrt());
-      return terrainTintNode(yGlobal.sub(uSeaLevel), normalY);
+      return groundColor(g.x, g.y, yGlobal, normalY);
     }) : null;
     return { heightNode, densityNode, groundColorNode };
   }
 
   // One construction, at the widest radius the sliders can reach: grass-compute cannot free its
   // storage buffers, so a live rebuild would leak them.
+  // Ground textures load in the background and the grass graph is built once, so building before
+  // they land would leave blades tinted from the fallback for the session. Bounded, because a
+  // failed load must not stop grass forever.
+  let groundWait = 0;
+  const GROUND_WAIT_FRAMES = 600;
   async function build() {
     if (built || !grassModule) return false;
     const contact = terrain.contactField;
     if (!contact) return false;
+    if (terrain.groundColorReady === false && groundWait++ < GROUND_WAIT_FRAMES) return false;
     const samplers = buildSamplers();
     if (!samplers) return false;
     // The reach of the widest window that can supply a height, capped by the slider's own ceiling.
@@ -158,6 +190,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       radius, maxRadius,
       Kmax: cfg.grassKmax,
       maxInstances: Math.floor(cfg.grassBufferMB * 1e6 / 32),
+      dispatchBudget: Math.floor(cfg.grassDispatchBudgetM * 1e6),
       density: cfg.grassDensity,
       cullStart: cfg.grassCullStart || null,
       bladeHeight: cfg.grassBladeHeight,
@@ -169,7 +202,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       groundColorNode: samplers.groundColorNode,
       groundTint: cfg.grassGroundTint,
       groundTintFar: cfg.grassGroundTintFar,
+      groundTintReach: cfg.grassGroundTintReach,
     });
+    grass.setWorldOrigin?.(readOrigin()[0], readOrigin()[2]);
     grass.mesh.frustumCulled = false;
     scene.add(grass.mesh);
     onMeshCb?.(grass.mesh);
@@ -224,7 +259,6 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       if (!built) { const ok = await build(); if (!ok) return false; }
       // Sea level and the origin both move; the water gate is in render-local Y like the blades.
       grass.setWaterLevel(terrain.seaLevel - uRenderOrigin.value.y);
-      uSeaLevel.value = terrain.seaLevel;
       await grass.update(seconds);
       // The surviving blade count is written by the GPU into the indirect buffer, so the CPU can
       // only report capacity and whether the cull actually ran.
@@ -235,14 +269,17 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       // Both sliders clamp; report the value in force and keep the request beside it.
       stats.radius = grass ? Math.min(cfg.grassRadius, maxRadius || cfg.grassRadius) : 0;
       stats.requestedRadius = cfg.grassRadius;
-      stats.density = Math.min(cfg.grassDensity, grass.stats.maxDensity);
+      // grass-compute owns these now: density is thinned by the thread budget, not just clamped.
+      stats.density = grass.stats.density;
       stats.requestedDensity = cfg.grassDensity;
+      stats.dispatchClamped = grass.stats.dispatchClamped;
       stats.maxDensity = grass.stats.maxDensity;
       stats.dispatch = grass.stats.dispatch;
       // Blades the sliders are asking for against blades the buffer holds. Over the line the field
       // truncates at the far edge rather than clamping the sliders, so the panel can say so.
       stats.groundTint = grass.groundTint;
-      stats.expected = Math.round(Math.PI * stats.radius * stats.radius * stats.density);
+      stats.groundSamplesTextures = terrain.groundColorSamplesTextures ?? false;
+      stats.expected = expectedBlades(stats.radius, stats.density, cfg.grassCullStart || stats.radius * 0.8);
       stats.truncating = stats.expected > stats.capacity;
       return true;
     },
@@ -253,6 +290,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       if (!grass) return;
       const radius = Math.max(1, Math.min(cfg.grassRadius, maxRadius || cfg.grassRadius));
       grass.setRadius(radius);
+      grass.setDispatchBudget(cfg.grassDispatchBudgetM * 1e6);
       grass.setDensity(cfg.grassDensity);
       grass.setCullStart(cfg.grassCullStart || radius * 0.8);
       grass.setBladeHeight(cfg.grassBladeHeight);
@@ -260,7 +298,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       grass.setVerticalOffset(cfg.grassVerticalOffset);
       grass.setWind(cfg.grassWind);
       grass.setBladeStyle?.(cfg.grassStyle);
-      grass.setGroundTint?.(cfg.grassGroundTint, cfg.grassGroundTintFar);
+      grass.setGroundTint?.(cfg.grassGroundTint, cfg.grassGroundTintFar, cfg.grassGroundTintReach);
+      terrain.setGroundColorMip?.(cfg.grassGroundTintMip);
       if (uCoverGate && uCoverGate.value !== cfg.grassCoverGate) {
         uCoverGate.value = cfg.grassCoverGate;
         grass.forceRecull();

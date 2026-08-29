@@ -143,18 +143,23 @@ export function createBaseGameRemotePlayers({ scene, worldCoordinates, radius = 
       const sample = record.track.sample(renderTime, { maxExtrapolationMs }, sampleOut);
       if (!sample) { record.mesh.visible = false; record.sample = null; continue; }
       const latest = record.track.latest;
-      record.sample = {
-        position: [...sample.position],
-        velocity: latest ? [...latest.velocity] : [0, 0, 0],
-        yaw: sample.yaw, pitch: sample.pitch, grounded: sample.grounded, mode: sample.mode,
-        // Weapon state is not interpolated: the latest authoritative values ride along.
-        weapon: latest?.weapon ?? null, slot: latest?.slot ?? 0, aiming: latest?.aiming === true,
-        loadout: latest?.loadout ?? null,   // the slots not in hand hang on the body
-        stance: latest?.stance ?? 0,
-        action: latest?.action ?? 0, actionTick: latest?.actionTick ?? 0, health: latest?.health ?? 100,
-        bodyModel: latest?.bodyModel ?? 'default', hitProfile: latest?.hitProfile ?? 'humanoid-default',
-        poseEpoch: latest?.poseEpoch ?? 0,
-      };
+      // One sample object per record, mutated in place: a fresh object and two arrays per body per
+      // frame was the whole allocation budget of this loop at sixteen bots.
+      const out = record.sample = record.sampleScratch ??= { position: [0, 0, 0], velocity: [0, 0, 0] };
+      out.position[0] = sample.position[0]; out.position[1] = sample.position[1]; out.position[2] = sample.position[2];
+      const lv = latest?.velocity;
+      out.velocity[0] = lv ? lv[0] : 0; out.velocity[1] = lv ? lv[1] : 0; out.velocity[2] = lv ? lv[2] : 0;
+      out.yaw = sample.yaw; out.pitch = sample.pitch; out.grounded = sample.grounded; out.mode = sample.mode;
+      // Weapon state is not interpolated: the latest authoritative values ride along.
+      out.weapon = latest?.weapon ?? null; out.slot = latest?.slot ?? 0; out.aiming = latest?.aiming === true;
+      out.loadout = latest?.loadout ?? null;   // the slots not in hand hang on the body
+      out.stance = latest?.stance ?? 0;
+      out.action = latest?.action ?? 0; out.actionTick = latest?.actionTick ?? 0; out.health = latest?.health ?? 100;
+      out.bodyModel = latest?.bodyModel ?? 'default'; out.hitProfile = latest?.hitProfile ?? 'humanoid-default';
+      out.poseEpoch = latest?.poseEpoch ?? 0;
+      out.tick = latest?.tick ?? 0;
+      out.gadgetReady = latest?.gadgetReady !== false; out.gadgets = latest?.gadgets ?? null;
+      out.team = latest?.team ?? 1; out.npc = latest?.npc === true; out.appearance = latest?.appearance ?? null;
       if (!enabled) { record.mesh.visible = false; record.mode = sample.mode; continue; }
       worldCoordinates.toRenderLocal(sample.position, _local);
       record.mesh.visible = true;

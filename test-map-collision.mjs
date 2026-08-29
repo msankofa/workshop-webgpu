@@ -8,6 +8,7 @@
 // node test-map-collision.mjs
 
 import * as THREE from 'three';
+import { Capsule } from 'three/addons/math/Capsule.js';
 import { createMapCollider } from './map-collision.js';
 
 let failures = 0;
@@ -60,6 +61,26 @@ console.log('\n[3] the build cost is reported, split by phase');
   const c = createMapCollider(mesh, { maxTriangles: 250000 });
   ok(Number.isFinite(c.buildMs.bake) && Number.isFinite(c.buildMs.bvh), 'bake and bvh are both timed');
   ok(typeof c.buildMs.direct === 'boolean', 'and the record says which path ran');
+}
+
+console.log('\n[4] character support separates walkable slopes vertically');
+{
+  const geometry = new THREE.BoxGeometry(20, 0.5, 10);
+  geometry.rotateZ(30 * Math.PI / 180);
+  const mesh = new THREE.Mesh(geometry);
+  mesh.updateMatrixWorld();
+  const c = createMapCollider(mesh);
+  const hit = c.raycastDown(new THREE.Vector3(0, 10, 0), 20);
+  const capsule = new Capsule(
+    new THREE.Vector3(0, hit.point.y + 0.30, 0),
+    new THREE.Vector3(0, hit.point.y + 1.40, 0),
+    0.35,
+  );
+  const velocity = new THREE.Vector3(0, -4, 0);
+  const result = c.resolveCapsule(capsule, velocity, { slopeLimitY: 0.6, walkableVerticalResolution: true });
+  ok(result.grounded && Math.abs(capsule.start.x) < 1e-9, 'walkable penetration raises the capsule without downhill X/Z correction');
+  ok(velocity.x === 0 && velocity.y === 0, 'a vertical landing does not become downhill velocity');
+  c.dispose();
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);

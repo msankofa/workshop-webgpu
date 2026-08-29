@@ -1,18 +1,22 @@
 // depth-of-field.js — gather depth of field for the WebGPU node post pipeline.
 //
-// Port of demos/sdf-bug-v2.html's `dofPass`: for each pixel, sample a golden-angle disc of
-// neighbours and keep each tap only in so far as its OWN circle of confusion reaches this pixel,
-// which stops a blurred background bleeding over a sharp subject. The demo read depth it had
-// stored itself; here it comes from the scene pass depth attachment, converted to view distance.
+// Port of demos/sdf-bug-v2.html's `dofPass`: each pixel gathers a golden-angle disc scaled by its
+// OWN circle of confusion, so an in-focus pixel's disc collapses and it stays sharp — that disc
+// scaling, not the tap weight, is what keeps background blur off a sharp subject. The tap weight
+// only stops a sharper neighbour polluting a blurred pixel. Known single-pass limit: a NEAR
+// blurred object keeps a hard silhouette over a sharp background (three's dof() addon separates
+// near/far fields if that ever matters). Depth comes from the scene pass attachment, linearized
+// with the SCENE camera's planes held in our own uniforms — the global cameraNear/cameraFar nodes
+// would read the post quad's ortho camera (near 0, far 1) and flatten every depth to zero.
 // Focus is either a hand-set distance or whatever sits at frame centre (one depth fetch).
 //
-// createDepthOfField({ scenePass, params }) -> { node, uniforms, setParams }. `node` is the
-// colour to feed into renderOutput (or a grade). Gather runs on the HDR colour, so highlights
-// spread into bright discs instead of grey mush.
+// createDepthOfField({ scenePass, camera, params }) -> { node, uniforms, setParams, updateFocus }.
+// `node` is the colour to feed into renderOutput (or a grade). Gather runs on the HDR colour, so
+// highlights spread into bright discs instead of grey mush.
 
 import {
-  Fn, uv, vec2, vec3, vec4, float, uniform, texture, mix, clamp, abs, step, max, sqrt, cos, sin, length,
-  Loop, hash, perspectiveDepthToViewZ, cameraNear, cameraFar, screenSize,
+  Fn, If, uv, vec2, vec4, float, uniform, mix, clamp, abs, step, max, sqrt, cos, sin, length,
+  Loop, hash, perspectiveDepthToViewZ, screenSize,
 } from 'three/tsl';
 
 export const DOF_DEFAULTS = Object.freeze({
@@ -23,10 +27,11 @@ export const DOF_DEFAULTS = Object.freeze({
   maxRadius: 14,         // px, largest blur circle
   farScale: 2.1,         // the far side of focus falls apart this much faster than the near side
   focusRate: 6,          // 1/s, how fast auto focus settles (pulled on the CPU each frame)
-  taps: 48,
+  taps: 48,              // baked into the shader loop at build — changing it means a new node
 });
 
-export function createDepthOfField({ scenePass, params = {} } = {}) {
+export function createDepthOfField({ scenePass, camera, params = {} } = {}) {
+  if (!camera) throw new Error('createDepthOfField needs the scene camera (near/far for depth linearization)');
   const p = { ...DOF_DEFAULTS, ...params };
   const u = {
     enabled: uniform(p.enabled ? 1 : 0),
@@ -36,13 +41,18 @@ export function createDepthOfField({ scenePass, params = {} } = {}) {
     maxRadius: uniform(p.maxRadius),
     farScale: uniform(p.farScale),
     focusSmoothed: uniform(p.focusDistance),   // CPU-eased auto focus, read back from the picture
+    // Scene camera planes, refreshed every render from the closed-over camera.
+    sceneNear: uniform(camera.near).onRenderUpdate(() => camera.near),
+    sceneFar: uniform(camera.far).onRenderUpdate(() => camera.far),
   };
   const TAPS = Math.max(8, Math.min(96, p.taps | 0));
   const colorTex = scenePass.getTextureNode('output');
   const depthTex = scenePass.getTextureNode('depth');
 
-  // View distance (positive metres) of the scene at a screen uv, from the pass depth attachment.
-  const distanceAt = (q) => perspectiveDepthToViewZ(depthTex.sample(q).x, cameraNear, cameraFar).negate();
+  // View distance (positive metres) at a screen uv. The Lod variant samples with an explicit
+  // level so it stays legal inside the non-uniform early-out branch (no implicit derivatives).
+  const distanceAt = (q) => perspectiveDepthToViewZ(depthTex.sample(q).x, u.sceneNear, u.sceneFar).negate();
+  const distanceAtLod = (q) => perspectiveDepthToViewZ(depthTex.sample(q).level(0).x, u.sceneNear, u.sceneFar).negate();
 
   const node = Fn(() => {
     const q = uv();
@@ -57,23 +67,28 @@ export function createDepthOfField({ scenePass, params = {} } = {}) {
       return clamp(abs(s).mul(mix(float(1.0), u.farScale, step(float(0), s))).mul(u.aperture), 0, 1);
     };
     const rHere = cocOf(dHere).mul(u.maxRadius).mul(u.enabled);
-    const acc = here.xyz.toVar();
-    const wsum = float(1).toVar();
-    // Per-pixel angular jitter turns spiral spokes into fine grain.
-    const jitter = hash(q.x.mul(screenSize.x).add(q.y.mul(screenSize.y).mul(7919.0))).mul(6.2831853);
-    Loop(TAPS, ({ i }) => {
-      const fi = float(i);
-      const ang = fi.mul(2.39996).add(jitter);
-      const rad = sqrt(fi.add(0.5).div(TAPS));
-      const off = vec2(cos(ang), sin(ang)).mul(rad.mul(rHere));
-      const sq = q.add(off.mul(texel));
-      const s = colorTex.sample(sq);
-      const rThere = cocOf(distanceAt(sq)).mul(u.maxRadius).mul(u.enabled);
-      const w = clamp(rThere.sub(length(off)).add(1.0), 0, 1);
-      acc.addAssign(s.xyz.mul(w));
-      wsum.addAssign(w);
+    const result = here.toVar();
+    // Sharp (or disabled) pixels skip the whole gather; the branch implies enabled = 1.
+    If(rHere.greaterThan(float(0.5)), () => {
+      const acc = here.xyz.toVar();
+      const wsum = float(1).toVar();
+      // Per-pixel angular jitter turns spiral spokes into fine grain.
+      const jitter = hash(q.x.mul(screenSize.x).add(q.y.mul(screenSize.y).mul(7919.0))).mul(6.2831853);
+      Loop(TAPS, ({ i }) => {
+        const fi = float(i);
+        const ang = fi.mul(2.39996).add(jitter);
+        const rad = sqrt(fi.add(0.5).div(TAPS));
+        const off = vec2(cos(ang), sin(ang)).mul(rad.mul(rHere));
+        const sq = q.add(off.mul(texel));
+        const s = colorTex.sample(sq).level(0);
+        const rThere = cocOf(distanceAtLod(sq)).mul(u.maxRadius);
+        const w = clamp(rThere.sub(length(off)).add(1.0), 0, 1);
+        acc.addAssign(s.xyz.mul(w));
+        wsum.addAssign(w);
+      });
+      result.assign(vec4(acc.div(max(wsum, float(1e-4))), here.w));
     });
-    return vec4(acc.div(max(wsum, float(1e-4))), here.w);
+    return result;
   })();
 
   function setParams(next) {

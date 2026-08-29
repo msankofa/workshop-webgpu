@@ -70,10 +70,12 @@ console.log('\n[3] live toggle: collision never lapses while volume chunks are s
   const hf = c.getPosition()[1];
   ok(c.grounded && c.surface?.providerId === 'terrain', `grounded on the heightfield first (y ${hf.toFixed(2)})`);
 
+  // Captured BEFORE the toggle: restream drops the resident chunks (the far LOD covers the gap),
+  // so after setVolumetric there is nothing left to stand in for the volume tiles.
+  const saved = [...terrain.system.chunks.entries()];
   terrain.setVolumetric(true);
   ok(terrain.handoffPending && terrain.provider.enabled && terrain.volumeProvider.enabled, 'toggle: heightfield stays live until the volume chunk under the player exists');
   // Emulate worker latency: colliders are withheld for a full second while the player keeps moving.
-  const saved = [...terrain.system.chunks.entries()];
   terrain.volumeProvider.clear();
   for (let i = 0; i < 60; i++) c.advance(FRAME);
   ok(c.grounded && Math.abs(c.getPosition()[1] - hf) < 0.5, `still standing after 1 s without volume colliders (y ${c.getPosition()[1].toFixed(2)})`);

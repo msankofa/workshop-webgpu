@@ -10,6 +10,7 @@ import { createBaseGameTerrain } from './base-game-terrain.js';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
+import { placeholderStreamedSplatTextures, createStreamedSplatMaterial } from './terrain-splat-streamed.js';
 
 let passed = 0, failed = 0;
 function check(name, cond, detail = '') {
@@ -75,6 +76,25 @@ section('the radius is clamped to what the window can serve');
   check('and nothing derives the ceiling from the current radius setting',
     !('maxRadiusHeadroom' in BASE_GAME_FLORA_DEFAULTS));
   flora.setEnabled(false);
+  terrain.dispose();
+}
+
+section('grass tints toward what the ground actually shows');
+{
+  // The terrain draws splat TEXTURES when ground textures are on and the vertex tint only when they
+  // are off, so tinting toward the tint unconditionally matches a colour that is not on screen.
+  const { terrain, flora } = rig();
+  check('with no textures the ground colour is ready anyway once splat is off',
+    terrain.groundColorReady === false, 'splat defaults on, so it waits for the load');
+  terrain.setSplatEnabled(false);
+  check('turning ground textures off makes it immediately ready', terrain.groundColorReady === true);
+  terrain.setSplatEnabled(true);
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex, {}), tex);
+  check('loading textures makes it ready', terrain.groundColorReady === true);
+  const node = terrain.groundColorNode();
+  check('the ground colour node takes world xz as well as height', typeof node === 'function');
+  check('and it samples the real maps, not just their averages', terrain.groundColorSamplesTextures === true);
   terrain.dispose();
 }
 

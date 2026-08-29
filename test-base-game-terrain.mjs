@@ -164,6 +164,16 @@ console.log('[7] the per-frame cost split (instrumentation pass)');
   ok(typeof t.system.takeInstallCost === 'function', 'the out-of-frame install timer is drainable');
   const drained = t.system.takeInstallCost();
   ok(drained.ms === 0 && drained.count === 0, 'draining twice yields zero, so no frame double-counts it');
+  // The frame path must not allocate. Object identity is the observable form of that: a getter that
+  // returns a fresh literal fails here, and reverting either fix turns this red.
+  ok(t.frameCost === t.frameCost, 'frameCost reuses one object, so reading it every frame is free');
+  ok(t.system.takeInstallCost() === t.system.takeInstallCost(), 'takeInstallCost reuses one object');
+  // Same rule for the active-chunk cache: it is an array of one object per resident chunk, and the
+  // frame loop must not rebuild it for a getter only the tile-bounds debug view reads.
+  const refreshesBefore = t.system.activeChunkRefreshes;
+  for (let i = 0; i < 40; i++) t.update([i, 0, 0], 1 / 60);
+  ok(t.system.activeChunkRefreshes === refreshesBefore, `the frame loop rebuilds the active-chunk cache zero times (${t.system.activeChunkRefreshes - refreshesBefore})`);
+  ok(t.system.activeChunks.length > 0 && t.system.activeChunkRefreshes === refreshesBefore + 1, 'reading it builds it once');
   t.dispose();
 }
 

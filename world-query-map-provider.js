@@ -38,6 +38,7 @@ export function createMapColliderWorldQueryProvider(collider, {
         slopeLimitY: query.slopeLimitCos,
         iterations: query.iterations,
         contacts,
+        walkableVerticalResolution: query.walkableVerticalResolution === true,
       });
       return {
         capsule: {

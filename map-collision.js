@@ -112,7 +112,7 @@ export function createMapCollider(root, { maxTriangles = 250000, extraRoots = nu
   const twoSidedMesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
   twoSidedMesh.raycast = acceleratedRaycast;
 
-  function resolveOnce(capsule, velocity, slopeLimitY, contacts) {
+  function resolveOnce(capsule, velocity, slopeLimitY, contacts, walkableVerticalResolution) {
     let hit = false;
     let grounded = false;
     let ceiling = false;
@@ -140,21 +140,34 @@ export function createMapCollider(root, { maxTriangles = 250000, extraRoots = nu
           if (_normal.y < 0) _normal.multiplyScalar(-1);
         }
         const depth = r - dist;
-        _push.copy(_normal).multiplyScalar(depth);
+        const walkable = _normal.y >= slopeLimitY;
+        // A character standing on walkable ground must not inherit the contact normal's lateral
+        // component. Resolve that penetration vertically; reserve normal push-out for walls,
+        // ceilings, and deliberately too-steep slopes. depth / normal.y gives the same separating
+        // distance along the plane normal without moving X/Z.
+        if (walkableVerticalResolution && walkable) _push.set(0, depth / _normal.y, 0);
+        else _push.copy(_normal).multiplyScalar(depth);
         capsule.translate(_push);
         _line.copy(capsule);
         _box.expandByPoint(_line.start);
         _box.expandByPoint(_line.end);
         hit = true;
-        if (_normal.y >= slopeLimitY) grounded = true;
+        if (walkable) grounded = true;
         if (_normal.y <= -slopeLimitY) ceiling = true;
         if (contacts) contacts.push({
           normal: [_normal.x, _normal.y, _normal.z],
           depth,
+          walkable,
         });
 
-        const vn = velocity.dot(_normal);
-        if (vn < 0) velocity.addScaledVector(_normal, -vn);
+        if (walkableVerticalResolution && walkable) {
+          // Normal projection turns a vertical landing into downhill velocity. Walkable ground is
+          // support: cancel only downward speed and let requested X/Z motion climb via correction.
+          if (velocity.y < 0) velocity.y = 0;
+        } else {
+          const vn = velocity.dot(_normal);
+          if (vn < 0) velocity.addScaledVector(_normal, -vn);
+        }
         return false;
       },
     });
@@ -166,12 +179,13 @@ export function createMapCollider(root, { maxTriangles = 250000, extraRoots = nu
     slopeLimitY = 0.5,
     iterations = 3,
     contacts = null,
+    walkableVerticalResolution = false,
   } = {}) {
     let grounded = false;
     let ceiling = false;
     if (contacts) contacts.length = 0;
     for (let i = 0; i < iterations; i++) {
-      const result = resolveOnce(capsule, velocity, slopeLimitY, contacts);
+      const result = resolveOnce(capsule, velocity, slopeLimitY, contacts, walkableVerticalResolution);
       grounded = grounded || result.grounded;
       ceiling = ceiling || result.ceiling;
       if (!result.hit) break;

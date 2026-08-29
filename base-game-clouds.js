@@ -51,6 +51,7 @@ export function createBaseGameClouds({ scene, worldCoordinates = null, deckCount
   const tint = new THREE.Color();
   const manualTint = new THREE.Color(CLOUD_DEFAULTS.tint);
   const flashTint = new THREE.Color(CLOUD_DEFAULTS.flashTint);
+  const overcastColor = new THREE.Color(0.36, 0.38, 0.42);   // clouds.js's stock grey until the page drives it
   let elapsed = 0, overcast = 0, enabled = CLOUD_DEFAULTS.enabled;
 
   function build(deck) {
@@ -76,6 +77,7 @@ export function createBaseGameClouds({ scene, worldCoordinates = null, deckCount
     mesh.setFadeFloor(cfg.fadeFloor);
     mesh.setEdgeStart(cfg.edgeStart);
     mesh.setSpeed(cfg.speed);
+    mesh.setOvercastColor(overcastColor);
     mesh.visible = enabled && cfg.visible;
   }
 
@@ -137,6 +139,12 @@ export function createBaseGameClouds({ scene, worldCoordinates = null, deckCount
     setOvercast(v) {
       overcast = Math.max(0, Math.min(1, v));
       for (const deck of decks) deck.mesh.setOvercast(overcast * shared.overcastTint);
+    },
+
+    // What grey a lidded deck goes. The page blends this with the night so a storm cannot glow at midnight.
+    setOvercastColor(c) {
+      overcastColor.set(c);
+      for (const deck of decks) deck.mesh.setOvercastColor(overcastColor);
     },
 
     // Far distance the camera must reach for the farthest deck corner not to be clipped.

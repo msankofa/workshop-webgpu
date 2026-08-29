@@ -41,11 +41,30 @@ section('the density ceiling comes from Kmax');
 {
   const { grass } = rig({ Kmax: 256 });
   check('Kmax 256 over a 2 m cell allows 64 blades/m2', grass.stats.maxDensity === 64, `${grass.stats.maxDensity}`);
-  check('and the panel slider tops out below that', 60 <= grass.stats.maxDensity);
   const legacy = rig({ Kmax: 64 }).grass;
   check('the old Kmax 64 still means 16 blades/m2', legacy.stats.maxDensity === 16, `${legacy.stats.maxDensity}`);
-  check('Base Game asks for the raised ceiling', BASE_GAME_FLORA_DEFAULTS.grassKmax === 256,
-    `${BASE_GAME_FLORA_DEFAULTS.grassKmax}`);
+
+  // The invariant that actually matters, and the one that was broken: whatever the panel offers,
+  // the implementation must be able to deliver. A slider whose top two thirds do nothing is worse
+  // than a lower slider, because nothing tells you where it stopped meaning anything.
+  const page = readFileSync('base-game.html', 'utf8');
+  // Plain string parsing: find the slider's call and read the two numbers after its label. No
+  // regex and no newline literal, both of which this file has had escaping trouble with.
+  const range = name => {
+    const i = page.indexOf(`addRange(plantsSec, '${name}'`);
+    if (i < 0) return null;
+    const nums = page.slice(i, i + 220).split(',').map(x => Number(x.trim())).filter(Number.isFinite);
+    return nums.length >= 2 ? { min: nums[0], max: nums[1] } : null;
+  };
+  const density = range('grassDensity'), radius = range('grassRadius');
+  check('the panel has a density slider', !!density, JSON.stringify(density));
+  check('the panel has a radius slider', !!radius, JSON.stringify(radius));
+  const ceiling = BASE_GAME_FLORA_DEFAULTS.grassKmax / 4;      // cellSize 2
+  check('the density ceiling covers the whole density slider', !!density && density.max <= ceiling,
+    `slider ${density?.max} vs ceiling ${ceiling}`);
+  check('the radius ceiling covers the whole radius slider',
+    !!radius && radius.max <= BASE_GAME_FLORA_DEFAULTS.grassMaxRadius,
+    `slider ${radius?.max} vs ceiling ${BASE_GAME_FLORA_DEFAULTS.grassMaxRadius}`);
 }
 
 section('the dispatch follows the live window, not the buffer');
@@ -68,6 +87,28 @@ section('the dispatch follows the live window, not the buffer');
   const side = 2 * Math.ceil(55 / 2) + 1;      // the live window at radius 55, cellSize 2
   check('density 60 is not silently clamped', grass.stats.dispatch === side * side * 240,
     `${grass.stats.dispatch} vs ${side * side * 240}`);
+}
+
+section('the thread budget thins instead of hanging');
+{
+  // Radius and density both multiply into the dispatch, so the far corner of the two sliders is
+  // tens of millions of threads. It thins, and says it thinned; it never silently clamps.
+  const { grass, recull } = rig({ Kmax: 512, dispatchBudget: 1e6 });
+  grass.setRadius(600);
+  grass.setDensity(128);
+  await recull();
+  check('a huge window with huge density stays inside the budget',
+    grass.stats.dispatch <= 1e6 * 1.1, `${grass.stats.dispatch}`);
+  check('and reports that it thinned', grass.stats.dispatchClamped === true);
+  check('the effective density is below what was asked for',
+    grass.stats.density < grass.stats.requestedDensity, `${grass.stats.density} vs ${grass.stats.requestedDensity}`);
+  grass.setDispatchBudget(64e6);
+  await recull();
+  check('raising the budget raises the density back', grass.stats.density > 1, `${grass.stats.density}`);
+  grass.setRadius(20);
+  await recull();
+  check('a small window needs no thinning at all', grass.stats.dispatchClamped === false,
+    `eff ${grass.stats.density} of ${grass.stats.requestedDensity}`);
 }
 
 section('the dispatch never outruns the instance buffer');
@@ -100,6 +141,55 @@ section('the cell gate still skips reculls');
   await grass.update(3);
   check('standing still skips the recull', grass.stats.reculls === after, `${grass.stats.reculls} vs ${after}`);
   check('and counts the skips', grass.stats.skippedReculls >= 2, `${grass.stats.skippedReculls}`);
+}
+
+section('a floating-origin rebase does not re-roll the field');
+{
+  // Placement hashes off render-local cells meant a rebase shifted every hash input and re-scattered
+  // every blade in one frame. The origin is added back, so the hash is on a GLOBAL cell.
+  const { grass, recull } = rig({ Kmax: 256 });
+  await recull();
+  const before = grass.stats.reculls;
+  grass.setWorldOrigin(8192, -4096);
+  check('moving the origin marks the field dirty', grass.stats.dirty);
+  await recull();
+  check('and it reculls', grass.stats.reculls > before);
+  const same = grass.stats.reculls;
+  grass.setWorldOrigin(8192, -4096);
+  check('setting the same origin again is a no-op', grass.stats.dirty === false, `dirty ${grass.stats.dirty}`);
+  // The rebase snap must land on a whole number of cells or the global grid shears.
+  const snap = 1024, cellSize = 2;
+  check('the rebase snap is a whole number of cells', Number.isInteger(snap / cellSize), `${snap / cellSize}`);
+}
+
+section('the storage buffers are freed on dispose');
+{
+  // Storage attributes have no dispose event and ComputeNode.dispose() does not free them, so
+  // dispose() has to reach the renderer's attribute table or ~29 MB outlives the instance.
+  const freed = [];
+  const camera = new THREE.PerspectiveCamera();
+  const grass = createComputeGrass({
+    renderer: { computeAsync: async () => {}, _attributes: { delete: a => freed.push(a) } },
+    camera, radius: 20, maxRadius: 20, density: 4, Kmax: 64,
+  });
+  grass.dispose();
+  check('dispose frees more than the geometry and material', freed.length >= 3, `freed ${freed.length}`);
+  check('the instance buffer is among them', freed.some(a => a?.array?.length >= grass.stats.capacity * 8));
+  // A renderer without the internal must not throw: it is private API on a pinned build.
+  const plain = createComputeGrass({ renderer: { computeAsync: async () => {} }, camera, radius: 20, maxRadius: 20, Kmax: 64 });
+  let threw = false;
+  try { plain.dispose(); } catch { threw = true; }
+  check('and dispose survives a renderer without that internal', !threw);
+}
+
+section('no colour in the graph skips sRGB to linear');
+{
+  // uBaseColor/uTipColor go through THREE.Color, which converts. A raw vec3 of sRGB bytes does not,
+  // and the dry tint was rendering about 2.5x too bright because of it.
+  const src = readFileSync('grass-compute.js', 'utf8');
+  const rawByteColour = /vec3\(\s*\d+\s*\/\s*255/.test(src);
+  check('no raw sRGB byte triple is used as a colour', !rawByteColour);
+  check('the dry tint goes through THREE.Color', /uDryColor\s*=\s*uniform\(new THREE\.Color/.test(src));
 }
 
 section('the wind gets a clock, not a frame delta');

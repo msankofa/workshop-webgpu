@@ -75,6 +75,28 @@ const feet = bodies.localBody.gait.feet;
 ok(near(feet.left.current.y, 0, 0.05) && near(feet.right.current.y, 0, 0.05), 'local feet plant on the origin floor');
 ok(bodies.localSupport.diagnostics.probes > 0, 'the local body routes support through the adapter');
 
+// Overhead hold: a gadget in hand raises both hands over the head and the anchor sits between them.
+ok(bodies.heldAnchor('local') === null, 'no anchor while nothing is held overhead');
+for (let i = 0; i < 30; i++) bodies.updateLocal(1 / 60, { globalFoot: foot, velocity: [0, 0, 0], yaw: 0.7, grounded: true, height: 1.8, radius: 0.35, overhead: 'quad' });
+const anchor = bodies.heldAnchor('local');
+const headY = bodies.localBody.joints.head.position.y;
+ok(!!anchor && anchor[1] > headY + 0.15, `held anchor is above the head (${anchor?.[1]?.toFixed(2)} vs head ${headY.toFixed(2)})`);
+const hands = bodies.localBody.joints;
+ok(Math.abs(hands.leftHand.position.y - hands.rightHand.position.y) < 0.05, 'both hands are level');
+ok(hands.leftHand.position.distanceTo(hands.rightHand.position) > 0.3, 'the hands are apart, around the hull');
+ok(near(anchor.yaw, 0.7, 0.3), `the anchor faces the body's way (${anchor.yaw.toFixed(2)})`);
+for (let i = 0; i < 30; i++) bodies.updateLocal(1 / 60, { globalFoot: foot, velocity: [0, 0, 0], yaw: 0.7, grounded: true, height: 1.8, radius: 0.35, overhead: null });
+ok(bodies.heldAnchor('local') === null && hands.leftHand.position.y < headY, 'the hands come down when the gadget goes');
+// The throw: the hands go behind the head first, then well in front of it at the release.
+const fwdOf = (p) => -(p.z - bodies.localBody.joints.head.position.z);   // body forward at yaw 0 is -Z
+for (let i = 0; i < 30; i++) bodies.updateLocal(1 / 60, { globalFoot: foot, velocity: [0, 0, 0], yaw: 0, grounded: true, height: 1.8, radius: 0.35, overhead: 'quad', overheadPhase: { throw: 0.32, reload: null } });
+const windup = fwdOf(hands.rightHand.position);
+for (let i = 0; i < 30; i++) bodies.updateLocal(1 / 60, { globalFoot: foot, velocity: [0, 0, 0], yaw: 0, grounded: true, height: 1.8, radius: 0.35, overhead: 'quad', overheadPhase: { throw: 0.5, reload: null } });
+const release = fwdOf(hands.rightHand.position);
+ok(windup < -0.1 && release > 0.35, `the throw winds up behind the head (${windup.toFixed(2)} m) and releases in front (${release.toFixed(2)} m)`);
+for (let i = 0; i < 30; i++) bodies.updateLocal(1 / 60, { globalFoot: foot, velocity: [0, 0, 0], yaw: 0, grounded: true, height: 1.8, radius: 0.35, overhead: 'quad', overheadPhase: { throw: null, reload: 0.5 } });
+ok(hands.rightHand.position.y < headY - 0.5, `mid-reload the hands are down at the hip (${(hands.rightHand.position.y - headY).toFixed(2)} m below the head)`);
+
 // Two remote bodies at one X/Z on different floors keep distinct feet.
 bodies.beginRemoteFrame();
 bodies.updateRemote(1 / 60, 'upper', { globalFoot: [47, 10, -23], velocity: [0, 0, 0], yaw: 0, grounded: true });

@@ -163,6 +163,11 @@ console.log('\n[4] Base Game fixture: surface, cave at the same X/Z, and back on
   sim(onTop, 2);
   const top = onTop.getPosition();
   ok(onTop.grounded && onTop.surface?.providerId === 'terrain-volume' && Math.abs(top[1] - cave.topY) < 1, `stands on the mesh surface above the cave (y ${top[1].toFixed(2)} vs ${cave.topY.toFixed(2)}; grounded ${onTop.grounded}, provider ${onTop.surface?.providerId}, xz drift ${Math.hypot(top[0] - cave.x, top[2] - cave.z).toFixed(2)})`);
+  const restStart = onTop.getPosition();
+  for (let i = 0; i < 60 * 120; i++) onTop.stepOnce({ moveX: 0, moveZ: 0, yaw: 0 });
+  const restEnd = onTop.getPosition();
+  const restDrift = Math.hypot(restEnd[0] - restStart[0], restEnd[2] - restStart[2]);
+  ok(onTop.grounded && restDrift < 1e-3, `holds position for 60 s on irregular volumetric ground (${restDrift.toExponential(2)} m drift)`);
 
   const inside = createBaseGamePlayerController({ worldQuery, spawn: [cave.x, cave.floorY + 1.0, cave.z] });
   sim(inside, 2);

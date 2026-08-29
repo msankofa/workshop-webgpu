@@ -89,6 +89,21 @@ assert.equal(windClamped.world.weatherWindSpeed, 0, 'a negative wind speed clamp
 assert.equal(windClamped.world.weatherGust, 40, 'an absurd gust clamps to the ceiling');
 assert.equal(windClamped.world.weatherGustPeriod, 0.5, 'a zero gust period clamps to the floor, so nothing divides by it');
 
+// Stellar sky. The generation keys are carried (the planets are landmarks everyone stands under);
+// a client's star/disc look never enters the room world. Counts and the seed round on the wire.
+service.handle(owner, {
+  type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION,
+  patch: { skySeed: 123456.7, skyPlanetCount: 5.2, skyMoonCount: 99, skyBodyScale: 2, skyMilkyWay: false, skyStarColor: '#ff0000', skyStarCount: 200 },
+});
+const skyWorld = message(guest, 'base:snapshot');
+assert.equal(skyWorld.world.skySeed, 123457, 'the sky seed is carried and rounded');
+assert.equal(skyWorld.world.skyPlanetCount, 5, 'the planet count is carried and rounded');
+assert.equal(skyWorld.world.skyMoonCount, 12, 'an absurd moon count clamps to the ceiling');
+assert.equal(skyWorld.world.skyBodyScale, 2, 'the body scale is carried');
+assert.equal(skyWorld.world.skyMilkyWay, false, 'the Milky Way flag is carried');
+assert.equal('skyStarColor' in skyWorld.world, false, 'a local star colour never enters the room world');
+assert.equal('skyStarCount' in skyWorld.world, false, 'a local star count never enters the room world');
+
 // Lightning (phase R4). No strike is ever sent; what IS carried is every input the derived schedule
 // reads, because two clients with different inputs would compute different storms.
 service.handle(owner, {

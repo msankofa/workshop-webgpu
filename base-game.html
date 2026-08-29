@@ -98,6 +98,7 @@ import * as THREE from 'three';
 import { WebGPURenderer, RenderPipeline, TimestampQuery } from 'three/webgpu';
 import { pass, renderOutput } from 'three/tsl';
 import { createDepthOfField } from './depth-of-field.js';
+import { visionNode, setVisionMode, visionMode, tagScene, heatTag, heatMix, HEAT, uIR, VISION_MODES, VISION_LABEL } from './vision-modes.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createLightingRig } from './lights.js';
 import { createSky } from './sky.js';
@@ -191,6 +192,7 @@ const TOD_MOON_MAX = 0.35;
 // and the control-registry assertion below prevents a future panel control from silently escaping
 // save/load coverage.
 const DEFAULT_SETTINGS = Object.freeze({
+  frameCap: 'unlimited',
   worldMode: 'traversalLab',
   labCollisionDebug: false,
   labOriginMarker: true,
@@ -227,7 +229,11 @@ const DEFAULT_SETTINGS = Object.freeze({
   treesPerHectare: BASE_GAME_TREE_DEFAULTS.treesPerHectare,
   treeMaxSize: BASE_GAME_TREE_DEFAULTS.treeMaxSize,
   treeSpecies: BASE_GAME_TREE_DEFAULTS.treeSpecies,
+  treeVariantsPerSpecies: BASE_GAME_FOREST_DEFAULTS.treeVariantsPerSpecies,
   treeVerticalOffset: BASE_GAME_TREE_DEFAULTS.treeVerticalOffset,
+  treeLeafSize: BASE_GAME_FOREST_DEFAULTS.treeLeafSize,
+  treeTrunkHeight: BASE_GAME_FOREST_DEFAULTS.treeTrunkHeight,
+  treeTrunkWidth: BASE_GAME_FOREST_DEFAULTS.treeTrunkWidth,
   treeDrawRadius: BASE_GAME_FOREST_DEFAULTS.treeDrawRadius,
   treeLodR0: BASE_GAME_FOREST_DEFAULTS.treeLodR0,
   treeLodR1: BASE_GAME_FOREST_DEFAULTS.treeLodR1,
@@ -342,6 +348,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   terrainCollisionDebug: false,
   playerControlMode: 'player',
   playerViewMode: 'firstPerson',
+  visorMode: 'rgb',
   playerCapsuleVisible: false,
   playerHurtRigVisible: false,
   playerHurtZoneColors: true,
@@ -599,6 +606,7 @@ const NUMBER_LIMITS = Object.freeze({
   weatherRainBedVolume: [0, 1], weatherThunderVolume: [0, 1], weatherSoundSpeed: [50, 2000],
 });
 const STRING_VALUES = Object.freeze({
+  frameCap: ['unlimited', '60', '45', '30'],
   weatherFogSource: ['sky', 'custom'],
   rainGroundSource: ['fine', 'coarse', 'off'],
   primaryBody: ['sun', 'moon'],
@@ -607,6 +615,7 @@ const STRING_VALUES = Object.freeze({
   playerControlMode: ['player', 'orbit'],
   waterLook: [...BASE_GAME_WATER_LOOKS],
   playerViewMode: ['thirdPerson', 'firstPerson'],
+  visorMode: [...VISION_MODES],
   playerBodyMode: [...BASE_GAME_BODY_MODES],
   bodyDesign: BASE_GAME_BODY_DESIGNS.map((d) => d.key),
   weaponPrimary: [...BASE_GAME_WEAPON_IDS], weaponSidearm: [...BASE_GAME_WEAPON_IDS],
@@ -858,6 +867,7 @@ function overcastAmount() {
 }
 const appliedAtmosphere = { overcast: -1, density: -1, source: null, color: null, lid: null };
 const _fogColor = new THREE.Color();
+const BASE_GAME_IR_FOG_SCALE = 0.35;   // how much of the haze a thermal sensor sees through
 function applyAtmosphereSettings() {
   const overcast = overcastAmount();
   if (overcast !== appliedAtmosphere.overcast) {
@@ -875,7 +885,10 @@ function applyAtmosphereSettings() {
   // Density is a `reference()` node inside three's fog handling, so writing it costs nothing. What
   // is NOT free is attaching scene.fog for the first time: that changes every material's cache key.
   // So the fog exists from startup at density 0 and only the number moves.
-  const density = settings.weatherFogEnabled ? settings.weatherFogBase + settings.weatherRain * settings.weatherFogPerRain : 0;
+  // A thermal sensor sees through haze that stops the eye, so the fog thins under IR. applyVisor
+  // calls back into here on every mode change, which is what makes the number move.
+  const density = (settings.weatherFogEnabled ? settings.weatherFogBase + settings.weatherRain * settings.weatherFogPerRain : 0)
+    * (uIR.value ? BASE_GAME_IR_FOG_SCALE : 1);
   if (density !== appliedAtmosphere.density) { appliedAtmosphere.density = density; scene.fog.density = density; }
   if (settings.weatherFogSource === 'custom') {
     if (settings.weatherFogColor !== appliedAtmosphere.color) {
@@ -1078,7 +1091,16 @@ const worldQuery = createWorldQueryService();
 const scenePass = pass(scene, camera, { samples: 4 });   // keep MSAA through the DoF path
 const depthOfField = createDepthOfField({ scenePass, camera });   // camera feeds the depth-linearization planes
 const postPipeline = new RenderPipeline(renderer);   // PostProcessing was renamed in r183
-postPipeline.outputNode = renderOutput(depthOfField.node);
+// One pipeline for both effects: a second one would mean a second pass(scene, camera), so the whole
+// scene would render twice and the visor and depth of field could not be on together.
+//
+// renderOutput is applied here by hand, and the visor palette runs after it on display-referred
+// colour. So the pipeline must not apply the transform a second time. It was doing exactly that
+// before this line existed: outputColorTransform defaults to true, which wraps outputNode in another
+// renderOutput, so the depth-of-field path tone mapped and sRGB-encoded twice while the plain
+// renderer.render path did it once.
+postPipeline.outputColorTransform = false;
+postPipeline.outputNode = visionNode(renderOutput(depthOfField.node));
 const dofRay = { origin: new THREE.Vector3(), direction: new THREE.Vector3(), local: [0, 0, 0], global: [0, 0, 0], query: { origin: null, direction: [0, 0, 0], maxDistance: 300 } };
 function measureCentreDistance() {
   camera.getWorldPosition(dofRay.origin);
@@ -1091,11 +1113,14 @@ function measureCentreDistance() {
   return hit ? hit.distance : 80;
 }
 // Uniforms are only rewritten when a dof* setting actually changed (one reused object, no per-frame literal).
-const dofApplied = { enabled: true, autoFocus: null, focusDistance: null, aperture: null, maxRadius: null, farScale: null };
+// `enabled` is tracked like every other param because the pipeline now also runs for the visor with
+// depth of field off. Pinned on, it would blur the frame whenever the visor was up.
+const dofApplied = { enabled: null, autoFocus: null, focusDistance: null, aperture: null, maxRadius: null, farScale: null };
 function syncDofParams() {
-  if (dofApplied.autoFocus === settings.dofAutoFocus && dofApplied.focusDistance === settings.dofFocusDistance
+  if (dofApplied.enabled === settings.dofEnabled && dofApplied.autoFocus === settings.dofAutoFocus && dofApplied.focusDistance === settings.dofFocusDistance
     && dofApplied.aperture === settings.dofAperture && dofApplied.maxRadius === settings.dofMaxRadius
     && dofApplied.farScale === settings.dofFarScale) return;
+  dofApplied.enabled = settings.dofEnabled;
   dofApplied.autoFocus = settings.dofAutoFocus;
   dofApplied.focusDistance = settings.dofFocusDistance;
   dofApplied.aperture = settings.dofAperture;
@@ -1350,7 +1375,8 @@ function stepSoloDrones(dt, canControl, di) {
     _soloWorld.input = r.input; stepBaseGameDrone(r, Math.min(dt, 0.05), _soloWorld);
     if (r.done) { if (r.crash && r.def.crashBlast) presentExplosion(r.crash, r.def.crashBlast.radius, { contact: true, weaponId: `${r.kind}_crash` }); soloDrones.delete(r.id); }
   }
-  droneView.ingest([...soloDrones.values()].map(droneWireState), performance.now());
+  // Nothing in the air and nothing shown: skip the per-frame list, sanitize and set churn.
+  if (soloDrones.size || droneView.drones.size) droneView.ingest([...soloDrones.values()].map(droneWireState), performance.now());
 }
 function droneHudLine() {
   const owner = localDroneOwnerId();
@@ -1520,6 +1546,21 @@ function applyFlashlight() {
   });
   weaponLight.setOn(settings.flashlightOn === true);
 }
+// The visor: night vision and the two thermal palettes, from vision-modes.js. The palette itself is
+// already in the post pipeline; this is the switch, plus the two things a mode change has to do to
+// the world. tagScene sweeps any material built since the last change and gives it a heat, so
+// nothing spawned mid-game renders as a lit colour object in a heat frame. Anything it cannot tag is
+// a classic (non-node) material, which is a bug in whatever built it rather than something to live
+// with silently, so it is reported on every mode change.
+let visorUntaggable = [];
+function applyVisor() {
+  setVisionMode(settings.visorMode);
+  const swept = tagScene(scene);
+  visorUntaggable = swept.untaggable;
+  if (visorUntaggable.length) console.warn('visor: these materials are not node materials and cannot carry heat:', visorUntaggable);
+  applyAtmosphereSettings();   // the fog thins under IR
+}
+
 // The laser rides the same mount as the flashlight, and takes no ray of its own: the dot is the
 // spot light landing on whatever is really there, so occlusion, curvature and anything the world
 // query has no provider for (bodies, most of all) come out right for free. Only the beam in the air
@@ -2273,6 +2314,9 @@ function applyFloraSettings() {
 // the 8 m window's coverTree channel; the trunks sit on the collision surface, so a trunk and the
 // player's feet cannot disagree about the ground.
 const forest = createBaseGameForest({ scene, renderer, camera, terrain, worldCoordinates, settings });
+// Read from the light, not copied from it: a LOD rung starting past the shadow camera rasterises
+// into a map it cannot appear in.
+forest.apply({ treeShadowReach: rig.dirLight.shadow.camera.right });
 // Out of the planar mirror in v1 (tree plan D7): the reflect pass is already the frame's most
 // expensive, and a reflected forest doubles the forest's draw cost on every mirror frame.
 let forestMirrorMeshes = [];
@@ -2285,6 +2329,7 @@ forest.onMeshes(meshes => {
   for (const mesh of forestMirrorMeshes) if (!reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh);
 });
 const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'treeMaxSize', 'treeSpecies',
+  'treeVariantsPerSpecies', 'treeLeafSize', 'treeTrunkHeight', 'treeTrunkWidth',
   'treeVerticalOffset', 'treeDrawRadius', 'treeLodR0', 'treeLodR1', 'treeLodR2',
   'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway',
   'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows'];
@@ -2761,10 +2806,14 @@ function changed(key) {
     // As in v3: picking a model writes its recommended lead into the slider instead of applying it invisibly.
     settings.bodyStepLeadScale = GAIT_MODELS[settings.bodyGaitModel]?.stepLeadScale ?? settings.bodyStepLeadScale;
     syncAllControls();
+  } else if (key === 'treeSpecies' || key === 'treeVariantsPerSpecies') {
+    controlRegistry.get('treeVariantsPerSpecies')?.sync();
   } else if (key === 'cameraOffsetTarget') {
     syncAllControls();   // the three offset sliders now show the other mode's numbers
   } else if (key === 'unlimitedAmmo') {
     applyUnlimitedAmmo();
+  } else if (key === 'visorMode') {
+    applyVisor();
   } else if (key?.startsWith('flashlight') || key?.startsWith('laser')) {
     applyFlashlight();
     applyLaser();
@@ -2929,6 +2978,9 @@ const lightningSec = createSection(weatherSec, 'Lightning', { collapsed: true })
 const weatherAudioSec = createSection(weatherSec, 'Weather audio', { collapsed: true });
 const atmosphereSec = createSection(weatherSec, 'Atmosphere response', { collapsed: true });
 
+addSelect(captureSec, 'frameCap', 'Frame cap', ['unlimited', '60', '45', '30'],
+  ['Unlimited', '60 fps', '45 fps', '30 fps']);
+
 const captureLabelLabel = document.createElement('label');
 captureLabelLabel.textContent = 'Optional label';
 const captureLabelInput = document.createElement('input');
@@ -3062,6 +3114,8 @@ worldSec.append(labSummary);
 
 addSelect(playerSec, 'playerControlMode', 'Control mode', ['player', 'orbit']);
 addSelect(playerSec, 'playerViewMode', 'Player view', ['thirdPerson', 'firstPerson']);
+addSelect(playerSec, 'visorMode', 'Visor (H)', [...VISION_MODES],
+  ['Off', 'Night vision', 'Thermal, white hot', 'Thermal, black hot']);
 addSelect(playerSec, 'playerBodyMode', 'Player body', [...BASE_GAME_BODY_MODES]);
 addSelect(playerSec, 'bodyDesign', 'Model appearance', BASE_GAME_BODY_DESIGNS.map((d) => d.key), BASE_GAME_BODY_DESIGNS.map((d) => d.label));
 const weaponLabel = (id) => id === 'none' ? 'none' : (WEAPONS[id]?.displayName ?? id);
@@ -3458,7 +3512,16 @@ function refreshGrassRuntimeLine() {
 addToggle(plantsSec, 'treesEnabled', 'Trees');
 addCommitRange(plantsSec, 'treesPerHectare', 'Trees per hectare (asked)', 0, 400, 1, value => value.toFixed(0));
 addCommitRange(plantsSec, 'treeSpecies', 'Species', 1, 8, 1, value => value.toFixed(0));
+// Species x variants is the variant count, and the variant count is the draw count and the
+// material count both. Rebuild-class: it rebakes the palette.
+addCommitRange(plantsSec, 'treeVariantsPerSpecies', 'Variants per species', 1, 8, 1,
+  value => `${value.toFixed(0)} · ${(settings.treeSpecies * value).toFixed(0)} variants, ${(settings.treeSpecies * value * 7).toFixed(0)} draws`);
 addCommitRange(plantsSec, 'treeMaxSize', 'Max tree size', 0.05, 3, 0.05, value => value.toFixed(2));
+// Shape, not scale: these three move the trunk and the leaves against each other, where max
+// tree size moves the whole tree. Rebuild-class, so they commit on release.
+addCommitRange(plantsSec, 'treeTrunkHeight', 'Trunk height', 0.05, 5, 0.05, value => `${value.toFixed(2)}x`);
+addCommitRange(plantsSec, 'treeTrunkWidth', 'Trunk width', 0.05, 5, 0.05, value => `${value.toFixed(2)}x`);
+addCommitRange(plantsSec, 'treeLeafSize', 'Leaf size', 0.05, 5, 0.05, value => `${value.toFixed(2)}x`);
 addRange(plantsSec, 'treeVerticalOffset', 'Trunk vertical bias (m)', -1, 1, 0.01, value => `${value.toFixed(2)} m`);
 addRange(plantsSec, 'treeLeafSway', 'Canopy sway', 0, 4, 0.05, value => value.toFixed(2));
 addRange(plantsSec, 'treeDrawRadius', 'Draw radius', 40, 900, 5, value => `${value.toFixed(0)} m`);
@@ -3481,14 +3544,19 @@ plantsSec.append(forestRuntimeLine);
 function refreshForestRuntimeLine() {
   const f = forest.sampleDetail();   // per-rung counts are a scan; this is the interval that pays for it
   if (!f.enabled) { forestRuntimeLine.textContent = 'Trees off.'; return; }
-  if (!f.built) { forestRuntimeLine.textContent = `Trees waiting on the palette${f.lastError ? `: ${f.lastError}` : ' and the terrain field.'}`; return; }
+  if (!f.built) {
+    forestRuntimeLine.textContent = f.lastError ? `Trees unavailable: ${f.lastError}`
+      : 'Trees: baking the palette and compiling shaders. The forest appears when it is ready.';
+    return;
+  }
   const asked = Math.round(f.requestedTrees);
   const thinned = asked > 0 ? ` (asked ${asked}, cover thinned ${(f.coverThinning * 100).toFixed(0)}%)` : '';
   const over = f.truncating ? ` Capacity ${f.capacity} is full, so ${f.dropped} trees are not drawn; raise instances per variant.` : '';
   forestRuntimeLine.textContent = `${f.trees} trees${thinned} over ${f.resident} chunks: `
-    + `${f.draws} draws, ~${(f.triangles / 1000).toFixed(0)}k triangles, `
+    + `${f.draws} main + ${f.shadowDraws} shadow mesh submissions, ~${(f.triangles / 1000).toFixed(0)}k triangles, `
     + `${f.lod0}/${f.lod1}/${f.lod2} at LOD0/1/2, ${f.visibleVariants} of ${f.variants} variants, `
-    + `palette ${f.paletteMs.toFixed(0)} ms, placing ${f.placeMs.toFixed(2)} ms.${over}`;
+    + `palette ${f.paletteMs.toFixed(0)} ms elapsed, render warmup ${f.compileMs.toFixed(0)} ms, `
+    + `compute warmup ${f.computeCompileMs.toFixed(0)} ms, placing ${f.placeMs.toFixed(2)} ms.${over}`;
 }
 
 // ---- Weather: clouds (phase C1; rain, lightning and the shared master land in later phases) ----
@@ -3668,6 +3736,7 @@ if (missingControls.length) throw new Error(`Unsaved/unconfigured settings: ${mi
 
 loadShotSpread();   // the committed accuracy numbers; the built-in fallback stands until it lands
 applyUnlimitedAmmo();   // restored from the autosave in Solo, replaced by the room's world online
+applyVisor();           // purely local, like the flashlight below: nothing about it is replicated
 applyFlashlight();      // purely local: the beam is not replicated, so it is never the room's to set
 applyLaser();           // likewise local-only
 playerBodies.setLocalLoadout(currentLoadout());
@@ -3846,6 +3915,7 @@ function applyAllState(payload) {
   if (typeof data.ui?.panelCollapsed === 'boolean') ctrlRoot.classList.toggle('collapsed', data.ui.panelCollapsed);
   applySectionStates(ctrlBody, data.ui?.sections);
   applyAudioSettings();
+  applyVisor();
   applyFlashlight();
   applyLaser();
   applyMusicSetting().catch(reportBaseGameError);
@@ -4069,6 +4139,14 @@ addEventListener('keydown', event => {
     spawner.active = !spawner.active;
     if (spawner.active && weaponState.slot !== 1) selectSlot(1);   // the sidearm carries the laser
   }
+  // H for helmet. V is the view toggle and N is the drone recall, so neither obvious letter was free.
+  // The key writes the setting, so the panel dropdown and the key are one switch rather than two.
+  if (event.code === 'KeyH' && !event.repeat) {
+    settings.visorMode = VISION_MODES[(VISION_MODES.indexOf(settings.visorMode) + 1) % VISION_MODES.length];
+    syncAllControls();
+    changed('visorMode');
+    scheduleAutosaveSafe();
+  }
   if (event.code === 'KeyG' && !event.repeat) weaponState.throwEdge = true;
   if (event.code === 'KeyF' && !event.repeat) droneCtl.toggleEdge = true;
   if (event.code === 'KeyB' && !event.repeat) droneCtl.sendEdge = true;
@@ -4143,6 +4221,27 @@ updateWorld(0);
 const statsEl = document.getElementById('stats');
 let frameBusy = false;
 let lastFrameStart = performance.now();
+// Frame cap. The animation loop still fires at the display's rate; a capped frame returns before any
+// work, so what it costs is one comparison and a longer dt for the next frame that does run. The
+// deadline is an absolute grid rather than "last frame plus a period", which would drift by however
+// long each frame took and settle below the cap it was asked for.
+let frameCapNext = 0, frameCapFps = 0, frameCapPrevRaf = 0, frameCapRafMs = 1000 / 60;
+function frameCapHolds(now) {
+  // Only a plausible gap says anything about the display's rate: a tab switch or a shader compile
+  // would otherwise drag the average into the seconds and unlock the cap for as long as it decays.
+  const rafGap = now - frameCapPrevRaf;
+  if (frameCapPrevRaf && rafGap > 0 && rafGap < 100) frameCapRafMs += (rafGap - frameCapRafMs) * 0.1;
+  frameCapPrevRaf = now;
+  const fps = Number(settings.frameCap);
+  if (!Number.isFinite(fps) || fps <= 0) { frameCapNext = 0; frameCapFps = 0; return false; }
+  if (fps !== frameCapFps) { frameCapFps = fps; frameCapNext = 0; }   // a new cap starts its grid now
+  const period = 1000 / fps;
+  // Half a display frame of slack, or a 60 cap on a 60 Hz screen loses every other frame to jitter.
+  const slack = Math.min(frameCapRafMs, period) * 0.5;
+  if (frameCapNext && now + slack < frameCapNext) return true;
+  frameCapNext = frameCapNext && now - frameCapNext < period ? frameCapNext + period : now + period;
+  return false;
+}
 const remoteAudioLocal = [0, 0, 0];
 const remoteAudioPos = { x: 0, y: 0, z: 0 };
 const audioVelocityScratch = [0, 0, 0];
@@ -4431,6 +4530,7 @@ function updateStats(frameMs) {
 
 async function animate() {
   if (frameBusy) { frameProfiler.markDropped(); return; }
+  if (frameCapHolds(performance.now())) return;
   frameBusy = true;
   try {
     frameProfiler.beginFrame();
@@ -4714,9 +4814,11 @@ async function animate() {
       // of two numbers from different captures.
       const reflectPassesBefore = water.reflectStats.passes;
       const encodeStart = performance.now();
-      if (settings.dofEnabled) {
+      // The pipeline runs when either effect wants it. Plain sight with depth of field off keeps the
+      // direct render, so the common case still costs no full-screen pass.
+      if (settings.dofEnabled || settings.visorMode !== 'rgb') {
         syncDofParams();
-        if (settings.dofAutoFocus) depthOfField.updateFocus(dt, measureCentreDistance());
+        if (settings.dofEnabled && settings.dofAutoFocus) depthOfField.updateFocus(dt, measureCentreDistance());
         postPipeline.render();
       } else {
         renderer.render(scene, camera);

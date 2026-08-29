@@ -22,7 +22,7 @@ import {
 } from 'three/webgpu';
 import {
   Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast, modInt,
-  vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, positionLocal, positionWorld,
+  vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld,
   atomicAdd, atomicStore, atomicLoad, texture,
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
@@ -165,7 +165,8 @@ export function createComputeGrass(opts) {
   // per instance: 2x vec4 → [2i]=(x,y,z,h), [2i+1]=(yaw,_,_,_)
   const instAttr = new StorageInstancedBufferAttribute(new Float32Array(CAP * 8), 8);
   const inst = storage(instAttr, 'vec4', CAP * 2);
-  const counter = storage(new StorageBufferAttribute(new Uint32Array(1), 1), 'uint', 1).toAtomic();
+  const counterAttr = new StorageBufferAttribute(new Uint32Array(1), 1);
+  const counter = storage(counterAttr, 'uint', 1).toAtomic();
   const indirectAttr = new IndirectStorageBufferAttribute(new Uint32Array([9, 0, 0, 0, 0]), 5);
   const indirect = storage(indirectAttr, 'uint', 5);
   // anchor mode: (x,y,z,rand01) per anchor, chunk-slot-strided + live count per slot
@@ -184,7 +185,19 @@ export function createComputeGrass(opts) {
   const uHalf     = uniform(half0);
   const uSide     = uniform(2 * half0 + 1);
   const uPerCell  = uniform(perCellCount(o.density, cellSize, Kmax));
+  // Threads a recull may dispatch. The buffer already truncates; without this the DISPATCH still
+  // grows as radius^2 x density, and the far corner of the two sliders is tens of millions of
+  // threads -- a hang rather than a degraded frame. Thinning is visible in stats, never silent.
+  let dispatchBudget = Math.max(1, opts.dispatchBudget ?? 8e6);
+  let requestedPerCell = perCellCount(o.density, cellSize, Kmax);
   const uCellSize = uniform(cellSize);
+  // Cell indices are render-local, so a floating-origin rebase used to shift every hash input and
+  // re-roll the whole field in one frame. Placement hashes add this back to get a GLOBAL cell.
+  const uCellOriginX = uniform(0, 'int');
+  const uCellOriginZ = uniform(0, 'int');
+  // Same problem for anything sampled at a world position in the material: wind phase, cloud
+  // shadow, coverage. This is the render origin in metres.
+  const uWorldOrigin = uniform(new THREE.Vector2());
   const uWaterMin = uniform(o.waterLevel + o.shoreMargin);
   const uDensityScale = uniform(1);            // anchor mode: live density / sampled base
   const uHardCap = uniform(CAP, 'uint');       // instance-buffer capacity (write + draw clamp)
@@ -202,6 +215,7 @@ export function createComputeGrass(opts) {
   // How far a blade reads as the ground it stands on: at the root, and at the draw edge.
   const uGroundTint = uniform(injectedGround ? (opts.groundTint ?? 0.5) : 0);
   const uGroundTintFar = uniform(opts.groundTintFar ?? 1);
+  const uGroundTintReach = uniform(opts.groundTintReach ?? 0.35);
   // Terrain extent: grass is rejected outside these XZ bounds. Defaults to ±1e9 (effectively
   // infinite) for procedural terrain; set to the map's world bounds for authored maps so blades
   // don't scatter beyond the mesh edge.
@@ -217,6 +231,11 @@ export function createComputeGrass(opts) {
     anchorMode,
     capacity: CAP,          // instance-buffer size; the live count lives in the indirect buffer
     dispatch: 0,            // threads the last recull actually ran
+    dispatchClamped: false, // the thread budget thinned the field below what density asked for
+    perCell: 0,
+    perCellRequested: 0,
+    density: 0,
+    requestedDensity: 0,
     maxDensity: Kmax / (cellSize * cellSize),
     residentChunks: 0,
     reculls: 0,
@@ -228,6 +247,20 @@ export function createComputeGrass(opts) {
     dirty = true;
     stats.dirty = true;
   };
+  // Blades per cell actually used: what density asks for, thinned to fit the thread budget. Slots
+  // are hashed independently, so thinning drops the high slots and leaves the rest where they are.
+  function syncPerCell() {
+    const side = Math.max(1, uSide.value);
+    const room = Math.max(1, Math.floor(dispatchBudget / (side * side)));
+    const eff = Math.max(0, Math.min(requestedPerCell, room));
+    stats.perCellRequested = requestedPerCell;
+    stats.perCell = eff;
+    stats.dispatchClamped = eff < requestedPerCell;
+    stats.density = eff / (cellSize * cellSize);
+    stats.requestedDensity = requestedPerCell / (cellSize * cellSize);
+    if (uPerCell.value !== eff) { uPerCell.value = eff; markDirty(); }
+  }
+  syncPerCell();
 
   // TSL terrain height: injected by the host, texture path for authored maps, else closed-form.
   const heightFn = injectedHeight ? injectedHeight : hasHeightTex
@@ -317,16 +350,18 @@ export function createComputeGrass(opts) {
       const camGz = int(floor(uCam.y.div(uCellSize)));
       const gx = camGx.add(lx).sub(int(uHalf));
       const gz = camGz.add(lz).sub(int(uHalf));
-      const jx = slotRandFn(gx, gz, slot, int(1));
-      const jz = slotRandFn(gx, gz, slot, int(2));
+      // Positions stay render-local; only the hash inputs are global.
+      const hx = gx.add(uCellOriginX), hz = gz.add(uCellOriginZ);
+      const jx = slotRandFn(hx, hz, slot, int(1));
+      const jz = slotRandFn(hx, hz, slot, int(2));
       const wx = gx.toFloat().mul(uCellSize).add(jx.mul(uCellSize));
       const wz = gz.toFloat().mul(uCellSize).add(jz.mul(uCellSize));
       const wy = heightFn(wx, wz);
       const dist = length(vec2(wx.sub(uCam.x), wz.sub(uCam.y)));
       const gradRange = uRadius.sub(uCullStart).max(float(0.001));
       const edge = clamp(dist.sub(uCullStart).div(gradRange), 0, 1);
-      const keepRand = slotRandFn(gx, gz, slot, int(7));
-      const densityRand = slotRandFn(gx, gz, slot, int(8));
+      const keepRand = slotRandFn(hx, hz, slot, int(7));
+      const densityRand = slotRandFn(hx, hz, slot, int(8));
       const biomeDensity = densityFn(wx, wz);
       const live = wy.greaterThan(uWaterMin)
         .and(wx.greaterThanEqual(uTerrainMinX)).and(wx.lessThanEqual(uTerrainMaxX))
@@ -340,8 +375,8 @@ export function createComputeGrass(opts) {
           .and(uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades)));
         If(withinCap, () => {
           const base2 = s.mul(uint(2));
-          const yaw = slotRandFn(gx, gz, slot, int(3)).mul(6.2831853);
-          const bh = float(0.8).add(slotRandFn(gx, gz, slot, int(5)).mul(0.6));
+          const yaw = slotRandFn(hx, hz, slot, int(3)).mul(6.2831853);
+          const bh = float(0.8).add(slotRandFn(hx, hz, slot, int(5)).mul(0.6));
           const g = injectedGround ? injectedGround(wx, wz, wy) : vec3(0);
           inst.element(base2).assign(vec4(wx, wy, wz, bh));
           inst.element(base2.add(uint(1))).assign(vec4(yaw, g.x, g.y, g.z));
@@ -381,8 +416,10 @@ export function createComputeGrass(opts) {
   const rz = bladeX.mul(sy);
   const ly = positionLocal.y.mul(bladeH.div(0.8)).mul(uBladeHeight);
 
+  // Global, not render-local: a rebase must not jump the wind phase or the cloud shadows.
+  const baseWorld = vec2(base.x.add(uWorldOrigin.x), base.z.add(uWorldOrigin.y));
   const worldX = base.x.add(rx);
-  const wave = sin(uTime.mul(uWindSpeed).add(worldX.mul(uWindFreq)));
+  const wave = sin(uTime.mul(uWindSpeed).add(worldX.add(uWorldOrigin.x).mul(uWindFreq)));
   const isMidTip = clamp(aWind.mul(2), 0, 1);
   const isTip = clamp(aWind.sub(0.6).mul(10), 0, 1);
   const swayAmp = isMidTip.mul(mix(uCenterDist, uTipDist, isTip));
@@ -390,12 +427,12 @@ export function createComputeGrass(opts) {
   const look = createGrassLook(opts.look || {});
   const bladeT = positionLocal.y.div(0.8);            // 0..1 up the base blade (0.8 = its authored height)
   const face = vec2(sy.negate(), cy);                 // horizontal facing, perpendicular to the width axis
-  const rnd = look.nodes.bladeRandoms(vec2(yaw.mul(0.31), yaw.mul(0.77).add(base.x.mul(0.013))));
+  const rnd = look.nodes.bladeRandoms(vec2(yaw.mul(0.31), yaw.mul(0.77).add(baseWorld.x.mul(0.013))));
   const swayXZ = look.nodes.sway({
-    worldXZ: vec2(base.x, base.z), legacy: wave, amp: swayAmp, time: uTime, speed: uWindSpeed,
+    worldXZ: baseWorld, legacy: wave, amp: swayAmp, time: uTime, speed: uWindSpeed,
     freq: uWindFreq, phase: rnd.phase,
   });
-  const lyKept = ly.mul(look.nodes.coverage(vec2(base.x, base.z)));
+  const lyKept = ly.mul(look.nodes.coverage(baseWorld));
   const curl = look.nodes.curl({ y: lyKept, t: bladeT, face, curlVar: rnd.curlVar });
   const posNode = vec3(
     worldX.add(swayXZ.x).add(curl.dxz.x),
@@ -407,7 +444,7 @@ export function createComputeGrass(opts) {
   const uTipColor  = uniform(new THREE.Color(0x5a8a32));
   const uAmbient = uniform(0.55), uKey = uniform(0.55);
   const uCloudStr = uniform(0.35), uCloudScale = uniform(0.02);
-  const cloud = float(1).sub(uCloudStr.mul(noise2D(vec2(base.x, base.z).mul(uCloudScale))));
+  const cloud = float(1).sub(uCloudStr.mul(noise2D(baseWorld.mul(uCloudScale))));
 
   const aBladeUV = attribute('aBladeUV', 'vec2');
   const uBladeStyle = uniform(Math.max(0, STYLE_KEYS.indexOf(opts.bladeStyle || 'streaks')), 'float');
@@ -415,14 +452,19 @@ export function createComputeGrass(opts) {
   const atlasUv = vec2(uBladeStyle.add(aBladeUV.x).div(numStyles), aBladeUV.y);
   const styleSample = texture(getGrassStyleAtlas(), atlasUv);
   const fiberMul = float(FIBER_REMAP_MIN).add(styleSample.r.mul(FIBER_REMAP_MAX - FIBER_REMAP_MIN));
-  const dryColor = vec3(120 / 255, 96 / 255, 40 / 255);
+  // 0x786028 through THREE.Color, so it is converted to working space like uBaseColor/uTipColor.
+  // As a raw vec3 of sRGB bytes it rendered about 2.5x too bright.
+  const uDryColor = uniform(new THREE.Color(0x786028));
   const grassColorBase = mix(uBaseColor, uTipColor, aWind).mul(fiberMul);
-  const grassColor = mix(grassColorBase, dryColor, styleSample.g.mul(0.7));
+  const grassColor = mix(grassColorBase, uDryColor, styleSample.g.mul(0.7));
   // Read as the ground the blade stands on: strongest at the root, and total at the draw edge, so
   // the field dissolves into the terrain instead of ending on a visible line.
   const camDist = length(vec2(base.x.sub(uCam.x), base.z.sub(uCam.y)));
   const edgeT = camDist.sub(uCullStart).div(uRadius.sub(uCullStart).max(float(0.001))).clamp(0, 1);
-  const tintAmt = uGroundTint.mul(mix(float(1).sub(bladeT), float(1), edgeT.mul(uGroundTintFar))).clamp(0, 1);
+  // Confined to the base, the way grass-look's rootShade does it; a full-length linear ramp left
+  // the blade's midpoint half ground-coloured and washed the whole field out.
+  const rootW = float(1).sub(smoothstep(float(0), uGroundTintReach.max(float(0.001)), bladeT));
+  const tintAmt = uGroundTint.mul(mix(rootW, float(1), edgeT.mul(uGroundTintFar))).clamp(0, 1);
   const grounded = mix(grassColor, groundColor, tintAmt);
   const colorNode = grounded.mul(uAmbient.add(uKey)).mul(cloud).mul(look.nodes.rootShade(bladeT));
 
@@ -534,6 +576,15 @@ export function createComputeGrass(opts) {
       stats.dirty = false;
       stats.reculls++;
     },
+    // The floating origin moved. Placement hashes and every world-space sample add this back, so
+    // the field stays put in the world instead of re-rolling.
+    setWorldOrigin(x, z) {
+      if (uWorldOrigin.value.x === x && uWorldOrigin.value.y === z) return;
+      uWorldOrigin.value.set(x, z);
+      uCellOriginX.value = Math.round(x / cellSize);
+      uCellOriginZ.value = Math.round(z / cellSize);
+      markDirty();
+    },
     forceRecull: markDirty,
     stats,
     setDensity(d) {
@@ -545,10 +596,8 @@ export function createComputeGrass(opts) {
         markDirty();
         return;
       }
-      const perCell = perCellCount(d, cellSize, Kmax);
-      if (uPerCell.value === perCell) return;
-      uPerCell.value = perCell;
-      markDirty();
+      requestedPerCell = perCellCount(d, cellSize, Kmax);
+      syncPerCell();
     },
     setRadius(r) {
       r = Math.min(r, maxRadius);                       // never exceed the buffer capacity
@@ -556,6 +605,7 @@ export function createComputeGrass(opts) {
       if (uRadius.value === r && uHalf.value === half && uSide.value === 2 * half + 1) return;
       uRadius.value = r; uHalf.value = half; uSide.value = 2 * half + 1;
       if (o.cullStart === null) uCullStart.value = r * 0.8;
+      syncPerCell();          // a wider window is more cells, so fewer blades each fit the budget
       markDirty();
     },
     setCullStart(wu) {
@@ -565,6 +615,14 @@ export function createComputeGrass(opts) {
       uCullStart.value = v;
       markDirty();
     },
+    // Threads per recull. Raising it buys density at large radius, at whatever your GPU will take.
+    setDispatchBudget(n) {
+      const v = Math.max(1, Math.floor(Number(n) || 1));
+      if (dispatchBudget === v) return;
+      dispatchBudget = v;
+      syncPerCell();
+    },
+    get dispatchBudget() { return dispatchBudget; },
     setMaxBlades(n) {
       const v = Math.max(0, n) >>> 0;
       if (uMaxBlades.value === v) return;
@@ -589,11 +647,14 @@ export function createComputeGrass(opts) {
     maxRadius,
     setWind(strength) { uTipDist.value = 0.3 * strength; uCenterDist.value = 0.1 * strength; },
     // No recull: the tint is already in the instance record, these only reweight it.
-    setGroundTint(amount, far) {
+    setGroundTint(amount, far, reach) {
       if (amount !== undefined && injectedGround) uGroundTint.value = Math.max(0, Math.min(1, Number(amount) || 0));
       if (far !== undefined) uGroundTintFar.value = Math.max(0, Math.min(1, Number(far) || 0));
+      if (reach !== undefined) uGroundTintReach.value = Math.max(0.001, Math.min(1, Number(reach) || 0.001));
     },
-    get groundTint() { return { amount: uGroundTint.value, far: uGroundTintFar.value, available: !!injectedGround }; },
+    get groundTint() {
+      return { amount: uGroundTint.value, far: uGroundTintFar.value, reach: uGroundTintReach.value, available: !!injectedGround };
+    },
     // grass-look.js toggles/amounts; live, no recull. setSunDir takes the world direction TOWARD the sun.
     setLook(partial) { look.set(partial); },
     getLook() { return look.get(); },
@@ -616,6 +677,19 @@ export function createComputeGrass(opts) {
       uWaterMin.value = waterMin;
       markDirty();
     },
-    dispose() { geom.dispose(); mat.dispose(); },
+    // Storage attributes have no dispose event, and ComputeNode.dispose() frees pipelines and bind
+    // groups but not the buffers. Renderer._attributes.delete is the same path the geometry teardown
+    // uses (Attributes.delete -> backend.destroyAttribute); private, so it is guarded and optional.
+    dispose() {
+      for (const node of [reset, cull, finalize]) { try { node?.dispose?.(); } catch { /* already gone */ } }
+      const attrs = renderer?._attributes;
+      if (attrs?.delete) {
+        for (const a of [instAttr, counterAttr, indirectAttr, anchorAttr, slotCountAttr]) {
+          if (a) { try { attrs.delete(a); } catch { /* not uploaded, or a build without this internal */ } }
+        }
+      }
+      geom.dispose();
+      mat.dispose();
+    },
   };
 }

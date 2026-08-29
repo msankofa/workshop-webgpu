@@ -33,13 +33,20 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
 Returns an object with: `group`, `setSunDir(v)`, `setMoonDir(v)`, `setCelestialVisibility(sunVisible,
 moonVisible)`, `setDomeVisible(on)`, `setStarsVisible(on)`, `setMilkyWayVisible(on)`,
 `setBodiesVisible(on)`, `setPalette(o)`, `setCelestialType(type)`, `setStarCount(n)`, `setStarOpacity(v)`,
-`setStarColor(hex)`, `setSunSize(v)`, `setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius(radius?)`,
+`setStarColor(hex)`, `setSunSize(v)`, `setMoonSize(v)` (independent moon disc size; falls back to `sunSize`
+when `palette.moonSize` is unset), `setSunColor(hex)` / `setMoonColor(hex)` (2026-08-27: live — repaints the
+disc's existing canvas in place and sets `map.needsUpdate`, so there is no texture dispose to race the
+submit), `setSunOpacity(v)` / `setMoonOpacity(v)` (disc `material.opacity`; both persist into the palette so
+a seed rebuild keeps them, like `setStarCount`), `setMilkyWayIntensity(v)`, `setSeed(n)`, `setRadius(radius?)`,
 `colorAlong(dirNode)` (TSL: the dome gradient along a unit direction from the live dome uniforms — what the Base Game water reflects; the dome material itself is built from the same `skyColorAlong`),
 `rebuild(r)`, `update()`, `updateDome(elevationDeg)`, `setCelestialOpacityMode(on)`,
 `setGlowDirectionality(v)`, `setOvercast(v)` / `setOvercastColor(c)` (2026-08-24: a grey lid mixed in at
 the end of `skyColorAlong`, brighter at the horizon than overhead; defaults to 0 so every existing
 consumer is unchanged, and because it lives in `skyColorAlong` it also greys `colorAlong` — the Base
-Game water's sky reflection — and `applyDome` lerps `scene.background` toward it),
+Game water's sky reflection — and `applyDome` lerps `scene.background` toward it. The default lid
+colour is a fixed **daytime** grey with no nightness term, so a page that runs a night must darken it
+itself or a full lid reads as daylight at midnight — `base-game.html` re-blends it by `nightness`
+every frame; see base-game.md's "the lid follows the night" note, 2026-08-27),
 `flushDisposals()`, `dispose()`, getters `radius`, `isMoon`, `moonDir`, `overcast`,
 `nightness`, `skyStates`, `thresholds`. `setStarOpacity`/`setStarColor` are live uniform writes (no
 rebuild), like `setMilkyWayIntensity`. `updateDome(elevationDeg)` blends the day/dusk/night dome
@@ -223,7 +230,13 @@ without affecting the other.
   itself is owned by `SKY_PARAMS.seed` in `environment-viewer.html`, randomized once per load
   (`Math.random()*0xffffffff>>>0`) so sessions differ, and exposed as a UI number field +
   Reroll button. `sky-field.js`/`DEFAULT_PALETTE` are untouched — seed handling lives
-  entirely in `sky.js` and the viewer, so the Node tests are unaffected.
+  entirely in `sky.js` and the viewer, so the Node tests are unaffected. In `base-game.html`
+  (2026-08-27) the seed is the `skySeed` setting instead: a shared world key, so a room's
+  planets are the same landmarks for everyone (see `docs/subsystems/base-game.md`).
+- **Bodies without the Milky Way**: `build()` gates celestial bodies on `palette.milkyWay`
+  (its historic night marker) **or** an explicit `palette.bodies === true` (2026-08-27), so a
+  palette can turn the band off without deleting its planets. Palettes that omit `bodies`
+  behave exactly as before.
 - **Sun/moon disc placement**: `sunSpritePlacement(dir, radius, palette)` places the
   disc along the normalized light direction at `0.74 * radius`, with disc scale
   `radius * sunSize * 2.15 * (moon ? 2.4 : 1)` (moon renders larger than the sun). The discs are

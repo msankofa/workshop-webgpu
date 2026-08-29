@@ -274,5 +274,35 @@ function openEdges(geo) {
   bare.dispose(); kids.dispose();
 }
 
+{
+  // 4e: optional branch LOD streams must only simplify the emitted skin. They may not perturb
+  // the full mesh or consume RNG that would move leaf cards and cause visible LOD popping.
+  const opts = { seed: 0x51a7, levels: 2 };
+  const baseline = createTree(opts);
+  const lod = createTree({
+    ...opts,
+    branchLods: [
+      { sectionStride: 2, segmentScale: 0.67 },
+      { sectionStride: 3, segmentScale: 0.5 },
+    ],
+  });
+  const same = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
+  const arrayOf = (geo, name) => Array.from(geo.getAttribute(name).array);
+  const indicesOf = geo => Array.from(geo.getIndex().array);
+  ok(lod.branchLodGeometries.length === 2, '4e: requesting two branch LODs emits two geometries');
+  const fullTris = lod.branchesMesh.geometry.getIndex().count / 3;
+  const lod1Tris = lod.branchLodGeometries[0].getIndex().count / 3;
+  const lod2Tris = lod.branchLodGeometries[1].getIndex().count / 3;
+  ok(fullTris > lod1Tris && lod1Tris > lod2Tris,
+    `4e: branch triangle cost falls at each rung (${fullTris}/${lod1Tris}/${lod2Tris})`);
+  ok(same(arrayOf(baseline.branchesMesh.geometry, 'position'), arrayOf(lod.branchesMesh.geometry, 'position'))
+    && same(indicesOf(baseline.branchesMesh.geometry), indicesOf(lod.branchesMesh.geometry)),
+    '4e: enabling branch LODs leaves the full branch mesh unchanged');
+  ok(same(arrayOf(baseline.leavesMesh.geometry, 'position'), arrayOf(lod.leavesMesh.geometry, 'position'))
+    && same(indicesOf(baseline.leavesMesh.geometry), indicesOf(lod.leavesMesh.geometry)),
+    '4e: enabling branch LODs leaves leaf placement unchanged');
+  baseline.dispose(); lod.dispose();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

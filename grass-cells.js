@@ -1,12 +1,19 @@
 // grass-cells.js
-// Pure, renderer-independent math for the world-anchored grass cell grid. The TSL
-// compute kernel in grass-compute.js mirrors candidateBlade(); grass-compute.js uses
-// maxInstances()/perCellCount() to size buffers and dispatch. Node-tested.
+// Pure, renderer-independent math for the world-anchored grass cell grid. grass-compute.js uses
+// maxInstances()/perCellCount() to size its buffers and its per-recull dispatch, and those two ARE
+// load-bearing. Node-tested.
+//
+// candidateBlade() is NOT a twin of the shader. It is a readable reference for the placement
+// SCHEME -- jitter within a cell, planted on the height, deterministic per (cell, slot) -- and
+// nothing imports it but this module's own test. The hashes genuinely differ: slotRandFn in
+// grass-compute.js salts with 2246822519 where slotRand here uses 0x85ebca6b, folds slot and salt
+// in before the xor-shift cellHash() applies inside itself, and runs an extra multiply round. Do
+// not write a test that expects the two to agree on a blade position; they never have.
 
 import { grassHeightRef } from './grass-height-ref.js';
 
-// Integer cell hash → uint in [0, 2^32). Same family as terrain-field lakeHash; the
-// TSL port uses the identical ops so placement matches between JS and shader.
+// Integer cell hash -> uint in [0, 2^32). Same family as terrain-field lakeHash. The shader's
+// hash is a relative, not a copy: see the header.
 export function cellHash(gx, gz) {
   let h = (Math.imul(gx | 0, 1597334677) ^ Math.imul(gz | 0, 3812015801)) | 0;
   h = Math.imul(h ^ (h >>> 15), 2246822519);

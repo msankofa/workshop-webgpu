@@ -19,7 +19,7 @@ import { wetPuddleField, wetRippleOffset, wetAlbedoScale, wetRoughness } from '.
 import {
   Fn, If, Discard, uniform, texture, vec2, vec3, vec4, float, mix, clamp, smoothstep, normalize, abs, pow, max,
   positionWorld, normalLocal, cameraPosition, length, fract, sin, dot, transformNormalToView, dFdx, dFdy, property,
-  textureLoad, ivec2, floor, select, refract, saturate, oneMinus, max as tslMax,
+  textureLoad, ivec2, floor, select, refract, saturate, oneMinus, max as tslMax, textureLevel,
 } from 'three/tsl';
 
 export const STREAMED_SPLAT_LAYERS = Object.freeze(['sand', 'grass', 'dirt', 'rock', 'snow']);
@@ -64,6 +64,102 @@ export function splatWeights(height, normalY, cfg = STREAMED_SPLAT_DEFAULTS) {
   const rock = 1 - sstep(cfg.rockFull, cfg.rockSlope, normalY);
   const flat = 1 - rock;
   return [sand * flat, grass * flat, dirt * flat, rock, snowW * flat];
+}
+
+// GPU twin of splatWeights. Returns (sand, grass, dirt, rock) already multiplied by the flat/rock
+// split; the five weights sum to 1, so snow is whatever is left over. Shared by both ground-colour
+// nodes below so there is one copy of the rule.
+function createSplatWeightsNode(cfg = STREAMED_SPLAT_DEFAULTS) {
+  const keys = ['shoreTop', 'grassTop', 'dirtTop', 'snowBottom', 'snowTop', 'rockSlope', 'rockFull'];
+  const u = {};
+  for (const k of keys) u[k] = uniform(cfg?.[k] ?? STREAMED_SPLAT_DEFAULTS[k]);
+  // Height is world metres here, the same frame splatWeights uses -- not height above sea.
+  const node = Fn(([height, normalY]) => {
+    const sand = oneMinus(smoothstep(u.shoreTop.sub(1.5), u.shoreTop.add(1.5), height));
+    const dirtT = smoothstep(u.grassTop, u.dirtTop, height);
+    const snow = smoothstep(u.snowBottom, u.snowTop, height);
+    const notSand = oneMinus(sand);
+    const rock = oneMinus(smoothstep(u.rockFull, u.rockSlope, normalY));
+    const flat = oneMinus(rock);
+    return vec4(
+      sand.mul(flat),
+      notSand.mul(oneMinus(dirtT)).mul(oneMinus(snow)).mul(flat),
+      notSand.mul(dirtT).mul(oneMinus(snow)).mul(flat),
+      rock);
+  });
+  return {
+    node,
+    sync(next) { for (const k of keys) if (next?.[k] !== undefined && u[k].value !== next[k]) u[k].value = next[k]; },
+  };
+}
+
+// Per-layer AVERAGE colour, blended by those weights. This is what the material itself settles on
+// past `fadeFar`; inside that it is only an approximation of the ground.
+export function createSplatAverageNode(textures, cfg = STREAMED_SPLAT_DEFAULTS) {
+  const weights = createSplatWeightsNode(cfg);
+  const avg = {};
+  for (const name of STREAMED_SPLAT_LAYERS) {
+    const a = textures?.layers?.[name]?.average ?? AVERAGE_FALLBACK[name];
+    // Averages are already linear, and Color(r,g,b) keeps floats in working space.
+    avg[name] = uniform(new THREE.Color(a[0], a[1], a[2]));
+  }
+  const node = Fn(([height, normalY]) => {
+    const w = weights.node(height, normalY).toVar();
+    const snow = oneMinus(w.x.add(w.y).add(w.z).add(w.w)).max(float(0));
+    return avg.sand.mul(w.x).add(avg.grass.mul(w.y)).add(avg.dirt.mul(w.z))
+      .add(avg.rock.mul(w.w)).add(avg.snow.mul(snow));
+  });
+  return {
+    node,
+    weights,
+    sync(next) { weights.sync(next); },
+    // Textures arrive after construction. Mutating the uniforms keeps `node` stable, so a consumer
+    // that already baked it into a shader graph picks the real averages up without a rebuild.
+    setTextures(next) {
+      for (const name of STREAMED_SPLAT_LAYERS) {
+        const a = next?.layers?.[name]?.average ?? AVERAGE_FALLBACK[name];
+        avg[name].value.setRGB(a[0], a[1], a[2]);
+      }
+    },
+  };
+}
+
+// The ground's albedo at a world point, sampled from the SAME maps the terrain draws with and
+// blended by the same weights. This is what anything planted on the ground should tint toward: the
+// average node above is one flat colour per layer, and the terrain only settles on that past
+// `fadeFar` (1400 m), which is far outside anything grass reaches.
+//
+// Sampling is explicit-LOD because callers run this in a compute kernel, which has no derivatives.
+// The mip is tunable rather than 0 on purpose: one sample per blade at full detail is per-texel
+// noise, and "blends with the ground" wants the local average over roughly a blade's footprint.
+export function createSplatSampleNode(textures, cfg = STREAMED_SPLAT_DEFAULTS) {
+  const average = createSplatAverageNode(textures, cfg);
+  const maps = {};
+  for (const name of STREAMED_SPLAT_LAYERS) maps[name] = textures?.layers?.[name]?.color ?? null;
+  const ready = STREAMED_SPLAT_LAYERS.every(n => maps[n]);
+  const uTile = uniform(1 / (cfg?.tileMeters ?? STREAMED_SPLAT_DEFAULTS.tileMeters));
+  const uMip = uniform(4);
+  // Without maps this degrades to the averages rather than failing to build. Same arity either
+  // way, so a consumer's graph does not depend on whether textures had loaded yet.
+  const node = !ready ? Fn(([x, z, height, normalY]) => average.node(height, normalY)) : Fn(([x, z, height, normalY]) => {
+    const uv = vec2(x, z).mul(uTile);
+    const w = average.weights.node(height, normalY).toVar();
+    const snow = oneMinus(w.x.add(w.y).add(w.z).add(w.w)).max(float(0));
+    return textureLevel(maps.sand, uv, uMip).rgb.mul(w.x)
+      .add(textureLevel(maps.grass, uv, uMip).rgb.mul(w.y))
+      .add(textureLevel(maps.dirt, uv, uMip).rgb.mul(w.z))
+      .add(textureLevel(maps.rock, uv, uMip).rgb.mul(w.w))
+      .add(textureLevel(maps.snow, uv, uMip).rgb.mul(snow));
+  });
+  return {
+    node, ready,
+    sync(next) {
+      average.sync(next);
+      if (next?.tileMeters !== undefined) uTile.value = 1 / Math.max(0.1, next.tileMeters);
+    },
+    setMip(v) { uMip.value = Math.max(0, Math.min(12, Number(v) || 0)); },
+    get mip() { return uMip.value; },
+  };
 }
 
 // CPU twin of the distance fades: { farTile, detail } in [0, 1].

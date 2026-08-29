@@ -153,5 +153,56 @@ function runResponse({ frames = FRAMES, weatherRain = 1, ambientLiftPerRain = 0.
     'and the lift is applied AFTER the night dim, so a bolt is not scaled down by 0.85 at night');
 }
 
+// ---- 7. the overcast lid follows the night --------------------------------------------------------
+// sky.js's overcastColor uniform is a fixed daytime grey, and applyDome lerps scene.background
+// toward it with no nightness term — so at full rain a midnight sky was 5.6x the luminance of a
+// clear one (and the sky-sourced fog painted the whole distance with it). The page now blends the
+// lid between a day grey and a night grey by sky.nightness and pushes it into sky + cloud decks.
+{
+  const fs = await import('fs/promises');
+  const html = await fs.readFile('./base-game.html', 'utf8');
+  const { nightnessAtElevation, DEFAULT_SKY_STATES, DEFAULT_THRESHOLDS } = await import('./sky-field.js');
+
+  const day = html.match(/overcastDayColor: '(#[0-9a-f]{6})'/)?.[1];
+  const night = html.match(/overcastNightColor: '(#[0-9a-f]{6})'/)?.[1];
+  ok(!!day && !!night, `the page ships both lid colours (day ${day}, night ${night})`);
+
+  const rgb = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => v / 255); };
+  const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const mixc = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  // The shipped path: lid = lerpHex(day, night, nightness); background = lerp(dome bottom, lid, overcast).
+  const skyLum = (elevDeg, overcast, lidNight = night) => {
+    const nn = nightnessAtElevation(elevDeg, DEFAULT_THRESHOLDS);
+    const lid = mixc(rgb(day), rgb(lidNight), nn);
+    return lum(mixc(rgb(DEFAULT_SKY_STATES.night.bottom), lid, overcast));
+  };
+
+  const clear = skyLum(-18, 0);
+  ok(near(clear, lum(rgb(DEFAULT_SKY_STATES.night.bottom))), `a clear midnight is the dome bottom (luminance ${clear.toFixed(4)})`);
+  const storm = skyLum(-18, 1);
+  ok(storm / clear < 2.5, `a full-rain midnight is now ${(storm / clear).toFixed(2)}x a clear one, under 2.5x`);
+  ok(storm > clear, 'but still brighter than clear: an overcast night traps light under the deck');
+  // The regression being guarded against: the old fixed grey at full weight.
+  const before = lum(mixc(rgb(DEFAULT_SKY_STATES.night.bottom), rgb(day), 1));
+  ok(before / clear > 5, `the fixed daytime grey really was ${(before / clear).toFixed(1)}x, which read as daylight`);
+  // Daytime is untouched: the day lid IS sky.js's stock grey (0.42, 0.44, 0.48), 8-bit quantized.
+  const dayLid = rgb(day);
+  ok(Math.max(Math.abs(dayLid[0] - 0.42), Math.abs(dayLid[1] - 0.44), Math.abs(dayLid[2] - 0.48)) < 2 / 255,
+    'the day lid matches the sky.js default, so a daytime storm looks exactly as before');
+  // Monotonic: the lidded sky darkens as the sun goes down, no bright band at dusk.
+  let mono = true;
+  for (let e = 10; e > -18; e -= 0.5) if (skyLum(e - 0.5, 1) > skyLum(e, 1) + 1e-12) mono = false;
+  ok(mono, 'at full overcast the sky only darkens as the sun sets');
+
+  ok(/sky\.setOvercastColor\(lid\)/.test(html) && /clouds\.setOvercastColor\(lid\)/.test(html),
+    'the page pushes one blended lid into the sky dome AND the cloud decks');
+  ok(/lerpHex\(settings\.overcastDayColor, settings\.overcastNightColor/.test(html),
+    'and the blend is by nightness between the two lid settings');
+  const cloudsSrc = await fs.readFile('./base-game-clouds.js', 'utf8');
+  ok(/setOvercastColor\(c\)\s*{\s*overcastColor\.set\(c\);/.test(cloudsSrc)
+    && /mesh\.setOvercastColor\(overcastColor\)/.test(cloudsSrc),
+    'the deck manager forwards the lid to every deck and re-applies it on a rebuild');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
