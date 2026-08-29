@@ -148,6 +148,8 @@
 
   #stage { position: relative; min-width: 0; background: #0d1014; }
   #stage canvas { width: 100%; height: 100%; }
+  #marquee { position: absolute; display: none; z-index: 16; pointer-events: none;
+             border: 1px solid #5fd08a; background: #5fd08a1f; }
   #stageMsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
               color: #6b7480; font-size: 12px; text-align: center; padding: 0 40px; pointer-events: none; }
   #error { position: fixed; inset: auto 10px 10px 10px; max-height: 40vh; overflow: auto; display: none;
@@ -179,6 +181,7 @@
   </aside>
 
   <div id="stage">
+    <div id="marquee"></div>
     <div id="stageMsg">Choose a species from the dex to load it.</div>
   </div>
 
@@ -192,8 +195,8 @@
       <div class="mono" id="facts">—</div>
       <div class="warn" id="factWarn"></div>
 
-      <h3 data-tip="Click a bone to select it. Shift-click for its whole chain."
-          data-more="Clicking a chain you have already started adds the rest of it rather than removing what you have.">Bones</h3>
+      <h3 data-tip="Click a bone to select it. Shift-click for its whole chain. Alt-drag a box over several."
+          data-more="The box needs the skeleton visible, since it takes the joints inside it on screen, and shift works there too. All three follow one rule: a group you have partly selected is completed rather than each bone being flipped.">Bones</h3>
       <div class="row">
         <button id="skelBtn" data-tip="Show the skeleton over the model.">Skeleton</button>
         <button id="modelBtn" class="on" data-tip="Hide the model and leave the skeleton.">Body</button>
@@ -437,7 +440,7 @@ import {
   emptyAnnotation, getAnnotation, putAnnotation, setSegment, removeSegment, segmentsOf,
   resolveSegment, wholeClip, segmentKind, poseAt, COMMON_STATES, setNeutralBone, clearNeutral,
 } from './pokemon-annotation.js';
-import { toggleKeys, chainKeysOf, selectionInfo, nearestPoint } from './pokemon-select.js';
+import { toggleKeys, chainKeysOf, selectionInfo, nearestPoint, pointsInRect } from './pokemon-select.js';
 import { chainUp, selectedReach, fabrik, segmentRotations, limitRelative, qmul, qconj } from './pokemon-ik.js';
 import {
   buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness, setBend, boneRotations, boneOrder,
@@ -868,7 +871,68 @@ function boneAt(ev) {
   return nearestPoint(skel.screen, ev.clientX - rect.left, ev.clientY - rect.top, 16);
 }
 
+// --- the selection box ------------------------------------------------------------------------------
+//
+// Alt and drag. A click picks one bone and shift-click one chain, but a limb is often neither: `extractChains`
+// splits at every branch, so a tuft hanging off a thigh cuts one leg into three chains and a dozen clicks.
+//
+// It reads the same projected points the click does, so what it takes is what is inside it IN THE PICTURE
+// rather than inside a volume the camera happens to be looking through, and it catches bones the mesh is in
+// front of — which is what the overlay already promises by drawing with depth testing off.
+const marquee = { on: false, chain: false, x0: 0, y0: 0, x1: 0, y1: 0 };
+
+function startMarquee(ev) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  marquee.on = true;
+  marquee.chain = ev.shiftKey;                    // shift means the chain, in this gesture as in a click
+  marquee.x0 = marquee.x1 = ev.clientX - rect.left;
+  marquee.y0 = marquee.y1 = ev.clientY - rect.top;
+  skel.hover = -1;                                // hover stops updating during the drag, so drop it now
+  controls.enabled = false;
+  drawMarquee();
+}
+
+function drawMarquee() {
+  const s = $('marquee').style;
+  s.display = marquee.on ? '' : 'none';
+  if (!marquee.on) return;
+  s.left = `${Math.min(marquee.x0, marquee.x1)}px`;
+  s.top = `${Math.min(marquee.y0, marquee.y1)}px`;
+  s.width = `${Math.abs(marquee.x1 - marquee.x0)}px`;
+  s.height = `${Math.abs(marquee.y1 - marquee.y0)}px`;
+}
+
+/** Finish the drag. `apply` is false when it was abandoned rather than released. */
+function endMarquee(apply) {
+  if (!marquee.on) return;
+  marquee.on = false;
+  drawMarquee();
+  controls.enabled = true;
+  if (!apply || !current) return;
+  const hit = pointsInRect(skel.screen, marquee.x0, marquee.y0, marquee.x1, marquee.y1);
+  if (!hit.length) return;
+  const bones = current.rig.bones;
+  const keys = marquee.chain
+    ? [...new Set(hit.flatMap(i => chainKeysOf(current.rig, bones[i].key)))]
+    : hit.map(i => bones[i].key);
+  // One rule for both gestures: a partly caught group is completed, a wholly caught one is dropped.
+  skel.selected = toggleKeys(skel.selected, keys);
+  paintSkeleton();
+  refreshSelection();
+}
+
+// On the window, not the canvas, so a box can be dragged past the edge of the viewport and still track.
+addEventListener('pointermove', (ev) => {
+  if (!marquee.on) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  marquee.x1 = ev.clientX - rect.left;
+  marquee.y1 = ev.clientY - rect.top;
+  drawMarquee();
+});
+addEventListener('pointercancel', () => endMarquee(false));
+
 renderer.domElement.addEventListener('pointermove', (ev) => {
+  if (marquee.on) return;                         // no hover repaint while a box is being dragged
   if (ragdoll.carry >= 0) {
     // The pin follows the pointer; the physics does the rest on the next frame.
     const to = dragPoint(ev);
@@ -899,6 +963,9 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   // Left button only. A right-click on a bone opens its menu, and without this it would also start
   // carrying or posing that bone behind the menu.
   if (ev.button !== 0) return;
+  // Alt-drag is a selection box, so it is neither an orbit nor a grab. `downAt` stays null, or the click
+  // that follows a box small enough to look like a click would also toggle whatever bone is under it.
+  if (ev.altKey && skel.on && current) { ev.preventDefault(); downAt = null; startMarquee(ev); return; }
   downAt = { x: ev.clientX, y: ev.clientY };
   if (overGizmo(ev)) return;
   const i = boneAt(ev);
@@ -921,6 +988,7 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   }
 });
 addEventListener('pointerup', () => {
+  if (marquee.on) { endMarquee(true); return; }
   if (ragdoll.carry >= 0) {
     // Let go and it drops, which is the whole point of holding it up.
     releaseAll(ragdoll.sim);
@@ -2194,7 +2262,8 @@ addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') ev.target.blur();
     return;
   }
-  if (ev.key === 'Escape') { clearSelection(); return; }
+  // Escape abandons a box being dragged before it clears anything, so a mis-started drag costs nothing.
+  if (ev.key === 'Escape') { if (marquee.on) endMarquee(false); else clearSelection(); return; }
   if (ev.key === 'b') { setSkeletonVisible(!skel.on); return; }
   if (ev.key === 'h') { setModelVisible(!skel.model); return; }
   if (ev.key === ' ') { ev.preventDefault(); $('playBtn').click(); }

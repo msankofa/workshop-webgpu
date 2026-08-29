@@ -127,3 +127,25 @@ export function nearestPoint(points, x, y, radius = 14) {
   }
   return best;
 }
+
+/**
+ * Every projected point inside a screen rectangle, in `points` order.
+ *
+ * Corners come in either order, since a drag starts at whichever one the pointer went down on. `hidden` is
+ * skipped for the same reason `nearestPoint` skips it: behind the camera the projection wraps and the
+ * position is nonsense, so a box on the left of the picture would catch bones off to the right.
+ *
+ * Depth is ignored on purpose. This takes what is inside the box IN THE PICTURE, including bones the mesh
+ * is in front of, which is the same promise the overlay makes by drawing with depth testing off.
+ */
+export function pointsInRect(points, x0, y0, x1, y1) {
+  const left = Math.min(x0, x1), right = Math.max(x0, x1);
+  const top = Math.min(y0, y1), bottom = Math.max(y0, y1);
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (!p || p.hidden) continue;
+    if (p.x >= left && p.x <= right && p.y >= top && p.y <= bottom) out.push(i);
+  }
+  return out;
+}

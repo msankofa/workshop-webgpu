@@ -9,7 +9,7 @@ import { readRigFromGLB } from './pokemon-rig.js';
 import { toggleBones, addAppendage, emptyAnnotation } from './pokemon-annotation.js';
 import {
   toggleKeys, chainContaining, chainKeysOf, chainCoverage, selectionInfo, orderSelection,
-  isUnbrokenRun, nearestPoint,
+  isUnbrokenRun, nearestPoint, pointsInRect,
 } from './pokemon-select.js';
 
 const DIR = 'models/stadium';
@@ -222,6 +222,47 @@ check('a clearly nearer joint beats a deeper one that is further away', () => {
   // Depth only breaks ties. A joint 1px away should win over one 13px away that happens to be in front.
   const pts = [{ x: 0, y: 0, depth: 50 }, { x: 13, y: 0, depth: 1 }];
   eq(nearestPoint(pts, 0, 0, 14), 0, 'distance decides first');
+});
+
+console.log('\n--- the selection box ---');
+
+check('a box takes what is inside it, whichever corner the drag started at', () => {
+  const pts = [{ x: 10, y: 10 }, { x: 50, y: 50 }, { x: 90, y: 90 }];
+  const inside = [0, 1];
+  eq(pointsInRect(pts, 0, 0, 60, 60).join(), inside.join(), 'dragged down and right');
+  eq(pointsInRect(pts, 60, 60, 0, 0).join(), inside.join(), 'dragged up and left');
+  eq(pointsInRect(pts, 60, 0, 0, 60).join(), inside.join(), 'dragged down and left');
+  eq(pointsInRect(pts, 0, 60, 60, 0).join(), inside.join(), 'dragged up and right');
+});
+
+check('the edge is inclusive, and a box over nothing catches nothing', () => {
+  const pts = [{ x: 10, y: 10 }, { x: 40, y: 40 }];
+  eq(pointsInRect(pts, 10, 10, 40, 40).length, 2, 'a point exactly on a corner is inside');
+  eq(pointsInRect(pts, 60, 60, 80, 80).length, 0, 'a box over empty space');
+  eq(pointsInRect([], 0, 0, 100, 100).length, 0, 'no points at all');
+});
+
+check('a bone behind the camera is not caught, however big the box is', () => {
+  // The projection wraps behind the camera, so a hidden point can land anywhere -- including inside a box
+  // drawn on the opposite side of the picture from the bone.
+  const pts = [{ x: 20, y: 20, hidden: true }, { x: 30, y: 30 }];
+  eq(pointsInRect(pts, 0, 0, 999, 999).join(), '1', 'only the visible one');
+});
+
+check('depth does not decide, because the overlay draws through the mesh', () => {
+  const pts = [{ x: 5, y: 5, depth: 0.99 }, { x: 6, y: 6, depth: -0.99 }];
+  eq(pointsInRect(pts, 0, 0, 10, 10).length, 2, 'a bone inside a leg is still inside the box');
+});
+
+check('a box follows the same rule as a click: complete a partial group, drop a whole one', () => {
+  // The page composes these two, so the composition is the thing worth pinning.
+  const pts = [{ x: 1, y: 1 }, { x: 2, y: 2 }, { x: 3, y: 3 }];
+  const keys = ['a', 'b', 'c'];
+  const caught = (sel) => toggleKeys(sel, pointsInRect(pts, 0, 0, 10, 10).map(i => keys[i]));
+  const partial = caught(new Set(['a']));
+  eq([...partial].sort().join(), 'a,b,c', 'a partly caught group is completed');
+  eq(caught(partial).size, 0, 'a wholly caught one is dropped');
+  eq(caught(new Set(['z'])).size, 4, 'and anything outside the box is left alone');
 });
 
 console.log('\n' + results.join('\n'));

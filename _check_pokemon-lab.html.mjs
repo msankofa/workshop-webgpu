@@ -369,6 +369,38 @@ check('the two gestures share one selection, so there is no mode to be in', () =
   assert(!/selectedChains|chainMode|selectionMode/.test(code), 'there must not be a second selection or a mode flag');
 });
 
+check('the selection box lands in the same selection, by the same rule', () => {
+  const end = code.match(/function endMarquee\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(end.length > 200, `endMarquee is ${end.length} chars, so this is reading the wrong slice`);
+  assert(/pointsInRect\(/.test(end), 'the box should go through pokemon-select.js, not a second hit test');
+  assert(/skel\.screen/.test(end), 'it must read the same projected points a click does');
+  assert(/toggleKeys\(/.test(end), 'a box and a click must land in one selection');
+  assert(/marquee\.chain[\s\S]*chainKeysOf/.test(end), 'shift should mean the chain here as it does in a click');
+});
+
+check('a box drag is neither an orbit nor a grab', () => {
+  const downs = [...code.matchAll(/renderer\.domElement\.addEventListener\('pointerdown'[\s\S]*?\n\}\);/g)]
+    .map(m => m[0]).filter(s => /beginPose\(/.test(s));
+  assert(downs.length === 1, `found ${downs.length} pointerdown handlers that start a drag`);
+  const down = downs[0];
+  const alt = down.indexOf('ev.altKey');
+  assert(alt >= 0, 'alt must be handled where a drag starts, or it grabs a bone instead');
+  assert(alt < down.indexOf('boneAt('), 'the box must be decided before a bone is picked');
+  assert(/downAt = null/.test(down), 'a small box must not fall through and toggle the bone under it');
+  assert(/function startMarquee\([\s\S]*?controls\.enabled = false/.test(code), 'the camera must let go of the drag');
+});
+
+check('a box can be abandoned, and does not need the pointer to stay on the canvas', () => {
+  // The window listeners are the point: a box dragged off the edge of the viewport still tracks, and a
+  // release out there still applies.
+  const onWindow = (type) => [...code.matchAll(new RegExp(`^addEventListener\\('${type}'[\\s\\S]*?\\n\\}\\);`, 'gm'))]
+    .map(m => m[0]).filter(s => /marquee|endMarquee/.test(s));
+  const moves = onWindow('pointermove'), ups = onWindow('pointerup');
+  assert(moves.length === 1 && /marquee\.x1 =/.test(moves[0]), 'tracking must be on the window, so a box can leave the canvas');
+  assert(ups.length === 1 && /endMarquee\(true\)/.test(ups[0]), 'a release must apply the box');
+  assert((code.match(/endMarquee\(false\)/g) || []).length >= 2, 'escape and a cancelled pointer must both drop it');
+});
+
 check('a selection does not survive a change of species', () => {
   const select = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(/skel\.selected = new Set\(\)/.test(select), 'bone keys mean nothing on the next skeleton');

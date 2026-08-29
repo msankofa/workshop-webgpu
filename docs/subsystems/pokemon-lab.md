@@ -415,6 +415,32 @@ That is the same rule `toggleBones` applies when a selection becomes a part, and
 the same sequence and asserts they agree at every step. There is no mode flag and no second selection; a
 check forbids one appearing.
 
+### A box over several bones
+
+**Alt-drag** draws a box and takes the joints inside it. Shift means the chain here too, so alt-shift-drag
+takes the whole chain of anything the box catches, and both land in `toggleKeys` — the box completes a
+group you had partly selected rather than flipping each bone, exactly as a click does.
+
+`pointsInRect` in `pokemon-select.js` reads the **same projected points** the click does, so the box takes
+what is inside it *in the picture*. Two consequences worth stating, because neither is what a volume test
+would do:
+
+- **Depth is ignored.** A bone the mesh is in front of is still caught. That is the promise the overlay
+  already makes by drawing with depth testing off — you can see the joint, so the box takes it.
+- **Bones behind the camera are skipped**, for the same reason `nearestPoint` skips them. `project` wraps
+  the sign back there, so without the check a box drawn on the left of the picture would catch bones off
+  to the right.
+
+Corners come in either order, since a drag starts at whichever one the pointer went down on.
+
+The drag is decided **before** a bone is picked, so alt is neither an orbit nor a grab, and `downAt` is
+cleared so a box small enough to look like a click does not also toggle the bone under it. Tracking and
+release are on the window rather than the canvas, so a box can be dragged past the edge of the viewport
+and still work. Escape abandons one, and a cancelled pointer drops it, in both cases without touching the
+selection.
+
+Like the other two gestures it needs the skeleton visible — the dots are what you are aiming at.
+
 ### Two measured facts the plan did not have
 
 **The root bone is in no chain.** `extractChains` splits at branch points and the root is one, so it is an
@@ -435,9 +461,9 @@ across the dex, **2,136 of 3,496 chains are a single bone and the median chain l
 | Ekans | — | — | 23 |
 
 On Onix, clicking chains *is* clicking bones. The two-gesture bet holds for Squirtle and Ekans and does
-nothing for a third of the dex, which suggests phase 3 will want a subtree gesture — select a bone and
-everything below it — since `descendants(rig, key)` already exists. Not built; the plan says two gestures
-and that is what is here. A test pins the Onix numbers so the problem cannot quietly go away.
+nothing for a third of the dex. That measurement is why there are now two more ways to select: the
+**Below** button, which takes a bone and everything under it through `descendants(rig, key)`, and the
+alt-drag box above. A test pins the Onix numbers so the problem cannot quietly come back.
 
 ## Posing: drag a bone, the chain above it answers
 
@@ -791,7 +817,8 @@ a worse gesture than turning the skeleton on first.
 
 A limb is a bone and everything under it, which is why the **Below** button exists: chains stop where the
 skeleton branches, and 2,136 of 3,496 chains in this dex are a single bone, so the chain gesture cannot
-select an arm. This is the third selection gesture the phase 2 notes said was missing.
+select an arm. Below and the alt-drag box are the two selection gestures the phase 2 notes said were
+missing; Below is structural and the box is whatever you can see.
 
 Masked bones are **coloured in the overlay** — blue for posed, red for limp. A mask you cannot see is one
 you find out about by wondering why half the body stopped moving.
@@ -905,6 +932,12 @@ field that matters and not for the ones that do not, that states and transitions
 with nothing falling outside, that stretching a pose's end frame changes what it is (the kind being derived
 rather than stored), and that the schema holds on the five species the old mapper could not do — Sandslash,
 Pikachu, Onix, Voltorb and Caterpie.
+
+`test-pokemon-select.mjs` covers the three gestures over real rigs, and pins the picking maths a browser
+would otherwise be the only place to see: that depth only breaks ties for a click, that a box takes what is
+inside it whichever corner the drag started at and ignores depth entirely, that bones behind the camera are
+excluded from both, and that a box composed with `toggleKeys` completes a partial group and drops a whole
+one — the composition being the thing the page actually does.
 
 `test-pokemon-lab-io.mjs` carries two cross-checks worth more than its unit tests. The filename the page
 saves to is matched against `serve.py`'s own whitelist regex, extracted from the Python source, because a
