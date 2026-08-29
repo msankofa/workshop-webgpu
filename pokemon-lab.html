@@ -178,6 +178,7 @@
       <h3>Bones</h3>
       <div class="row">
         <button id="skelBtn" class="on" title="Hide the skeleton.">Skeleton</button>
+        <button id="bodyBtn" class="on" title="Hide the model and leave the skeleton.">Body</button>
         <span style="color:#9aa4b0; font-size:11px;">Size</span>
         <input type="range" id="jointSize" min="0.3" max="3" step="0.1" value="1">
         <button id="clearSelBtn" disabled title="Deselect every bone.">Clear</button>
@@ -543,7 +544,7 @@ function restorePose() {
 // Positions come from the live Object3D matrices every frame, so the skeleton follows playback and the
 // ghosts and the scrubber without knowing anything about them.
 const skel = {
-  on: true, joints: null, lines: null, size: 1,
+  on: true, body: true, joints: null, lines: null, size: 1,
   selected: new Set(), hover: -1,
   screen: [],                       // one {x, y, depth, hidden} a bone, in rig.bones order, in CSS pixels
 };
@@ -669,6 +670,19 @@ function setSkeletonVisible(on) {
   $('skelBtn').title = on ? 'Hide the skeleton.' : 'Show the skeleton over the model.';
 }
 
+/**
+ * Hide the mesh and leave the bones.
+ *
+ * Only the drawing stops. The mixer still runs and `getWorldPosition` still resolves, so the skeleton keeps
+ * animating and stays pickable with the body off.
+ */
+function setBodyVisible(on) {
+  skel.body = on;
+  modelRoot.visible = on;
+  $('bodyBtn').classList.toggle('on', on);
+  $('bodyBtn').title = on ? 'Hide the model and leave the skeleton.' : 'Show the model again.';
+}
+
 /** Which bone is under the pointer, or -1. */
 function boneAt(ev) {
   if (!skel.on || !current) return -1;
@@ -717,6 +731,7 @@ function clearSelection() {
 }
 
 $('skelBtn').addEventListener('click', () => setSkeletonVisible(!skel.on));
+$('bodyBtn').addEventListener('click', () => setBodyVisible(!skel.body));
 $('clearSelBtn').addEventListener('click', clearSelection);
 $('jointSize').addEventListener('input', () => {
   skel.size = Number($('jointSize').value);
@@ -1350,6 +1365,7 @@ addEventListener('keydown', (ev) => {
   }
   if (ev.key === 'Escape') { clearSelection(); return; }
   if (ev.key === 'b') { setSkeletonVisible(!skel.on); return; }
+  if (ev.key === 'h') { setBodyVisible(!skel.body); return; }
   if (ev.key === ' ') { ev.preventDefault(); $('playBtn').click(); }
   else if (ev.key === 'ArrowLeft') { ev.preventDefault(); stepFrame(-1); }
   else if (ev.key === 'ArrowRight') { ev.preventDefault(); stepFrame(1); }

@@ -344,8 +344,8 @@ segment called `idle` — the facts-versus-decisions split working at its smalle
 suggestion can never reach the file on its own.
 
 Keys: space plays and pauses, the arrows step a frame, `i` and `o` set the start and the end, `p` marks the
-pose, `b` shows and hides the skeleton, Escape clears the bone selection, `[` and `]` change species, `/`
-focuses the filter, and Ctrl+Z and Ctrl+Shift+Z undo and redo.
+pose, `b` shows and hides the skeleton, `h` shows and hides the body, Escape clears the bone selection,
+`[` and `]` change species, `/` focuses the filter, and Ctrl+Z and Ctrl+Shift+Z undo and redo.
 
 ### The page owns the clock
 
@@ -370,6 +370,10 @@ green, the hovered one white.
 
 `frustumCulled = false` on the overlay for the same reason as the model: these meshes have garbage
 bounding volumes.
+
+**Body** (`h`) hides the mesh and leaves the bones, by hiding `modelRoot`. Only the drawing stops: the
+mixer still runs and `getWorldPosition` still resolves, so the skeleton keeps animating and stays pickable
+with the body off.
 
 ### Bones are matched to objects by node index, not by name
 
