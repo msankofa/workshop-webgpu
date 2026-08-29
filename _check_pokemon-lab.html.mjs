@@ -346,9 +346,15 @@ check('bones are picked in screen space, matching what is drawn', () => {
   // A raycast would disagree with the picture every time a bone sits behind a leg, because the overlay
   // ignores depth. Screen-space nearest is also forgiving where joints are a few pixels apart.
   assert(/nearestPoint\(/.test(code), 'picking should go through pokemon-select.js');
-  assert(!/Raycaster/.test(code), 'the page should not be raycasting for bones');
   const at = code.match(/function boneAt\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(at, 'no boneAt');
+  assert(!/Raycaster|intersect/.test(at), 'picking a bone must not raycast');
   assert(/getBoundingClientRect/.test(at), 'a hit must be measured against the canvas, not the page');
+  // A raycaster is fine for the drag PLANE, which is a different job. Anywhere else and picking has
+  // quietly grown a second implementation.
+  const rays = [...code.matchAll(/_?ray\w*\.(setFromCamera|intersect\w+)/g)].length;
+  const inDrag = [...(code.match(/function dragPoint\([\s\S]*?\n\}/)?.[0] ?? '').matchAll(/_?ray\w*\.(setFromCamera|intersect\w+)/g)].length;
+  assert(rays === inDrag, `${rays - inDrag} raycast call(s) outside dragPoint`);
 });
 
 check('a click that moved the camera is not a pick', () => {
@@ -366,6 +372,38 @@ check('the two gestures share one selection, so there is no mode to be in', () =
 check('a selection does not survive a change of species', () => {
   const select = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(/skel\.selected = new Set\(\)/.test(select), 'bone keys mean nothing on the next skeleton');
+});
+
+check('posing and playback cannot both own the bones', () => {
+  // A running clip rewrites every animated bone each frame, so a pose would be erased on the next one.
+  const set = code.match(/function setPoseMode\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(set, 'no setPoseMode');
+  assert(/play\.paused = true/.test(set), 'turning Pose on must stop the clip');
+  const transport = code.match(/function refreshTransport\([\s\S]*?\n  \$\('playBtn'\)\.title/)?.[0] ?? '';
+  assert(/!pose\.on/.test(transport), 'the transport must be disabled while Pose is on');
+});
+
+check('the reach comes from the selection first and the slider second', () => {
+  const begin = code.match(/function beginPose\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(begin, 'no beginPose');
+  assert(/selectedReach\([^)]*\) \|\| pose\.reach/.test(begin),
+    'a selected run should set the reach, falling back to the slider when it says nothing');
+  assert(/chain\.length < 2/.test(begin), 'a bone with nothing above it is not a grab');
+});
+
+check('a solved chain is applied top-down, since a local rotation depends on a moved parent', () => {
+  const drag = code.match(/function dragPose\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(drag, 'no dragPose');
+  assert(/for \(let i = 0; i < turns\.length; i\+\+\)/.test(drag), 'the loop must run from the anchor down');
+  assert(/updateMatrixWorld/.test(drag), 'each bone must be settled before its child reads it');
+  assert(/getWorldQuaternion/.test(drag), 'the solver returns world deltas, which need the world rotation');
+});
+
+check('a pose reaches the file, and records the whole stance rather than the edits', () => {
+  const take = code.match(/\$\('takeNeutralBtn'\)\.addEventListener[\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert(/setNeutralBone\(/.test(take), 'it must write through the annotation schema');
+  assert(/commit\(putAnnotation/.test(take), 'and through the undo history, which is what saves it');
+  assert(/current\.rig\.bones\.entries\(\)/.test(take), 'every bone, not only the ones that moved');
 });
 
 check('the skeleton follows playback rather than being placed once', () => {

@@ -24,13 +24,15 @@ inferred or eyeballed.
 | `pokemon-lab-io.js` | The one file, through `disk-store.js`, and the dex list. | shipped |
 | `pokemon-pose.js` | How far apart two poses are. Pure; not wired into the page. | shipped |
 | `pokemon-select.js` | Picking bones and chains: the gestures, and screen-space hit-testing. | shipped |
+| `pokemon-ik.js` | FABRIK, and which bones answer a drag. | shipped |
 | `pokemon-lab.html` | The page. | browse, segments and bone picking shipped |
 | `test-pokemon-rig.mjs` | 38 checks, mostly over all 151 models. | shipped |
 | `test-pokemon-annotation.mjs` | 62 checks, built against real rigs. | shipped |
 | `test-pokemon-lab-io.mjs` | 30 checks, including two cross-checks. | shipped |
 | `test-pokemon-pose.mjs` | 29 checks, four species. | shipped |
 | `test-pokemon-select.mjs` | 20 checks, six species. | shipped |
-| `_check_pokemon-lab.html.mjs` | 47 static checks on the page. | shipped |
+| `test-pokemon-ik.mjs` | 20 checks: the solver as geometry, chains against real rigs. | shipped |
+| `_check_pokemon-lab.html.mjs` | 53 static checks on the page. | shipped |
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
 
@@ -428,6 +430,71 @@ On Onix, clicking chains *is* clicking bones. The two-gesture bet holds for Squi
 nothing for a third of the dex, which suggests phase 3 will want a subtree gesture — select a bone and
 everything below it — since `descendants(rig, key)` already exists. Not built; the plan says two gestures
 and that is what is here. A test pins the Onix numbers so the problem cannot quietly go away.
+
+## Posing: drag a bone, the chain above it answers
+
+`pokemon-ik.js` is FABRIK — forward and backward reaching inverse kinematics. Positional and iterative, so
+no Jacobians, no matrix inverses, and no configuration where it blows up. It solves joint **positions**;
+`segmentRotations` turns the result into per-bone world-space rotations, and the page applies them
+**top-down**, because a bone's local rotation is relative to a parent this pass has already moved.
+
+Pure and free of THREE, so it is tested in Node against real rigs. Quaternions are `[x, y, z, w]` arrays,
+matching THREE's order.
+
+### The reach is one number, and the selection sets it
+
+Grab a bone whose ancestors are selected and that unbroken run is the chain. Grab one with nothing selected
+above it and the slider decides. `selectedReach` returns 0 when the selection has nothing to say, which the
+page reads as "fall back", so the two compose instead of competing and there is no mode — what you get is
+whatever is visibly green in the viewport.
+
+Reach 0 means every ancestor up to the root. A bone with nothing above it is not a grab and the drag is
+refused; Onix has a lot of those.
+
+### Two solver properties worth knowing
+
+**A straight chain aimed along its own axis cannot fold.** If the target is nearer than full extension,
+both FABRIK passes only slide joints along that line and it settles fully extended — a fixed point that
+more iterations do not escape. `breakCollinearity` bows the chain first, and the nudge is *sized*: a chain
+of length `L` spanning a chord `d` has to bow out by about `L·√(1 − (d/L)²)`, tapered by a sine so it is
+largest in the middle. Starting near the answer converges in a few passes where an arbitrary thousandth of
+`L` still had 2% error after sixteen. It falls to zero as the chord approaches full extension, which is
+also what stops a chain already on its target from being disturbed.
+
+**Near full extension it converges slowly, and past 99.5% it stops improving.** Measured on a 4-segment
+unit chain:
+
+| Target (of reach 4) | 4 passes | 16 | 64 | 128 |
+|---|---|---|---|---|
+| 3.0 | 2.5e-4 | 4.6e-10 | — | — |
+| 3.9 | 1.3e-2 | 2.8e-3 | 8.8e-6 | 4.3e-9 |
+| 3.999 | 1.7e-4 | 1.7e-4 | 1.6e-4 | 1.4e-4 |
+
+Ordinary targets are done in four to eight. The default is **64 iterations** because they are nearly free —
+the loop exits on tolerance, and a 9-joint solve measures ~6µs either way. The residue at 99.98% of reach
+is a property of the configuration, not of the iteration count, and at 1e-4 of chain length it is invisible.
+A test records this so nobody spends an afternoon on it.
+
+`tolerance` is **relative to chain length** by default. These models range from 9 to 320 units tall and one
+absolute figure cannot serve both.
+
+### Posing and playback cannot both own the bones
+
+A running clip rewrites every animated bone each frame, so a pose would be erased on the next one. Turning
+**Pose** on pauses playback and disables the transport, rather than letting a pose vanish silently. Turning
+it off lets the clip take the bones back, which the panel says.
+
+**Save as neutral pose** writes through `setNeutralBone` and the same `commit` path as everything else, so
+it lands in the file, is undoable, and autosaves. It records **every bone, not only the ones that moved** —
+a neutral pose is a whole stance, and storing only the edits would leave it depending on whichever clip
+happened to be showing when it was taken.
+
+### What is not handled
+
+No joint limits, so nothing stops a neck bending backwards. One yaw per solve, so a chain cannot twist
+about its own axis. And a solver assumes a bone points at its child, which is only true where the rig was
+built that way — the models' bone origins are documented as not anatomical, so on some species a drag will
+move something plausible-looking in an implausible way.
 
 ### The grid is sized, not subdivided
 
