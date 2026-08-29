@@ -379,7 +379,10 @@ check('posing and playback cannot both own the bones', () => {
   const set = code.match(/function setPoseMode\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(set, 'no setPoseMode');
   assert(/play\.paused = true/.test(set), 'turning Pose on must stop the clip');
-  const transport = code.match(/function refreshTransport\([\s\S]*?\n  \$\('playBtn'\)\.title/)?.[0] ?? '';
+  // Anchored on the whole function, not on a line inside it -- renaming that line silently emptied the
+  // slice and the assertion below then passed on nothing.
+  const transport = code.match(/function refreshTransport\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/const live/.test(transport), 'the refreshTransport slice is empty, so this check reads nothing');
   assert(/!pose\.on/.test(transport), 'the transport must be disabled while Pose is on');
 });
 
@@ -488,7 +491,10 @@ check('the root translates as well as turning, or a carried body cannot swing', 
 check('hanging, posing and playback are mutually exclusive', () => {
   const set = code.match(/function setHangMode\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(/play\.paused = true/.test(set) && /setPoseMode\(false\)/.test(set), 'hanging must stop the other two');
-  const transport = code.match(/function refreshTransport\([\s\S]*?\n  \$\('playBtn'\)\.title/)?.[0] ?? '';
+  // Anchored on the whole function, not on a line inside it -- renaming that line silently emptied the
+  // slice and the assertion below then passed on nothing.
+  const transport = code.match(/function refreshTransport\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/const live/.test(transport), 'the refreshTransport slice is empty, so this check reads nothing');
   assert(/!hang\.sim/.test(transport), 'the transport must be off while hanging');
   // The simulation being present IS the on state; a separate flag would be the same fact stored twice.
   assert(!/hang\.on\b/.test(code), 'hang.sim is the state, so there must be no second flag');
@@ -527,12 +533,54 @@ check('bones are matched to objects by glTF node, not by name', () => {
 
 console.log('\n--- how it reads ---');
 
+const tips = [...markup.matchAll(/data-(tip|more)="([^"]*)"/g)].map(m => ({ kind: m[1], text: m[2].replace(/\s+/g, ' ').trim() }));
+
 check('the UI text is in full sentences, not fragments', () => {
-  const hints = [...markup.matchAll(/<p class="hint">([\s\S]*?)<\/p>/g)].map(m => m[1].replace(/\s+/g, ' ').trim());
-  for (const h of hints) {
-    assert(/[.!?]$/.test(h), `a hint does not end in a full stop: "${h}"`);
-    assert(h.split(' ').length > 3, `a hint is a fragment: "${h}"`);
+  // A full stop and a capital, not a word count: "Hide the skeleton." is a whole sentence and the right
+  // length for a button. The fragments worth catching are "skeleton toggle" and "hides skeleton".
+  assert(tips.length > 20, `only ${tips.length} tooltips, so this is passing on nothing`);
+  for (const { text } of tips) {
+    assert(/[.!?]$/.test(text), `hover text does not end in a full stop: "${text}"`);
+    assert(/^[A-Z0-9]/.test(text), `hover text does not start as a sentence: "${text}"`);
+    assert(/\s/.test(text), `hover text is a single word: "${text}"`);
   }
+});
+
+check('the panel is controls, not an essay', () => {
+  // Explanation belongs on hover. Paragraphs in the panel are read once, in the way forever after, and
+  // push the controls that matter off the bottom of the scroll.
+  const paras = [...markup.matchAll(/<p class="hint">([\s\S]*?)<\/p>/g)];
+  assert(paras.length === 0, `${paras.length} hint paragraphs are still in the panel`);
+  for (const { kind, text } of tips) {
+    const words = text.split(' ').length;
+    const cap = kind === 'tip' ? 22 : 45;
+    assert(words <= cap, `a data-${kind} runs to ${words} words, which belongs in the docs: "${text}"`);
+  }
+});
+
+check('hover text is one mechanism, not two', () => {
+  // A `title` alongside would give the same control two tooltips, on two different delays. Both halves
+  // matter: nine of these were set from script and survived a check that only read the markup.
+  const inMarkup = [...markup.matchAll(/<[^>]*\stitle="/g)];
+  assert(inMarkup.length === 0, `${inMarkup.length} elements still use the browser's own title`);
+  const inScript = [...code.matchAll(/\.title\s*=/g)];
+  assert(inScript.length === 0, `${inScript.length} titles are still set from script`);
+  assert(/data-more/.test(markup), 'nothing offers the longer text');
+  assert(/Ctrl for more/.test(html), 'the longer text must be discoverable, or it does not exist');
+});
+
+check('the hover text a control gets from script is there before it is clicked', () => {
+  // A label written only by its click handler explains nothing until you have already used it.
+  assert(/setSnap\(play\.snap\)/.test(code), 'the scrub mode never initialises');
+});
+
+check('a toggle with two named states says which one it is in', () => {
+  // "Snap" named neither state and lit up to mean one of them. The label is the state now, the way the
+  // ghost buttons beside it already worked.
+  const snap = code.match(/function setSnap\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/textContent = on \? 'Discrete' : 'Continuous'/.test(snap), 'the label must be the mode');
+  assert(!/snapBtn'\)\.classList\.toggle\('on'/.test(snap), 'a lit state as well would be the same fact twice');
+  assert(!/>Snap</.test(markup), 'the markup still hardcodes the old label');
 });
 
 check('the page says how to run it', () => {

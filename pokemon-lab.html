@@ -126,6 +126,11 @@
 
   .mono { font: 11px/1.6 ui-monospace, monospace; color: #8b95a2; white-space: pre-wrap; }
   .hint { color: #6b7480; font-size: 10.5px; margin: 4px 0 0; }
+  #tip { position: fixed; z-index: 40; max-width: 300px; display: none; pointer-events: none;
+         background: #10151c; border: 1px solid #2f3742; border-radius: 5px; padding: 6px 9px;
+         color: #b8c0c9; font-size: 11px; line-height: 1.5; box-shadow: 0 6px 18px #0009; }
+  #tip .more { display: block; margin-top: 5px; color: #7d8794; }
+  #tip .ask { display: block; margin-top: 5px; color: #5c6570; font-size: 10px; }
   .warn { color: #d8a657; font-size: 11px; margin-top: 6px; white-space: pre-wrap; }
   #disk { flex: none; padding: 8px 13px; border-top: 1px solid #222932; color: #7d8794; font-size: 10.5px; }
 
@@ -175,95 +180,90 @@
       <div class="mono" id="facts">—</div>
       <div class="warn" id="factWarn"></div>
 
-      <h3>Bones</h3>
+      <h3 data-tip="Click a bone to select it. Shift-click for its whole chain."
+          data-more="Clicking a chain you have already started adds the rest of it rather than removing what you have.">Bones</h3>
       <div class="row">
-        <button id="skelBtn" class="on" title="Hide the skeleton.">Skeleton</button>
-        <button id="bodyBtn" class="on" title="Hide the model and leave the skeleton.">Body</button>
+        <button id="skelBtn" class="on" data-tip="Hide the skeleton.">Skeleton</button>
+        <button id="bodyBtn" class="on" data-tip="Hide the model and leave the skeleton.">Body</button>
         <span style="color:#9aa4b0; font-size:11px;">Size</span>
-        <input type="range" id="jointSize" min="0.3" max="3" step="0.1" value="1">
-        <button id="clearSelBtn" disabled title="Deselect every bone.">Clear</button>
+        <input type="range" id="jointSize" min="0.3" max="3" step="0.1" value="1"
+               data-tip="How big the joint dots are drawn.">
+        <button id="clearSelBtn" disabled data-tip="Deselect every bone.">Clear</button>
       </div>
       <div class="mono" id="hoverRead"></div>
       <div class="mono" id="selRead">—</div>
       <div class="mono" id="selBones"></div>
-      <p class="hint">Click a bone to select it. Shift-click to select the whole chain it belongs to.
-        Clicking a chain you have already started adds the rest of it rather than removing what you have.</p>
 
       <h3>Pose</h3>
       <div class="row">
-        <button id="poseBtn" title="Drag a bone and let the rest of the body answer.">Pose</button>
+        <button id="poseBtn" data-tip="Drag a bone and let the rest of the body answer."
+                data-more="Turning this on stops the clip. Turning it off lets the clip take the bones back, so save the pose first if you want to keep it.">Pose</button>
         <span style="color:#9aa4b0; font-size:11px;">How far up</span>
-        <input type="range" id="reach" min="0" max="12" step="1" value="4">
+        <input type="range" id="reach" min="0" max="12" step="1" value="4"
+               data-tip="How many bones above the one you grab also bend. Zero means all of them."
+               data-more="Bones you have selected above the one you grab take priority over this.">
         <span class="mono" id="reachRead" style="flex:none;">4 bones</span>
       </div>
-      <div class="row">
+      <div class="row" data-tip="How far a bone may turn about its own length. 180 is no limit."
+           data-more="Measured against the parent bone, and against the pose the movement started from, so a whole limb turning as one is not a twisted joint.">
         <span style="color:#9aa4b0; font-size:11px; min-width:34px;">Twist</span>
         <input type="range" id="twistLimit" min="0" max="180" step="1" value="45">
         <span class="mono" id="twistRead" style="flex:none;">45°</span>
       </div>
-      <div class="row">
+      <div class="row" data-tip="How far a bone may turn across its length, which is the joint opening and closing. 180 is no limit."
+           data-more="Exact while you drag. While the creature hangs it is a pull rather than a wall, so a joint can pass the limit during a hard swing and is drawn back after.">
         <span style="color:#9aa4b0; font-size:11px; min-width:34px;">Bend</span>
         <input type="range" id="bendLimit" min="0" max="180" step="1" value="60">
         <span class="mono" id="bendRead" style="flex:none;">60°</span>
       </div>
       <div class="mono" id="poseRead">—</div>
       <div class="buttons">
-        <button id="takeNeutralBtn" disabled>Save as neutral pose</button>
-        <button id="clearNeutralBtn" disabled>Clear</button>
+        <button id="takeNeutralBtn" disabled data-tip="Keep the pose you have made as this species' neutral."
+                data-more="Every bone is recorded, not only the ones you moved, so a neutral pose is a whole stance rather than a set of edits to whichever clip was showing.">Save as neutral pose</button>
+        <button id="clearNeutralBtn" disabled data-tip="Forget the saved neutral pose.">Clear</button>
       </div>
-      <p class="hint">Dragging a bone bends this many bones above it. At zero it bends every bone up to the
-        root. If you have selected bones above the one you grab, those are bent instead.</p>
-      <p class="hint">Twist is how far a bone may turn about its own length. Bend is how far it may turn
-        across it, which is the joint opening and closing. Both are measured against the parent bone and
-        against the pose the movement started from, and at 180 nothing is limited.</p>
-      <p class="hint">Bending is limited exactly while you drag. While the creature hangs it is a pull rather
-        than a wall, so a joint can pass the limit during a hard swing and is drawn back after.</p>
-      <p class="hint">Turning Pose on stops the clip. Turning it off lets the clip take the bones back, so
-        save the pose first if you want to keep it.</p>
 
       <h3>Hang</h3>
       <div class="row">
-        <button id="hangBtn" title="Pick the creature up by a bone and let the rest of it hang.">Hang</button>
-        <button id="hangGroundBtn" class="on" title="Let it land on the floor instead of falling through.">Floor</button>
-        <button id="hangResetBtn" disabled>Put it back</button>
+        <button id="hangBtn" data-tip="Pick the creature up by a bone and let the rest of it hang."
+                data-more="Drag a bone to carry it by. Let go and it drops.">Hang</button>
+        <button id="hangGroundBtn" class="on" data-tip="Let it land on the floor instead of falling through.">Floor</button>
+        <button id="hangResetBtn" disabled data-tip="Put it back where it started.">Put it back</button>
       </div>
-      <div class="row">
+      <div class="row" data-tip="How hard it is pulled down. 1 is about earth for a body this size.">
         <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Gravity</span>
         <input type="range" id="hangGravity" min="0" max="4" step="0.05" value="1">
         <span class="mono" id="hangGravityRead" style="flex:none;">1.00</span>
       </div>
-      <div class="row">
+      <div class="row" data-tip="How hard the joints resist folding. At zero it hangs like a rope, at one it keeps its shape.">
         <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Stiffness</span>
         <input type="range" id="hangStiff" min="0" max="1" step="0.01" value="0.4">
         <span class="mono" id="hangStiffRead" style="flex:none;">0.40</span>
       </div>
-      <div class="row">
+      <div class="row" data-tip="How fast the swinging dies away.">
         <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Damping</span>
         <input type="range" id="hangDrag" min="0" max="0.4" step="0.005" value="0.02">
         <span class="mono" id="hangDragRead" style="flex:none;">0.020</span>
       </div>
       <div class="mono" id="hangRead">—</div>
-      <p class="hint">Drag a bone to carry the creature by it. Let go and it drops. Stiffness is how hard
-        the joints resist folding, so at zero it hangs like a rope and at one it keeps its shape.</p>
 
       <h3>Animations</h3>
       <div id="clips" class="mono">—</div>
 
       <h3>Playback</h3>
       <div class="row">
-        <button id="stepBackBtn" title="Step back one frame." disabled>◀</button>
+        <button id="stepBackBtn" data-tip="Step back one frame." disabled>◀</button>
         <button id="playBtn" disabled>Play</button>
-        <button id="stepFwdBtn" title="Step forward one frame." disabled>▶</button>
-        <button id="snapBtn" class="on"
-          title="The scrubber lands on whole frames. Click to scrub continuously between them.">Snap</button>
-        <button id="restBtn" disabled>Rest pose</button>
+        <button id="stepFwdBtn" data-tip="Step forward one frame." disabled>▶</button>
+        <button id="snapBtn" data-more="Any position between two frames is a real pose -- the mixer interpolates -- so this is a scrubbing convenience, not a limit of the model.">Discrete</button>
+        <button id="restBtn" disabled data-tip="Show the skeleton as the file stores it, with no animation.">Rest pose</button>
       </div>
       <div class="row">
-        <input type="range" id="scrub" min="0" max="1" step="1" value="0" disabled>
+        <input type="range" id="scrub" min="0" max="1" step="1" value="0" disabled data-tip="Scrub the clip.">
       </div>
       <div id="rangeBar"><div id="rangeFill"></div></div>
       <div class="mono" id="timeRead">—</div>
-      <div class="row">
+      <div class="row" data-tip="How fast it plays.">
         <span style="color:#9aa4b0; font-size:11px;">Speed</span>
         <input type="range" id="speed" min="0.05" max="2" step="0.05" value="1">
         <span class="mono" id="speedRead" style="flex:none;">1.00x</span>
@@ -271,44 +271,47 @@
 
       <h3>New segment from this animation</h3>
       <div class="row">
-        <button id="setInBtn" disabled>Set start</button>
-        <button id="setOutBtn" disabled>Set end</button>
-        <button id="wholeBtn" disabled>Whole clip</button>
-        <button id="markPoseBtn" disabled title="Set the start and the end to the frame you are on.">Mark pose</button>
-        <button id="loopBtn" class="on" title="Loop the range instead of playing it once and holding.">Loop</button>
+        <button id="setInBtn" disabled data-tip="Start the range at the frame you are on."
+                data-more="A start above the end plays backwards.">Set start</button>
+        <button id="setOutBtn" disabled data-tip="End the range at the frame you are on."
+                data-more="An end below the start plays backwards.">Set end</button>
+        <button id="wholeBtn" disabled data-tip="Take the whole clip as the range.">Whole clip</button>
+        <button id="markPoseBtn" disabled data-tip="Set the start and the end to the frame you are on.">Mark pose</button>
+        <button id="loopBtn" class="on" data-tip="Loop the range instead of playing it once and holding.">Loop</button>
       </div>
       <div class="row">
-        <button id="ghostBtn" class="on" title="Show the start or end frame as a translucent ghost.">Ghosts</button>
-        <button id="ghostModeBtn">Overlap</button>
-        <button id="ghostPoseBtn">Start</button>
+        <button id="ghostBtn" class="on" data-tip="Show the start or end frame as a translucent ghost.">Ghosts</button>
+        <button id="ghostModeBtn" data-tip="Draw the ghost in place, or beside the creature.">Overlap</button>
+        <button id="ghostPoseBtn" data-tip="Ghost the start frame, or the end frame.">Start</button>
       </div>
       <div class="mono" id="rangeRead">—</div>
       <div class="row">
-        <input type="text" id="segName" placeholder="Name, e.g. idle or enter_shell" list="segNames">
-        <button id="saveSegBtn" disabled>Save</button>
+        <input type="text" id="segName" placeholder="Name, e.g. idle or enter_shell" list="segNames"
+               data-tip="What this range of frames is.">
+        <button id="saveSegBtn" disabled data-tip="Keep this range under that name.">Save</button>
       </div>
       <datalist id="segNames"></datalist>
-      <p class="hint">If the start frame is higher than the end frame, it plays backwards.</p>
 
-      <h3>Saved segments</h3>
-      <p class="hint">A range that loops, or a single frame, is a state the creature can stay in. Any other
-        range is a transition, because it runs out and leaves the creature somewhere else.</p>
+      <h3 data-tip="A range that loops, or a single frame, is a state. Anything else is a transition."
+          data-more="A state is somewhere the creature can stay. A transition runs out and leaves it somewhere else, so which one a segment is follows from its range rather than being chosen.">Saved segments</h3>
       <div class="mono" id="segList">—</div>
       <div class="mono" id="idleState"></div>
       <div class="buttons">
-        <button id="undoBtn" title="Undo the last change to any species." disabled>Undo</button>
-        <button id="redoBtn" title="Redo the change you just undid." disabled>Redo</button>
+        <button id="undoBtn" data-tip="Undo the last change to any species." disabled>Undo</button>
+        <button id="redoBtn" data-tip="Redo the change you just undid." disabled>Redo</button>
       </div>
 
-      <h3>The file</h3>
+      <h3 data-tip="Everything you decide is saved to one file on disk, as you go."
+          data-more="Web storage is only a fallback for opening this page without the server, never the source of truth.">The file</h3>
       <div class="buttons">
-        <button id="snapshotBtn">Save a snapshot</button>
+        <button id="snapshotBtn" data-tip="Keep a dated copy of the file as it stands.">Save a snapshot</button>
       </div>
       <div class="mono" id="fileNotes"></div>
     </div>
   </aside>
 </div>
 
+<div id="tip"></div>
 <div id="error"></div>
 
 <script>
@@ -321,6 +324,61 @@ function showError(err) {
   el.style.display = 'block';
   el.textContent = (el.textContent ? el.textContent + '\n\n' : '') + (err && err.stack ? err.stack : String(err));
 }
+</script>
+
+<script>
+// Hover text, so the panel stays controls rather than half essay. `data-tip` is the short line every
+// control gets; `data-more` is the paragraph behind Ctrl, for the ones where what the control does and how
+// far to trust it are different questions.
+//
+// Not the browser's own `title`: it cannot show two lengths, it appears after a delay you cannot set, and
+// having both would mean two tooltips for one control. Plain script rather than the module, because a
+// tooltip needs no THREE and the page is more debuggable if the labels still explain themselves when the
+// module has failed.
+(function () {
+  const tip = document.getElementById('tip');
+  let host = null, x = 0, y = 0, tipCtrl = false;
+
+  // Content and position are separate because the pointer moves far more often than either changes, and
+  // rebuilding the text on every mousemove is work nobody asked for.
+  function render() {
+    if (!host || !host.dataset.tip) { tip.style.display = 'none'; return; }
+    tip.textContent = host.dataset.tip;
+    const more = host.dataset.more;
+    if (more) {
+      const p = document.createElement('span');
+      p.className = tipCtrl ? 'more' : 'ask';
+      p.textContent = tipCtrl ? more : 'Ctrl for more';
+      tip.appendChild(p);
+    }
+    tip.style.display = 'block';
+    place();
+  }
+
+  function place() {
+    if (tip.style.display === 'none') return;
+    // Below-right of the pointer, flipped rather than clipped at either edge.
+    const r = tip.getBoundingClientRect();
+    tip.style.left = `${Math.max(4, Math.min(x + 14, innerWidth - r.width - 4))}px`;
+    tip.style.top = `${y + 18 + r.height > innerHeight ? Math.max(4, y - r.height - 10) : y + 18}px`;
+  }
+
+  addEventListener('pointerover', (e) => {
+    const el = e.target.closest && e.target.closest('[data-tip]');
+    if (el === host) return;
+    host = el;
+    render();
+  });
+  addEventListener('pointermove', (e) => { x = e.clientX; y = e.clientY; place(); });
+  addEventListener('pointerout', (e) => {
+    if (host && !e.relatedTarget?.closest?.('[data-tip]')) { host = null; render(); }
+  });
+  // Ctrl is read from the key events rather than from the last pointer move, or the longer text would only
+  // appear once you also jiggled the mouse.
+  addEventListener('keydown', (e) => { if (e.key === 'Control' && !tipCtrl) { tipCtrl = true; render(); } });
+  addEventListener('keyup', (e) => { if (e.key === 'Control') { tipCtrl = false; render(); } });
+  addEventListener('blur', () => { tipCtrl = false; host = null; render(); });
+})();
 </script>
 
 <script type="importmap">
@@ -733,7 +791,7 @@ function setSkeletonVisible(on) {
   if (skel.joints) skel.joints.visible = on;
   if (skel.lines) skel.lines.visible = on;
   $('skelBtn').classList.toggle('on', on);
-  $('skelBtn').title = on ? 'Hide the skeleton.' : 'Show the skeleton over the model.';
+  $('skelBtn').dataset.tip = on ? 'Hide the skeleton.' : 'Show the skeleton over the model.';
 }
 
 /**
@@ -746,7 +804,7 @@ function setBodyVisible(on) {
   skel.body = on;
   modelRoot.visible = on;
   $('bodyBtn').classList.toggle('on', on);
-  $('bodyBtn').title = on ? 'Hide the model and leave the skeleton.' : 'Show the model again.';
+  $('bodyBtn').dataset.tip = on ? 'Hide the model and leave the skeleton.' : 'Show the model again.';
 }
 
 /** Which bone is under the pointer, or -1. */
@@ -1232,11 +1290,11 @@ function refreshGhostButtons() {
   const LABEL = { start: 'Start', end: 'End', both: 'Both' };
   $('ghostBtn').classList.toggle('on', ghosts.on);
   $('ghostModeBtn').textContent = ghosts.mode === 'overlap' ? 'Overlap' : 'Offset';
-  $('ghostModeBtn').title = ghosts.mode === 'overlap'
+  $('ghostModeBtn').dataset.tip = ghosts.mode === 'overlap'
     ? 'Ghosts stand where the model stands. Click to push them aside instead.'
     : 'Ghosts stand aside from the model. Click to put them in its place instead.';
   $('ghostPoseBtn').textContent = LABEL[ghosts.which];
-  $('ghostPoseBtn').title = `Showing the ${ghosts.which === 'both' ? 'start and end frames' : `${ghosts.which} frame`}.`
+  $('ghostPoseBtn').dataset.tip = `Showing the ${ghosts.which === 'both' ? 'start and end frames' : `${ghosts.which} frame`}.`
     + ' Click for the next choice of start, end and both.';
   $('ghostModeBtn').disabled = !ghosts.on;
   $('ghostPoseBtn').disabled = !ghosts.on;
@@ -1391,10 +1449,12 @@ const play = { from: 0, to: 0, ends: 'loop', frame: 0, paused: false, segment: n
 
 function setSnap(on) {
   play.snap = on;
-  $('snapBtn').classList.toggle('on', on);
-  $('snapBtn').title = on
-    ? 'The scrubber lands on whole frames. Click to scrub continuously between them.'
-    : 'The scrubber moves continuously between frames. Click to land on whole frames again.';
+  // The label IS the state, the way the ghost mode and ghost pose buttons beside it work. "Snap" said
+  // nothing about what it was doing, and lit up to mean a thing the word never named.
+  $('snapBtn').textContent = on ? 'Discrete' : 'Continuous';
+  $('snapBtn').dataset.tip = on
+    ? 'The scrubber lands on whole frames. Click to scrub between them.'
+    : 'The scrubber moves between frames. Click to land on whole frames.';
   $('scrub').step = on ? '1' : 'any';
   if (on && action) { play.frame = Math.round(play.frame); applyFrame(); }
   refreshTransport();
@@ -1466,7 +1526,7 @@ function refreshTransport() {
   $('restBtn').disabled = !current || pose.on;
   $('scrub').disabled = !live;
   for (const id of ['setInBtn', 'setOutBtn', 'wholeBtn', 'markPoseBtn', 'stepBackBtn', 'stepFwdBtn']) $(id).disabled = !live;
-  $('playBtn').title = pose.on ? 'Turn Pose off to play the clip again.' : '';
+  $('playBtn').dataset.tip = pose.on ? 'Turn Pose off to play the clip again.' : '';
   $('playBtn').textContent = live && !play.paused ? 'Pause' : 'Play';
   $('loopBtn').classList.toggle('on', play.ends === 'loop');
   $('speedRead').textContent = `${Number($('speed').value).toFixed(2)}x`;
@@ -1592,7 +1652,7 @@ function refreshSegments() {
     const badge = document.createElement('span');
     badge.className = 'skind ' + kind;
     badge.textContent = kind;
-    badge.title = kind === 'state'
+    badge.dataset.tip = kind === 'state'
       ? 'The creature can stay in this one.'
       : 'This one runs out and leaves the creature somewhere else.';
     const range = document.createElement('span');
@@ -1605,7 +1665,7 @@ function refreshSegments() {
     const del = document.createElement('button');
     del.className = 'del';
     del.textContent = '×';
-    del.title = `Delete the segment called ${name}.`;
+    del.dataset.tip = `Delete the segment called ${name}.`;
     del.addEventListener('click', (ev) => {
       ev.stopPropagation();
       if (play.segment === name) play.segment = null;
@@ -1663,7 +1723,7 @@ function refreshSaveButton() {
   const exists = !!(current && getAnnotation(library, current.entry.species)?.segments?.[name]);
   $('saveSegBtn').disabled = currentClip < 0 || !name;
   $('saveSegBtn').textContent = exists ? 'Update' : 'Save';
-  $('saveSegBtn').title = exists
+  $('saveSegBtn').dataset.tip = exists
     ? `Replace the segment called ${name} with the range above.`
     : 'Save the range above under this name.';
 }
@@ -1703,7 +1763,7 @@ function buildGrid() {
         && String(e.dex) !== text.replace(/^0+/, '')) continue;
     const el = document.createElement('div');
     el.className = `tile ${status}`;
-    el.title = `${e.name} — ${e.bones} bones, ${e.clips.length} animations, ${STATUS_LABELS[status]}`;
+    el.dataset.tip = `${e.name} — ${e.bones} bones, ${e.clips.length} animations, ${STATUS_LABELS[status]}`;
     el.innerHTML = `<div class="num">${String(e.dex).padStart(3, '0')}</div>`
       + `<div class="nm">${e.name}</div><div class="dot"></div>`;
     el.addEventListener('click', () => selectSpecies(e.species).catch(showError));
@@ -1794,6 +1854,7 @@ renderer.setAnimationLoop(() => {
   }
 });
 
+setSnap(play.snap);                                      // so its label and hover text exist before a click
 refreshBoard();
 selectSpecies(dex[0].species).catch(showError);
 </script>

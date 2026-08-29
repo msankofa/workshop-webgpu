@@ -34,7 +34,7 @@ inferred or eyeballed.
 | `test-pokemon-select.mjs` | 20 checks, six species. | shipped |
 | `test-pokemon-ik.mjs` | 38 checks: the solver as geometry, twist and bend, chains against real rigs. | shipped |
 | `test-pokemon-hang.mjs` | 27 checks: the physics as physics, the rotation fit against known rotations. | shipped |
-| `_check_pokemon-lab.html.mjs` | 63 static checks on the page. | shipped |
+| `_check_pokemon-lab.html.mjs` | 67 static checks on the page. | shipped |
 
 `ragdoll.js` is reused, and its 31 tests still pass untouched. Its cone solver gained an optional `min` and
 an optional per-cone `stiffness` for the bend limit below; both default to the old behaviour, so the bot
@@ -684,14 +684,42 @@ the chains it covers wholly and partly, and whether it forms one unbroken parent
 `unbroken` is reported, never enforced. A pair of ears is one part and two runs, so it is a hint here and a
 gate's business later.
 
-### Snapping is a scrubbing convenience, not a limit
+### Scrubbing is a convenience, not a limit
 
 `play.frame` is fractional on purpose. The mixer interpolates between keys, so any position between two
-frames is a real pose. The **Snap** button only changes the scrubber's step; with it off the readout shows
-two decimals. Segment bounds are still whole frames, because that is what the file stores.
+frames is a real pose. The **Discrete / Continuous** button only changes the scrubber's step; on Continuous
+the readout shows two decimals. Segment bounds are still whole frames, because that is what the file stores.
+
+Its label *is* its state, the way the ghost mode and ghost pose buttons beside it already worked. It used to
+read "Snap" and light up, which named neither state and made the reader guess which way the lit one meant.
+A check asserts the label is the mode and that it does not also carry a lit class, since that would be the
+same fact twice.
 
 Stepping floors going forward and ceils going back, so a step from frame 12.6 lands on 13 rather than
 skipping to 14.
+
+### Explanation lives on hover, and the panel stays controls
+
+The panel had nine paragraphs of prose in it. Prose in a panel is read once and then in the way forever,
+and it pushes the controls that matter off the bottom of the scroll. All of it moved to hover text:
+
+| | Where | Length |
+|---|---|---|
+| `data-tip` | Every control. What it does. | One sentence. Capped at 22 words by a check. |
+| `data-more` | Twelve of them. Shown while **Ctrl** is held. | Capped at 45 words. Anything longer belongs here in the docs. |
+
+A `data-more` earns its place only where *what a control does* and *how far to trust it* are different
+questions — the bend limit being exact while dragging but a pull while hanging is the clearest case. The
+tooltip advertises itself with a dim "Ctrl for more" line, because a hidden affordance nobody is told about
+does not exist.
+
+It is one mechanism, not two. The browser's own `title` is gone from both the markup and the script: it
+cannot show two lengths, its delay is not settable, and having both would mean two tooltips racing on one
+control. Checks assert zero `title=` in the markup **and** zero `.title =` in the script — the first version
+only read the markup, and nine script-set titles sailed through it.
+
+The tooltip is a plain script rather than part of the module. It needs no THREE, and the page is far more
+debuggable if its labels still explain themselves when the module has failed to load.
 
 ### Undo is a stack of references
 
