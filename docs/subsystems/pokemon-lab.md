@@ -948,3 +948,8 @@ manifest's clip list is compared against the real `.glb` animations across the w
 code reaches for exists and every id in the markup is read by something, that every imported name is
 exported, that `localStorage` appears exactly once and only as the store's fallback, that every edit to the
 library is followed by a save, and that a suggested idle is never written without a click.
+
+One of its checks is there because the selection box shipped invisible. Assigning `style.display = ''`
+**removes** the inline style, so an element the stylesheet hides stays hidden while the code reads as
+though it works — right for `#stageMsg`, whose stylesheet value is `flex`, and wrong for the four ids
+hidden by default. The check reads the stylesheet for those ids and forbids showing them with `''`.

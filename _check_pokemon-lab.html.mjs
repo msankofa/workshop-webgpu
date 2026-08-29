@@ -369,6 +369,26 @@ check('the two gestures share one selection, so there is no mode to be in', () =
   assert(!/selectedChains|chainMode|selectionMode/.test(code), 'there must not be a second selection or a mode flag');
 });
 
+check('nothing hidden by the stylesheet is shown by clearing its inline style', () => {
+  // Assigning '' REMOVES the inline style, so an element the stylesheet hides stays hidden and the code
+  // reads as if it works. This is how the selection box shipped invisible. `display: ''` is right for
+  // #stageMsg, whose stylesheet value is flex, and wrong for everything hidden by default.
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  const hidden = new Set();
+  for (const rule of css.split('}')) {
+    const [sel, decl = ''] = rule.split('{');
+    if (!/display:\s*none/.test(decl)) continue;
+    for (const m of sel.matchAll(/#([\w-]+)/g)) hidden.add(m[1]);
+  }
+  assert(hidden.size >= 3, `only ${hidden.size} default-hidden ids found, so this is reading the wrong thing`);
+  for (const m of code.matchAll(/\.display = ([^;]+);/g)) {
+    if (!/''|""/.test(m[1])) continue;
+    const near = code.slice(Math.max(0, m.index - 300), m.index);
+    const id = [...hidden].find(h => near.includes(`'${h}'`));
+    assert(!id, `#${id} is hidden by the stylesheet, so showing it needs a real display value: ${m[0]}`);
+  }
+});
+
 check('the selection box lands in the same selection, by the same rule', () => {
   const end = code.match(/function endMarquee\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(end.length > 200, `endMarquee is ${end.length} chars, so this is reading the wrong slice`);
