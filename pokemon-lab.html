@@ -135,6 +135,8 @@
   .part .del { border: none; background: none; color: #6b7480; padding: 0 2px; font-size: 13px;
                line-height: 1; flex: none; }
   .part .del:hover { color: #e07a7a; }
+  /* The dot that ties a row in the panel to a colour in the viewport. */
+  .sw { width: 8px; height: 8px; border-radius: 2px; flex: none; align-self: center; }
 
   .limb { border: 1px solid #232a33; border-radius: 5px; padding: 4px 6px; margin: 5px 0; }
   .limb.sel { border-color: #3f5a4a; background: #151d19; }
@@ -252,7 +254,7 @@
         <button id="setSpineBtn" disabled data-tip="Make the selected bones the spine.">Spine</button>
         <button id="setHeadBtn" disabled data-tip="Make the selected bones the head.">Head</button>
         <button id="setContactBtn" disabled data-tip="Say the selected bones touch the ground. Press it again to take them off."
-                data-more="Contacts are not only feet. A Caterpie's are belly segments and a Voltorb's is one point on a sphere, and a walker needs them wherever they are.">Contact</button>
+                data-more="Usually the feet, but not always: a Caterpie's are belly segments and a Voltorb's is one point on a sphere. They are drawn as bigger joints rather than a colour, so the limb's own colour survives.">Touches ground</button>
         <button id="addLimbBtn" disabled data-tip="Make the selected bones a new limb."
                 data-more="Its side is read from where the bones sit: these models face +z, so the creature's own left is +x. Change it if the reading is wrong.">New limb</button>
       </div>
@@ -728,9 +730,8 @@ async function selectSpecies(species) {
   // A selection is a set of bone keys for THIS species, so it does not survive a change of species.
   skel.selected = new Set();
   skel.hover = -1;
-  // Bone keys repeat across species, so last species' contacts would colour this one's joints until the
-  // panel caught up, and its mirror note would be read as this one's.
-  contactBones = new Set();
+  // The part colours go with the skeleton, in clearSkeleton. This one is the panel's, and last species'
+  // mirror note would otherwise be read as this one's.
   mirrorNote = '';
   buildSkeleton();
   refreshSelection();
@@ -779,25 +780,40 @@ function restorePose() {
 // Positions come from the live Object3D matrices every frame, so the skeleton follows playback and the
 // ghosts and the scrubber without knowing anything about them.
 const skel = {
-  on: false, model: true, joints: null, lines: null, size: 1,
+  on: false, model: true, joints: null, lines: null, halo: null, size: 1,
   selected: new Set(), hover: -1,
   screen: [],                       // one {x, y, depth, hidden} a bone, in rig.bones order, in CSS pixels
+  partColor: [],                    // the colour each bone gets from the part it is in, or null
+  contact: [],                      // whether each bone touches the ground, which is drawn as size
 };
 const JOINT_COLOR = new THREE.Color(0x6d7c8c);
 const JOINT_SELECTED = new THREE.Color(0x5fd08a);
+const JOINT_FLASH = new THREE.Color(0xeafff2);
 const JOINT_HOVER = new THREE.Color(0xffffff);
-const JOINT_ROOT = new THREE.Color(0xd8a657);
 // A bone the clip no longer owns is coloured, because otherwise a mask is invisible until you play
-// something and wonder why part of the body is not moving.
-const JOINT_POSED = new THREE.Color(0x7f8fd0);
-const JOINT_LIMP = new THREE.Color(0xcf6f8a);
-// Contacts are the one part with a place in the world rather than in the body, and the gates measure them
-// against the floor, so they are worth seeing without opening a list.
-const JOINT_CONTACT = new THREE.Color(0xe08a4a);
-let contactBones = new Set();
+// something and wonder why part of the body is not moving. Both are darker than any part colour below,
+// so a masked limb still reads as masked on a body that is fully annotated.
+const JOINT_POSED = new THREE.Color(0x3f5a9c);
+const JOINT_LIMP = new THREE.Color(0x9c3f52);
+
+// What each part looks like. Green and white are not in here: they belong to the selection and the hover,
+// and a part that borrowed either would be unreadable the moment you selected something.
+const PART_COLORS = {
+  root: 0xd8a657, spine: 0x6aa9e0, head: 0xe08a4a,
+  leg: 0xb78be0, arm: 0xe0d060, wing: 0x7fd3d8, fin: 0x4fa8b8, tail: 0xd86f8a,
+  tentacle: 0x9b8be0, ear: 0xc9a45f, antenna: 0x8fa8c0, other: 0xa0846a,
+};
+const PART_TINT = Object.fromEntries(Object.entries(PART_COLORS).map(([k, v]) => [k, new THREE.Color(v)]));
+const ROOT_HINT = new THREE.Color(0x6f5a34);
+// A contact is usually INSIDE a limb, so it cannot have a colour of its own without hiding which limb it
+// belongs to. It gets size instead: colour says which part, size says it touches the floor.
+const CONTACT_SCALE = 1.7;
+const SELECT_SCALE = 1.35;          // how much bigger a selected joint is drawn
+const SELECT_PULSE = 1.1;           // seconds for one flash
+const HALO_SCALE = 2.6;             // the glow around a selected joint
 
 function clearSkeleton() {
-  for (const key of ['joints', 'lines']) {
+  for (const key of ['joints', 'lines', 'halo']) {
     const o = skel[key];
     if (!o) continue;
     scene.remove(o);
@@ -805,7 +821,11 @@ function clearSkeleton() {
     o.material.dispose();
     skel[key] = null;
   }
+  // All three are per-skeleton, and bone keys repeat across species, so the last one's parts would colour
+  // this one's joints if they outlived it.
   skel.screen = [];
+  skel.partColor = [];
+  skel.contact = [];
 }
 
 function buildSkeleton() {
@@ -833,14 +853,30 @@ function buildSkeleton() {
   lines.renderOrder = 9;
   lines.visible = skel.on;
 
+  // The glow. A bright dot on a dark viewport does not read as one, so a selected joint gets a second,
+  // larger, additive sphere behind it; every other joint is scaled to nothing rather than hidden, which
+  // would mean a second visibility flag to keep in step.
+  const halo = new THREE.InstancedMesh(
+    new THREE.SphereGeometry(r * HALO_SCALE, 8, 6),
+    new THREE.MeshBasicMaterial({
+      color: JOINT_SELECTED, transparent: true, opacity: 0.2,
+      depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
+    }),
+    n);
+  halo.frustumCulled = false;
+  halo.renderOrder = 8;
+  halo.visible = skel.on;
+
   skel.joints = joints;
   skel.lines = lines;
+  skel.halo = halo;
   // Parent indices and the xyz scratch are per-species, so the frame loop allocates nothing and looks
   // nothing up by name.
-  const index = new Map(current.rig.bones.map((b, i) => [b.key, i]));
-  skel.parentOf = current.rig.bones.map(b => (b.parent != null ? index.get(b.parent) ?? -1 : -1));
+  skel.indexOf = new Map(current.rig.bones.map((b, i) => [b.key, i]));
+  skel.parentOf = current.rig.bones.map(b => (b.parent != null ? skel.indexOf.get(b.parent) ?? -1 : -1));
   skel.xyz = new Float64Array(n * 3);
-  scene.add(lines, joints);
+  scene.add(halo, lines, joints);
+  refreshPartColors();
   updateSkeleton();
 }
 
@@ -849,19 +885,33 @@ const _m = new THREE.Matrix4();
 
 /** Re-place every joint and segment from the live bone matrices. Called once a frame. */
 function updateSkeleton() {
-  const { joints, lines, xyz, parentOf } = skel;
+  const { joints, lines, halo, xyz, parentOf } = skel;
   if (!joints || !current) return;
   const objects = current.objects;
+  const bones = current.rig.bones;
   const n = objects.length;
   const pos = lines.geometry.attributes.position.array;
+  // One phase for the whole overlay, so every selected joint flashes together rather than shimmering.
+  const pulse = selectPulse();
 
   for (let i = 0; i < n; i++) {
     const o = objects[i];
     if (o) o.getWorldPosition(_v); else _v.set(0, 0, 0);
     xyz[i * 3] = _v.x; xyz[i * 3 + 1] = _v.y; xyz[i * 3 + 2] = _v.z;
-    _m.makeTranslation(_v.x, _v.y, _v.z);
+    const chosen = skel.selected.has(bones[i].key);
+    // Size carries two facts at once: a selected joint swells as it flashes, and a bone that touches the
+    // ground is drawn bigger whatever else is true of it.
+    const size = chosen ? 1 + (SELECT_SCALE - 1) * pulse : (skel.contact[i] ? CONTACT_SCALE : 1);
+    _m.makeScale(size, size, size);
+    _m.setPosition(_v.x, _v.y, _v.z);
     joints.setMatrixAt(i, _m);
+    const glow = chosen ? 0.7 + 0.3 * pulse : 0;
+    _m.makeScale(glow, glow, glow);
+    _m.setPosition(_v.x, _v.y, _v.z);
+    halo.setMatrixAt(i, _m);
   }
+  halo.material.opacity = 0.12 + 0.16 * pulse;
+  halo.instanceMatrix.needsUpdate = true;
   for (let i = 0; i < n; i++) {
     // A root has no parent, so it draws a zero-length segment, which is invisible.
     const p = parentOf[i] >= 0 ? parentOf[i] : i;
@@ -892,18 +942,27 @@ function projectSkeleton(xyz) {
   }
 }
 
+// A triangle rather than a sine: the bright end of a sine is where it moves slowest, so a sine reads as a
+// dim joint that occasionally brightens rather than as a flash.
+function selectPulse() {
+  const t = (performance.now() * 0.001 / SELECT_PULSE) % 1;
+  return t < 0.5 ? t * 2 : 2 - t * 2;
+}
+
+const _tint = new THREE.Color();
+
 function paintSkeleton() {
   const { joints } = skel;
   if (!joints || !current) return;
   const bones = current.rig.bones;
+  const pulse = selectPulse();
   for (let i = 0; i < bones.length; i++) {
     const mode = driveOf(drive, bones[i].key);
     const colour = i === skel.hover ? JOINT_HOVER
-      : skel.selected.has(bones[i].key) ? JOINT_SELECTED
+      : skel.selected.has(bones[i].key) ? _tint.copy(JOINT_SELECTED).lerp(JOINT_FLASH, pulse)
         : mode === LIMP ? JOINT_LIMP
           : mode === POSED ? JOINT_POSED
-            : contactBones.has(bones[i].key) ? JOINT_CONTACT
-              : bones[i].key === current.rig.root ? JOINT_ROOT : JOINT_COLOR;
+            : skel.partColor[i] || JOINT_COLOR;
     joints.setColorAt(i, colour);
   }
   if (joints.instanceColor) joints.instanceColor.needsUpdate = true;
@@ -911,8 +970,7 @@ function paintSkeleton() {
 
 function setSkeletonVisible(on) {
   skel.on = on;
-  if (skel.joints) skel.joints.visible = on;
-  if (skel.lines) skel.lines.visible = on;
+  for (const key of ['joints', 'lines', 'halo']) if (skel[key]) skel[key].visible = on;
   $('skelBtn').classList.toggle('on', on);
   $('skelBtn').dataset.tip = on ? 'Hide the skeleton.' : 'Show the skeleton over the model.';
 }
@@ -1491,8 +1549,36 @@ function refreshParts() {
   renderLimbs(a);
   renderUnaddressed(a);
   renderPartWarnings(a);
-  contactBones = new Set(a?.parts?.contacts || []);
+  refreshPartColors();
   paintSkeleton();
+}
+
+/**
+ * What colour each bone gets from the part it is in, and which bones touch the ground.
+ *
+ * Built on an edit and read every frame, rather than resolved per bone per frame. Colour carries the part
+ * and size carries the contact, because a contact is usually a bone INSIDE a limb: giving it a colour of
+ * its own would mean the one bone whose limb you cannot see is the foot.
+ */
+function refreshPartColors() {
+  const n = current?.rig?.bones.length ?? 0;
+  skel.partColor = new Array(n).fill(null);
+  skel.contact = new Array(n).fill(false);
+  if (!current) return;
+  const p = getAnnotation(library, current.entry.species)?.parts || {};
+  const at = (key) => skel.indexOf?.get(key);
+  const paint = (keys, tint) => {
+    for (const k of keys || []) { const i = at(k); if (i !== undefined) skel.partColor[i] = tint; }
+  };
+  // Least specific first, so a limb wins over the spine it hangs off and the root wins over both.
+  paint(p.spine, PART_TINT.spine);
+  paint(p.head, PART_TINT.head);
+  for (const ap of p.appendages || []) paint(ap.chain, PART_TINT[ap.type] || PART_TINT.other);
+  // The skeleton's own root is a fact worth seeing before anyone has named it, so it is drawn in a muted
+  // version of the colour it will take once it is named.
+  paint([current.rig.root], ROOT_HINT);
+  paint(p.root ? [p.root] : [], PART_TINT.root);
+  for (const k of p.contacts || []) { const i = at(k); if (i !== undefined) skel.contact[i] = true; }
 }
 
 // The row element and the bones of each limb, so a selection change can re-mark the list without
@@ -1523,6 +1609,7 @@ function limbRow(ap, limbs) {
   const head = document.createElement('div');
   head.className = 'lhead';
   head.dataset.tip = 'Put this limb\'s bones in the selection.';
+  head.append(swatch(PART_COLORS[ap.type] ?? PART_COLORS.other));
   const id = document.createElement('span');
   id.className = 'lid';
   id.textContent = ap.id;
@@ -1637,30 +1724,44 @@ function renderPartRows(a) {
   if (!current) { host.textContent = '—'; return; }
   const p = a?.parts || {};
   const rows = [
-    ['Root', p.root ? [p.root] : [], () => editParts(x => setRoot(x, null))],
-    ['Spine', p.spine || [], () => editParts((x, rig) => setSpine(x, rig, []))],
-    ['Head', p.head || [], () => editParts((x, rig) => setHead(x, rig, []))],
-    ['Contacts', p.contacts || [], () => editParts((x, rig) => setContacts(x, rig, []))],
+    ['Root', PART_COLORS.root, p.root ? [p.root] : [], 'Forget which bone is the root.',
+      () => editParts(x => setRoot(x, null))],
+    ['Spine', PART_COLORS.spine, p.spine || [], 'Forget the spine.',
+      () => editParts((x, rig) => setSpine(x, rig, []))],
+    ['Head', PART_COLORS.head, p.head || [], 'Forget the head.',
+      () => editParts((x, rig) => setHead(x, rig, []))],
+    ['On the ground', null, p.contacts || [], 'Say no bone touches the ground.',
+      () => editParts((x, rig) => setContacts(x, rig, []))],
   ];
-  for (const [label, bones, clear] of rows) {
+  for (const [label, tint, bones, clearTip, clear] of rows) {
     // The skeleton's own root is a measured fact, so it is offered as a starting point rather than
     // written in: clicking the row selects it and the Root button is still a press away.
     const suggested = label === 'Root' && !bones.length && current.rig.root ? [current.rig.root] : [];
     host.append(partRow({
       label,
+      tint: bones.length ? tint : null,
       value: bones.length ? describeBones(bones)
         : suggested.length ? `nothing yet — the skeleton's own is ${suggested[0]}` : 'nothing yet',
       dim: !bones.length,
       pick: bones.length ? bones : suggested,
       clear: bones.length ? clear : null,
-      clearTip: `Clear the ${label.toLowerCase()}.`,
+      clearTip,
     }));
   }
 }
 
-function partRow({ label, value, dim = false, pick = [], clear = null, clearTip = '' }) {
+/** The dot that ties a row in the panel to a colour in the viewport. */
+function swatch(tint) {
+  const el = document.createElement('span');
+  el.className = 'sw';
+  el.style.background = `#${tint.toString(16).padStart(6, '0')}`;
+  return el;
+}
+
+function partRow({ label, value, tint = null, dim = false, pick = [], clear = null, clearTip = '' }) {
   const el = document.createElement('div');
   el.className = 'part';
+  if (tint !== null) el.append(swatch(tint));
   const name = document.createElement('span');
   name.className = 'pn';
   name.textContent = label;

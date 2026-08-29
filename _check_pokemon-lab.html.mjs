@@ -490,15 +490,53 @@ check('a posture is offered only where it means something', () => {
   assert(/posture'\)\.disabled = [^;]*!== 'walker'/.test(fn), 'only a walker has a posture');
 });
 
-check('contacts are toggled and shown, not set and hidden', () => {
+check('contacts are toggled, and drawn as size so a limb keeps its colour', () => {
   const btn = code.match(/setContactBtn'\)\.addEventListener\([\s\S]*?\n\);/)?.[0]
     ?? code.match(/setContactBtn'\)\.addEventListener\([^\n]*/)?.[0] ?? '';
   assert(/toggleContact/.test(btn), 'pressing it again must take the bones off again');
-  assert(/JOINT_CONTACT/.test(code), 'a contact must be visible in the overlay, not only in a list');
+  // A contact is normally a bone INSIDE a limb. Give it a colour and the one bone whose limb you cannot
+  // see is the foot, so it is carried by scale instead.
+  const place = code.match(/function updateSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(place.length > 400, `updateSkeleton is ${place.length} chars, so this is reading the wrong slice`);
+  assert(/skel\.contact\[i\] \? CONTACT_SCALE/.test(place), 'a contact must be visible without stealing a colour');
   const paint = code.match(/function paintSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/contactBones\.has/.test(paint), 'the overlay must colour contacts');
-  const select = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/contactBones = new Set\(\)/.test(select), 'bone keys repeat across species, so contacts must be cleared');
+  assert(!/contact/i.test(paint), 'a contact must not take a colour from the part it is in');
+});
+
+check('a bone is coloured by the part it is in', () => {
+  const fn = code.match(/function refreshPartColors\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn.length > 400, `refreshPartColors is ${fn.length} chars, so this is reading the wrong slice`);
+  // Every type the file can hold needs a colour, or a limb somebody typed goes back to looking unnamed.
+  const palette = code.match(/const PART_COLORS = \{([\s\S]*?)\};/)?.[1] ?? '';
+  assert(palette.length > 100, `the palette is ${palette.length} chars, so this found the wrong thing`);
+  const named = [...palette.matchAll(/(\w+):/g)].map(m => m[1]);
+  const types = [...(fs.readFileSync('pokemon-annotation.js', 'utf8')
+    .match(/APPENDAGE_TYPES = \[([^\]]*)\]/)?.[1] ?? '').matchAll(/'([^']+)'/g)].map(m => m[1]);
+  assert(types.length >= 8, `only ${types.length} appendage types read from the module`);
+  const missing = types.filter(t => !named.includes(t));
+  assert(!missing.length, `no colour for ${missing.join(', ')}`);
+  for (const reserved of ['5fd08a', 'ffffff']) {
+    assert(!palette.includes(reserved), `${reserved} is the selection or the hover, so no part may take it`);
+  }
+  // The lookup is built on an edit and read per frame, not resolved per bone per frame.
+  const paint = code.match(/function paintSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/skel\.partColor\[i\] \|\| JOINT_COLOR/.test(paint), 'the frame must read a prepared colour');
+  const clear = code.match(/function clearSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/skel\.partColor = \[\]/.test(clear) && /skel\.contact = \[\]/.test(clear),
+    'bone keys repeat across species, so these go with the skeleton');
+});
+
+check('a selected bone glows and flashes, on one phase for the whole overlay', () => {
+  const pulse = code.match(/function selectPulse\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(pulse.length > 80, `selectPulse is ${pulse.length} chars, so this is reading the wrong slice`);
+  assert(/performance\.now\(\)/.test(pulse), 'the flash must run on the clock, not on the frame count');
+  assert(!/Math\.sin/.test(pulse), 'a sine is slowest where it is brightest, which reads as a glimmer');
+  const place = code.match(/function updateSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/const pulse = selectPulse\(\)/.test(place) && /halo\.setMatrixAt/.test(place),
+    'the glow and the swell must come from one phase, or the joints shimmer against each other');
+  assert(/SELECT_SCALE/.test(place), 'a selected joint must swell as it flashes');
+  const clear = code.match(/function clearSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/'halo'/.test(clear), 'the glow is a mesh, so it has to be disposed with the rest');
 });
 
 check('what is unaddressed is derived, never stored', () => {

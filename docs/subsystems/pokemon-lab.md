@@ -488,12 +488,32 @@ the words the file accepts. A check forbids writing any of them out by hand.
 Posture is offered only for a walker, because `setLocomotion` drops it for anything else — carrying a
 stale posture would misreport the body plan.
 
-### Contacts are toggled, and coloured
+### The overlay says three things at once
 
-Contacts follow the same complete-or-remove rule as every other multi-bone gesture here, and they are
-**orange in the overlay**. They are what the gates measure against the floor, and a part that lives only
-in a list is one you forget you set. They are also not only feet: a Caterpie's are belly segments and a
-Voltorb's is one point on a sphere.
+**Colour is which part.** Every named part has one, and every type the file can hold has an entry in
+`PART_COLORS` — a check reads `APPENDAGE_TYPES` out of the module and fails if any of them has no colour,
+because a limb somebody typed going back to looking unnamed is worse than never having coloured it. Green
+and white are not in the palette: they belong to the selection and the hover, and a part that borrowed
+either would be unreadable the moment you selected something. The two drive-mask colours are darker than
+anything in the palette, so a masked limb still reads as masked on a fully annotated body.
+
+The lookup is built when the annotation changes and read per frame, not resolved per bone per frame, and
+it goes with the skeleton in `clearSkeleton` — bone keys repeat across species.
+
+**Size is whether it touches the ground.** A contact is normally a bone *inside* a limb, so giving it a
+colour would mean the one bone whose limb you cannot see is the foot. It gets scale instead. The button
+is labelled **Touches ground** rather than Contact, and contacts follow the same complete-or-remove rule
+as every other multi-bone gesture. They are not only feet: a Caterpie's are belly segments, a Voltorb's is
+one point on a sphere, and a walker needs them wherever they are.
+
+**A selected bone glows and flashes.** It swells, its colour runs to near-white, and a larger additive
+sphere sits behind it — a bright dot on a dark viewport does not read as a glow on its own. The phase is
+one `selectPulse()` shared by the swell, the colour and the halo, or the joints shimmer against each
+other. It is a **triangle wave, not a sine**: the bright end of a sine is where it moves slowest, so a
+sine reads as a dim joint that occasionally brightens rather than as a flash.
+
+Unselected joints have their halo scaled to nothing rather than hidden, which would mean a second
+visibility flag to keep in step with the skeleton toggle.
 
 ### A limb reads its own side
 
@@ -887,7 +907,8 @@ skeleton branches, and 2,136 of 3,496 chains in this dex are a single bone, so t
 select an arm. Below and the alt-drag box are the two selection gestures the phase 2 notes said were
 missing; Below is structural and the box is whatever you can see.
 
-Masked bones are **coloured in the overlay** — blue for posed, red for limp. A mask you cannot see is one
+Masked bones are **coloured in the overlay** — deep blue for posed, deep red for limp, both darker than
+any part colour so a mask still reads on an annotated body. A mask you cannot see is one
 you find out about by wondering why half the body stopped moving.
 
 #### Not saved
