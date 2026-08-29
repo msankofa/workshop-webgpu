@@ -441,15 +441,30 @@ no Jacobians, no matrix inverses, and no configuration where it blows up. It sol
 Pure and free of THREE, so it is tested in Node against real rigs. Quaternions are `[x, y, z, w]` arrays,
 matching THREE's order.
 
-### The reach is one number, and the selection sets it
+### How far up: one number, and the selection sets it
+
+The slider is labelled **How far up** and reads out in bones, because the first version called it "Reach"
+and the first person to see it asked what that meant.
 
 Grab a bone whose ancestors are selected and that unbroken run is the chain. Grab one with nothing selected
 above it and the slider decides. `selectedReach` returns 0 when the selection has nothing to say, which the
 page reads as "fall back", so the two compose instead of competing and there is no mode — what you get is
 whatever is visibly green in the viewport.
 
-Reach 0 means every ancestor up to the root. A bone with nothing above it is not a grab and the drag is
+Zero means every ancestor up to the root. A bone with nothing above it is not a grab and the drag is
 refused; Onix has a lot of those.
+
+### Two scratch vectors, not one
+
+`dragPoint` returns plain numbers rather than a reused `Vector3`. The first version returned the shared
+scratch vector, and the next line read every bone's world position into that same vector — so the solver
+was handed the grabbed bone's *current* position as its target, solved to where it already was, and
+**dragging did nothing at all**. A check now requires `dragPoint` to return numbers and forbids `dragPose`
+from reading `.x` off its target.
+
+The bone objects are resolved once in `beginPose`, not looked up by name on every pointer move, and each
+bone settles with `updateWorldMatrix(false, false)` rather than forcing its whole subtree — which on a
+98-bone rig was the entire skeleton once per chain bone per event.
 
 ### Two solver properties worth knowing
 

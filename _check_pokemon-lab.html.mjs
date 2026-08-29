@@ -391,11 +391,31 @@ check('the reach comes from the selection first and the slider second', () => {
   assert(/chain\.length < 2/.test(begin), 'a bone with nothing above it is not a grab');
 });
 
+check('the drag target is plain data, not a scratch vector something else will overwrite', () => {
+  // This shipped broken once. dragPoint returned a shared Vector3, and the next line read every bone's
+  // world position into that same vector, so the solver was handed the grabbed bone's CURRENT position as
+  // its target and dragging did nothing at all.
+  const point = code.match(/function dragPoint\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(point, 'no dragPoint');
+  assert(/\[_\w+\.x, _\w+\.y, _\w+\.z\]/.test(point), 'dragPoint must return numbers, not a reused vector');
+  const drag = code.match(/function dragPose\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(!/target\.[xyz]/.test(drag), 'reading .x off the target means it is still a vector');
+});
+
+check('the chain is resolved on grab, not rebuilt on every pointer move', () => {
+  const drag = code.match(/function dragPose\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(!/new Map\(/.test(drag), 'a name-to-index map per pointermove is rebuilt thousands of times a drag');
+  assert(/pose\.objects/.test(drag), 'the bone objects should be resolved once in beginPose');
+});
+
 check('a solved chain is applied top-down, since a local rotation depends on a moved parent', () => {
   const drag = code.match(/function dragPose\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(drag, 'no dragPose');
   assert(/for \(let i = 0; i < turns\.length; i\+\+\)/.test(drag), 'the loop must run from the anchor down');
-  assert(/updateMatrixWorld/.test(drag), 'each bone must be settled before its child reads it');
+  assert(/updateWorldMatrix\(false, false\)/.test(drag),
+    'each bone must be settled before its child reads it, and only that bone');
+  assert(!/updateMatrixWorld\(true\)/.test(drag),
+    'forcing the subtree redoes the same work once per chain bone per pointer move');
   assert(/getWorldQuaternion/.test(drag), 'the solver returns world deltas, which need the world rotation');
 });
 

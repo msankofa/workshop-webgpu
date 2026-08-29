@@ -192,20 +192,19 @@
       <h3>Pose</h3>
       <div class="row">
         <button id="poseBtn" title="Drag a bone and let the rest of the body answer.">Pose</button>
-        <span style="color:#9aa4b0; font-size:11px;">Reach</span>
+        <span style="color:#9aa4b0; font-size:11px;">How far up</span>
         <input type="range" id="reach" min="0" max="12" step="1" value="4">
-        <span class="mono" id="reachRead" style="flex:none;">4</span>
+        <span class="mono" id="reachRead" style="flex:none;">4 bones</span>
       </div>
       <div class="mono" id="poseRead">—</div>
       <div class="buttons">
         <button id="takeNeutralBtn" disabled>Save as neutral pose</button>
         <button id="clearNeutralBtn" disabled>Clear</button>
       </div>
-      <p class="hint">Reach is how many bones above the one you grab are allowed to move, and zero means all
-        of them up to the root. If you have selected a run of bones above the one you grab, that run is used
-        instead and the slider shows what it came to.</p>
-      <p class="hint">Turning Pose on stops the clip, because playback rewrites every bone each frame.
-        Turning it off lets the clip take the bones back, so save first if you want to keep the pose.</p>
+      <p class="hint">Dragging a bone bends this many bones above it. At zero it bends every bone up to the
+        root. If you have selected bones above the one you grab, those are bent instead.</p>
+      <p class="hint">Turning Pose on stops the clip. Turning it off lets the clip take the bones back, so
+        save the pose first if you want to keep it.</p>
 
       <h3>Animations</h3>
       <div id="clips" class="mono">—</div>
@@ -745,6 +744,7 @@ addEventListener('pointerup', () => {
   if (pose.bone < 0) return;
   pose.bone = -1;
   pose.chain = [];
+  pose.objects = [];
   controls.enabled = true;
   refreshPose();
 });
@@ -775,9 +775,17 @@ function clearSelection() {
 // The reach is one number and the selection SETS it. Grab a bone whose ancestors are selected and that run
 // is the chain; grab one with nothing selected above it and the slider decides. No mode, and what you get
 // is whatever is visibly green in the viewport.
-const pose = { on: false, reach: 4, bone: -1, chain: [], plane: new THREE.Plane(), grab: new THREE.Vector3() };
+const pose = {
+  on: false, reach: 4, bone: -1, chain: [], objects: [],
+  plane: new THREE.Plane(), grab: new THREE.Vector3(),
+};
 const _ray = new THREE.Raycaster();
+// Two scratch vectors on purpose. Sharing one made dragPoint's result get overwritten by the very next
+// line, which read every bone's world position into it, so the solver was handed the grabbed bone's
+// current position as its target and nothing moved.
 const _hit = new THREE.Vector3();
+const _where = new THREE.Vector3();
+const _dir = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _qp = new THREE.Quaternion();
 const _ndc = new THREE.Vector2();
@@ -796,11 +804,12 @@ function refreshPose() {
     && Object.keys(getAnnotation(library, current.entry.species).neutral.bones).length > 0;
   $('takeNeutralBtn').disabled = !current || !pose.on;
   $('clearNeutralBtn').disabled = !has;
-  $('reachRead').textContent = pose.reach === 0 ? 'all' : String(pose.reach);
+  $('reachRead').textContent = pose.reach === 0 ? 'to the root' : `${pose.reach} bone${pose.reach === 1 ? '' : 's'}`;
+  const saved = has ? ' A neutral pose is saved for this species.' : '';
   $('poseRead').textContent = !current ? '—'
-    : !pose.on ? (has ? 'A neutral pose is saved for this species.' : 'Pose is off.')
-      : pose.chain.length ? `Bending ${pose.chain.length} bones from ${pose.chain[0]}.`
-        : 'Drag a bone to bend the chain above it.';
+    : !pose.on ? `Pose is off. Turn it on to drag bones.${saved}`
+      : pose.chain.length ? `Bending ${pose.chain.length} bones, from ${pose.chain[0]} down.`
+        : `Drag any bone.${saved}`;
 }
 
 /** World point under the pointer on the plane through the grabbed bone, facing the camera. */
@@ -808,7 +817,7 @@ function dragPoint(ev) {
   const rect = renderer.domElement.getBoundingClientRect();
   _ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
   _ray.setFromCamera(_ndc, camera);
-  return _ray.ray.intersectPlane(pose.plane, _hit) ? _hit : null;
+  return _ray.ray.intersectPlane(pose.plane, _where) ? [_where.x, _where.y, _where.z] : null;
 }
 
 function beginPose(index, ev) {
@@ -818,26 +827,28 @@ function beginPose(index, ev) {
   const reach = selectedReach(rig, key, skel.selected) || pose.reach;
   pose.chain = chainUp(rig, key, reach);
   // A root, or a bone with nothing above it to bend, is not a grab. Onix has a lot of these.
-  if (pose.chain.length < 2) { pose.chain = []; pose.bone = -1; refreshPose(); return false; }
+  if (pose.chain.length < 2) { pose.chain = []; pose.objects = []; pose.bone = -1; refreshPose(); return false; }
+
+  // Resolved once here, not per pointermove, which was rebuilding a name-to-index map on every event.
+  const at = new Map(rig.bones.map((b, i) => [b.key, i]));
+  pose.objects = pose.chain.map(k => current.objects[at.get(k)]);
+  if (pose.objects.some(o => !o)) { pose.chain = []; pose.objects = []; pose.bone = -1; refreshPose(); return false; }
   pose.bone = index;
 
-  const at = new THREE.Vector3(skel.xyz[index * 3], skel.xyz[index * 3 + 1], skel.xyz[index * 3 + 2]);
-  pose.plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).negate(), at);
-  pose.grab.copy(at);
+  pose.grab.set(skel.xyz[index * 3], skel.xyz[index * 3 + 1], skel.xyz[index * 3 + 2]);
+  // Drag on the plane through the bone that faces the camera, which is where the pointer already is.
+  pose.plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(_dir).negate(), pose.grab);
   refreshPose();
   return true;
 }
 
 function dragPose(ev) {
   const target = dragPoint(ev);
-  if (!target || pose.chain.length < 2) return;
-  const rig = current.rig;
-  const index = new Map(rig.bones.map((b, i) => [b.key, i]));
-  const objects = pose.chain.map(k => current.objects[index.get(k)]);
-  if (objects.some(o => !o)) return;
+  if (!target || !pose.objects.length) return;
 
+  const objects = pose.objects;
   const before = objects.map((o) => { o.getWorldPosition(_hit); return [_hit.x, _hit.y, _hit.z]; });
-  const after = fabrik(before, [target.x, target.y, target.z]);
+  const after = fabrik(before, target);
   const turns = segmentRotations(before, after);
 
   // Top-down: each bone's local rotation is relative to a parent this loop has already moved.
@@ -849,7 +860,10 @@ function dragPose(ev) {
     _q.multiply(_qp);                                   // the bone's new world rotation
     if (o.parent) { o.parent.getWorldQuaternion(_qp); _q.premultiply(_qp.invert()); }
     o.quaternion.copy(_q);
-    o.updateMatrixWorld(true);
+    // This bone only. The next getWorldQuaternion updates its own ancestors, and updateSkeleton resolves
+    // every bone through getWorldPosition, so forcing the whole subtree here would redo the same work once
+    // per chain bone per pointer move.
+    o.updateWorldMatrix(false, false);
   }
   updateSkeleton();
 }
