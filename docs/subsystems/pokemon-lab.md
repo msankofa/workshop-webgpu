@@ -36,7 +36,7 @@ inferred or eyeballed.
 | `test-pokemon-ik.mjs` | 38 checks: the solver as geometry, twist and bend, chains against real rigs. | shipped |
 | `test-pokemon-hang.mjs` | 27 checks: the physics as physics, the rotation fit against known rotations. | shipped |
 | `test-pokemon-drive.mjs` | 18 checks: the mask, its fit to real clips, and the partial ragdoll as physics. | shipped |
-| `_check_pokemon-lab.html.mjs` | 77 static checks on the page. | shipped |
+| `_check_pokemon-lab.html.mjs` | 82 static checks on the page. | shipped |
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
 
@@ -823,6 +823,38 @@ only read the markup, and nine script-set titles sailed through it.
 
 The tooltip is a plain script rather than part of the module. It needs no THREE, and the page is far more
 debuggable if its labels still explain themselves when the module has failed to load.
+
+### Two histories, and one key press between them
+
+There are **two undo stacks**, and they are separate on purpose:
+
+| | Holds | Lifetime | Where |
+|---|---|---|---|
+| `history` | the annotation library | outlives the species its entries were made on | Undo / Redo, under Saved segments |
+| `bodyHistory` | bone transforms, the drive mask, held poses | dies with the species | Undo / Reset, at the top of Pose |
+
+Merging them would mean offering to undo a pose onto a different skeleton, since a library entry is still
+meaningful after you have moved on and a pose is not. So the body history is cleared with the species it
+names.
+
+Keeping them apart leaves one problem: **Ctrl+Z has to mean "undo what I just did"**, whichever kind that
+was. Both stacks share one counter, `editSeq`, and every entry records when it was made; `undoNewest`
+compares the two tops and takes back the later. No mode, no guessing at intent.
+
+Snapshots are taken **before** an edit, one per drag rather than one per pointer move, so undo steps back by
+something a person did rather than by a frame. The snapshot is taken on the press and only once `beginPose`
+reports the grab took, so a press that grabbed nothing leaves nothing to step through — `beginPose` only
+works out which bones will answer, and nothing has moved yet.
+
+Turning the ragdoll **off** is restored by undo; turning it back on is not. A running simulation has no
+state worth returning to — it would fall somewhere else immediately — so undo puts the body back and leaves
+it stopped.
+
+**Reset** puts the animation back in charge of every bone: no mask, nothing held, ragdoll off. It touches
+nothing in the file — segments and the neutral pose survive it — and it pushes a snapshot first, so it is
+undoable like any other edit rather than a way to lose an afternoon. It ends by re-applying the current
+frame rather than leaving the file's rest pose on screen, because "the animation drives every bone again"
+should not look like the clip was thrown away too.
 
 ### Undo is a stack of references
 

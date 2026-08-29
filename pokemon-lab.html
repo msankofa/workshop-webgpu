@@ -196,7 +196,7 @@
           data-more="Clicking a chain you have already started adds the rest of it rather than removing what you have.">Bones</h3>
       <div class="row">
         <button id="skelBtn" data-tip="Show the skeleton over the model.">Skeleton</button>
-        <button id="bodyBtn" class="on" data-tip="Hide the model and leave the skeleton.">Body</button>
+        <button id="modelBtn" class="on" data-tip="Hide the model and leave the skeleton.">Body</button>
         <span style="color:#9aa4b0; font-size:11px;">Size</span>
         <input type="range" id="jointSize" min="0.3" max="3" step="0.1" value="1"
                data-tip="How big the joint dots are drawn.">
@@ -218,6 +218,12 @@
       <div class="mono" id="driveRead">—</div>
 
       <h3>Pose</h3>
+      <div class="row">
+        <button id="bodyUndoBtn" disabled data-tip="Undo the last change to the pose, to what drives a bone, or to the ragdoll."
+                data-more="A separate history from the Undo under Saved segments, which is for the file. Control-Z takes back whichever of the two you did last.">Undo</button>
+        <button id="bodyResetBtn" disabled data-tip="Put the creature back: the animation drives every bone again."
+                data-more="Nothing saved is touched. Segments and the neutral pose survive it, and the reset itself can be undone.">Reset</button>
+      </div>
       <div class="row">
         <button id="poseBtn" data-tip="Drag a bone and let the rest of the body answer."
                 data-more="Turning this on stops the clip. Turning it off lets the clip take the bones back, so save the pose first if you want to keep it.">Pose</button>
@@ -461,9 +467,14 @@ $('fileNotes').textContent = fileNotes.length ? fileNotes.join('\n') : `Reading 
 // than copied. Every write to `library` goes through commit() so nothing can slip past the history.
 const history = { past: [], future: [], limit: 200 };
 
+// One counter across both histories -- this one and the body's. They undo different things and cannot be
+// merged (a library edit outlives the species it was made on, a pose does not), but "undo the last thing I
+// did" has to mean that whichever it was, so each entry records WHEN and one key press picks the newer.
+let editSeq = 0;
+
 function commit(next) {
   if (next === library) return;
-  history.past.push(library);
+  history.past.push({ seq: ++editSeq, library });
   if (history.past.length > history.limit) history.past.shift();
   history.future.length = 0;
   library = next;
@@ -473,16 +484,16 @@ function commit(next) {
 
 function undo() {
   if (!history.past.length) return;
-  history.future.push(library);
-  library = history.past.pop();
+  history.future.push({ seq: ++editSeq, library });
+  library = history.past.pop().library;
   saveLibrary();
   afterEdit();
 }
 
 function redo() {
   if (!history.future.length) return;
-  history.past.push(library);
-  library = history.future.pop();
+  history.past.push({ seq: ++editSeq, library });
+  library = history.future.pop().library;
   saveLibrary();
   afterEdit();
 }
@@ -666,7 +677,12 @@ async function selectSpecies(species) {
   drive = {};
   held = new Map();
   limp.sim = null;
+  // The body history names bones of the species being left, so it goes with them rather than offering to
+  // undo a pose onto a different skeleton.
+  bodyHistory.past.length = 0;
+  bodyHistory.future.length = 0;
   refreshDrive();
+  refreshBody();
   setPoseMode(false);
   setRagdollMode(false);
   $('stageMsg').style.display = 'none';
@@ -699,7 +715,7 @@ function restorePose() {
 // Positions come from the live Object3D matrices every frame, so the skeleton follows playback and the
 // ghosts and the scrubber without knowing anything about them.
 const skel = {
-  on: false, body: true, joints: null, lines: null, size: 1,
+  on: false, model: true, joints: null, lines: null, size: 1,
   selected: new Set(), hover: -1,
   screen: [],                       // one {x, y, depth, hidden} a bone, in rig.bones order, in CSS pixels
 };
@@ -838,11 +854,11 @@ function setSkeletonVisible(on) {
  * Only the drawing stops. The mixer still runs and `getWorldPosition` still resolves, so the skeleton keeps
  * animating and stays pickable with the body off.
  */
-function setBodyVisible(on) {
-  skel.body = on;
+function setModelVisible(on) {
+  skel.model = on;
   modelRoot.visible = on;
-  $('bodyBtn').classList.toggle('on', on);
-  $('bodyBtn').dataset.tip = on ? 'Hide the model and leave the skeleton.' : 'Show the model again.';
+  $('modelBtn').classList.toggle('on', on);
+  $('modelBtn').dataset.tip = on ? 'Hide the model and leave the skeleton.' : 'Show the model again.';
 }
 
 /** Which bone is under the pointer, or -1. */
@@ -897,6 +913,10 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
     controls.enabled = false;
     refreshRagdoll();
   } else if (pose.on && beginPose(i, ev)) {
+    // On the press and only once the grab took, so one drag is one undo however many pointer moves it
+    // took, and a press that grabbed nothing leaves no entry to step back through. `beginPose` only works
+    // out which bones will answer; nothing has moved yet, so this is still the pose before the drag.
+    pushBody();
     controls.enabled = false;
   }
 });
@@ -1221,7 +1241,7 @@ $('clearNeutralBtn').addEventListener('click', () => {
 });
 
 $('skelBtn').addEventListener('click', () => setSkeletonVisible(!skel.on));
-$('bodyBtn').addEventListener('click', () => setBodyVisible(!skel.body));
+$('modelBtn').addEventListener('click', () => setModelVisible(!skel.model));
 $('clearSelBtn').addEventListener('click', clearSelection);
 $('jointSize').addEventListener('input', () => {
   skel.size = Number($('jointSize').value);
@@ -1271,6 +1291,7 @@ const setDriveFor = (mode) => applyDrive([...skel.selected], mode);
 /** The one place a bone changes what drives it, so the panel and the right-click menu cannot diverge. */
 function applyDrive(keys, mode) {
   if (!current || !keys.length) return;
+  if (keys.some(k => driveOf(drive, k) !== mode)) pushBody();     // nothing to undo if nothing changes
   drive = setDrive(drive, keys, mode);
   for (const key of keys) {
     if (mode === POSED) holdBone(key); else held.delete(key);
@@ -1370,6 +1391,107 @@ function stepLimpFrame(dt) {
     o.updateWorldMatrix(false, false);
   }
 }
+
+// --- undoing and resetting the body -----------------------------------------------------------------
+//
+// A second history, for what the FILE does not hold: where the bones are, what drives them, and whether the
+// ragdoll is running. The library history above cannot carry these -- its entries outlive the species they
+// were made on, and a pose does not -- so they are kept apart and joined only by `editSeq`, which lets one
+// key press undo whichever happened last.
+//
+// Snapshots are taken BEFORE an edit, one per drag rather than one per pointer move, so undo steps back by
+// something a person did rather than by a frame.
+const bodyHistory = { past: [], future: [], limit: 60 };
+
+function bodySnapshot() {
+  if (!current) return null;
+  const trs = (o) => ({ p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() });
+  return {
+    species: current.entry.species,
+    drive: { ...drive },
+    held: [...held.keys()],
+    bones: current.objects.map(o => (o ? trs(o) : null)),
+    ragdoll: !!ragdoll.sim,
+    pose: pose.on,
+  };
+}
+
+function pushBody() {
+  const shot = bodySnapshot();
+  if (!shot) return;
+  bodyHistory.past.push({ seq: ++editSeq, shot });
+  if (bodyHistory.past.length > bodyHistory.limit) bodyHistory.past.shift();
+  bodyHistory.future.length = 0;
+  refreshBody();
+}
+
+function restoreBody(shot) {
+  // A snapshot names bones of one species, so it means nothing against another skeleton.
+  if (!shot || !current || shot.species !== current.entry.species) return;
+  // Turning the ragdoll OFF is restored; turning it back on is not. A running simulation has no state worth
+  // returning to -- it would immediately fall somewhere else -- so undo puts the body back and leaves it.
+  if (ragdoll.sim && !shot.ragdoll) setRagdollMode(false);
+  if (pose.on !== shot.pose) setPoseMode(shot.pose);
+  current.objects.forEach((o, i) => {
+    const t = shot.bones[i];
+    if (o && t) { o.position.copy(t.p); o.quaternion.copy(t.q); o.scale.copy(t.s); }
+  });
+  current.gltf.scene.updateMatrixWorld(true);
+  drive = { ...shot.drive };
+  held = new Map();
+  for (const key of shot.held) holdBone(key);      // re-taken from the bones just restored
+  reseedRagdoll();
+  refreshDrive();
+  updateSkeleton();
+  refreshBody();
+}
+
+function undoBody() {
+  if (!bodyHistory.past.length) return;
+  const now = bodySnapshot();
+  const entry = bodyHistory.past.pop();
+  if (now) bodyHistory.future.push({ seq: ++editSeq, shot: now });
+  restoreBody(entry.shot);
+}
+
+function redoBody() {
+  if (!bodyHistory.future.length) return;
+  const now = bodySnapshot();
+  const entry = bodyHistory.future.pop();
+  if (now) bodyHistory.past.push({ seq: ++editSeq, shot: now });
+  restoreBody(entry.shot);
+}
+
+/**
+ * Put the creature back: the animation drives every bone, nothing is posed or limp, the ragdoll is off.
+ *
+ * Undoable like anything else, because a reset is an edit. Nothing in the FILE is touched -- saved segments
+ * and the neutral pose survive it, and this is not a way to throw work away by accident.
+ */
+function resetBody() {
+  if (!current) return;
+  pushBody();
+  drive = {};
+  held = new Map();
+  limp.sim = null;
+  setPoseMode(false);
+  setRagdollMode(false);
+  restorePose();
+  // Back to the frame you were on, not to the file's rest pose. Reset means "the animation drives every
+  // bone again", and leaving a T-pose on screen would say the clip had been thrown away too.
+  applyFrame();
+  refreshDrive();
+  updateSkeleton();
+  refreshBody();
+}
+
+function refreshBody() {
+  $('bodyUndoBtn').disabled = !bodyHistory.past.length;
+  $('bodyResetBtn').disabled = !current;
+}
+
+$('bodyUndoBtn').addEventListener('click', undoBody);
+$('bodyResetBtn').addEventListener('click', resetBody);
 
 // --- right-clicking a bone --------------------------------------------------------------------------
 //
@@ -2052,19 +2174,29 @@ $('snapshotBtn').addEventListener('click', async () => {
 });
 
 // --- keys -----------------------------------------------------------------------------------------
+
+/** Take back whichever of the two histories moved last, so one key press means "undo what I just did". */
+const topSeq = (stack) => (stack.length ? stack[stack.length - 1].seq : -1);
+function undoNewest() {
+  if (topSeq(bodyHistory.past) > topSeq(history.past)) undoBody(); else undo();
+}
+function redoNewest() {
+  if (topSeq(bodyHistory.future) > topSeq(history.future)) redoBody(); else redo();
+}
+
 addEventListener('keydown', (ev) => {
   // Undo works from anywhere, including a focused text box, which is where the browser's own undo lives
   // and is not what somebody pressing it after saving a segment means.
   const z = (ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z';
-  if (z) { ev.preventDefault(); (ev.shiftKey ? redo : undo)(); return; }
-  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'y') { ev.preventDefault(); redo(); return; }
+  if (z) { ev.preventDefault(); (ev.shiftKey ? redoNewest : undoNewest)(); return; }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'y') { ev.preventDefault(); redoNewest(); return; }
   if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT') {
     if (ev.key === 'Escape') ev.target.blur();
     return;
   }
   if (ev.key === 'Escape') { clearSelection(); return; }
   if (ev.key === 'b') { setSkeletonVisible(!skel.on); return; }
-  if (ev.key === 'h') { setBodyVisible(!skel.body); return; }
+  if (ev.key === 'h') { setModelVisible(!skel.model); return; }
   if (ev.key === ' ') { ev.preventDefault(); $('playBtn').click(); }
   else if (ev.key === 'ArrowLeft') { ev.preventDefault(); stepFrame(-1); }
   else if (ev.key === 'ArrowRight') { ev.preventDefault(); stepFrame(1); }

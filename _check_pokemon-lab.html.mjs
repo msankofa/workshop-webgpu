@@ -488,6 +488,59 @@ check('the root translates as well as turning, or a carried body cannot swing', 
     'rotations alone cannot move the root, so a body held by its head would not swing its hips');
 });
 
+check('the body has its own history, separate from the file\'s', () => {
+  // The library history outlives the species its entries were made on; a pose does not. Merging them would
+  // mean offering to undo a pose onto a different skeleton.
+  assert(/const bodyHistory = /.test(code), 'no body history');
+  const push = code.match(/function pushBody\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/bodyHistory\.past\.push/.test(push) && /bodyHistory\.future\.length = 0/.test(push),
+    'a new edit must record, and must drop the redo stack');
+  assert(/bodyHistory\.limit/.test(push), 'an unbounded pose history would grow without end');
+  const shot = code.match(/function bodySnapshot\([\s\S]*?\n\}/)?.[0] ?? '';
+  for (const field of ['species', 'drive', 'held', 'bones']) {
+    assert(new RegExp(`${field}:`).test(shot), `a snapshot without ${field} cannot restore the body`);
+  }
+  const restore = code.match(/function restoreBody\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/shot\.species !== current\.entry\.species/.test(restore),
+    'a snapshot of one species must not be applied to another');
+});
+
+check('one drag is one undo, and a grab that took nothing leaves no entry', () => {
+  const downs = [...code.matchAll(/renderer\.domElement\.addEventListener\('pointerdown'[\s\S]*?\n\}\);/g)]
+    .map(m => m[0]).filter(s => /beginPose\(/.test(s));
+  assert(downs.length === 1, `found ${downs.length} pointerdown handlers that start a drag`);
+  assert(/beginPose\(i, ev\)\) \{[\s\S]{0,400}?pushBody\(\)/.test(downs[0]),
+    'the snapshot must be taken on the press, and only once the grab took');
+  const move = code.match(/function dragPose\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/limitChain\(\)/.test(move), 'the dragPose slice is wrong, so this reads nothing');
+  assert(!/pushBody\(\)/.test(move), 'a snapshot per pointer move would make undo step back by frames');
+});
+
+check('one key press undoes whichever history moved last', () => {
+  // Two undo buttons with one shortcut between them is only bearable if the shortcut is not arbitrary.
+  assert(/undoNewest/.test(code) && /redoNewest/.test(code), 'the key must route between the two');
+  const fn = code.match(/function undoNewest\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/topSeq\(bodyHistory\.past\) > topSeq\(history\.past\)/.test(fn), 'it must compare when, not guess');
+  assert(/seq: \+\+editSeq/.test(code), 'entries must record when they were made');
+});
+
+check('reset clears the body and nothing else, and is itself undoable', () => {
+  const fn = code.match(/function resetBody\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn, 'no resetBody');
+  assert(/pushBody\(\)/.test(fn), 'a reset you cannot undo is a way to lose work by accident');
+  assert(/drive = \{\}/.test(fn) && /held = new Map\(\)/.test(fn) && /limp\.sim = null/.test(fn),
+    'it must clear the mask, the held transforms and the simulation');
+  assert(!/commit\(|putAnnotation|removeSegment|saveLibrary/.test(fn),
+    'reset must not touch the file: segments and the neutral pose survive it');
+  assert(/applyFrame\(\)/.test(fn), 'it should leave the frame you were on, not the file rest pose');
+});
+
+check('the body history goes with the species it names', () => {
+  const sel = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/skel\.selected = new Set\(\)/.test(sel), 'the selectSpecies slice is wrong, so this reads nothing');
+  assert(/bodyHistory\.past\.length = 0/.test(sel), 'a pose must not be undoable onto another skeleton');
+});
+
 check('right-clicking a bone offers the same three modes, through the same function', () => {
   // Two ways in, one code path. A menu that set the mask itself would be a second place for the held
   // transforms and the re-seed to be forgotten.
