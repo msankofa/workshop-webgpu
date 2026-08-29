@@ -421,6 +421,55 @@ check('a box can be abandoned, and does not need the pointer to stay on the canv
   assert((code.match(/endMarquee\(false\)/g) || []).length >= 2, 'escape and a cancelled pointer must both drop it');
 });
 
+check('the classes offered are the module\'s own, not a second list to drift from it', () => {
+  // A hand-written <option> list is a vocabulary the file does not share. Both selects are built from the
+  // exported arrays, so adding a locomotion class in one place adds it everywhere.
+  const build = code.match(/for \(const \[id, values, blank\][\s\S]*?\n\}/)?.[0] ?? '';
+  assert(build.includes('LOCOMOTION') && build.includes('POSTURES'), 'the selects must be built from the module');
+  assert(!/<option value="(walker|biped)"/.test(markup), 'the vocabularies must not be written out in the markup');
+});
+
+check('every edit to a part goes through one function, and a no-op is not an edit', () => {
+  const fn = code.match(/function editParts\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn.length > 150, `editParts is ${fn.length} chars, so this is reading the wrong slice`);
+  assert(/annotationStamp\(after\) === annotationStamp\(before\)/.test(fn),
+    'pressing a part button that changes nothing must not fill the undo stack');
+  assert(/commit\(putAnnotation/.test(fn), 'a part edit must reach the file through the history');
+  // Any other route to the parts would be a second place to forget the history.
+  const setters = [...code.matchAll(/(setRoot|setSpine|setHead|setContacts|toggleContact|setLocomotion)\(/g)];
+  assert(setters.length >= 6, `only ${setters.length} part setters found, so this regex missed`);
+  for (const m of setters) {
+    const line = code.slice(code.lastIndexOf('\n', m.index) + 1, code.indexOf('\n', m.index));
+    assert(line.includes('editParts('), `${m[1]} is called outside editParts: ${line.trim()}`);
+  }
+});
+
+check('a posture is offered only where it means something', () => {
+  const fn = code.match(/function refreshParts\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn.length > 200, `refreshParts is ${fn.length} chars, so this is reading the wrong slice`);
+  assert(/posture'\)\.disabled = [^;]*!== 'walker'/.test(fn), 'only a walker has a posture');
+});
+
+check('contacts are toggled and shown, not set and hidden', () => {
+  const btn = code.match(/setContactBtn'\)\.addEventListener\([\s\S]*?\n\);/)?.[0]
+    ?? code.match(/setContactBtn'\)\.addEventListener\([^\n]*/)?.[0] ?? '';
+  assert(/toggleContact/.test(btn), 'pressing it again must take the bones off again');
+  assert(/JOINT_CONTACT/.test(code), 'a contact must be visible in the overlay, not only in a list');
+  const paint = code.match(/function paintSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/contactBones\.has/.test(paint), 'the overlay must colour contacts');
+  const select = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/contactBones = new Set\(\)/.test(select), 'bone keys repeat across species, so contacts must be cleared');
+});
+
+check('what is unaddressed is derived, never stored', () => {
+  // A stored to-do list would go stale the moment a part changed, and the file would carry a second
+  // answer to a question the parts already answer.
+  const fn = code.match(/function renderUnaddressed\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn.length > 200, `renderUnaddressed is ${fn.length} chars, so this is reading the wrong slice`);
+  assert(/unaddressed\(/.test(fn), 'it must come from the module');
+  assert(!/putAnnotation|commit\(/.test(fn), 'nothing about it may be written to the file');
+});
+
 check('a selection does not survive a change of species', () => {
   const select = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(/skel\.selected = new Set\(\)/.test(select), 'bone keys mean nothing on the next skeleton');

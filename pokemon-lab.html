@@ -124,6 +124,18 @@
               line-height: 1; flex: none; }
   .seg .del:hover { color: #e07a7a; }
 
+  /* --- named parts --------------------------------------------------------------------------------- */
+  .part { display: flex; align-items: baseline; gap: 6px; padding: 3px 6px; border-radius: 4px; }
+  .part.pick { cursor: pointer; }
+  .part.pick:hover { background: #1c232c; }
+  .part .pn { font: 11px ui-monospace, monospace; color: #9aa4b0; flex: none; min-width: 58px; }
+  .part .pv { font: 11px ui-monospace, monospace; color: #cfd6dd; flex: 1;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .part .pv.none { color: #5c6570; }
+  .part .del { border: none; background: none; color: #6b7480; padding: 0 2px; font-size: 13px;
+               line-height: 1; flex: none; }
+  .part .del:hover { color: #e07a7a; }
+
   .mono { font: 11px/1.6 ui-monospace, monospace; color: #8b95a2; white-space: pre-wrap; }
   .hint { color: #6b7480; font-size: 10.5px; margin: 4px 0 0; }
   #tip { position: fixed; z-index: 40; max-width: 300px; display: none; pointer-events: none;
@@ -210,6 +222,28 @@
       <div class="mono" id="hoverRead"></div>
       <div class="mono" id="selRead">—</div>
       <div class="mono" id="selBones"></div>
+
+      <h3 data-tip="What kind of creature this is, which decides which checks it has to pass."
+          data-more="A species with no legs is usually not a broken walker. Voltorb rolls, Gastly floats, Onix is a serpent, and saying so is most of the fix.">What it is</h3>
+      <div class="row">
+        <select id="locomotion" disabled data-tip="How this species gets about."></select>
+        <select id="posture" disabled data-tip="What it stands on. Only a walker has a posture."></select>
+      </div>
+
+      <h3 data-tip="Select bones, then press what they are."
+          data-more="A part holds a list of bones rather than a reference to a chain, so a limb roughed in with one shift-click can be corrected bone by bone afterwards. Click a part below to put its bones back in the selection.">Parts</h3>
+      <div class="row">
+        <button id="setRootBtn" disabled data-tip="Make the selected bone the root.">Root</button>
+        <button id="setSpineBtn" disabled data-tip="Make the selected bones the spine.">Spine</button>
+        <button id="setHeadBtn" disabled data-tip="Make the selected bones the head.">Head</button>
+        <button id="setContactBtn" disabled data-tip="Say the selected bones touch the ground. Press it again to take them off."
+                data-more="Contacts are not only feet. A Caterpie's are belly segments and a Voltorb's is one point on a sphere, and a walker needs them wherever they are.">Contact</button>
+      </div>
+      <div id="partsRead" class="mono">—</div>
+
+      <h3 data-tip="Bones in no part at all, the biggest first."
+          data-more="Not a to-do list. A bone nothing has been said about is decoration, which is a complete answer; this is here so you can see what you are defaulting rather than find out later.">Unaddressed</h3>
+      <div id="unaddressed" class="mono">—</div>
 
       <h3 data-tip="What moves each bone: the animation, nothing, or the ragdoll. Right-click a bone for the same three."
           data-more="Posed is not limp. A bone with no driver keeps its last local transform and swings around rigidly with its parent; to hang and settle it needs the solver, which is what Limp hands it to.">What moves each bone</h3>
@@ -439,6 +473,8 @@ import {
 import {
   emptyAnnotation, getAnnotation, putAnnotation, setSegment, removeSegment, segmentsOf,
   resolveSegment, wholeClip, segmentKind, poseAt, COMMON_STATES, setNeutralBone, clearNeutral,
+  LOCOMOTION, POSTURES, setLocomotion, setRoot, setSpine, setHead, setContacts, toggleContact,
+  unaddressed, annotationStamp,
 } from './pokemon-annotation.js';
 import { toggleKeys, chainKeysOf, selectionInfo, nearestPoint, pointsInRect } from './pokemon-select.js';
 import { chainUp, selectedReach, fabrik, segmentRotations, limitRelative, qmul, qconj } from './pokemon-ik.js';
@@ -672,6 +708,9 @@ async function selectSpecies(species) {
   // A selection is a set of bone keys for THIS species, so it does not survive a change of species.
   skel.selected = new Set();
   skel.hover = -1;
+  // Bone keys repeat across species, so last species' contacts would colour this one's joints until the
+  // panel caught up.
+  contactBones = new Set();
   buildSkeleton();
   refreshSelection();
   // Posing, the ragdoll and the drive mask are per-species too: none may carry onto the next skeleton.
@@ -693,6 +732,7 @@ async function selectSpecies(species) {
   describeSpecies();
   buildClipList();
   refreshSegments();
+  refreshParts();
   refreshTransport();
 
   // Open on the species' own idle segment if it has one, and otherwise on the manifest's suggestion —
@@ -730,6 +770,10 @@ const JOINT_ROOT = new THREE.Color(0xd8a657);
 // something and wonder why part of the body is not moving.
 const JOINT_POSED = new THREE.Color(0x7f8fd0);
 const JOINT_LIMP = new THREE.Color(0xcf6f8a);
+// Contacts are the one part with a place in the world rather than in the body, and the gates measure them
+// against the floor, so they are worth seeing without opening a list.
+const JOINT_CONTACT = new THREE.Color(0xe08a4a);
+let contactBones = new Set();
 
 function clearSkeleton() {
   for (const key of ['joints', 'lines']) {
@@ -837,7 +881,8 @@ function paintSkeleton() {
       : skel.selected.has(bones[i].key) ? JOINT_SELECTED
         : mode === LIMP ? JOINT_LIMP
           : mode === POSED ? JOINT_POSED
-            : bones[i].key === current.rig.root ? JOINT_ROOT : JOINT_COLOR;
+            : contactBones.has(bones[i].key) ? JOINT_CONTACT
+              : bones[i].key === current.rig.root ? JOINT_ROOT : JOINT_COLOR;
     joints.setColorAt(i, colour);
   }
   if (joints.instanceColor) joints.instanceColor.needsUpdate = true;
@@ -1329,6 +1374,7 @@ function refreshSelection() {
   $('clearSelBtn').disabled = !info?.count;
   $('belowBtn').disabled = !info?.count;
   for (const id of ['driveClipBtn', 'drivePosedBtn', 'driveLimpBtn']) $(id).disabled = !info?.count;
+  refreshPartButtons(info);
   if (!info?.count) {
     $('selRead').textContent = current ? 'Nothing selected.' : '—';
     $('selBones').textContent = '';
@@ -1341,6 +1387,155 @@ function refreshSelection() {
     + (info.chains.partial.length ? ` (${info.chains.partial.length} part-selected)` : '')
     + (info.unbroken ? ', one unbroken run' : '');
   $('selBones').textContent = info.bones.join(' ');
+}
+
+/** Put an exact set of bones in the selection, which is how a named part is edited. */
+function selectBones(keys) {
+  skel.selected = new Set(keys);
+  paintSkeleton();
+  refreshSelection();
+}
+
+// --- what it is, and which bones are which ----------------------------------------------------------
+//
+// The schema and every edit to it are pokemon-annotation.js; this is the wiring. Selection first, then a
+// button says what the selection IS, so there is no mode in which clicking a bone quietly edits a part.
+// Clicking a part puts its bones back in the selection, which closes the loop without a second gesture.
+for (const [id, values, blank] of [['locomotion', LOCOMOTION, 'Unclassified'], ['posture', POSTURES, 'No posture']]) {
+  $(id).append(new Option(blank, ''));
+  for (const v of values) $(id).append(new Option(v[0].toUpperCase() + v.slice(1), v));
+}
+
+/** Every edit to a species' annotation goes through here, so none of them can skip the history. */
+function editParts(fn) {
+  if (!current) return;
+  const before = annotationFor(current.entry.species);
+  const after = fn(before, current.rig);
+  // Pressing Spine on the bones that are already the spine is not an edit, and an undo stack full of
+  // those is one you cannot find anything in.
+  if (annotationStamp(after) === annotationStamp(before)) return;
+  commit(putAnnotation(library, after));
+}
+
+const classify = () => editParts(a => setLocomotion(a, $('locomotion').value || null, $('posture').value || null));
+$('locomotion').addEventListener('change', classify);
+$('posture').addEventListener('change', classify);
+
+$('setRootBtn').addEventListener('click', () => editParts(a => setRoot(a, [...skel.selected][0])));
+$('setSpineBtn').addEventListener('click', () => editParts((a, rig) => setSpine(a, rig, [...skel.selected])));
+$('setHeadBtn').addEventListener('click', () => editParts((a, rig) => setHead(a, rig, [...skel.selected])));
+// Toggling, not setting: pressing it again with the same bones takes them back off, which is the rule
+// every other multi-bone gesture on this page follows.
+$('setContactBtn').addEventListener('click', () => editParts((a, rig) => toggleContact(a, rig, [...skel.selected])));
+
+/** Cheap enough for a hover. The full render is `refreshParts`, which only runs on an edit. */
+function refreshPartButtons(info) {
+  const n = info?.count ?? 0;
+  $('setRootBtn').disabled = n !== 1;
+  for (const id of ['setSpineBtn', 'setHeadBtn', 'setContactBtn']) $(id).disabled = !n;
+}
+
+/** How many bones and how much of the model, which is what says a part is a limb and not a spike. */
+function describeBones(bones) {
+  if (bones.length === 1) return bones[0];
+  const total = current.rig.units.totalVertices || 1;
+  let n = 0;
+  for (const b of bones) n += current.rig.geometry.get(b)?.count ?? 0;
+  return `${bones.length} bones, ${(n / total * 100).toFixed(1)}% of the mesh`;
+}
+
+function refreshParts() {
+  const a = current ? getAnnotation(library, current.entry.species) : null;
+  $('locomotion').disabled = !current;
+  $('locomotion').value = a?.locomotion || '';
+  // A posture only means something for a walker, and `setLocomotion` drops it for anything else.
+  $('posture').disabled = !current || a?.locomotion !== 'walker';
+  $('posture').value = a?.posture || '';
+  renderPartRows(a);
+  renderUnaddressed(a);
+  contactBones = new Set(a?.parts?.contacts || []);
+  paintSkeleton();
+}
+
+function renderPartRows(a) {
+  const host = $('partsRead');
+  host.textContent = '';
+  if (!current) { host.textContent = '—'; return; }
+  const p = a?.parts || {};
+  const rows = [
+    ['Root', p.root ? [p.root] : [], () => editParts(x => setRoot(x, null))],
+    ['Spine', p.spine || [], () => editParts((x, rig) => setSpine(x, rig, []))],
+    ['Head', p.head || [], () => editParts((x, rig) => setHead(x, rig, []))],
+    ['Contacts', p.contacts || [], () => editParts((x, rig) => setContacts(x, rig, []))],
+  ];
+  for (const [label, bones, clear] of rows) {
+    // The skeleton's own root is a measured fact, so it is offered as a starting point rather than
+    // written in: clicking the row selects it and the Root button is still a press away.
+    const suggested = label === 'Root' && !bones.length && current.rig.root ? [current.rig.root] : [];
+    host.append(partRow({
+      label,
+      value: bones.length ? describeBones(bones)
+        : suggested.length ? `nothing yet — the skeleton's own is ${suggested[0]}` : 'nothing yet',
+      dim: !bones.length,
+      pick: bones.length ? bones : suggested,
+      clear: bones.length ? clear : null,
+      clearTip: `Clear the ${label.toLowerCase()}.`,
+    }));
+  }
+}
+
+function partRow({ label, value, dim = false, pick = [], clear = null, clearTip = '' }) {
+  const el = document.createElement('div');
+  el.className = 'part';
+  const name = document.createElement('span');
+  name.className = 'pn';
+  name.textContent = label;
+  const val = document.createElement('span');
+  val.className = dim ? 'pv none' : 'pv';
+  val.textContent = value;
+  el.append(name, val);
+  if (clear) {
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '×';
+    del.dataset.tip = clearTip;
+    del.addEventListener('click', (ev) => { ev.stopPropagation(); clear(); });
+    el.append(del);
+  }
+  if (pick.length) {
+    el.classList.add('pick');
+    el.dataset.tip = 'Put these bones in the selection.';
+    el.addEventListener('click', () => selectBones(pick));
+  }
+  return el;
+}
+
+// Bones worth a row of their own. Below this a bone is a spike or a decal, and there are hundreds.
+const UNADDRESSED_MASS = 0.01;
+const UNADDRESSED_ROWS = 8;
+
+function renderUnaddressed(a) {
+  const host = $('unaddressed');
+  host.textContent = '';
+  if (!current) { host.textContent = '—'; return; }
+  const all = unaddressed(a || emptyAnnotation(current.entry.species, current.rig), current.rig);
+  if (!all.length) { host.textContent = 'Every bone is in a part.'; return; }
+  const mass = all.reduce((m, b) => m + b.mass, 0);
+  const big = all.filter(b => b.mass >= UNADDRESSED_MASS);
+  const head = document.createElement('div');
+  head.textContent = `${all.length} bone${all.length === 1 ? '' : 's'} in no part, `
+    + `${(mass * 100).toFixed(1)}% of the mesh.`;
+  host.append(head);
+  for (const b of big.slice(0, UNADDRESSED_ROWS)) {
+    host.append(partRow({ label: b.key, value: `${(b.mass * 100).toFixed(1)}% of the mesh`, pick: [b.key] }));
+  }
+  const hidden = big.length - Math.min(big.length, UNADDRESSED_ROWS);
+  if (hidden) {
+    const more = document.createElement('div');
+    more.className = 'part';
+    more.textContent = `and ${hidden} more above ${UNADDRESSED_MASS * 100}% of the mesh.`;
+    host.append(more);
+  }
 }
 
 // --- what moves each bone --------------------------------------------------------------------------
@@ -2181,7 +2376,7 @@ $('saveSegBtn').addEventListener('click', () => {
 
 function afterEdit() {
   // Undo can be pressed before any species has finished loading, and the per-species panels would throw.
-  if (current) { refreshSegments(); buildClipList(); describeSpecies(); refreshPose(); }
+  if (current) { refreshSegments(); refreshParts(); buildClipList(); describeSpecies(); refreshPose(); }
   refreshBoard();
   $('undoBtn').disabled = !history.past.length;
   $('redoBtn').disabled = !history.future.length;
