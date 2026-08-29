@@ -36,7 +36,7 @@ inferred or eyeballed.
 | `test-pokemon-ik.mjs` | 38 checks: the solver as geometry, twist and bend, chains against real rigs. | shipped |
 | `test-pokemon-hang.mjs` | 27 checks: the physics as physics, the rotation fit against known rotations. | shipped |
 | `test-pokemon-drive.mjs` | 18 checks: the mask, its fit to real clips, and the partial ragdoll as physics. | shipped |
-| `_check_pokemon-lab.html.mjs` | 74 static checks on the page. | shipped |
+| `_check_pokemon-lab.html.mjs` | 77 static checks on the page. | shipped |
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
 
@@ -766,6 +766,26 @@ angle came from the simulation — and its length would stop matching the constr
 
 The mask is re-seeded whenever it changes, from the pose on screen. Without that, a bone arriving at limp
 would snap to wherever the body was when the species loaded.
+
+#### Right-clicking a bone
+
+The same three modes, at the bone. Two things it does that the panel cannot: it says what that bone is on
+**right now**, and it offers the subtree without making you build a selection first.
+
+It follows the convention every file manager uses. Right-click inside the selection and it acts on the
+selection; right-click outside it and that bone *becomes* the selection first, so what is highlighted is
+always what is about to change. A dot marks the mode every bone in the set is already on.
+
+Both routes go through one `applyDrive(keys, mode)`. A menu that set the mask itself would be a second
+place to forget the held transforms and the re-seed.
+
+Right-clicking **nothing** is left to the browser, so the page does not steal a right-click it has no use
+for. And dragging is now left-button only — without that, the same press that opened a bone's menu also
+started carrying or posing that bone behind it.
+
+Picking needs the skeleton visible, which it no longer is by default. That is deliberate rather than an
+oversight: the dots are what you aim at, and right-clicking for the nearest of a set of invisible targets is
+a worse gesture than turning the skeleton on first.
 
 #### Selecting a limb
 

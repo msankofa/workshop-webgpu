@@ -131,6 +131,18 @@
          color: #b8c0c9; font-size: 11px; line-height: 1.5; box-shadow: 0 6px 18px #0009; }
   #tip .more { display: block; margin-top: 5px; color: #7d8794; }
   #tip .ask { display: block; margin-top: 5px; color: #5c6570; font-size: 10px; }
+
+  #menu { position: fixed; z-index: 45; display: none; min-width: 168px; padding: 4px 0;
+          background: #10151c; border: 1px solid #2f3742; border-radius: 5px;
+          box-shadow: 0 8px 24px #000a; font-size: 11px; }
+  #menu .head { padding: 4px 11px 6px; color: #7d8794; border-bottom: 1px solid #232a33; margin-bottom: 4px; }
+  #menu .head b { color: #cfd6dd; font-weight: 600; }
+  #menu .group { padding: 5px 11px 2px; color: #5c6570; font-size: 10px; }
+  #menu button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0;
+                 background: none; color: #cfd6dd; padding: 5px 11px; font-size: 11px; }
+  #menu button:hover { background: #1c2530; }
+  #menu button[disabled] { color: #5c6570; background: none; }
+  #menu button .now { float: right; color: #5fd08a; }
   .warn { color: #d8a657; font-size: 11px; margin-top: 6px; white-space: pre-wrap; }
   #disk { flex: none; padding: 8px 13px; border-top: 1px solid #222932; color: #7d8794; font-size: 10.5px; }
 
@@ -196,7 +208,7 @@
       <div class="mono" id="selRead">—</div>
       <div class="mono" id="selBones"></div>
 
-      <h3 data-tip="What moves each bone: the animation, nothing, or the ragdoll."
+      <h3 data-tip="What moves each bone: the animation, nothing, or the ragdoll. Right-click a bone for the same three."
           data-more="Posed is not limp. A bone with no driver keeps its last local transform and swings around rigidly with its parent; to hang and settle it needs the solver, which is what Limp hands it to.">What moves each bone</h3>
       <div class="row">
         <button id="driveClipBtn" disabled data-tip="Let the animation drive the selected bones.">Animation</button>
@@ -323,6 +335,7 @@
 </div>
 
 <div id="tip"></div>
+<div id="menu"></div>
 <div id="error"></div>
 
 <script>
@@ -867,6 +880,9 @@ renderer.domElement.addEventListener('pointerleave', () => {
 // distance from where the button went down is the only thing that can tell them apart.
 let downAt = null;
 renderer.domElement.addEventListener('pointerdown', (ev) => {
+  // Left button only. A right-click on a bone opens its menu, and without this it would also start
+  // carrying or posing that bone behind the menu.
+  if (ev.button !== 0) return;
   downAt = { x: ev.clientX, y: ev.clientY };
   if (overGizmo(ev)) return;
   const i = boneAt(ev);
@@ -1250,10 +1266,13 @@ function refreshSelection() {
 let drive = {};
 let held = new Map();
 
-function setDriveFor(mode) {
-  if (!current || !skel.selected.size) return;
-  drive = setDrive(drive, [...skel.selected], mode);
-  for (const key of skel.selected) {
+const setDriveFor = (mode) => applyDrive([...skel.selected], mode);
+
+/** The one place a bone changes what drives it, so the panel and the right-click menu cannot diverge. */
+function applyDrive(keys, mode) {
+  if (!current || !keys.length) return;
+  drive = setDrive(drive, keys, mode);
+  for (const key of keys) {
     if (mode === POSED) holdBone(key); else held.delete(key);
   }
   // A bone leaving limp keeps whatever the simulation last gave it rather than snapping, and one arriving
@@ -1351,6 +1370,74 @@ function stepLimpFrame(dt) {
     o.updateWorldMatrix(false, false);
   }
 }
+
+// --- right-clicking a bone --------------------------------------------------------------------------
+//
+// The same three modes as the panel, at the bone. Two things it does that the panel cannot: it says what
+// the bone is on RIGHT NOW, and it offers the subtree without making you build a selection first.
+//
+// It follows the convention every file manager uses. Right-click inside the selection and it acts on the
+// selection; right-click outside it and that bone becomes the selection first, so what is highlighted is
+// always what is about to change.
+const MODE_LABEL = { [CLIP]: 'Animation', [POSED]: 'Posed', [LIMP]: 'Limp' };
+
+function closeMenu() { $('menu').style.display = 'none'; }
+
+function openMenu(ev, index) {
+  const rig = current.rig;
+  const key = rig.bones[index].key;
+  if (!skel.selected.has(key)) {
+    skel.selected = new Set([key]);
+    paintSkeleton();
+    refreshSelection();
+  }
+  const target = [...skel.selected];
+  const below = new Set(target);
+  for (const k of target) for (const d of descendants(rig, k)) below.add(d);
+
+  const el = $('menu');
+  el.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'head';
+  head.innerHTML = `<b>${key}</b> — ${MODE_LABEL[driveOf(drive, key)].toLowerCase()}`;
+  el.appendChild(head);
+
+  const section = (label, keys) => {
+    if (label) {
+      const g = document.createElement('div');
+      g.className = 'group';
+      g.textContent = label;
+      el.appendChild(g);
+    }
+    for (const mode of [CLIP, POSED, LIMP]) {
+      const b = document.createElement('button');
+      // A tick on the mode every bone in the set is already on, so the menu reads as state and not a guess.
+      const all = keys.every(k => driveOf(drive, k) === mode);
+      b.innerHTML = `${MODE_LABEL[mode]}${all ? '<span class="now">•</span>' : ''}`;
+      b.addEventListener('click', () => { closeMenu(); applyDrive(keys, mode); });
+      el.appendChild(b);
+    }
+  };
+
+  section(target.length === 1 ? null : `These ${target.length} bones`, target);
+  if (below.size > target.length) section(`With everything below (${below.size})`, [...below]);
+
+  el.style.display = 'block';
+  const r = el.getBoundingClientRect();
+  el.style.left = `${Math.max(4, Math.min(ev.clientX, innerWidth - r.width - 4))}px`;
+  el.style.top = `${Math.max(4, Math.min(ev.clientY, innerHeight - r.height - 4))}px`;
+}
+
+renderer.domElement.addEventListener('contextmenu', (ev) => {
+  const i = boneAt(ev);
+  // Off a bone the browser menu is left alone, so the page does not steal a right-click it has no use for.
+  if (i < 0) { closeMenu(); return; }
+  ev.preventDefault();
+  openMenu(ev, i);
+});
+addEventListener('pointerdown', (ev) => { if (!ev.target?.closest?.('#menu')) closeMenu(); });
+addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeMenu(); });
+addEventListener('blur', closeMenu);
 
 $('driveClipBtn').addEventListener('click', () => setDriveFor(CLIP));
 $('drivePosedBtn').addEventListener('click', () => setDriveFor(POSED));

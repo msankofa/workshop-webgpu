@@ -488,6 +488,39 @@ check('the root translates as well as turning, or a carried body cannot swing', 
     'rotations alone cannot move the root, so a body held by its head would not swing its hips');
 });
 
+check('right-clicking a bone offers the same three modes, through the same function', () => {
+  // Two ways in, one code path. A menu that set the mask itself would be a second place for the held
+  // transforms and the re-seed to be forgotten.
+  assert(/addEventListener\('contextmenu'/.test(code), 'no right-click handler');
+  const open = code.match(/function openMenu\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(open, 'no openMenu');
+  assert(/applyDrive\(keys, mode\)/.test(open), 'the menu must go through the one apply');
+  assert(/for \(const mode of \[CLIP, POSED, LIMP\]\)/.test(open), 'all three modes must be offered');
+  assert(/descendants\(rig, k\)/.test(open), 'the menu must offer the subtree, which is why it exists');
+  // Right-clicking nothing must leave the browser's own menu alone.
+  const handler = code.match(/addEventListener\('contextmenu'[\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert(/if \(i < 0\)/.test(handler) && handler.indexOf('preventDefault') > handler.indexOf('if (i < 0)'),
+    'a right-click that hits no bone must not be swallowed');
+});
+
+check('a right-click does not also grab the bone it opened a menu on', () => {
+  // Without this the same press starts carrying or posing the bone, behind its own menu.
+  // There is more than one pointerdown on the canvas, so this picks the one by what it does rather than
+  // by which comes first.
+  const downs = [...code.matchAll(/renderer\.domElement\.addEventListener\('pointerdown'[\s\S]*?\n\}\);/g)]
+    .map(m => m[0]).filter(s => /beginPose\(/.test(s));
+  assert(downs.length === 1, `found ${downs.length} pointerdown handlers that start a drag`);
+  const down = downs[0];
+  assert(/ev\.button !== 0/.test(down), 'dragging must be left-button only');
+});
+
+check('the menu closes on anything that should close it', () => {
+  assert(/Escape/.test(code) && /addEventListener\('blur', closeMenu\)/.test(code),
+    'escape and losing focus must both dismiss it');
+  assert(/closest\?\.\('#menu'\)|closest\('#menu'\)/.test(code),
+    'clicking away must dismiss it, but clicking it must not');
+});
+
 check('each of the three drives has a control and reaches the frame', () => {
   for (const id of ['driveClipBtn', 'drivePosedBtn', 'driveLimpBtn']) {
     assert(ids.has(id), `no ${id}`);
@@ -533,7 +566,9 @@ check('the mask is re-seeded when it changes, not left pointing at an old pose',
   const fn = code.match(/function reseedRagdoll\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(fn, 'no reseedRagdoll');
   assert(/updateSkeleton\(\)/.test(fn) && /limp\.seed = /.test(fn), 'the seed must be taken from the live pose');
-  assert(/reseedRagdoll\(\)/.test(code.match(/function setDriveFor\([\s\S]*?\n\}/)?.[0] ?? ''),
+  const apply = code.match(/function applyDrive\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/drive = setDrive\(/.test(apply), 'the applyDrive slice is wrong, so this reads nothing');
+  assert(/reseedRagdoll\(\)/.test(apply),
     'changing the mask must re-seed, or a newly limp bone snaps to where the species loaded');
 });
 
