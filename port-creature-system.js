@@ -1422,7 +1422,9 @@ class Creature {
 
   _makeDebugGroup() {
     const group = new THREE.Group();
-    const poly = new THREE.LineLoop(new THREE.BufferGeometry(), debugPolyMat);
+    // A Line, not a LineLoop: WebGPU refuses LineLoop once a frame and draws nothing. The closing edge is
+    // added where the points are set instead.
+    const poly = new THREE.Line(new THREE.BufferGeometry(), debugPolyMat);
     const normal = new THREE.Line(new THREE.BufferGeometry(), debugNormalMat);
     const com = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 8), debugComMat);
     const scans = new THREE.LineSegments(new THREE.BufferGeometry(), debugScanMat);
@@ -2731,7 +2733,8 @@ class Creature {
     const poly = this.debugData.poly;
     if (poly.length >= 2) {
       dbg.poly.geometry.dispose();
-      dbg.poly.geometry = new THREE.BufferGeometry().setFromPoints(poly);
+      // The first point again, so a Line closes the support polygon the way a LineLoop used to.
+      dbg.poly.geometry = new THREE.BufferGeometry().setFromPoints(poly.concat(poly[0]));
       dbg.poly.visible = true;
     } else {
       dbg.poly.visible = false;

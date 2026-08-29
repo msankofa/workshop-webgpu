@@ -27,16 +27,19 @@ inferred or eyeballed.
 | `pokemon-ik.js` | FABRIK, and which bones answer a drag. | shipped |
 | `pokemon-hang.js` | A ragdoll from a rig, and particles back to bone rotations. | shipped |
 | `pokemon-drive.js` | What moves each bone: the clip, nothing, or the ragdoll. | shipped |
-| `pokemon-lab.html` | The page. | browse, segments and bone picking shipped |
+| `pokemon-map-scope.js` | Which files count as this subsystem, and what imports what. | shipped |
+| `pokemon-map-view.js` | The Map tab's scene, on the page's own renderer. | shipped |
+| `filesystem-map-core.js` | Tree, force layout and clusters. Generic; infra, not lab. | shipped |
+| `pokemon-lab.html` | The page. | browse, segments, picking, posing and annotating shipped |
 | `test-pokemon-rig.mjs` | 38 checks, mostly over all 151 models. | shipped |
-| `test-pokemon-annotation.mjs` | 62 checks, built against real rigs. | shipped |
+| `test-pokemon-annotation.mjs` | 65 checks, built against real rigs. | shipped |
 | `test-pokemon-lab-io.mjs` | 30 checks, including two cross-checks. | shipped |
 | `test-pokemon-pose.mjs` | 29 checks, four species. | shipped |
-| `test-pokemon-select.mjs` | 20 checks, six species. | shipped |
+| `test-pokemon-select.mjs` | 25 checks, six species: the three gestures and the picking maths. | shipped |
 | `test-pokemon-ik.mjs` | 38 checks: the solver as geometry, twist and bend, chains against real rigs. | shipped |
 | `test-pokemon-hang.mjs` | 27 checks: the physics as physics, the rotation fit against known rotations. | shipped |
 | `test-pokemon-drive.mjs` | 18 checks: the mask, its fit to real clips, and the partial ragdoll as physics. | shipped |
-| `_check_pokemon-lab.html.mjs` | 82 static checks on the page. | shipped |
+| `_check_pokemon-lab.html.mjs` | 98 static checks on the page. | shipped |
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
 
@@ -500,11 +503,15 @@ anything in the palette, so a masked limb still reads as masked on a fully annot
 The lookup is built when the annotation changes and read per frame, not resolved per bone per frame, and
 it goes with the skeleton in `clearSkeleton` — bone keys repeat across species.
 
-**Size is whether it touches the ground.** A contact is normally a bone *inside* a limb, so giving it a
-colour would mean the one bone whose limb you cannot see is the foot. It gets scale instead. The button
-is labelled **Touches ground** rather than Contact, and contacts follow the same complete-or-remove rule
-as every other multi-bone gesture. They are not only feet: a Caterpie's are belly segments, a Voltorb's is
-one point on a sphere, and a walker needs them wherever they are.
+**Size is whether it stands on the ground.** A contact is normally a bone *inside* a limb, so giving it a
+colour outright would mean the one bone whose limb you cannot see is the foot. It gets scale instead —
+and a colour of its own **only where nothing else gave it one**, because a Caterpie's belly segment is in
+no limb and would otherwise be the one part you named that still looked unnamed.
+
+The button says **Foot**, which is what it is on most of the dex. The file still calls the list
+`contacts`, because a Caterpie stands on belly segments and a Voltorb on one point of a sphere, and a
+walker needs them wherever they are. Contacts follow the same complete-or-remove rule as every other
+multi-bone gesture.
 
 **A selected bone glows and flashes.** It swells, its colour runs to near-white, and a larger additive
 sphere sits behind it — a bright dot on a dark viewport does not read as a glow on its own. The phase is
@@ -514,6 +521,23 @@ sine reads as a dim joint that occasionally brightens rather than as a flash.
 
 Unselected joints have their halo scaled to nothing rather than hidden, which would mean a second
 visibility flag to keep in step with the skeleton toggle.
+
+### Turning the model down
+
+**Wireframe** and **Opacity**, both acting on the model's own materials. Under WebGPU `material.wireframe`
+selects a line-list topology and the renderer builds the wireframe index buffer itself, so this is the
+same one line it would be on WebGL rather than a second draw path.
+
+Below full opacity the materials also stop **writing depth**. Without that, the near surface of a
+see-through body still occludes the skeleton, which is the one thing you turned the model down to look at.
+
+`transparent` is the property that decides how a material compiles, so it is the only one that takes a
+`needsUpdate`, and it takes one **only when it actually flips** — asking on every slider tick would
+recompile the whole model as you dragged.
+
+The look is a page setting, not a fact about a species, so it never reaches the file. Because materials
+are cached per species, it is re-applied on every load rather than only when a control moves; otherwise
+the next species arrives solid while the button still reads Wireframe. A check pins both halves.
 
 ### A limb reads its own side
 
@@ -1003,6 +1027,39 @@ Three.js `ViewHelper`, bottom right. Clicking an axis snaps the camera to it. It
 swallowing the release means OrbitControls never learns the drag ended and the camera keeps orbiting with
 the button up. A check forbids the `stopPropagation` form.
 
+## Sound: the Stadium soundtrack, and the cries
+
+The page reuses `environment-audio.js` — the shared controller every viewer plays music and SFX through —
+rather than growing its own Web Audio code. It is created with `getPlayerPosition: () => controls.target`,
+so every speaker behavior that is written against "the player" is in fact written against the point the
+camera orbits, which is where the creature stands. `envAudio.update()` runs once per frame so the Web
+Audio listener follows the orbiting camera.
+
+**Music** is the ripped Stadium soundtrack in `pokemon/Stadium Music/`, listed by `serve.py`'s
+`GET /api/list-pokemon-music` and fed to `loadMusicHttp` with that listing and base URL — the stock HTTP
+playlist path, pointed at a different folder. The panel's Music section is transport (previous, play or
+pause, next, shuffle), a track dropdown, a seek bar, and the music volume, all synced from
+`subscribe()`/`getState()`. Nothing plays until the play button; the controller is created with
+`autoplayOnGesture: false`.
+
+The output select is the controller's own global-versus-speaker choice. The speaker is the orb from the
+other viewers (scaled to 0.6 here), and the behavior select carries the four follow behaviors plus one
+added for this page: **`fixed`** ("Where you put it"), which holds a world position instead of following
+anything. Dragging the orb in the scene — a capture-phase `pointerdown` on the stage, so a grab never
+also orbits the camera or picks a bone — moves it on the camera-facing plane through it via
+`setMusicSpeakerPosition`, which also switches the behavior to `fixed`. `getMusicSpeakerObject` exists so
+the page can raycast the orb; the orb is a real mesh, which is why the "no raycasts outside dragPoint"
+check names `speakerOrbHit`/`speakerDragPoint` as the other allowed homes.
+
+**Cries** are `pokemon/poke_cries/`, one file per species, listed by `GET /api/list-pokemon-cries` and
+matched **by the three-digit dex prefix**, never by name — the files spell names their own way
+(`Farfetchd`, `Mr-Mime`). The Play cry button fetches and decodes the buffer once per species (a failed
+load is retried, not cached), then plays it through the controller's newly exported `playBufferAt` — the
+same panner chain positional SFX use — at the annotated head's position, or the mean of all bone
+positions when no head has been annotated. Bones, not the mesh bounding box, because the mesh bounding
+volumes on these models are garbage (vertices are authored bone-local). Orbiting the camera pans and
+attenuates the cry.
+
 ## Tests
 
 Both pure suites run over the real models rather than fixtures, because a fixture built from an assumption
@@ -1041,3 +1098,72 @@ One of its checks is there because the selection box shipped invisible. Assignin
 **removes** the inline style, so an element the stylesheet hides stays hidden while the code reads as
 though it works — right for `#stageMsg`, whose stylesheet value is `flex`, and wrong for the four ids
 hidden by default. The check reads the stylesheet for those ids and forbids showing them with `''`.
+
+## The Map tab
+
+The Pokémon-specific filesystem as a force-directed node graph, at the top of the page beside Browse.
+It answers a question the file table cannot: what this subsystem actually touches, and where it touches
+things it does not own.
+
+It runs on the page's **existing** renderer. A second `WebGPURenderer` on a page already driving a
+151-model viewer would cost a whole extra render path for a picture of forty files, and two
+`setAnimationLoop` owners on one canvas fight over it, so the tab swaps which scene is drawn and steps
+nothing else while it is up. Exactly one `OrbitControls` is enabled at a time, for the same reason.
+Everything is built on the first click, so browse mode never pays for a repo scan it may not show.
+
+### Scope is rules, not a list
+
+`pokemon-map-scope.js` decides membership with patterns rather than filenames, because the list goes
+stale faster than anyone updates it — the Lab gained five modules in a single night. A rule picks up
+`pokemon-gates.js` the day it is written.
+
+Six groups. `lab`, `docs`, `data` and `borrowed` are on by default; **`moves` and `old` are off and
+toggle on**, because they are neighbours rather than parts: nothing imports either one today.
+
+**Group is a role, path is a fact, and the path wins.** The moves tests physically live in
+`pokemon-park-old/`, so they are drawn inside the archive with a note saying what they really are.
+Grouping by location keeps the toggles predictable — turning off `old` empties that cluster and nothing
+else.
+
+`models/stadium` collapses to one weighted node. Expanded it is 151 model files against twenty code
+files, and it would be the entire picture. Its label counts extensions rather than assuming, because the
+directory holds 151 models **and** the manifest, and calling it "152 models" would be wrong in a way
+nobody would ever check.
+
+### The edges are the point
+
+Tree edges say where a file lives, which a listing already tells you. The two that earn the map are
+drawn over them: green for an import, blue joining a test to what it checks. Test edges are derived from
+the naming convention, so a new test needs no edit. Import edges are hand-written, because they are facts
+about the code that no directory listing knows — and `test-pokemon-map-scope.mjs` reads every one back
+out of the source, then checks the other direction too, so an import the page gains cannot go undrawn.
+That check has already earned itself twice: it caught `environment-audio.js` becoming a dependency, and
+it caught the map's own modules.
+
+### The one that got away from the static checks
+
+`tab` and `mapView` are declared above `resize()` rather than beside the rest of the map tab, and must
+stay there. `resize()` is called immediately below its own definition, so a `let` declared further down is
+still in its temporal dead zone — the read **throws** rather than seeing `undefined`, and `?.` does not
+save you, because the throw is on the read itself. The page died on load with the map tab never opened.
+`_check_pokemon-lab.html.mjs` now asserts that `resize()` only reads what is declared above it.
+
+### The tab strip added a row, and the row needed a minimum
+
+`#stage` must keep **both** `min-width: 0` and `min-height: 0`. A grid item defaults to `min-*: auto` and
+refuses to shrink below its content; the canvas is 100% of that box, so the canvas size feeds the track
+size which feeds the canvas size, and the browser reports *ResizeObserver loop completed with undelivered
+notifications*. `min-width` was always there and `.col` already had `min-height` — the vertical half was
+simply never needed until the tab strip gave `#app` a second row. `resize()` also returns early when the
+size has not changed, which is the other half of the same loop.
+
+### Two things it shows that the table does not
+
+`pokemon-pose.js` floats unconnected — written, tested, imported by nothing. And `filesystem-map-core.js`
+sits in `borrowed` rather than `lab`, because it is generic infra shared with `tools/filesystem-map.html`.
+
+**That page still carries its own copy of the layout math.** It predates this module and was not
+refactored, so the two are twins that must be changed together; the header of `filesystem-map-core.js`
+says so. The one deliberate difference is that randomness is injected here rather than taken from
+`Math.random`, so a seeded layout is reproducible — which is what stops the graph jumping every time a
+toggle is clicked, and what lets a test assert a position at all.

@@ -130,7 +130,13 @@ check('the fetched paths are ones serve.py serves', () => {
   const fetched = [...code.matchAll(/fetch\(([^)]*)\)/g)].map(m => m[1]);
   assert(fetched.length, 'nothing is fetched, which cannot be right');
   for (const f of fetched) {
-    assert(/modelURL|snapshotWriteURL/.test(f), `an unrecognised fetch: ${f}`);
+    assert(/modelURL|snapshotWriteURL|list-pokemon-cries|poke_cries/.test(f), `an unrecognised fetch: ${f}`);
+  }
+  // The audio routes the page names must really exist in serve.py, not be hoped for — the page looks
+  // fine right up until the listing 404s and the music panel is silently empty.
+  const serve = fs.readFileSync('serve.py', 'utf8');
+  for (const route of ['/api/list-pokemon-music', '/api/list-pokemon-cries']) {
+    if (code.includes(route)) assert(serve.includes(`'${route}'`), `${route} is not a serve.py route`);
   }
   // The model directory and the manifest both come from pokemon-lab-io.js rather than being retyped here.
   assert(!/models\/stadium/.test(code), 'the model path belongs in pokemon-lab-io.js, not in the page');
@@ -350,11 +356,15 @@ check('bones are picked in screen space, matching what is drawn', () => {
   assert(at, 'no boneAt');
   assert(!/Raycaster|intersect/.test(at), 'picking a bone must not raycast');
   assert(/getBoundingClientRect/.test(at), 'a hit must be measured against the canvas, not the page');
-  // A raycaster is fine for the drag PLANE, which is a different job. Anywhere else and picking has
-  // quietly grown a second implementation.
+  // A raycaster is fine for the drag PLANE, and for the speaker orb — a real mesh with a real bounding
+  // volume, which is exactly what a ray is for. Anywhere else and picking has quietly grown a second
+  // implementation.
+  const allowed = ['dragPoint', 'speakerOrbHit', 'speakerDragPoint'];
   const rays = [...code.matchAll(/_?ray\w*\.(setFromCamera|intersect\w+)/g)].length;
-  const inDrag = [...(code.match(/function dragPoint\([\s\S]*?\n\}/)?.[0] ?? '').matchAll(/_?ray\w*\.(setFromCamera|intersect\w+)/g)].length;
-  assert(rays === inDrag, `${rays - inDrag} raycast call(s) outside dragPoint`);
+  const inAllowed = allowed
+    .map(name => code.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`))?.[0] ?? '')
+    .reduce((n, fn) => n + [...fn.matchAll(/_?ray\w*\.(setFromCamera|intersect\w+)/g)].length, 0);
+  assert(rays === inAllowed, `${rays - inAllowed} raycast call(s) outside ${allowed.join('/')}`);
 });
 
 check('a click that moved the camera is not a pick', () => {
@@ -501,6 +511,11 @@ check('contacts are toggled, and drawn as size so a limb keeps its colour', () =
   assert(/skel\.contact\[i\] \? CONTACT_SCALE/.test(place), 'a contact must be visible without stealing a colour');
   const paint = code.match(/function paintSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(!/contact/i.test(paint), 'a contact must not take a colour from the part it is in');
+  // But a foot in NO limb has no colour to keep, and grey is what an unaddressed bone looks like — so it
+  // falls back to a colour of its own rather than looking like a bone nobody has said anything about.
+  const colours = code.match(/function refreshPartColors\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/!skel\.partColor\[i\][\s\S]{0,60}PART_TINT\.foot/.test(colours),
+    'a foot that is in no limb must not be drawn as an unaddressed bone');
 });
 
 check('a bone is coloured by the part it is in', () => {
@@ -524,6 +539,37 @@ check('a bone is coloured by the part it is in', () => {
   const clear = code.match(/function clearSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(/skel\.partColor = \[\]/.test(clear) && /skel\.contact = \[\]/.test(clear),
     'bone keys repeat across species, so these go with the skeleton');
+});
+
+check('nothing asks WebGPU to draw an object it refuses', () => {
+  // LineLoop is the only object type this renderer rejects outright, and it rejects it once a FRAME: the
+  // floor ring never drew and filled the console at 60 a second. Read from the shipped build rather than
+  // written down here, so a future version that refuses something else fails this too.
+  const three = fs.readFileSync('node_modules/three/build/three.webgpu.js', 'utf8');
+  const refused = [...three.matchAll(/Objects of type THREE\.(\w+) are not supported/g)].map(m => m[1]);
+  assert(refused.length, 'found no refusal messages in the build, so this check reads nothing');
+  for (const type of new Set(refused)) {
+    assert(!new RegExp(`new THREE\\.${type}\\(`).test(code), `THREE.${type} is not drawn by this renderer`);
+  }
+});
+
+check('how the model is drawn survives loading the next one', () => {
+  // The materials are cached per species, so a look pushed only when a control moves would leave the next
+  // species solid while the button still says Wireframe.
+  const fn = code.match(/function applyModelLook\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn.length > 300, `applyModelLook is ${fn.length} chars, so this is reading the wrong slice`);
+  const select = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/applyModelLook\(\)/.test(select), 'the look must be re-applied on every load');
+  assert(/wireframe = modelLook\.wire/.test(fn) && /opacity = modelLook\.opacity/.test(fn),
+    'both controls must reach the material');
+  // `transparent` decides how the material compiles, so it is the one that needs a rebuild — and asking
+  // for one when it has not changed would recompile the model on every slider tick.
+  assert(/m\.transparent !== clear[\s\S]{0,80}needsUpdate = true/.test(fn),
+    'transparent must flip with a rebuild, and only when it actually flips');
+  assert(/depthWrite = !clear/.test(fn),
+    'a see-through body must stop writing depth, or it hides the skeleton it was turned down to reveal');
+  assert(!/modelLook[\s\S]{0,60}putAnnotation|putAnnotation[\s\S]{0,60}modelLook/.test(code),
+    'how you are looking is not a fact about a species, so it must not reach the file');
 });
 
 check('a selected bone glows and flashes, on one phase for the whole overlay', () => {
@@ -912,6 +958,45 @@ check('a toggle with two named states says which one it is in', () => {
   assert(/textContent = on \? 'Discrete' : 'Continuous'/.test(snap), 'the label must be the mode');
   assert(!/snapBtn'\)\.classList\.toggle\('on'/.test(snap), 'a lit state as well would be the same fact twice');
   assert(!/>Snap</.test(markup), 'the markup still hardcodes the old label');
+});
+
+check('resize() only reads things declared above it', () => {
+  // `let` and `const` sit in a temporal dead zone until their declaration RUNS, so a read above it throws
+  // rather than seeing undefined -- and `?.` does not help, because the throw is on the read itself.
+  // This shipped: resize() called `mapView?.resize()` and resize() is invoked immediately below its own
+  // definition, while `let mapView` sat two thousand lines further down, so the page died on load with the
+  // map tab never opened. resize() is the one function this page runs during setup, so it is the one that
+  // has to obey.
+  const at = code.indexOf('function resize()');
+  assert(at > 0, 'resize() must exist for this check to mean anything');
+  const body = code.slice(at).match(/function resize\(\)[\s\S]*?\n\}/)?.[0] ?? '';
+  const above = code.slice(0, at);
+  const declaredAbove = new Set(
+    [...above.matchAll(/(?:let|const|function|class)\s+([A-Za-z_$][\w$]*)/g)].map(m => m[1]));
+  const declaredBelow = new Set(
+    [...code.slice(at).matchAll(/^(?:let|const)\s+([A-Za-z_$][\w$]*)/gm)].map(m => m[1]));
+  const locals = new Set([...body.matchAll(/(?:let|const)\s+([A-Za-z_$][\w$]*)/g)].map(m => m[1]));
+  for (const m of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*(?:\?\.|\.)/g)) {
+    const name = m[1];
+    if (locals.has(name) || declaredAbove.has(name)) continue;
+    assert(!declaredBelow.has(name),
+      `resize() reads ${name}, which is declared below it - that throws on load, not undefined`);
+  }
+});
+
+check('the canvas box can shrink, so the resize observer settles', () => {
+  // A grid item defaults to min-width/min-height: auto and refuses to shrink below its content. The
+  // canvas is 100% of #stage, so without both minimums the canvas size feeds the track size which feeds
+  // the canvas size, and the browser reports "ResizeObserver loop completed with undelivered
+  // notifications". min-width was always here; min-height became necessary when the tab strip gave #app
+  // a second row.
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  const rule = css.split('}').find(r => /#stage\s*\{/.test(r + '}')) ?? '';
+  assert(/min-width:\s*0/.test(rule), '#stage must be allowed to shrink horizontally');
+  assert(/min-height:\s*0/.test(rule), '#stage must be allowed to shrink vertically');
+  // And the handler must not re-write a size that has not changed, which is the other half of the loop.
+  const fn = code.match(/function resize\(\)[\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/lastW|lastH/.test(fn), 'resize() must skip when the size is unchanged');
 });
 
 check('the page says how to run it', () => {

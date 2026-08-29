@@ -42,7 +42,38 @@
   html, body { margin: 0; height: 100%; background: #0d1014; color: #cfd6dd;
                font: 13px/1.45 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
   canvas { display: block; }
-  #app { display: grid; grid-template-columns: 300px 1fr 320px; height: 100%; }
+  #app { display: grid; grid-template-columns: 300px 1fr 320px; grid-template-rows: auto 1fr;
+         height: 100%; }
+
+  /* --- the tab strip ---------------------------------------------------------------------------
+     Spans all three columns so the mode is the first thing read, above the dex rather than inside it. */
+  #tabs { grid-column: 1 / -1; display: flex; align-items: center; gap: 2px; padding: 0 10px;
+          background: #0f1319; border-bottom: 1px solid #2a323c; }
+  #tabs .tab { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+               padding: 8px 13px; color: #7d8794; font-size: 12px; }
+  #tabs .tab:hover { color: #cfd6dd; }
+  #tabs .tab.on { color: #9fe0b8; border-bottom-color: #5fd08a; }
+  #tabs .spacer { flex: 1; }
+  #tabs .note { color: #6b7480; font-size: 10.5px; }
+
+  /* --- the map overlay -------------------------------------------------------------------------
+     Sits over the stage rather than in the side column, so switching tabs does not rebuild the panel
+     the browse mode is using. */
+  #mapPanel { position: absolute; top: 10px; left: 10px; width: 226px; z-index: 5;
+              background: rgba(17, 21, 27, 0.92); border: 1px solid #2a323c; border-radius: 6px;
+              padding: 9px 11px 11px; display: none; }
+  #mapPanel h3 { margin: 0 0 6px; }
+  #mapPanel .grp { display: flex; align-items: baseline; gap: 7px; padding: 3px 0; cursor: pointer; }
+  #mapPanel .grp input { margin: 0; accent-color: #5fd08a; }
+  #mapPanel .grp .sw { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  #mapPanel .grp .nm { font-size: 11.5px; color: #cfd6dd; flex: 1; }
+  #mapPanel .grp .ct { font: 10px ui-monospace, monospace; color: #6b7480; flex: none; }
+  #mapPanel .grp.locked .nm { color: #7d8794; }
+  #mapHint { color: #6b7480; font-size: 10.5px; margin: 7px 0 0; }
+  #mapRead { position: absolute; bottom: 10px; left: 10px; z-index: 5; max-width: 460px; display: none;
+             background: rgba(17, 21, 27, 0.94); border: 1px solid #2a323c; border-radius: 6px;
+             padding: 8px 11px; font: 11px/1.55 ui-monospace, monospace; color: #8b95a2;
+             white-space: pre-wrap; pointer-events: none; }
 
   .col { background: #11151b; border-right: 1px solid #222932; display: flex; flex-direction: column;
          min-height: 0; }
@@ -175,7 +206,11 @@
   .warn { color: #d8a657; font-size: 11px; margin-top: 6px; white-space: pre-wrap; }
   #disk { flex: none; padding: 8px 13px; border-top: 1px solid #222932; color: #7d8794; font-size: 10.5px; }
 
-  #stage { position: relative; min-width: 0; background: #0d1014; }
+  /* Both minimums matter, and for the same reason: a grid item defaults to min-*: auto, so it refuses to
+     shrink below its content. The canvas is 100% of this box, so without these the canvas size feeds the
+     track size which feeds the canvas size, and the ResizeObserver never settles. `min-height` became
+     necessary when the tab strip gave the grid a second row. */
+  #stage { position: relative; min-width: 0; min-height: 0; background: #0d1014; }
   #stage canvas { width: 100%; height: 100%; }
   #marquee { position: absolute; display: none; z-index: 16; pointer-events: none;
              border: 1px solid #5fd08a; background: #5fd08a1f; }
@@ -189,6 +224,13 @@
 <body>
 
 <div id="app">
+  <div id="tabs">
+    <button class="tab on" id="tabBrowse">Browse</button>
+    <button class="tab" id="tabMap">Map</button>
+    <span class="spacer"></span>
+    <span class="note" id="tabNote"></span>
+  </div>
+
   <aside class="col">
     <header>
       <h1>Pokemon Lab</h1>
@@ -212,6 +254,13 @@
   <div id="stage">
     <div id="marquee"></div>
     <div id="stageMsg">Choose a species from the dex to load it.</div>
+
+    <div id="mapPanel">
+      <h3>What to show</h3>
+      <div id="mapGroups"></div>
+      <p id="mapHint">Green edges are imports and blue ones join a test to what it checks.</p>
+    </div>
+    <div id="mapRead"></div>
   </div>
 
   <aside class="col" id="side">
@@ -232,6 +281,13 @@
         <span style="color:#9aa4b0; font-size:11px;">Size</span>
         <input type="range" id="jointSize" min="0.3" max="3" step="0.1" value="1"
                data-tip="How big the joint dots are drawn.">
+        <button id="wireBtn" data-tip="Draw the model as edges instead of surfaces."
+                data-more="Every bone stays where it was. This changes how the model is drawn and nothing else.">Wireframe</button>
+        <span style="color:#9aa4b0; font-size:11px;">Opacity</span>
+        <input type="range" id="modelOpacity" min="0" max="1" step="0.02" value="1"
+               data-tip="How solid the model is drawn."
+               data-more="Below full it stops writing depth, so the skeleton inside shows through instead of being hidden by the near surface.">
+        <span class="mono" id="modelOpacityRead" style="flex:none;">100%</span>
         <button id="belowBtn" disabled data-tip="Add every bone below the selected ones."
                 data-more="A limb is a bone and everything under it, which is not the same as a chain -- a chain stops where the skeleton branches.">Below</button>
         <button id="clearSelBtn" disabled data-tip="Deselect every bone.">Clear</button>
@@ -253,8 +309,8 @@
         <button id="setRootBtn" disabled data-tip="Make the selected bone the root.">Root</button>
         <button id="setSpineBtn" disabled data-tip="Make the selected bones the spine.">Spine</button>
         <button id="setHeadBtn" disabled data-tip="Make the selected bones the head.">Head</button>
-        <button id="setContactBtn" disabled data-tip="Say the selected bones touch the ground. Press it again to take them off."
-                data-more="Usually the feet, but not always: a Caterpie's are belly segments and a Voltorb's is one point on a sphere. They are drawn as bigger joints rather than a colour, so the limb's own colour survives.">Touches ground</button>
+        <button id="setContactBtn" disabled data-tip="Say the selected bones are what it stands on. Press it again to take them off."
+                data-more="Feet on most species, but a Caterpie stands on belly segments and a Voltorb on one point of a sphere, so the file calls them contacts. They are drawn bigger, and keep their limb's colour.">Foot</button>
         <button id="addLimbBtn" disabled data-tip="Make the selected bones a new limb."
                 data-more="Its side is read from where the bones sit: these models face +z, so the creature's own left is +x. Change it if the reading is wrong.">New limb</button>
       </div>
@@ -388,6 +444,46 @@
         <button id="redoBtn" data-tip="Redo the change you just undid." disabled>Redo</button>
       </div>
 
+      <h3 data-tip="The cry this species had in the games.">Cry</h3>
+      <div class="row">
+        <button id="cryBtn" disabled data-tip="Play the cry from where the creature stands."
+                data-more="The sound is placed in the world, at the head when one has been annotated and at the middle of the skeleton otherwise, so it shifts and fades as the camera moves.">Play cry</button>
+        <span class="mono" id="cryRead"></span>
+      </div>
+
+      <h3 data-tip="The Pokemon Stadium soundtrack, as background music.">Music</h3>
+      <div class="row">
+        <button id="musicPrevBtn" data-tip="Go back a track.">◀</button>
+        <button id="musicPlayBtn" data-tip="Play the music, or pause it.">Play</button>
+        <button id="musicNextBtn" data-tip="Skip to the next track.">▶</button>
+        <button id="musicShuffleBtn" class="on" data-tip="Play the tracks in a shuffled order.">Shuffle</button>
+      </div>
+      <select id="musicTrackSel" data-tip="Every track in the folder. Picking one plays it."></select>
+      <div class="row">
+        <input type="range" id="musicSeek" min="0" max="1" step="0.001" value="0" data-tip="Scrub through the playing track.">
+        <span class="mono" id="musicTimeRead" style="flex:none;">—</span>
+      </div>
+      <div class="row" data-tip="How loud the music is.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Volume</span>
+        <input type="range" id="musicVol" min="0" max="1" step="0.01" value="1">
+        <span class="mono" id="musicVolRead" style="flex:none;">100%</span>
+      </div>
+      <div class="row">
+        <select id="musicOutSel" data-tip="Play the music flat, or from a speaker floating in the scene."
+                data-more="The speaker is a small orb the music comes out of, so it gets quieter with distance and moves between your ears as the camera turns.">
+          <option value="global">Everywhere</option>
+          <option value="speaker">From a speaker</option>
+        </select>
+        <select id="musicSpeakerSel" data-tip="What the speaker does."
+                data-more="The first four follow the creature and the camera. Where you put it stays still, and dragging the orb in the scene moves it there and picks this.">
+          <option value="front">In front</option>
+          <option value="behind">Behind</option>
+          <option value="orbit">Circling</option>
+          <option value="above">Above</option>
+          <option value="fixed">Where you put it</option>
+        </select>
+      </div>
+
       <h3 data-tip="Everything you decide is saved to one file on disk, as you go."
           data-more="Web storage is only a fallback for opening this page without the server, never the source of truth.">The file</h3>
       <div class="buttons">
@@ -504,6 +600,9 @@ import {
   buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness, setBend, boneRotations, boneOrder,
 } from './pokemon-hang.js';
 import { describeStatus } from './disk-store.js';
+import { loadScan, createMapView } from './pokemon-map-view.js';
+import { GROUPS, defaultToggles } from './pokemon-map-scope.js';
+import { createEnvironmentAudio } from './environment-audio.js';
 import {
   LAB_FILE, createLabStore, readLibrary, loadManifest, dexEntries, modelURL, clipLabels,
   suggestedIdle, speciesStatus, labSummary, STATUS_LABELS, rigMismatch,
@@ -620,12 +719,24 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   controls.enabled = true;
 });
 
+// Declared here rather than beside the rest of the map tab because resize() runs immediately below,
+// and a `let` read before its declaration throws instead of reading undefined — optional chaining
+// does not save you from a temporal dead zone.
+let tab = 'browse';
+let mapView = null;
+
+let lastW = 0, lastH = 0;
 function resize() {
   const w = stage.clientWidth, h = stage.clientHeight;
   if (!w || !h) return;
+  // A resize that changes nothing must not call setSize: the observer fires for its own effects, and a
+  // redundant write is how the loop keeps feeding itself.
+  if (w === lastW && h === lastH) return;
+  lastW = w; lastH = h;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
+  mapView?.resize(w, h);      // the map shares this canvas, so it shares the resize
 }
 new ResizeObserver(resize).observe(stage);
 resize();
@@ -724,6 +835,7 @@ async function selectSpecies(species) {
   currentClip = -1;
   restorePose();
   modelRoot.add(assets.gltf.scene);
+  applyModelLook();
   current.mixer = new THREE.AnimationMixer(assets.gltf.scene);
   frameCamera(assets.rig);
   buildGhosts();
@@ -756,6 +868,7 @@ async function selectSpecies(species) {
   refreshSegments();
   refreshParts();
   refreshTransport();
+  refreshCry();
 
   // Open on the species' own idle segment if it has one, and otherwise on the manifest's suggestion —
   // which is a starting point to watch, not a decision. Naming it is a separate click.
@@ -799,7 +912,7 @@ const JOINT_LIMP = new THREE.Color(0x9c3f52);
 // What each part looks like. Green and white are not in here: they belong to the selection and the hover,
 // and a part that borrowed either would be unreadable the moment you selected something.
 const PART_COLORS = {
-  root: 0xd8a657, spine: 0x6aa9e0, head: 0xe08a4a,
+  root: 0xd8a657, spine: 0x6aa9e0, head: 0xe08a4a, foot: 0xe0553f,
   leg: 0xb78be0, arm: 0xe0d060, wing: 0x7fd3d8, fin: 0x4fa8b8, tail: 0xd86f8a,
   tentacle: 0x9b8be0, ear: 0xc9a45f, antenna: 0x8fa8c0, other: 0xa0846a,
 };
@@ -1433,6 +1546,46 @@ $('clearNeutralBtn').addEventListener('click', () => {
   refreshPose();
 });
 
+// How the model itself is drawn. Kept on the page rather than per species, because it is how you are
+// looking at the moment and not a fact about a Pikachu -- so it survives loading the next one.
+const modelLook = { wire: false, opacity: 1 };
+
+/**
+ * Push the look onto the model's own materials.
+ *
+ * These are shared and cached per species, so this is re-applied on every load rather than only when a
+ * control moves: otherwise the next species arrives solid while the button still says Wireframe.
+ */
+function applyModelLook() {
+  if (!current) return;
+  const clear = modelLook.opacity < 1;
+  current.gltf.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      if (!m) continue;
+      m.wireframe = modelLook.wire;
+      m.opacity = modelLook.opacity;
+      // Depth writing is what would otherwise hide the skeleton behind the near surface of a see-through
+      // body, which is the whole reason to turn the model down.
+      m.depthWrite = !clear;
+      // `transparent` changes how the material is compiled, so it is the one that needs a rebuild -- and
+      // only when it actually flips, since asking for one every frame would recompile the model.
+      if (m.transparent !== clear) { m.transparent = clear; m.needsUpdate = true; }
+    }
+  });
+}
+
+$('wireBtn').addEventListener('click', () => {
+  modelLook.wire = !modelLook.wire;
+  $('wireBtn').classList.toggle('on', modelLook.wire);
+  applyModelLook();
+});
+$('modelOpacity').addEventListener('input', () => {
+  modelLook.opacity = Number($('modelOpacity').value);
+  $('modelOpacityRead').textContent = `${Math.round(modelLook.opacity * 100)}%`;
+  applyModelLook();
+});
+
 $('skelBtn').addEventListener('click', () => setSkeletonVisible(!skel.on));
 $('modelBtn').addEventListener('click', () => setModelVisible(!skel.model));
 $('clearSelBtn').addEventListener('click', clearSelection);
@@ -1578,7 +1731,15 @@ function refreshPartColors() {
   // version of the colour it will take once it is named.
   paint([current.rig.root], ROOT_HINT);
   paint(p.root ? [p.root] : [], PART_TINT.root);
-  for (const k of p.contacts || []) { const i = at(k); if (i !== undefined) skel.contact[i] = true; }
+  // A foot is drawn bigger whatever else it is, and it only takes a colour of its OWN where nothing else
+  // gave it one -- a foot inside a leg should stay the colour of that leg, but a Caterpie's belly segment
+  // is in no limb and would otherwise be the one part you named that still looked unnamed.
+  for (const k of p.contacts || []) {
+    const i = at(k);
+    if (i === undefined) continue;
+    skel.contact[i] = true;
+    if (!skel.partColor[i] || skel.partColor[i] === ROOT_HINT) skel.partColor[i] = PART_TINT.foot;
+  }
 }
 
 // The row element and the bones of each limb, so a selection change can re-mark the list without
@@ -1730,7 +1891,7 @@ function renderPartRows(a) {
       () => editParts((x, rig) => setSpine(x, rig, []))],
     ['Head', PART_COLORS.head, p.head || [], 'Forget the head.',
       () => editParts((x, rig) => setHead(x, rig, []))],
-    ['On the ground', null, p.contacts || [], 'Say no bone touches the ground.',
+    ['Feet', PART_COLORS.foot, p.contacts || [], 'Say nothing on this creature stands on the ground.',
       () => editParts((x, rig) => setContacts(x, rig, []))],
   ];
   for (const [label, tint, bones, clearTip, clear] of rows) {
@@ -2258,7 +2419,10 @@ function frameCamera(rig) {
     const t = (i / 64) * Math.PI * 2;
     pts.push(new THREE.Vector3(Math.cos(t) * r, u.floorY, Math.sin(t) * r));
   }
-  floorRing = new THREE.LineLoop(
+  // A Line rather than a LineLoop: WebGPU does not draw LineLoop at all, and refuses it once a frame
+  // rather than once. The point list already repeats its first point at the end, so the ring closes
+  // anyway and this draws exactly what the LineLoop was asking for.
+  floorRing = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints(pts),
     new THREE.LineBasicMaterial({ color: 0x5fd08a }),
   );
@@ -2752,12 +2916,283 @@ addEventListener('keydown', (ev) => {
   }
 });
 
+// --- the map tab ------------------------------------------------------------------------------------
+//
+// The Pokemon-specific filesystem as a node graph, on the SAME renderer as the model viewer. A second
+// WebGPU device for a picture of twenty files would cost a whole extra render path, and two animation
+// loops on one canvas fight, so the tab swaps which scene is drawn.
+//
+// Everything is built on the first click rather than at load: browse mode should not pay for a repo scan
+// it may never show.
+let mapToggles = defaultToggles();      // `tab` and `mapView` are declared above resize()
+
+async function buildMap() {
+  if (mapView) return mapView;
+  $('stageMsg').textContent = 'Scanning the repository…';
+  $('stageMsg').style.display = 'flex';
+  const scan = await loadScan();
+  mapView = createMapView({ THREE, OrbitControls, renderer, scan });
+  buildMapGroups();
+  refreshMap({ frame: true });
+  const w = stage.clientWidth, h = stage.clientHeight;
+  mapView.resize(w, h);
+  $('stageMsg').style.display = 'none';
+  return mapView;
+}
+
+function buildMapGroups() {
+  const host = $('mapGroups');
+  host.textContent = '';
+  for (const g of GROUPS) {
+    const row = document.createElement('label');
+    row.className = 'grp' + (g.locked ? ' locked' : '');
+    row.dataset.tip = g.hint;
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = !!mapToggles[g.id];
+    box.disabled = !!g.locked;
+    box.addEventListener('change', () => {
+      mapToggles = { ...mapToggles, [g.id]: box.checked };
+      refreshMap({ frame: false });
+    });
+    const sw = document.createElement('span');
+    sw.className = 'sw';
+    sw.style.background = `#${g.color.toString(16).padStart(6, '0')}`;
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = g.label;
+    const ct = document.createElement('span');
+    ct.className = 'ct';
+    ct.dataset.group = g.id;
+    row.append(box, sw, nm, ct);
+    host.appendChild(row);
+  }
+}
+
+// A rebuild re-lays out from a fixed seed, so toggling a group does not throw the rest of the map
+// somewhere new — only framing is optional, because a settled camera is worth keeping.
+function refreshMap({ frame = false } = {}) {
+  if (!mapView) return;
+  const info = mapView.rebuild(mapToggles);
+  if (frame) mapView.frame();
+  for (const el of $('mapGroups').querySelectorAll('.ct')) {
+    el.textContent = info.counts[el.dataset.group] || '';
+  }
+  $('tabNote').textContent = `${info.nodes} nodes, ${info.edges} edges.`;
+}
+
+function setTab(next) {
+  if (next === tab) return;
+  tab = next;
+  const onMap = tab === 'map';
+  $('tabBrowse').classList.toggle('on', !onMap);
+  $('tabMap').classList.toggle('on', onMap);
+  $('mapPanel').style.display = onMap ? 'block' : 'none';
+  $('mapRead').style.display = 'none';
+  // Exactly one set of OrbitControls listens at a time; two on one canvas both act on every drag.
+  controls.enabled = !onMap;
+  mapView?.setActive(onMap);
+  $('tabNote').textContent = onMap ? $('tabNote').textContent : '';
+  if (!onMap) $('stageMsg').style.display = current ? 'none' : 'flex';
+}
+
+$('tabBrowse').addEventListener('click', () => setTab('browse'));
+$('tabMap').addEventListener('click', () => {
+  setTab('map');
+  buildMap().then(() => refreshMap({ frame: true })).catch((err) => {
+    $('stageMsg').textContent = String(err.message || err);
+    $('stageMsg').style.display = 'flex';
+  });
+});
+
+// Hover readout. Only while the map is up, and only when the pointer is not dragging the camera.
+renderer.domElement.addEventListener('pointermove', (ev) => {
+  if (tab !== 'map' || !mapView) return;
+  const node = mapView.pick(ev);
+  const lines = mapView.describe(node);
+  $('mapRead').style.display = lines ? 'block' : 'none';
+  if (lines) $('mapRead').textContent = lines.join('\n');
+});
+
 // --- the loop -------------------------------------------------------------------------------------
 const clock = new THREE.Clock();
+// --- sound --------------------------------------------------------------------------------------
+// The shared audio controller every viewer uses. The "player" it positions behaviors around is the
+// orbit target, which is where the creature stands, so a circling speaker circles the creature.
+const envAudio = createEnvironmentAudio({
+  THREE, scene, camera,
+  getPlayerPosition: () => controls.target,
+  autoplayOnGesture: false,
+  shuffle: true,
+});
+envAudio.init();
+envAudio.getMusicSpeakerObject().scale.setScalar(0.6);
+addEventListener('pointerdown', () => envAudio.noteGesture());
+envAudio.loadMusicHttp({ listUrl: '/api/list-pokemon-music', baseUrl: './pokemon/Stadium Music/', select: true });
+
+// Cries are matched by the three-digit dex prefix on the filename rather than by name, which the
+// files spell their own way (Farfetchd, Mr-Mime). Decoded buffers are kept per species.
+const cryFiles = new Map();
+const cryBuffers = new Map();
+fetch('/api/list-pokemon-cries').then(r => r.json()).then((data) => {
+  for (const name of data?.files || []) {
+    const m = /^(\d+)/.exec(name);
+    if (m) cryFiles.set(Number(m[1]), name);
+  }
+  refreshCry();
+}).catch(() => {});
+
+function cryBuffer(dex) {
+  const name = cryFiles.get(dex);
+  if (!name) return Promise.resolve(null);
+  if (!cryBuffers.has(dex)) {
+    const load = fetch('./pokemon/poke_cries/' + encodeURIComponent(name))
+      .then(r => (r.ok ? r.arrayBuffer() : null))
+      .then(buf => (buf ? envAudio.decodeAudio(buf) : null))
+      .catch(() => null)
+      .then((buf) => {
+        if (!buf) cryBuffers.delete(dex);   // a failed load is retried next press, not remembered
+        return buf;
+      });
+    cryBuffers.set(dex, load);
+  }
+  return cryBuffers.get(dex);
+}
+
+// Where the cry comes from: the annotated head, or the middle of the skeleton. The mesh's own
+// bounding volumes are garbage on these models (see assetsFor), so the bones are the truth.
+const _cryAt = new THREE.Vector3();
+function cryPosition() {
+  if (!current) return controls.target.clone();
+  const heads = annotationFor(current.entry.species)?.parts?.head || [];
+  const keys = heads.length ? heads : [...(skel.indexOf?.keys() || [])];
+  const pos = new THREE.Vector3();
+  let n = 0;
+  for (const key of keys) {
+    const i = skel.indexOf?.get(key);
+    const obj = i != null ? current.objects[i] : null;
+    if (obj) { pos.add(obj.getWorldPosition(_cryAt)); n++; }
+  }
+  return n ? pos.multiplyScalar(1 / n) : controls.target.clone();
+}
+
+function refreshCry() {
+  const dex = current?.entry?.dex;
+  $('cryBtn').disabled = !dex || (cryFiles.size > 0 && !cryFiles.has(dex));
+  $('cryRead').textContent = '';
+}
+
+$('cryBtn').addEventListener('click', async () => {
+  if (!current) return;
+  envAudio.noteGesture();
+  const buf = await cryBuffer(current.entry.dex);
+  if (!buf) { $('cryRead').textContent = 'No cry file for this species.'; return; }
+  envAudio.playBufferAt(buf, cryPosition(), 1, { refDistance: 2, maxDistance: 80 });
+});
+
+// --- the music player ---------------------------------------------------------------------------
+const musicPlayBtn = $('musicPlayBtn');
+const musicTrackSel = $('musicTrackSel');
+$('musicPrevBtn').addEventListener('click', () => { envAudio.noteGesture(); envAudio.prevTrack(); });
+$('musicNextBtn').addEventListener('click', () => { envAudio.noteGesture(); envAudio.nextTrack(); });
+musicPlayBtn.addEventListener('click', () => { envAudio.noteGesture(); envAudio.togglePlayback(); });
+$('musicShuffleBtn').addEventListener('click', () => envAudio.setShuffle(!envAudio.getState().shuffle));
+musicTrackSel.addEventListener('change', () => {
+  envAudio.noteGesture();
+  const entry = envAudio.getState().playlist.find(t => t.path === musicTrackSel.value);
+  if (entry) envAudio.playTrack(entry);
+});
+$('musicVol').addEventListener('input', () => envAudio.setVolume('music', Number($('musicVol').value)));
+$('musicOutSel').addEventListener('change', () => { envAudio.noteGesture(); envAudio.setMusicOutput($('musicOutSel').value); });
+$('musicSpeakerSel').addEventListener('change', () => envAudio.setMusicSpeakerBehavior($('musicSpeakerSel').value));
+let musicSeekHeld = false;
+$('musicSeek').addEventListener('input', () => { musicSeekHeld = true; });
+$('musicSeek').addEventListener('change', () => { envAudio.seekMusic(Number($('musicSeek').value)); musicSeekHeld = false; });
+
+envAudio.subscribe((state) => {
+  musicPlayBtn.textContent = state.musicPlaying ? 'Pause' : 'Play';
+  $('musicShuffleBtn').classList.toggle('on', state.shuffle);
+  $('musicVol').value = String(state.musicVolume);
+  $('musicVolRead').textContent = Math.round(state.musicVolume * 100) + '%';
+  $('musicOutSel').value = state.musicOutput;
+  $('musicSpeakerSel').value = state.speakerBehavior;
+  const list = state.playlist || [];
+  if (musicTrackSel.options.length !== list.length) {
+    musicTrackSel.textContent = '';
+    for (const t of list) {
+      musicTrackSel.append(Object.assign(document.createElement('option'), { value: t.path, textContent: t.label }));
+    }
+  }
+  if (state.currentTrackPath) musicTrackSel.value = state.currentTrackPath;
+});
+
+// Seek bar and clock follow the playing track, a few times a second rather than every frame.
+let musicProgressAt = 0;
+function syncMusicProgress(now) {
+  if (now - musicProgressAt < 250) return;
+  musicProgressAt = now;
+  const p = envAudio.getMusicProgress();
+  if (!musicSeekHeld) $('musicSeek').value = p.duration ? String(p.currentTime / p.duration) : '0';
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  $('musicTimeRead').textContent = p.duration ? `${mmss(p.currentTime)} / ${mmss(p.duration)}` : '—';
+}
+
+// Dragging the speaker orb. On the stage in the capture phase, so a grab of the orb never also
+// starts an orbit or picks a bone underneath it; the drag stays on the camera-facing plane through
+// the orb, and moving it is what switches the speaker to "where you put it".
+const speakerDrag = { on: false, plane: new THREE.Plane(), point: new THREE.Vector3() };
+
+/** True when the pointer is over the visible speaker orb. A real mesh, so a ray is the right tool. */
+function speakerOrbHit(ev) {
+  const orb = envAudio.getMusicSpeakerObject();
+  if (!orb.visible) return false;
+  const rect = renderer.domElement.getBoundingClientRect();
+  _ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+  _ray.setFromCamera(_ndc, camera);
+  return _ray.intersectObject(orb, true).length > 0;
+}
+
+/** World point under the pointer on the camera-facing plane through the orb, or null. */
+function speakerDragPoint(ev) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  _ndc.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+  _ray.setFromCamera(_ndc, camera);
+  return _ray.ray.intersectPlane(speakerDrag.plane, speakerDrag.point) ? speakerDrag.point : null;
+}
+
+stage.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0 || !speakerOrbHit(ev)) return;
+  ev.stopPropagation();
+  speakerDrag.on = true;
+  speakerDrag.plane.setFromNormalAndCoplanarPoint(
+    camera.getWorldDirection(_dir).negate(), envAudio.getMusicSpeakerObject().position);
+  controls.enabled = false;
+}, { capture: true });
+addEventListener('pointermove', (ev) => {
+  if (!speakerDrag.on) return;
+  const point = speakerDragPoint(ev);
+  if (point) envAudio.setMusicSpeakerPosition(point);
+});
+addEventListener('pointerup', () => {
+  if (!speakerDrag.on) return;
+  speakerDrag.on = false;
+  controls.enabled = true;
+});
+
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
+  // The map is a second scene on the same renderer, drawn instead of the model rather than beside it.
+  // Nothing in the browse pipeline is stepped while it is up, so a hidden tab costs nothing.
+  if (tab === 'map' && mapView) {
+    mapView.update(dt);
+    if (viewHelper) renderer.clear();
+    renderer.render(mapView.scene, mapView.camera);
+    return;
+  }
   advance(dt);
   controls.update();
+  envAudio.update();
+  syncMusicProgress(performance.now());
   // Order: the clip writes every bone, posed bones are put back over it, then the limp ones are simulated
   // against the result. Each step only overrides what the one before it had no business owning.
   if (ragdoll.sim) {
