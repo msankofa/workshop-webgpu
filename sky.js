@@ -181,6 +181,7 @@ export function createSky({ scene, camera, size, palette: overrides, sunDir, par
     starsPoints = null; starsMax = 0; milkyWayGroup = null; milkyGas = null; bodiesGroup = null;
     // dome
     dome = new THREE.Mesh(new THREE.SphereGeometry(radius, 40, 18), makeSkyDomeMaterial(domeU));
+    dome.name = 'skyDome';   // named so a heat sweep (vision-modes.js) can find it and call it cold
     dome.renderOrder = -1000; dome.frustumCulled = false;
     dome.visible = componentVisible.dome;
     group.add(dome);

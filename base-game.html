@@ -1555,12 +1555,48 @@ function applyFlashlight() {
 // nothing spawned mid-game renders as a lit colour object in a heat frame. Anything it cannot tag is
 // a classic (non-node) material, which is a bug in whatever built it rather than something to live
 // with silently, so it is reported on every mode change.
+//
+// What each thing radiates, by the name it already carries in the scene graph. Only the things whose
+// temperature actually matters are listed; tagScene gives everything else DEFAULT_HEAT, which is
+// HEAT.terrain and already the right answer for ground. A material is tagged once and skipped after,
+// so walking the whole scene on a mode change is cheap.
+//
+// The bodies are the point of the exercise: they have to be the warmest thing that is not on fire,
+// or a thermal sight has nothing to find.
+const VISOR_HEATS = [
+  ['BodyBatch:', HEAT.skin],          // every instanced remote player and NPC bot
+  ['proceduralPlayerBody', HEAT.skin],   // the local body, in third person
+  ['skyDome', HEAT.sky],              // cold, so bodies read against it rather than into it
+  ['base-game-water', HEAT.water],
+  ['base-game-rain', HEAT.water],
+  ['base-game-terrain', HEAT.terrain],
+  ['TerrainChunks', HEAT.terrain],
+];
 let visorUntaggable = [];
+let visorSweepTick = 0;
 function applyVisor() {
   setVisionMode(settings.visorMode);
+  // Named things first: heatTag skips a material that is already tagged, so whatever is not named
+  // here falls through to the default in the sweep below.
+  scene.traverse((object) => {
+    if (!object.material) return;
+    let heat = null;
+    for (let node = object; node && heat === null; node = node.parent) {
+      const name = node.name;
+      if (!name) continue;
+      const row = VISOR_HEATS.find(([prefix]) => name.startsWith(prefix));
+      if (row) heat = row[1];
+    }
+    if (heat === null) return;
+    for (const material of (Array.isArray(object.material) ? object.material : [object.material])) heatTag(material, heat);
+  });
   const swept = tagScene(scene);
-  visorUntaggable = swept.untaggable;
-  if (visorUntaggable.length) console.warn('visor: these materials are not node materials and cannot carry heat:', visorUntaggable);
+  // Only when the list changes: this runs once a second while the visor is up, and a warning every
+  // second would bury whatever else the console is trying to say.
+  if (swept.untaggable.join('|') !== visorUntaggable.join('|')) {
+    visorUntaggable = swept.untaggable;
+    if (visorUntaggable.length) console.warn('visor: these materials are not node materials and cannot carry heat:', visorUntaggable);
+  }
   applyAtmosphereSettings();   // the fog thins under IR
 }
 
@@ -1944,7 +1980,10 @@ function renderCombatStatus(now) {
     ? `<br>[L] ${[settings.flashlightOn ? 'light' : null, settings.laserOn ? 'laser' : null].filter(Boolean).join(' + ')} on` : '';
   // Write only on change. innerHTML reparses, and health, ammo and the hit flag hold still for whole
   // seconds at a time, so the great majority of frames wrote the identical markup back.
-  const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${torch}${droneHudLine()}${spawnerHudLine()}${killed}${slots}`;
+  // The visor recolours the whole frame, so it is obvious it is on; the line says WHICH mode, which
+  // is not obvious between the two thermal palettes.
+  const visor = settings.visorMode === 'rgb' ? '' : `<br>[H] visor ${VISION_LABEL[settings.visorMode]}`;
+  const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${torch}${visor}${droneHudLine()}${spawnerHudLine()}${killed}${slots}`;
   if (markup !== shownCombatStatus) { shownCombatStatus = markup; combatStatus.innerHTML = markup; }
   const flash = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
   if (flash !== shownDamageFlash) { shownDamageFlash = flash; damageFlash.style.opacity = flash; }
@@ -4788,6 +4827,11 @@ async function animate() {
       if (water.underwater !== underwaterAudio) { underwaterAudio = water.underwater; envAudio.setUnderwater?.(underwaterAudio); }
     });
     if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) { refreshTerrainRuntimeLine(); refreshGrassRuntimeLine(); refreshForestRuntimeLine(); }
+    // Terrain chunks, trees and grass stream in long after boot, and a material built while the visor
+    // is already up would have no heat and render as a lit colour object in a heat frame. Re-sweeping
+    // once a second catches them. It only runs with the visor up, and a tagged material is skipped,
+    // so the steady-state cost is one scene walk over a few hundred objects.
+    if (settings.visorMode !== 'rgb' && (visorSweepTick += dt) >= 1) { visorSweepTick = 0; applyVisor(); }
     frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); const gunLight = weaponLightSource(canControl); weaponLight.update(dt, gunLight); weaponLaser.update(dt, gunLight); });
     // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
     await frameProfiler.timeAsync('grassGpu', () => flora.update(frameStart / 1000));

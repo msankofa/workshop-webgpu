@@ -6,6 +6,8 @@
 // So this builds the real body materials, the real batch materials and a converted GLB material,
 // and asserts tagScene() leaves nothing behind.
 import * as THREE_WEBGPU from 'three/webgpu';
+import { vec3, vec4, uniform, float } from 'three/tsl';
+import { buildMaterial } from './tsl-build-check.mjs';
 import { readFileSync } from 'node:fs';
 import { tagScene, heatTag, HEAT, setVisionMode, visionMode, uIR, VISION_MODES } from './vision-modes.js';
 import { createBodyPartBatches } from './body-part-batches.js';
@@ -69,6 +71,56 @@ setVisionMode('rgb');
   // the tint that would reach an unlit heat value is never allocated in the first place.
   const html = readFileSync(new URL('./body-part-batches.js', import.meta.url), 'utf8');
   ok(html.includes('eye role is never colored'), 'the one unlit body role is documented as never tinted');
+}
+
+// ---- a material that owns a colour graph is wrapped, never overwritten ----
+// This is the one that would break the page rather than just look wrong. heatTag builds colorNode
+// from the material's flat `.color`, so tagging the terrain splat, the sky gradient or the water
+// would throw the whole graph away in EVERY mode, plain sight included.
+{
+  const m = new THREE.MeshStandardNodeMaterial({ roughness: 0.92 });
+  const splat = vec4(vec3(uniform(0.2), uniform(0.4), uniform(0.6)).mul(float(3.14159)), 1);
+  const roughGraph = uniform(0.77).mul(float(2.71828));
+  m.colorNode = splat;
+  m.roughnessNode = roughGraph;
+  const scene = new THREE.Scene();
+  scene.add(new THREE.Mesh(new THREE.BoxGeometry(), m));
+  ok(tagScene(scene, HEAT.terrain).untaggable.length === 0, 'a material with its own colour graph can still take a heat');
+  ok(m.userData.irWrapped === true, 'and it is recorded as wrapped rather than replaced');
+
+  setVisionMode('whot');
+  const built = await buildMaterial(m, new THREE.BoxGeometry());
+  const frag = built.fragment;
+  ok((frag.match(/3\.14159/g) || []).length === 1,
+    'the wrapped graph is built once, not once for the colour and again for the alpha');
+  ok((frag.match(/2\.71828/g) || []).length >= 1, "and the material's own roughness graph survives too");
+  setVisionMode('rgb');
+
+  // A vec3 colour graph has no alpha of its own. three pads it with 1 when it converts colorNode,
+  // and the wrap leans on the same conversion, so a vec3 graph does not come out invisible.
+  const m3 = new THREE.MeshBasicNodeMaterial();
+  m3.colorNode = vec3(uniform(0.5), uniform(0.5), uniform(0.5));
+  heatTag(m3, HEAT.cold);
+  const built3 = await buildMaterial(m3, new THREE.BoxGeometry());
+  ok(/1\.0\s*\)/.test(built3.fragment), 'a vec3 graph keeps a solid alpha through the wrap');
+}
+
+// ---- the heat table ----
+{
+  const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
+  ok(html.includes('VISOR_HEATS'), 'base-game names what each thing radiates');
+  // The whole point: people must be the warmest thing that is not on fire.
+  ok(html.includes("['BodyBatch:', HEAT.skin]") && html.includes("['proceduralPlayerBody', HEAT.skin]"),
+    'both the instanced bodies and the local one are tagged as skin');
+  ok(html.includes("['skyDome', HEAT.sky]"), 'the sky is cold, so bodies read against it');
+  ok(HEAT.skin > HEAT.terrain && HEAT.skin > HEAT.sky && HEAT.skin > HEAT.water,
+    'skin is warmer than the ground, the sky and the water');
+  ok(HEAT.fire > HEAT.skin, 'and fire is warmer than skin');
+  const sky = readFileSync(new URL('./sky.js', import.meta.url), 'utf8');
+  ok(sky.includes("dome.name = 'skyDome'"), 'the sky dome carries the name the table looks for');
+  // Streamed terrain and lazily loaded trees arrive long after boot.
+  ok(html.includes('visorSweepTick') && html.includes("settings.visorMode !== 'rgb' && (visorSweepTick"),
+    'the sweep repeats while the visor is up, so material built later still gets a heat');
 }
 
 // ---- a classic material is still refused, which is why the conversions matter ----

@@ -61,18 +61,29 @@ export function heatTag(material, heat = DEFAULT_HEAT) {
   material.userData.irTagged = true;
   material.userData.heat = heat;
   const h = vec3(heat);
+  // A material that already owns a colour graph is WRAPPED rather than overwritten. Writing colorNode
+  // from the material's flat `.color` would throw a terrain splat or a sky gradient away in EVERY
+  // mode, not just under IR — a broken page rather than a wrong-looking heat frame.
+  //
+  // vec4() of a vec3 node pads alpha with 1 (three does the same conversion on colorNode itself), so
+  // one line covers both widths. toVar() matters: without it the wrapped graph is inlined once for
+  // .rgb and again for .a, and on the terrain that is the whole splat computed twice.
+  const prior = material.colorNode ? vec4(material.colorNode).toVar() : null;
+  const priorRGB = prior ? prior.rgb : materialColor.rgb;
+  const priorA = prior ? prior.a : materialColor.a;
+  material.userData.irWrapped = !!prior;
   if (material.isMeshStandardNodeMaterial || material.isMeshPhysicalNodeMaterial
     || material.isMeshLambertNodeMaterial || material.isMeshPhongNodeMaterial) {
     // lit: kill the diffuse, emit the heat, flatten the specular so the sun cannot glint through
-    material.colorNode = vec4(mix(materialColor.rgb, vec3(0.0), uIR), materialColor.a);
-    material.emissiveNode = mix(materialEmissive, h, uIR);
+    material.colorNode = vec4(mix(priorRGB, vec3(0.0), uIR), priorA);
+    material.emissiveNode = mix(material.emissiveNode ?? materialEmissive, h, uIR);
     if (material.isMeshStandardNodeMaterial || material.isMeshPhysicalNodeMaterial) {
-      material.roughnessNode = mix(materialRoughness, float(1.0), uIR);
-      material.metalnessNode = mix(materialMetalness, float(0.0), uIR);
+      material.roughnessNode = mix(material.roughnessNode ?? materialRoughness, float(1.0), uIR);
+      material.metalnessNode = mix(material.metalnessNode ?? materialMetalness, float(0.0), uIR);
     }
   } else if (material.isNodeMaterial) {
     // unlit (basic, line, points, sprite): the colour IS the output
-    material.colorNode = vec4(mix(materialColor.rgb, h, uIR), materialColor.a);
+    material.colorNode = vec4(mix(priorRGB, h, uIR), priorA);
   } else {
     // a classic material cannot take a node; the renderer converts it and we cannot reach in.
     // Left as-is and reported, so a scene author can swap it for the node twin.
