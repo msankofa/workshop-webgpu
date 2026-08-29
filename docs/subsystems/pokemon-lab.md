@@ -26,6 +26,7 @@ inferred or eyeballed.
 | `pokemon-select.js` | Picking bones and chains: the gestures, and screen-space hit-testing. | shipped |
 | `pokemon-ik.js` | FABRIK, and which bones answer a drag. | shipped |
 | `pokemon-hang.js` | A ragdoll from a rig, and particles back to bone rotations. | shipped |
+| `pokemon-drive.js` | What moves each bone: the clip, nothing, or the ragdoll. | shipped |
 | `pokemon-lab.html` | The page. | browse, segments and bone picking shipped |
 | `test-pokemon-rig.mjs` | 38 checks, mostly over all 151 models. | shipped |
 | `test-pokemon-annotation.mjs` | 62 checks, built against real rigs. | shipped |
@@ -34,13 +35,14 @@ inferred or eyeballed.
 | `test-pokemon-select.mjs` | 20 checks, six species. | shipped |
 | `test-pokemon-ik.mjs` | 38 checks: the solver as geometry, twist and bend, chains against real rigs. | shipped |
 | `test-pokemon-hang.mjs` | 27 checks: the physics as physics, the rotation fit against known rotations. | shipped |
-| `_check_pokemon-lab.html.mjs` | 67 static checks on the page. | shipped |
+| `test-pokemon-drive.mjs` | 18 checks: the mask, its fit to real clips, and the partial ragdoll as physics. | shipped |
+| `_check_pokemon-lab.html.mjs` | 74 static checks on the page. | shipped |
+| `pokemon-gates.js` | Per-class validation. | not started |
+| `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
 
 `ragdoll.js` is reused, and its 31 tests still pass untouched. Its cone solver gained an optional `min` and
 an optional per-cone `stiffness` for the bend limit below; both default to the old behaviour, so the bot
 ragdoll's five cones — which set neither — behave exactly as before.
-| `pokemon-gates.js` | Per-class validation. | not started |
-| `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
 
 This is a separate line from `demos/stadium-walker-v2.html` and the `stadium-*.js` modules, which keep
 working and are not changed. The only thing shared is `stadium-glb.js`, whose GLB reading is verified and
@@ -697,6 +699,87 @@ same fact twice.
 
 Stepping floors going forward and ceils going back, so a step from frame 12.6 lands on 13 rather than
 skipping to 14.
+
+### What moves each bone
+
+A clip asserts a local transform for every bone it has a track for, every frame. That is fine until a
+creature has to do two things at once. `pokemon-drive.js` gives each bone one of three answers:
+
+| Mode | Driven by | What it looks like |
+|---|---|---|
+| **Animation** | the clip | the default, and what every bone did before this |
+| **Posed** | nothing | keeps its local transform and rides its parent **rigidly** |
+| **Limp** | the ragdoll | gravity, plus whatever the parent transmits |
+
+**Posed is not the same as "no driving force", and that distinction is the whole reason there are three
+modes rather than two.** A bone with no driver is not floppy, it is *welded*: it keeps its last local
+transform and swings around rigidly with its parent. To hang and lag and settle it needs a solver — the
+force just comes from gravity and the parent's motion instead of a keyframe. That is Limp.
+
+The mask is stored by absence: `{}` means an ordinary animated body, so every loop can skip its work with
+one `isPlain` check and nothing pays for a feature it is not using.
+
+#### It needs no lookup layer, and that was measured
+
+The design rests on a bone key and a THREE track's target being the same string. Across the whole dex:
+
+| | |
+|---|---|
+| Tracks naming a bone their rig does not have | **0** of 54,503 |
+| Species with two bones sharing a name | **0** of 151 |
+| Bone names THREE rewrites on import | **0** |
+| Non-bone nodes shadowing a bone's name | **0** |
+
+So a mask is a set of the same keys selection, IK and the ragdoll already use. The first two are pinned by
+tests over every file; the last two were measured once and are recorded here.
+
+#### The frame, in order
+
+Each step may only override what the one before it had no business owning:
+
+1. `mixer.update(0)` — the clip writes every bone it has a track for.
+2. `applyHeld()` — posed bones are put back over it.
+3. `stepLimpFrame()` — the limp ones are simulated against the result.
+4. `updateSkeleton()` — the overlay is built from what actually happened.
+
+`applyFrame` repeats step 2, because scrubbing and stepping write a frame outside the loop and a posed bone
+would otherwise snap back to the clip whenever you touched the scrubber.
+
+Tracks are **not** filtered out of the clip. That would work — `suppressedTracks` exists for a caller that
+wants it — but a filtered clip has to be rebuilt and re-timed on every change, where letting the mixer write
+everything and putting a handful of bones back afterwards makes the mask live.
+
+#### The partial ragdoll is the hanging one with the pinning inverted
+
+Hanging pins the bone you grabbed and lets the body fall off it. This pins **everything the animation still
+drives**, where the clip put it this frame, and lets the limp bones fall off that. Same solver, same
+constraints, different set held fixed — `anchorIndices` is the only new idea, and a Node test asserts that
+masking every bone limp reproduces the whole-body ragdoll to 1e-9.
+
+Anchors are re-pinned every frame, since the animation moves them. Motion reaches a limp arm through the
+constraints rather than through momentum, because `pinBone` sets a particle's previous position to its
+current one; a test drives the anchors two body-heights sideways and asserts no limp bone is left behind.
+
+A limp bone also keeps its **own local position**, not the clip's. These clips animate translation as well
+as rotation, so otherwise a limp bone would keep sliding along its parent to the clip's tune while only its
+angle came from the simulation — and its length would stop matching the constraint holding it.
+
+The mask is re-seeded whenever it changes, from the pose on screen. Without that, a bone arriving at limp
+would snap to wherever the body was when the species loaded.
+
+#### Selecting a limb
+
+A limb is a bone and everything under it, which is why the **Below** button exists: chains stop where the
+skeleton branches, and 2,136 of 3,496 chains in this dex are a single bone, so the chain gesture cannot
+select an arm. This is the third selection gesture the phase 2 notes said was missing.
+
+Masked bones are **coloured in the overlay** — blue for posed, red for limp. A mask you cannot see is one
+you find out about by wondering why half the body stopped moving.
+
+#### Not saved
+
+The mask lives on the page and dies with the species. Whether "this tail is always limp" is a fact about a
+species worth keeping in the annotation file is a schema decision, and it has not been made.
 
 ### Explanation lives on hover, and the panel stays controls
 

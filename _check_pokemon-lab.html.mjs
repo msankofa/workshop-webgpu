@@ -429,16 +429,16 @@ check('a pose reaches the file, and records the whole stance rather than the edi
   assert(/current\.rig\.bones\.entries\(\)/.test(take), 'every bone, not only the ones that moved');
 });
 
-check('both angular limits reach the drag and the hang, from one control each', () => {
+check('both angular limits reach the drag and the ragdoll, from one control each', () => {
   // A positional solver cannot see twist -- turning a single-child bone about its own length moves nothing
   // -- so it has to be clamped where rotations are handed back, in both places that do that.
   assert(/function twistLimit\(/.test(code), 'no shared twist limit');
   assert(/function bendLimit\(/.test(code), 'no shared bend limit');
   const drag = code.match(/function dragPose\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(/limitChain\(\)/.test(drag), 'the drag must clamp the chain');
-  const step = code.match(/function stepHangFrame\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/maxTwist: twistLimit\(\)/.test(step), 'hanging must pass the twist limit through');
-  assert(/maxBend: bendLimit\(\)/.test(step), 'hanging must pass the bend limit through');
+  const step = code.match(/function stepRagdollFrame\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/maxTwist: twistLimit\(\)/.test(step), 'the ragdoll must pass the twist limit through');
+  assert(/maxBend: bendLimit\(\)/.test(step), 'the ragdoll must pass the bend limit through');
   for (const id of ['twistLimit', 'bendLimit']) {
     const html = markup.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`))?.[0] ?? '';
     assert(/max="180"/.test(html), `${id} must reach 180, which is where nothing is limited`);
@@ -460,50 +460,114 @@ check('the angular limits measure from the grab, not from one pointer move', () 
 check('the bend limit is enforced in the simulation, not only on the way to the mesh', () => {
   // Bend, unlike twist, moves joints, so the physics can hold it. Leaving it to the rotation pass alone
   // would let the particles fold through the body while the drawn pose pretended otherwise.
-  const start = code.match(/function startHang\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/maxBend: bendLimit\(\)/.test(start), 'the hang must be built with the limit');
-  assert(/setBend\(hang\.sim, bendLimit\(\)\)/.test(code), 'the slider must be live, like stiffness');
+  const start = code.match(/function startRagdoll\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/maxBend: bendLimit\(\)/.test(start), 'the ragdoll must be built with the limit');
+  assert(/setBend\(ragdoll\.sim, bendLimit\(\)\)/.test(code), 'the slider must be live, like stiffness');
 });
 
-check('hanging reuses the tested ragdoll rather than a second physics solver', () => {
+check('the ragdoll reuses the tested solver rather than a second physics loop', () => {
   assert(/from '\.\/pokemon-hang\.js'/.test(code), 'the page should not carry its own Verlet loop');
   assert(!/prev\.[xyz]|integrate\(/.test(code), 'no integration in the page');
   assert(/stepHang\(/.test(code) && /boneRotations\(/.test(code), 'physics and the rotation fit both come from the module');
 });
 
-check('the hang fit is measured from the seeded pose, not from the last frame', () => {
+check('the ragdoll fit is measured from the seeded pose, not from the last frame', () => {
   // Frame-to-frame deltas applied on top of an already-rotated bone accumulate drift. The seed pose and the
   // seed world rotations are captured once and everything is measured against them.
-  const step = code.match(/function stepHangFrame\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(step, 'no stepHangFrame');
-  assert(/boneRotations\(current\.rig, hang\.seed, now[,)]/.test(step), 'the fit must run seed to now');
-  assert(/hang\.seedQuat\[i\]/.test(step), 'and be applied to the seeded world rotation');
-  assert(/for \(const i of hang\.order\)/.test(step),
+  const step = code.match(/function stepRagdollFrame\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(step, 'no stepRagdollFrame');
+  assert(/boneRotations\(current\.rig, ragdoll\.seed, now[,)]/.test(step), 'the fit must run seed to now');
+  assert(/ragdoll\.seedQuat\[i\]/.test(step), 'and be applied to the seeded world rotation');
+  assert(/for \(const i of ragdoll\.order\)/.test(step),
     'bones must be settled root-first, since rig.bones is ordered by glTF node index');
 });
 
 check('the root translates as well as turning, or a carried body cannot swing', () => {
-  const step = code.match(/function stepHangFrame\([\s\S]*?\n\}/)?.[0] ?? '';
+  const step = code.match(/function stepRagdollFrame\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(/worldToLocal/.test(step) && /position\.copy/.test(step),
     'rotations alone cannot move the root, so a body held by its head would not swing its hips');
 });
 
-check('hanging, posing and playback are mutually exclusive', () => {
-  const set = code.match(/function setHangMode\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/play\.paused = true/.test(set) && /setPoseMode\(false\)/.test(set), 'hanging must stop the other two');
+check('each of the three drives has a control and reaches the frame', () => {
+  for (const id of ['driveClipBtn', 'drivePosedBtn', 'driveLimpBtn']) {
+    assert(ids.has(id), `no ${id}`);
+    assert(new RegExp(`\\$\\('${id}'\\)\\.addEventListener`).test(code), `${id} does nothing`);
+  }
+  assert(/setDriveFor\(CLIP\)/.test(code) && /setDriveFor\(POSED\)/.test(code) && /setDriveFor\(LIMP\)/.test(code),
+    'the three buttons must set the three modes');
+});
+
+check('the frame applies the clip, then posed bones, then the limp ones', () => {
+  // Order is the whole design: each step may only override what the one before had no business owning.
+  const loop = code.match(/setAnimationLoop\([\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert(loop, 'no animation loop');
+  const held = loop.indexOf('applyHeld()');
+  const limp = loop.indexOf('stepLimpFrame(');
+  const skel = loop.indexOf('updateSkeleton()');
+  assert(held > -1 && limp > held, 'posed bones must be put back before the limp ones are simulated');
+  assert(skel > limp, 'the overlay must be built after both, or it draws a frame behind');
+  // Scrubbing writes a frame outside the loop, so the mask has to be honoured there too.
+  const apply = code.match(/function applyFrame\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/applyHeld\(\)/.test(apply), 'scrubbing would drop a posed bone back to the clip');
+});
+
+check('a posed bone is held by object, not looked up by name every frame', () => {
+  const fn = code.match(/function applyHeld\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn, 'no applyHeld');
+  assert(!/findIndex|find\(/.test(fn), 'this runs every frame; it must not search the skeleton');
+});
+
+check('the partial ragdoll pins what the animation drives, which is the inverse of hanging', () => {
+  const step = code.match(/function stepLimpFrame\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(step, 'no stepLimpFrame');
+  assert(/releaseAll\(limp\.sim\)/.test(step) && /pinBone\(limp\.sim/.test(step),
+    'anchors must be re-pinned each frame, since the animation moves them');
+  assert(/for \(const i of limp\.anchors\)/.test(step), 'the anchors come from the mask');
+  assert(/for \(const i of limp\.order\)/.test(step),
+    'only the limp bones take simulated rotations, and root-first among themselves');
+  assert(/limp\.seedPos\[i\]/.test(step),
+    'a limp bone must keep its own local position, or the clip keeps sliding it along its parent');
+});
+
+check('the mask is re-seeded when it changes, not left pointing at an old pose', () => {
+  const fn = code.match(/function reseedRagdoll\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn, 'no reseedRagdoll');
+  assert(/updateSkeleton\(\)/.test(fn) && /limp\.seed = /.test(fn), 'the seed must be taken from the live pose');
+  assert(/reseedRagdoll\(\)/.test(code.match(/function setDriveFor\([\s\S]*?\n\}/)?.[0] ?? ''),
+    'changing the mask must re-seed, or a newly limp bone snaps to where the species loaded');
+});
+
+check('the mask does not survive a change of species', () => {
+  // No fallback to the whole file: a slice that missed would make this pass on the declarations instead.
+  const sel = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/skel\.selected = new Set\(\)/.test(sel), 'the selectSpecies slice is wrong, so this reads nothing');
+  assert(/drive = \{\}/.test(sel), 'the drive mask must be cleared with the skeleton it names');
+  assert(/held = new Map\(\)/.test(sel), 'and so must the held transforms');
+  assert(/limp\.sim = null/.test(sel), 'and the simulation built on those bones');
+});
+
+check('a masked bone is visible as one without playing anything', () => {
+  const paint = code.match(/function paintSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/JOINT_LIMP/.test(paint) && /JOINT_POSED/.test(paint),
+    'a mask you cannot see is one you find out about by wondering why the body stopped moving');
+});
+
+check('the ragdoll, posing and playback are mutually exclusive', () => {
+  const set = code.match(/function setRagdollMode\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/play\.paused = true/.test(set) && /setPoseMode\(false\)/.test(set), 'the ragdoll must stop the other two');
   // Anchored on the whole function, not on a line inside it -- renaming that line silently emptied the
   // slice and the assertion below then passed on nothing.
   const transport = code.match(/function refreshTransport\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(/const live/.test(transport), 'the refreshTransport slice is empty, so this check reads nothing');
-  assert(/!hang\.sim/.test(transport), 'the transport must be off while hanging');
+  assert(/!ragdoll\.sim/.test(transport), 'the transport must be off while the ragdoll runs');
   // The simulation being present IS the on state; a separate flag would be the same fact stored twice.
-  assert(!/hang\.on\b/.test(code), 'hang.sim is the state, so there must be no second flag');
+  assert(!/hang\.on\b/.test(code), 'ragdoll.sim is the state, so there must be no second flag');
 });
 
 check('letting go actually drops it', () => {
   // The window-level one, not the canvas listener the gizmo uses.
   const up = code.match(/\naddEventListener\('pointerup'[\s\S]*?\n\}\);/)?.[0] ?? '';
-  assert(/releaseAll\(hang\.sim\)/.test(up), 'the pin must be released on pointer up');
+  assert(/releaseAll\(ragdoll\.sim\)/.test(up), 'the pin must be released on pointer up');
 });
 
 check('the skeleton follows playback rather than being placed once', () => {

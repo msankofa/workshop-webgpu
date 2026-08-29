@@ -183,16 +183,27 @@
       <h3 data-tip="Click a bone to select it. Shift-click for its whole chain."
           data-more="Clicking a chain you have already started adds the rest of it rather than removing what you have.">Bones</h3>
       <div class="row">
-        <button id="skelBtn" class="on" data-tip="Hide the skeleton.">Skeleton</button>
+        <button id="skelBtn" data-tip="Show the skeleton over the model.">Skeleton</button>
         <button id="bodyBtn" class="on" data-tip="Hide the model and leave the skeleton.">Body</button>
         <span style="color:#9aa4b0; font-size:11px;">Size</span>
         <input type="range" id="jointSize" min="0.3" max="3" step="0.1" value="1"
                data-tip="How big the joint dots are drawn.">
+        <button id="belowBtn" disabled data-tip="Add every bone below the selected ones."
+                data-more="A limb is a bone and everything under it, which is not the same as a chain -- a chain stops where the skeleton branches.">Below</button>
         <button id="clearSelBtn" disabled data-tip="Deselect every bone.">Clear</button>
       </div>
       <div class="mono" id="hoverRead"></div>
       <div class="mono" id="selRead">—</div>
       <div class="mono" id="selBones"></div>
+
+      <h3 data-tip="What moves each bone: the animation, nothing, or the ragdoll."
+          data-more="Posed is not limp. A bone with no driver keeps its last local transform and swings around rigidly with its parent; to hang and settle it needs the solver, which is what Limp hands it to.">What moves each bone</h3>
+      <div class="row">
+        <button id="driveClipBtn" disabled data-tip="Let the animation drive the selected bones.">Animation</button>
+        <button id="drivePosedBtn" disabled data-tip="Hold the selected bones where they are, through the animation.">Posed</button>
+        <button id="driveLimpBtn" disabled data-tip="Hand the selected bones to the ragdoll, hanging off whatever still drives their parent.">Limp</button>
+      </div>
+      <div class="mono" id="driveRead">—</div>
 
       <h3>Pose</h3>
       <div class="row">
@@ -211,7 +222,7 @@
         <span class="mono" id="twistRead" style="flex:none;">45°</span>
       </div>
       <div class="row" data-tip="How far a bone may turn across its length, which is the joint opening and closing. 180 is no limit."
-           data-more="Exact while you drag. While the creature hangs it is a pull rather than a wall, so a joint can pass the limit during a hard swing and is drawn back after.">
+           data-more="Exact while you drag. While the ragdoll runs it is a pull rather than a wall, so a joint can pass the limit during a hard swing and is drawn back after.">
         <span style="color:#9aa4b0; font-size:11px; min-width:34px;">Bend</span>
         <input type="range" id="bendLimit" min="0" max="180" step="1" value="60">
         <span class="mono" id="bendRead" style="flex:none;">60°</span>
@@ -223,29 +234,29 @@
         <button id="clearNeutralBtn" disabled data-tip="Forget the saved neutral pose.">Clear</button>
       </div>
 
-      <h3>Hang</h3>
+      <h3>Ragdoll</h3>
       <div class="row">
-        <button id="hangBtn" data-tip="Pick the creature up by a bone and let the rest of it hang."
-                data-more="Drag a bone to carry it by. Let go and it drops.">Hang</button>
-        <button id="hangGroundBtn" class="on" data-tip="Let it land on the floor instead of falling through.">Floor</button>
-        <button id="hangResetBtn" disabled data-tip="Put it back where it started.">Put it back</button>
+        <button id="ragdollBtn" data-tip="Pick the creature up by a bone and let the rest of it hang."
+                data-more="Drag a bone to carry it by. Let go and it drops.">Ragdoll</button>
+        <button id="ragdollGroundBtn" class="on" data-tip="Let it land on the floor instead of falling through.">Floor</button>
+        <button id="ragdollResetBtn" disabled data-tip="Put it back where it started.">Put it back</button>
       </div>
       <div class="row" data-tip="How hard it is pulled down. 1 is about earth for a body this size.">
         <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Gravity</span>
-        <input type="range" id="hangGravity" min="0" max="4" step="0.05" value="1">
-        <span class="mono" id="hangGravityRead" style="flex:none;">1.00</span>
+        <input type="range" id="ragdollGravity" min="0" max="4" step="0.05" value="1">
+        <span class="mono" id="ragdollGravityRead" style="flex:none;">1.00</span>
       </div>
       <div class="row" data-tip="How hard the joints resist folding. At zero it hangs like a rope, at one it keeps its shape.">
         <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Stiffness</span>
-        <input type="range" id="hangStiff" min="0" max="1" step="0.01" value="0.4">
-        <span class="mono" id="hangStiffRead" style="flex:none;">0.40</span>
+        <input type="range" id="ragdollStiff" min="0" max="1" step="0.01" value="0.4">
+        <span class="mono" id="ragdollStiffRead" style="flex:none;">0.40</span>
       </div>
       <div class="row" data-tip="How fast the swinging dies away.">
         <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Damping</span>
-        <input type="range" id="hangDrag" min="0" max="0.4" step="0.005" value="0.02">
-        <span class="mono" id="hangDragRead" style="flex:none;">0.020</span>
+        <input type="range" id="ragdollDrag" min="0" max="0.4" step="0.005" value="0.02">
+        <span class="mono" id="ragdollDragRead" style="flex:none;">0.020</span>
       </div>
-      <div class="mono" id="hangRead">—</div>
+      <div class="mono" id="ragdollRead">—</div>
 
       <h3>Animations</h3>
       <div id="clips" class="mono">—</div>
@@ -280,7 +291,7 @@
         <button id="loopBtn" class="on" data-tip="Loop the range instead of playing it once and holding.">Loop</button>
       </div>
       <div class="row">
-        <button id="ghostBtn" class="on" data-tip="Show the start or end frame as a translucent ghost.">Ghosts</button>
+        <button id="ghostBtn" data-tip="Show the start or end frame as a translucent ghost.">Ghosts</button>
         <button id="ghostModeBtn" data-tip="Draw the ghost in place, or beside the creature.">Overlap</button>
         <button id="ghostPoseBtn" data-tip="Ghost the start frame, or the end frame.">Start</button>
       </div>
@@ -399,7 +410,10 @@ import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 // SkeletonUtils.clone, not Object3D.clone(true): a plain clone shares the skeleton, so posing a ghost
 // would pose the live model with it.
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
-import { readRigFromGLB } from './pokemon-rig.js';
+import { readRigFromGLB, descendants } from './pokemon-rig.js';
+import {
+  CLIP, POSED, LIMP, driveOf, setDrive, driveCounts, indicesWith, anchorIndices, isPlain,
+} from './pokemon-drive.js';
 import {
   emptyAnnotation, getAnnotation, putAnnotation, setSegment, removeSegment, segmentsOf,
   resolveSegment, wholeClip, segmentKind, poseAt, COMMON_STATES, setNeutralBone, clearNeutral,
@@ -633,11 +647,15 @@ async function selectSpecies(species) {
   skel.hover = -1;
   buildSkeleton();
   refreshSelection();
-  // Posing and hanging are per-species too: neither may carry onto the next skeleton.
+  // Posing, the ragdoll and the drive mask are per-species too: none may carry onto the next skeleton.
   pose.bone = -1;
   pose.chain = [];
+  drive = {};
+  held = new Map();
+  limp.sim = null;
+  refreshDrive();
   setPoseMode(false);
-  setHangMode(false);
+  setRagdollMode(false);
   $('stageMsg').style.display = 'none';
 
   describeSpecies();
@@ -668,7 +686,7 @@ function restorePose() {
 // Positions come from the live Object3D matrices every frame, so the skeleton follows playback and the
 // ghosts and the scrubber without knowing anything about them.
 const skel = {
-  on: true, body: true, joints: null, lines: null, size: 1,
+  on: false, body: true, joints: null, lines: null, size: 1,
   selected: new Set(), hover: -1,
   screen: [],                       // one {x, y, depth, hidden} a bone, in rig.bones order, in CSS pixels
 };
@@ -676,6 +694,10 @@ const JOINT_COLOR = new THREE.Color(0x6d7c8c);
 const JOINT_SELECTED = new THREE.Color(0x5fd08a);
 const JOINT_HOVER = new THREE.Color(0xffffff);
 const JOINT_ROOT = new THREE.Color(0xd8a657);
+// A bone the clip no longer owns is coloured, because otherwise a mask is invisible until you play
+// something and wonder why part of the body is not moving.
+const JOINT_POSED = new THREE.Color(0x7f8fd0);
+const JOINT_LIMP = new THREE.Color(0xcf6f8a);
 
 function clearSkeleton() {
   for (const key of ['joints', 'lines']) {
@@ -778,9 +800,12 @@ function paintSkeleton() {
   if (!joints || !current) return;
   const bones = current.rig.bones;
   for (let i = 0; i < bones.length; i++) {
+    const mode = driveOf(drive, bones[i].key);
     const colour = i === skel.hover ? JOINT_HOVER
       : skel.selected.has(bones[i].key) ? JOINT_SELECTED
-        : bones[i].key === current.rig.root ? JOINT_ROOT : JOINT_COLOR;
+        : mode === LIMP ? JOINT_LIMP
+          : mode === POSED ? JOINT_POSED
+            : bones[i].key === current.rig.root ? JOINT_ROOT : JOINT_COLOR;
     joints.setColorAt(i, colour);
   }
   if (joints.instanceColor) joints.instanceColor.needsUpdate = true;
@@ -815,10 +840,10 @@ function boneAt(ev) {
 }
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
-  if (hang.carry >= 0) {
+  if (ragdoll.carry >= 0) {
     // The pin follows the pointer; the physics does the rest on the next frame.
     const to = dragPoint(ev);
-    if (to) pinBone(hang.sim, hang.carry, to[0], to[1], to[2]);
+    if (to) pinBone(ragdoll.sim, ragdoll.carry, to[0], to[1], to[2]);
     return;
   }
   if (pose.bone >= 0) { dragPose(ev); return; }
@@ -847,25 +872,25 @@ renderer.domElement.addEventListener('pointerdown', (ev) => {
   const i = boneAt(ev);
   if (i < 0) return;
   // Grabbing a bone takes the pointer away from the camera for the length of the drag.
-  if (hang.sim) {
+  if (ragdoll.sim) {
     // Carrying: pin the grabbed bone and drag it on the plane it already sits on.
-    hang.carry = i;
+    ragdoll.carry = i;
     pose.grab.set(skel.xyz[i * 3], skel.xyz[i * 3 + 1], skel.xyz[i * 3 + 2]);
     pose.plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(_dir).negate(), pose.grab);
-    pinBone(hang.sim, i, pose.grab.x, pose.grab.y, pose.grab.z);
+    pinBone(ragdoll.sim, i, pose.grab.x, pose.grab.y, pose.grab.z);
     controls.enabled = false;
-    refreshHang();
+    refreshRagdoll();
   } else if (pose.on && beginPose(i, ev)) {
     controls.enabled = false;
   }
 });
 addEventListener('pointerup', () => {
-  if (hang.carry >= 0) {
+  if (ragdoll.carry >= 0) {
     // Let go and it drops, which is the whole point of holding it up.
-    releaseAll(hang.sim);
-    hang.carry = -1;
+    releaseAll(ragdoll.sim);
+    ragdoll.carry = -1;
     controls.enabled = true;
-    refreshHang();
+    refreshRagdoll();
     return;
   }
   if (pose.bone < 0) return;
@@ -1001,6 +1026,9 @@ function dragPose(ev) {
     o.updateWorldMatrix(false, false);
   }
   limitChain();
+  // A posed bone means "whatever it is now, held", so dragging one updates what is held rather than being
+  // undone by it on the next frame.
+  for (const key of pose.chain) if (held.has(key)) holdBone(key);
   updateSkeleton();
 }
 
@@ -1043,61 +1071,61 @@ function limitChain() {
 // The seeded pose and the seeded world rotations are captured once, and each frame the fit is computed
 // from seed to now rather than from the last frame, so nothing accumulates drift.
 // `sim` being non-null IS the on state. A separate flag would be a second copy of the same fact.
-const hang = { sim: null, seed: null, seedQuat: [], carry: -1, ground: true, gravity: 1, stiff: 0.4, drag: 0.02 };
+const ragdoll = { sim: null, seed: null, seedQuat: [], carry: -1, ground: true, gravity: 1, stiff: 0.4, drag: 0.02 };
 const _hq = new THREE.Quaternion();
 const _hp = new THREE.Quaternion();
 
-function startHang() {
+function startRagdoll() {
   if (!current || !skel.xyz) return;
-  hang.seed = Float64Array.from(skel.xyz);
-  hang.seedQuat = current.objects.map(o => (o ? o.getWorldQuaternion(new THREE.Quaternion()) : null));
+  ragdoll.seed = Float64Array.from(skel.xyz);
+  ragdoll.seedQuat = current.objects.map(o => (o ? o.getWorldQuaternion(new THREE.Quaternion()) : null));
   // rig.bones is ordered by glTF node index, which does not promise a parent before its child, and the
   // apply loop settles each bone against its parent.
-  hang.order = boneOrder(current.rig);
-  hang.sim = buildHang(current.rig, hang.seed, { stiffness: hang.stiff, maxBend: bendLimit() });
-  refreshHang();
+  ragdoll.order = boneOrder(current.rig);
+  ragdoll.sim = buildHang(current.rig, ragdoll.seed, { stiffness: ragdoll.stiff, maxBend: bendLimit() });
+  refreshRagdoll();
 }
 
-function stopHang() {
-  hang.sim = null;
-  hang.seed = null;
-  hang.seedQuat = [];
-  hang.carry = -1;
-  refreshHang();
+function stopRagdoll() {
+  ragdoll.sim = null;
+  ragdoll.seed = null;
+  ragdoll.seedQuat = [];
+  ragdoll.carry = -1;
+  refreshRagdoll();
 }
 
-function setHangMode(on) {
-  $('hangBtn').classList.toggle('on', on);
-  if (on) { play.paused = true; setPoseMode(false); startHang(); } else { stopHang(); restorePose(); }
+function setRagdollMode(on) {
+  $('ragdollBtn').classList.toggle('on', on);
+  if (on) { play.paused = true; setPoseMode(false); startRagdoll(); } else { stopRagdoll(); restorePose(); }
   refreshTransport();
-  refreshHang();
+  refreshRagdoll();
 }
 
-function refreshHang() {
-  $('hangResetBtn').disabled = !hang.sim;
-  $('hangGravityRead').textContent = hang.gravity.toFixed(2);
-  $('hangStiffRead').textContent = hang.stiff.toFixed(2);
-  $('hangDragRead').textContent = hang.drag.toFixed(3);
-  $('hangRead').textContent = !current ? '—'
-    : !hang.sim ? 'Hang is off.'
-      : hang.carry >= 0 ? `Carried by ${current.rig.bones[hang.carry].key}.`
+function refreshRagdoll() {
+  $('ragdollResetBtn').disabled = !ragdoll.sim;
+  $('ragdollGravityRead').textContent = ragdoll.gravity.toFixed(2);
+  $('ragdollStiffRead').textContent = ragdoll.stiff.toFixed(2);
+  $('ragdollDragRead').textContent = ragdoll.drag.toFixed(3);
+  $('ragdollRead').textContent = !current ? '—'
+    : !ragdoll.sim ? 'The ragdoll is off.'
+      : ragdoll.carry >= 0 ? `Carried by ${current.rig.bones[ragdoll.carry].key}.`
         : 'Falling. Drag a bone to pick it up.';
 }
 
 /** One frame of physics, then the bones follow the particles. */
-function stepHangFrame(dt) {
-  if (!hang.sim || !current) return;
-  stepHang(hang.sim, Math.min(dt, 1 / 20), {
-    gravity: hang.gravity, drag: hang.drag, ground: hang.ground,
+function stepRagdollFrame(dt) {
+  if (!ragdoll.sim || !current) return;
+  stepHang(ragdoll.sim, Math.min(dt, 1 / 20), {
+    gravity: ragdoll.gravity, drag: ragdoll.drag, ground: ragdoll.ground,
   });
-  const now = hangPositions(hang.sim);
-  const turns = boneRotations(current.rig, hang.seed, now, { maxTwist: twistLimit(), maxBend: bendLimit() });
+  const now = hangPositions(ragdoll.sim);
+  const turns = boneRotations(current.rig, ragdoll.seed, now, { maxTwist: twistLimit(), maxBend: bendLimit() });
   const bones = current.rig.bones;
 
   // Root first, so a bone's parent is settled before its local rotation is worked out against it.
-  for (const i of hang.order) {
+  for (const i of ragdoll.order) {
     const o = current.objects[i];
-    const seedQ = hang.seedQuat[i];
+    const seedQ = ragdoll.seedQuat[i];
     if (!o || !seedQ) continue;
     const [x, y, z, w] = turns[i];
     _hq.set(x, y, z, w).multiply(seedQ);                  // the bone's world rotation now
@@ -1118,18 +1146,18 @@ function stepHangFrame(dt) {
   updateSkeleton();
 }
 
-$('hangBtn').addEventListener('click', () => setHangMode(!hang.sim));
-$('hangGroundBtn').addEventListener('click', () => {
-  hang.ground = !hang.ground;
-  $('hangGroundBtn').classList.toggle('on', hang.ground);
+$('ragdollBtn').addEventListener('click', () => setRagdollMode(!ragdoll.sim));
+$('ragdollGroundBtn').addEventListener('click', () => {
+  ragdoll.ground = !ragdoll.ground;
+  $('ragdollGroundBtn').classList.toggle('on', ragdoll.ground);
 });
-$('hangResetBtn').addEventListener('click', () => { restorePose(); updateSkeleton(); startHang(); });
-$('hangGravity').addEventListener('input', () => { hang.gravity = Number($('hangGravity').value); refreshHang(); });
-$('hangDrag').addEventListener('input', () => { hang.drag = Number($('hangDrag').value); refreshHang(); });
-$('hangStiff').addEventListener('input', () => {
-  hang.stiff = Number($('hangStiff').value);
-  if (hang.sim) setStiffness(hang.sim, hang.stiff);      // live, so it does not need a rebuild
-  refreshHang();
+$('ragdollResetBtn').addEventListener('click', () => { restorePose(); updateSkeleton(); startRagdoll(); });
+$('ragdollGravity').addEventListener('input', () => { ragdoll.gravity = Number($('ragdollGravity').value); refreshRagdoll(); });
+$('ragdollDrag').addEventListener('input', () => { ragdoll.drag = Number($('ragdollDrag').value); refreshRagdoll(); });
+$('ragdollStiff').addEventListener('input', () => {
+  ragdoll.stiff = Number($('ragdollStiff').value);
+  if (ragdoll.sim) setStiffness(ragdoll.sim, ragdoll.stiff);      // live, so it does not need a rebuild
+  refreshRagdoll();
 });
 
 /** How far a bone may turn about its own length against its parent. Radians; pi means no limit. */
@@ -1149,7 +1177,7 @@ $('twistLimit').addEventListener('input', () => {
 });
 $('bendLimit').addEventListener('input', () => {
   $('bendRead').textContent = `${$('bendLimit').value}°`;
-  if (hang.sim) setBend(hang.sim, bendLimit());          // live, so it does not need a rebuild
+  if (ragdoll.sim) setBend(ragdoll.sim, bendLimit());          // live, so it does not need a rebuild
 });
 
 $('takeNeutralBtn').addEventListener('click', () => {
@@ -1194,6 +1222,8 @@ function refreshSelection() {
       + `, ${((current.rig.geometry.get(hovered.key)?.count ?? 0) / (current.rig.units.totalVertices || 1) * 100).toFixed(1)}% of the mesh`
     : '';
   $('clearSelBtn').disabled = !info?.count;
+  $('belowBtn').disabled = !info?.count;
+  for (const id of ['driveClipBtn', 'drivePosedBtn', 'driveLimpBtn']) $(id).disabled = !info?.count;
   if (!info?.count) {
     $('selRead').textContent = current ? 'Nothing selected.' : '—';
     $('selBones').textContent = '';
@@ -1208,6 +1238,134 @@ function refreshSelection() {
   $('selBones').textContent = info.bones.join(' ');
 }
 
+// --- what moves each bone --------------------------------------------------------------------------
+//
+// `drive` is a bone key to mode map, empty by default, so an untouched species animates exactly as before
+// and every loop below can skip its work with one `isPlain` check.
+//
+// `held` is the local transform a posed bone keeps. Captured when the bone is posed and again after any
+// drag that moved it, because "posed" means "whatever it is now, held", not "whatever it was when the file
+// was written". A bone the clip still owns is deliberately NOT held: drag one and the next frame overwrites
+// it, which is what makes the three modes mean something rather than being decoration.
+let drive = {};
+let held = new Map();
+
+function setDriveFor(mode) {
+  if (!current || !skel.selected.size) return;
+  drive = setDrive(drive, [...skel.selected], mode);
+  for (const key of skel.selected) {
+    if (mode === POSED) holdBone(key); else held.delete(key);
+  }
+  // A bone leaving limp keeps whatever the simulation last gave it rather than snapping, and one arriving
+  // needs the sim seeded from where the body is NOW, not from where it was when the species loaded.
+  reseedRagdoll();
+  refreshDrive();
+  paintSkeleton();
+}
+
+function holdBone(key) {
+  const i = current.rig.bones.findIndex(b => b.key === key);
+  const o = i >= 0 ? current.objects[i] : null;
+  // The object itself, not its index. This runs on every frame that has a posed bone, and a name lookup
+  // there would be a search of the whole skeleton per bone per frame.
+  if (o) held.set(key, { o, p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() });
+}
+
+/** Put every posed bone back after the mixer has written over it. */
+function applyHeld() {
+  for (const t of held.values()) {
+    t.o.position.copy(t.p); t.o.quaternion.copy(t.q); t.o.scale.copy(t.s);
+  }
+}
+
+function refreshDrive() {
+  const counts = current ? driveCounts(current.rig, drive) : null;
+  $('driveRead').textContent = !counts ? '—'
+    : isPlain(drive) ? 'The animation drives every bone.'
+      : `${counts.clip} animated, ${counts.posed} posed, ${counts.limp} limp.`;
+}
+
+// --- the partial ragdoll ----------------------------------------------------------------------------
+//
+// The whole-body Ragdoll above pins the bone you grabbed and lets everything fall off it. This is the same
+// solver with the pinning INVERTED: every bone the animation still drives is held where the clip put it
+// this frame, and the limp ones hang off that. A walking body with a dead arm is one set of pins away from
+// a hanging body with a live grip.
+//
+// Kept separate from `ragdoll` rather than sharing its simulation, because `ragdoll.sim` being non-null is
+// what the exclusivity logic reads as "the whole-body mode is on", and a partial ragdoll running during
+// ordinary playback is not that.
+const limp = { sim: null, seed: null, seedQuat: [], seedPos: [], anchors: [], order: [] };
+const _lq = new THREE.Quaternion();
+const _lp = new THREE.Quaternion();
+
+/**
+ * Build or drop the partial simulation to match the mask, seeded from where the body is right now.
+ *
+ * Called whenever the mask changes rather than every frame. Re-seeding matters: a bone arriving at limp has
+ * to start from the pose on screen, or it would snap to wherever the body was when the species loaded.
+ */
+function reseedRagdoll() {
+  const indices = current ? indicesWith(current.rig, drive, LIMP) : [];
+  if (!current || !indices.length) { limp.sim = null; return; }
+  updateSkeleton();
+  limp.seed = Float64Array.from(skel.xyz);
+  limp.seedQuat = current.objects.map(o => (o ? o.getWorldQuaternion(new THREE.Quaternion()) : null));
+  // These clips animate bone TRANSLATION as well as rotation. Left alone, a limp bone would keep sliding
+  // along its parent to the clip's tune while only its angle came from the simulation, and its length would
+  // stop matching the constraint holding it. The ragdoll owns the bone or it does not.
+  limp.seedPos = current.objects.map(o => (o ? o.position.clone() : null));
+  limp.sim = buildHang(current.rig, limp.seed, { stiffness: ragdoll.stiff, maxBend: bendLimit() });
+  limp.anchors = anchorIndices(current.rig, drive);
+  // Root-first among the limp bones only: the others are being written by the clip, not by this.
+  const isLimp = new Set(indices);
+  limp.order = boneOrder(current.rig).filter(i => isLimp.has(i));
+}
+
+/** One frame of the partial simulation. The clip has already written this frame when this runs. */
+function stepLimpFrame(dt) {
+  if (!limp.sim || !current) return;
+  const objects = current.objects;
+  // Anchors follow the animation: pinned where the clip just put them, so the limp bones feel the body move.
+  releaseAll(limp.sim);
+  for (const i of limp.anchors) {
+    const o = objects[i];
+    if (!o) continue;
+    o.getWorldPosition(_v);
+    pinBone(limp.sim, i, _v.x, _v.y, _v.z);
+  }
+  stepHang(limp.sim, Math.min(dt, 1 / 20), {
+    gravity: ragdoll.gravity, drag: ragdoll.drag, ground: false,
+  });
+  const now = hangPositions(limp.sim);
+  const turns = boneRotations(current.rig, limp.seed, now, { maxTwist: twistLimit(), maxBend: bendLimit() });
+  for (const i of limp.order) {
+    const o = objects[i];
+    const seedQ = limp.seedQuat[i];
+    if (!o || !seedQ || !turns[i]) continue;
+    const [x, y, z, w] = turns[i];
+    _lq.set(x, y, z, w).multiply(seedQ);
+    if (o.parent) { o.parent.getWorldQuaternion(_lp); _lq.premultiply(_lp.invert()); }
+    o.quaternion.copy(_lq);
+    if (limp.seedPos[i]) o.position.copy(limp.seedPos[i]);
+    o.updateWorldMatrix(false, false);
+  }
+}
+
+$('driveClipBtn').addEventListener('click', () => setDriveFor(CLIP));
+$('drivePosedBtn').addEventListener('click', () => setDriveFor(POSED));
+$('driveLimpBtn').addEventListener('click', () => setDriveFor(LIMP));
+$('belowBtn').addEventListener('click', () => {
+  if (!current) return;
+  // A limb is a bone and everything under it. Chains stop where the skeleton branches, so on most of this
+  // dex a chain is one bone and the chain gesture cannot select an arm.
+  const next = new Set(skel.selected);
+  for (const key of [...skel.selected]) for (const k of descendants(current.rig, key)) next.add(k);
+  skel.selected = next;
+  refreshSelection();
+  paintSkeleton();
+});
+
 // --- ghosts: the start and end frames of the range, drawn as translucent copies --------------------
 //
 // Two independent choices. WHICH frames to show — the start, the end, or both. And WHERE to put them:
@@ -1215,7 +1373,7 @@ function refreshSelection() {
 // landing back on one of them, and offset pushes them aside so they do not sit inside it.
 //
 // Green is the start frame and amber the end, matching the range bar.
-const ghosts = { start: null, end: null, on: true, mode: 'overlap', which: 'start' };
+const ghosts = { start: null, end: null, on: false, mode: 'overlap', which: 'start' };
 const GHOST_WHICH = ['start', 'end', 'both'];
 const GHOST_TINT = { start: 0x5fd08a, end: 0xd8a657 };
 const GHOST_SIDE = { start: -1, end: 1 };
@@ -1497,6 +1655,9 @@ function applyFrame() {
   const clip = action.getClip();
   action.time = Math.max(0, Math.min(clip.duration, play.frame / fpsOf(currentClip)));
   current.mixer.update(0);
+  // Scrubbing and stepping write a frame outside the loop, so the mask has to be honoured here too or a
+  // posed bone would jump back to the clip whenever you dragged the scrubber.
+  applyHeld();
 }
 
 function advance(dt) {
@@ -1521,7 +1682,7 @@ function advance(dt) {
 function refreshTransport() {
   // Posing, hanging and playback all own the bones, so the transport is off while either of the other two
   // is running rather than silently overwriting them on the next frame.
-  const live = !!(current && action) && !pose.on && !hang.sim;
+  const live = !!(current && action) && !pose.on && !ragdoll.sim;
   $('playBtn').disabled = !live;
   $('restBtn').disabled = !current || pose.on;
   $('scrub').disabled = !live;
@@ -1838,7 +1999,15 @@ renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   advance(dt);
   controls.update();
-  if (hang.sim) stepHangFrame(dt); else updateSkeleton();
+  // Order: the clip writes every bone, posed bones are put back over it, then the limp ones are simulated
+  // against the result. Each step only overrides what the one before it had no business owning.
+  if (ragdoll.sim) {
+    stepRagdollFrame(dt);
+  } else {
+    applyHeld();
+    stepLimpFrame(dt);
+    updateSkeleton();
+  }
   if (viewHelper) renderer.clear();
   renderer.render(scene, camera);
   if (viewHelper) {
@@ -1854,7 +2023,10 @@ renderer.setAnimationLoop(() => {
   }
 });
 
-setSnap(play.snap);                                      // so its label and hover text exist before a click
+// Controls whose look is written by script need one pass before the first click, or the button and the
+// state it stands for start out disagreeing.
+setSnap(play.snap);
+refreshGhostButtons();
 refreshBoard();
 selectSpecies(dex[0].species).catch(showError);
 </script>
