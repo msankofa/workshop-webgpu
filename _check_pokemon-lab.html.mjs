@@ -426,6 +426,44 @@ check('a pose reaches the file, and records the whole stance rather than the edi
   assert(/current\.rig\.bones\.entries\(\)/.test(take), 'every bone, not only the ones that moved');
 });
 
+check('hanging reuses the tested ragdoll rather than a second physics solver', () => {
+  assert(/from '\.\/pokemon-hang\.js'/.test(code), 'the page should not carry its own Verlet loop');
+  assert(!/prev\.[xyz]|integrate\(/.test(code), 'no integration in the page');
+  assert(/stepHang\(/.test(code) && /boneRotations\(/.test(code), 'physics and the rotation fit both come from the module');
+});
+
+check('the hang fit is measured from the seeded pose, not from the last frame', () => {
+  // Frame-to-frame deltas applied on top of an already-rotated bone accumulate drift. The seed pose and the
+  // seed world rotations are captured once and everything is measured against them.
+  const step = code.match(/function stepHangFrame\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(step, 'no stepHangFrame');
+  assert(/boneRotations\(current\.rig, hang\.seed, now\)/.test(step), 'the fit must run seed to now');
+  assert(/hang\.seedQuat\[i\]/.test(step), 'and be applied to the seeded world rotation');
+  assert(/for \(const i of hang\.order\)/.test(step),
+    'bones must be settled root-first, since rig.bones is ordered by glTF node index');
+});
+
+check('the root translates as well as turning, or a carried body cannot swing', () => {
+  const step = code.match(/function stepHangFrame\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/worldToLocal/.test(step) && /position\.copy/.test(step),
+    'rotations alone cannot move the root, so a body held by its head would not swing its hips');
+});
+
+check('hanging, posing and playback are mutually exclusive', () => {
+  const set = code.match(/function setHangMode\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/play\.paused = true/.test(set) && /setPoseMode\(false\)/.test(set), 'hanging must stop the other two');
+  const transport = code.match(/function refreshTransport\([\s\S]*?\n  \$\('playBtn'\)\.title/)?.[0] ?? '';
+  assert(/!hang\.sim/.test(transport), 'the transport must be off while hanging');
+  // The simulation being present IS the on state; a separate flag would be the same fact stored twice.
+  assert(!/hang\.on\b/.test(code), 'hang.sim is the state, so there must be no second flag');
+});
+
+check('letting go actually drops it', () => {
+  // The window-level one, not the canvas listener the gizmo uses.
+  const up = code.match(/\naddEventListener\('pointerup'[\s\S]*?\n\}\);/)?.[0] ?? '';
+  assert(/releaseAll\(hang\.sim\)/.test(up), 'the pin must be released on pointer up');
+});
+
 check('the skeleton follows playback rather than being placed once', () => {
   const loop = code.match(/renderer\.setAnimationLoop\([\s\S]*?\n\}\);/)?.[0] ?? '';
   assert(/updateSkeleton\(\)/.test(loop), 'the overlay must be re-placed every frame');

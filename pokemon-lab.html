@@ -206,6 +206,31 @@
       <p class="hint">Turning Pose on stops the clip. Turning it off lets the clip take the bones back, so
         save the pose first if you want to keep it.</p>
 
+      <h3>Hang</h3>
+      <div class="row">
+        <button id="hangBtn" title="Pick the creature up by a bone and let the rest of it hang.">Hang</button>
+        <button id="hangGroundBtn" class="on" title="Let it land on the floor instead of falling through.">Floor</button>
+        <button id="hangResetBtn" disabled>Put it back</button>
+      </div>
+      <div class="row">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Gravity</span>
+        <input type="range" id="hangGravity" min="0" max="4" step="0.05" value="1">
+        <span class="mono" id="hangGravityRead" style="flex:none;">1.00</span>
+      </div>
+      <div class="row">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Stiffness</span>
+        <input type="range" id="hangStiff" min="0" max="1" step="0.01" value="0.4">
+        <span class="mono" id="hangStiffRead" style="flex:none;">0.40</span>
+      </div>
+      <div class="row">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Damping</span>
+        <input type="range" id="hangDrag" min="0" max="0.4" step="0.005" value="0.02">
+        <span class="mono" id="hangDragRead" style="flex:none;">0.020</span>
+      </div>
+      <div class="mono" id="hangRead">—</div>
+      <p class="hint">Drag a bone to carry the creature by it. Let go and it drops. Stiffness is how hard
+        the joints resist folding, so at zero it hangs like a rope and at one it keeps its shape.</p>
+
       <h3>Animations</h3>
       <div id="clips" class="mono">—</div>
 
@@ -308,6 +333,9 @@ import {
 } from './pokemon-annotation.js';
 import { toggleKeys, chainKeysOf, selectionInfo, nearestPoint } from './pokemon-select.js';
 import { chainUp, selectedReach, fabrik, segmentRotations } from './pokemon-ik.js';
+import {
+  buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness, boneRotations, boneOrder,
+} from './pokemon-hang.js';
 import { describeStatus } from './disk-store.js';
 import {
   LAB_FILE, createLabStore, readLibrary, loadManifest, dexEntries, modelURL, clipLabels,
@@ -532,10 +560,11 @@ async function selectSpecies(species) {
   skel.hover = -1;
   buildSkeleton();
   refreshSelection();
-  // Posing is per-species too: a half-finished bend must not carry onto the next skeleton.
+  // Posing and hanging are per-species too: neither may carry onto the next skeleton.
   pose.bone = -1;
   pose.chain = [];
   setPoseMode(false);
+  setHangMode(false);
   $('stageMsg').style.display = 'none';
 
   describeSpecies();
@@ -713,6 +742,12 @@ function boneAt(ev) {
 }
 
 renderer.domElement.addEventListener('pointermove', (ev) => {
+  if (hang.carry >= 0) {
+    // The pin follows the pointer; the physics does the rest on the next frame.
+    const to = dragPoint(ev);
+    if (to) pinBone(hang.sim, hang.carry, to[0], to[1], to[2]);
+    return;
+  }
   if (pose.bone >= 0) { dragPose(ev); return; }
   if (overGizmo(ev)) { if (skel.hover !== -1) { skel.hover = -1; paintSkeleton(); } return; }
   const i = boneAt(ev);
@@ -735,12 +770,31 @@ renderer.domElement.addEventListener('pointerleave', () => {
 let downAt = null;
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   downAt = { x: ev.clientX, y: ev.clientY };
-  if (!pose.on || overGizmo(ev)) return;
+  if (overGizmo(ev)) return;
   const i = boneAt(ev);
+  if (i < 0) return;
   // Grabbing a bone takes the pointer away from the camera for the length of the drag.
-  if (i >= 0 && beginPose(i, ev)) controls.enabled = false;
+  if (hang.sim) {
+    // Carrying: pin the grabbed bone and drag it on the plane it already sits on.
+    hang.carry = i;
+    pose.grab.set(skel.xyz[i * 3], skel.xyz[i * 3 + 1], skel.xyz[i * 3 + 2]);
+    pose.plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(_dir).negate(), pose.grab);
+    pinBone(hang.sim, i, pose.grab.x, pose.grab.y, pose.grab.z);
+    controls.enabled = false;
+    refreshHang();
+  } else if (pose.on && beginPose(i, ev)) {
+    controls.enabled = false;
+  }
 });
 addEventListener('pointerup', () => {
+  if (hang.carry >= 0) {
+    // Let go and it drops, which is the whole point of holding it up.
+    releaseAll(hang.sim);
+    hang.carry = -1;
+    controls.enabled = true;
+    refreshHang();
+    return;
+  }
   if (pose.bone < 0) return;
   pose.bone = -1;
   pose.chain = [];
@@ -867,6 +921,104 @@ function dragPose(ev) {
   }
   updateSkeleton();
 }
+
+// --- hanging: the whole body, under gravity ---------------------------------------------------------
+//
+// `pokemon-hang.js` builds a ragdoll out of the rig and steps it with `ragdoll.js`, whose solver core is
+// already tested. Here the simulated particle positions are turned back into bone rotations so the MESH
+// hangs and not only the skeleton.
+//
+// The seeded pose and the seeded world rotations are captured once, and each frame the fit is computed
+// from seed to now rather than from the last frame, so nothing accumulates drift.
+// `sim` being non-null IS the on state. A separate flag would be a second copy of the same fact.
+const hang = { sim: null, seed: null, seedQuat: [], carry: -1, ground: true, gravity: 1, stiff: 0.4, drag: 0.02 };
+const _hq = new THREE.Quaternion();
+const _hp = new THREE.Quaternion();
+
+function startHang() {
+  if (!current || !skel.xyz) return;
+  hang.seed = Float64Array.from(skel.xyz);
+  hang.seedQuat = current.objects.map(o => (o ? o.getWorldQuaternion(new THREE.Quaternion()) : null));
+  // rig.bones is ordered by glTF node index, which does not promise a parent before its child, and the
+  // apply loop settles each bone against its parent.
+  hang.order = boneOrder(current.rig);
+  hang.sim = buildHang(current.rig, hang.seed, { stiffness: hang.stiff });
+  refreshHang();
+}
+
+function stopHang() {
+  hang.sim = null;
+  hang.seed = null;
+  hang.seedQuat = [];
+  hang.carry = -1;
+  refreshHang();
+}
+
+function setHangMode(on) {
+  $('hangBtn').classList.toggle('on', on);
+  if (on) { play.paused = true; setPoseMode(false); startHang(); } else { stopHang(); restorePose(); }
+  refreshTransport();
+  refreshHang();
+}
+
+function refreshHang() {
+  $('hangResetBtn').disabled = !hang.sim;
+  $('hangGravityRead').textContent = hang.gravity.toFixed(2);
+  $('hangStiffRead').textContent = hang.stiff.toFixed(2);
+  $('hangDragRead').textContent = hang.drag.toFixed(3);
+  $('hangRead').textContent = !current ? '—'
+    : !hang.sim ? 'Hang is off.'
+      : hang.carry >= 0 ? `Carried by ${current.rig.bones[hang.carry].key}.`
+        : 'Falling. Drag a bone to pick it up.';
+}
+
+/** One frame of physics, then the bones follow the particles. */
+function stepHangFrame(dt) {
+  if (!hang.sim || !current) return;
+  stepHang(hang.sim, Math.min(dt, 1 / 20), {
+    gravity: hang.gravity, drag: hang.drag, ground: hang.ground,
+  });
+  const now = hangPositions(hang.sim);
+  const turns = boneRotations(current.rig, hang.seed, now);
+  const bones = current.rig.bones;
+
+  // Root first, so a bone's parent is settled before its local rotation is worked out against it.
+  for (const i of hang.order) {
+    const o = current.objects[i];
+    const seedQ = hang.seedQuat[i];
+    if (!o || !seedQ) continue;
+    const [x, y, z, w] = turns[i];
+    _hq.set(x, y, z, w).multiply(seedQ);                  // the bone's world rotation now
+    if (o.parent) { o.parent.getWorldQuaternion(_hp); _hq.premultiply(_hp.invert()); }
+    o.quaternion.copy(_hq);
+    o.updateWorldMatrix(false, false);
+  }
+  // The root also TRANSLATES -- a body carried by its head swings its hips a long way -- and rotations
+  // alone cannot say that. Every other bone follows from its parent and its own fixed offset.
+  const root = bones.findIndex(b => b.key === current.rig.root);
+  const ro = root >= 0 ? current.objects[root] : null;
+  if (ro) {
+    _v.set(now[root * 3], now[root * 3 + 1], now[root * 3 + 2]);
+    if (ro.parent) ro.parent.worldToLocal(_v);
+    ro.position.copy(_v);
+    ro.updateWorldMatrix(false, true);
+  }
+  updateSkeleton();
+}
+
+$('hangBtn').addEventListener('click', () => setHangMode(!hang.sim));
+$('hangGroundBtn').addEventListener('click', () => {
+  hang.ground = !hang.ground;
+  $('hangGroundBtn').classList.toggle('on', hang.ground);
+});
+$('hangResetBtn').addEventListener('click', () => { restorePose(); updateSkeleton(); startHang(); });
+$('hangGravity').addEventListener('input', () => { hang.gravity = Number($('hangGravity').value); refreshHang(); });
+$('hangDrag').addEventListener('input', () => { hang.drag = Number($('hangDrag').value); refreshHang(); });
+$('hangStiff').addEventListener('input', () => {
+  hang.stiff = Number($('hangStiff').value);
+  if (hang.sim) setStiffness(hang.sim, hang.stiff);      // live, so it does not need a rebuild
+  refreshHang();
+});
 
 $('poseBtn').addEventListener('click', () => setPoseMode(!pose.on));
 $('reach').addEventListener('input', () => { pose.reach = Number($('reach').value); refreshPose(); });
@@ -1236,9 +1388,9 @@ function advance(dt) {
 }
 
 function refreshTransport() {
-  // Posing and playback both own the bones, so the transport is off while Pose is on rather than silently
-  // overwriting a pose on the next frame.
-  const live = !!(current && action) && !pose.on;
+  // Posing, hanging and playback all own the bones, so the transport is off while either of the other two
+  // is running rather than silently overwriting them on the next frame.
+  const live = !!(current && action) && !pose.on && !hang.sim;
   $('playBtn').disabled = !live;
   $('restBtn').disabled = !current || pose.on;
   $('scrub').disabled = !live;
@@ -1555,7 +1707,7 @@ renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   advance(dt);
   controls.update();
-  updateSkeleton();
+  if (hang.sim) stepHangFrame(dt); else updateSkeleton();
   if (viewHelper) renderer.clear();
   renderer.render(scene, camera);
   if (viewHelper) {

@@ -25,6 +25,7 @@ inferred or eyeballed.
 | `pokemon-pose.js` | How far apart two poses are. Pure; not wired into the page. | shipped |
 | `pokemon-select.js` | Picking bones and chains: the gestures, and screen-space hit-testing. | shipped |
 | `pokemon-ik.js` | FABRIK, and which bones answer a drag. | shipped |
+| `pokemon-hang.js` | A ragdoll from a rig, and particles back to bone rotations. | shipped |
 | `pokemon-lab.html` | The page. | browse, segments and bone picking shipped |
 | `test-pokemon-rig.mjs` | 38 checks, mostly over all 151 models. | shipped |
 | `test-pokemon-annotation.mjs` | 62 checks, built against real rigs. | shipped |
@@ -32,7 +33,10 @@ inferred or eyeballed.
 | `test-pokemon-pose.mjs` | 29 checks, four species. | shipped |
 | `test-pokemon-select.mjs` | 20 checks, six species. | shipped |
 | `test-pokemon-ik.mjs` | 20 checks: the solver as geometry, chains against real rigs. | shipped |
-| `_check_pokemon-lab.html.mjs` | 53 static checks on the page. | shipped |
+| `test-pokemon-hang.mjs` | 19 checks: the physics as physics, the rotation fit against known rotations. | shipped |
+| `_check_pokemon-lab.html.mjs` | 60 static checks on the page. | shipped |
+
+`ragdoll.js` and its 31 tests are **reused unchanged**. The only new physics here is the body definition.
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | not started |
 
@@ -510,6 +514,66 @@ No joint limits, so nothing stops a neck bending backwards. One yaw per solve, s
 about its own axis. And a solver assumes a bone points at its child, which is only true where the rig was
 built that way — the models' bone origins are documented as not anatomical, so on some species a drag will
 move something plausible-looking in an implausible way.
+
+## Hanging: pick it up and let gravity have it
+
+`pokemon-hang.js` builds a ragdoll out of a rig and steps it with **`ragdoll.js`, unchanged**. That solver's
+core — `stepRagdoll`, `integrate`, `solveConstraints`, `collideGround` — touches only `rd.particles` and
+`rd.constraints` and knows nothing about humanoids; only its `createRagdoll` is welded to a 16-joint body.
+So this builds the same shape of object from a Pokémon skeleton and inherits a Verlet solver that already
+has 31 tests. Nothing about the physics was rewritten.
+
+Two constraint kinds, both derived from the skeleton with **no anatomy needed**:
+
+| Kind | Between | Does |
+|---|---|---|
+| bone | parent and child, at its current length | stops stretching — on its own this is a rope |
+| brace | bone and **grandparent**, at its current distance | folding shortens that distance and the constraint pushes back |
+
+Braces are ordered **before** bones in the constraint list, because the solver runs it in order every
+iteration and whatever comes last has the final say. Interleaved, the braces pulled bones 2.5% out of
+length.
+
+Everything is scaled to body height — gravity, joint radius, the zero-length brace threshold. These models
+run from 9 to 320 units tall, so a constant tuned on one is wrong on most. `ragdoll.js`'s own default of 25
+is for a 1.8-unit humanoid; `stepHang` takes a multiplier and does the scaling.
+
+### Particles back to bone rotations
+
+The piece that did not exist anywhere. A chain has one child per bone and one rotation that satisfies it; a
+**body is a tree**, and a bone with seven children has no rotation putting all seven exactly where the
+simulation did. The best available answer minimises squared error over all of them — Wahba's problem —
+solved by iterative refinement (Müller et al., *A Robust Method to Extract the Rotational Part of
+Deformations*, 2016) rather than an eigen decomposition. Two dozen lines, cannot return a reflection the
+way a naive SVD can, and it warm-starts from the parent so the answer stays continuous frame to frame.
+
+**Child directions are normalised.** One branching Squirtle bone has children from 2.2 to 13.8 units long;
+un-normalised, the longest dictates the bone's orientation, *and* the correlation matrix is badly enough
+conditioned that the refinement drops from quadratic to linear — 24 passes reached only 2e-3 where
+normalised it reaches machine precision.
+
+**A bone with fewer than three children spanning three dimensions leaves a rotation undetermined.** Turning
+a one-child bone about its own length moves nothing; two children fix everything but the twist
+perpendicular to both. The fit returns one of the family that minimises the error. Most bones in these rigs
+have one child, so this is the common case, not a corner one — and it is why a test asserts the children
+*land where the simulation put them* rather than asserting the original rotation is recovered.
+
+**The root translates as well as turning.** A body carried by its head swings its hips a long way, and no
+rotation can express that. Every other bone follows from its parent and its own fixed offset.
+
+Bones are settled root-first via `boneOrder`, because **`rig.bones` is sorted by glTF node index** —
+whatever the exporter wrote — which does not promise a parent before its child. A test asserts that
+ordering on three species.
+
+### What it cannot do
+
+No cone limits. `ragdoll.js` stops a knee bending backwards because it knows which joint is a knee; nothing
+here knows that until the parts are annotated. Braces resist **all** folding equally, so a hanging creature
+reads as uniformly stiff — a neck resists exactly as much as a tail. That is the cost of having no
+annotation yet, not a limit of the solver, and it is the strongest argument for phase 3.
+
+Hanging, posing and playback all own the bones, so turning Hang on stops the other two and disables the
+transport. `hang.sim` being non-null *is* the on state; a separate flag would be the same fact twice.
 
 ### The grid is sized, not subdivided
 
