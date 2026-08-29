@@ -43,7 +43,13 @@
                font: 13px/1.45 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
   canvas { display: block; }
   #app { display: grid; grid-template-columns: 300px 1fr 320px; grid-template-rows: auto 1fr;
-         height: 100%; }
+         height: 100%; transition: grid-template-columns .18s ease; }
+  /* Collapsed to a zero track rather than a thin rail: the buttons that bring a column back live in the
+     tab strip, which is always there, so the column itself does not have to keep a handle on screen. */
+  #app.no-left { grid-template-columns: 0 1fr 320px; }
+  #app.no-right { grid-template-columns: 300px 1fr 0; }
+  #app.no-left.no-right { grid-template-columns: 0 1fr 0; }
+  #app.no-left #dexCol, #app.no-right #side { display: none; }
 
   /* --- the tab strip ---------------------------------------------------------------------------
      Spans all three columns so the mode is the first thing read, above the dex rather than inside it. */
@@ -54,26 +60,18 @@
   #tabs .tab:hover { color: #cfd6dd; }
   #tabs .tab.on { color: #9fe0b8; border-bottom-color: #5fd08a; }
   #tabs .spacer { flex: 1; }
-  #tabs .note { color: #6b7480; font-size: 10.5px; }
+  #tabs .note { color: #6b7480; font-size: 10.5px; margin-left: 10px; }
+  #tabs .pane { background: none; border: 1px solid #2f3742; border-radius: 4px; padding: 3px 9px;
+                color: #7d8794; font-size: 11px; }
+  #tabs .pane:hover { color: #cfd6dd; border-color: #4a5766; }
+  #tabs .pane.off { color: #5a636e; border-color: #262d36; }
 
-  /* --- the map overlay -------------------------------------------------------------------------
-     Sits over the stage rather than in the side column, so switching tabs does not rebuild the panel
-     the browse mode is using. */
-  #mapPanel { position: absolute; top: 10px; left: 10px; width: 226px; z-index: 5;
-              background: rgba(17, 21, 27, 0.92); border: 1px solid #2a323c; border-radius: 6px;
-              padding: 9px 11px 11px; display: none; }
-  #mapPanel h3 { margin: 0 0 6px; }
-  #mapPanel .grp { display: flex; align-items: baseline; gap: 7px; padding: 3px 0; cursor: pointer; }
-  #mapPanel .grp input { margin: 0; accent-color: #5fd08a; }
-  #mapPanel .grp .sw { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-  #mapPanel .grp .nm { font-size: 11.5px; color: #cfd6dd; flex: 1; }
-  #mapPanel .grp .ct { font: 10px ui-monospace, monospace; color: #6b7480; flex: none; }
-  #mapPanel .grp.locked .nm { color: #7d8794; }
-  #mapHint { color: #6b7480; font-size: 10.5px; margin: 7px 0 0; }
-  #mapRead { position: absolute; bottom: 10px; left: 10px; z-index: 5; max-width: 460px; display: none;
-             background: rgba(17, 21, 27, 0.94); border: 1px solid #2a323c; border-radius: 6px;
-             padding: 8px 11px; font: 11px/1.55 ui-monospace, monospace; color: #8b95a2;
-             white-space: pre-wrap; pointer-events: none; }
+  /* --- the map ---------------------------------------------------------------------------------
+     tools/filesystem-map.html itself, scoped to this subsystem. It is its own document, so it brings its
+     own renderer and its own controls and cannot fight with the model viewer over either. Hidden with
+     display:none rather than unmounted, so switching back does not re-scan and re-settle the layout. */
+  #mapFrame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none;
+              background: #02070c; }
 
   .col { background: #11151b; border-right: 1px solid #222932; display: flex; flex-direction: column;
          min-height: 0; }
@@ -228,10 +226,15 @@
     <button class="tab on" id="tabBrowse">Browse</button>
     <button class="tab" id="tabMap">Map</button>
     <span class="spacer"></span>
+    <button class="pane" id="paneLeft"
+      data-tip="Show or hide the dex list."
+      data-more="The map tab hides both side panels on its way in, and puts them back the way you left them when you return to browse.">Dex</button>
+    <button class="pane" id="paneRight"
+      data-tip="Show or hide the panel on the right.">Details</button>
     <span class="note" id="tabNote"></span>
   </div>
 
-  <aside class="col">
+  <aside class="col" id="dexCol">
     <header>
       <h1>Pokemon Lab</h1>
       <p class="sub" id="progress">Loading the dex…</p>
@@ -255,12 +258,7 @@
     <div id="marquee"></div>
     <div id="stageMsg">Choose a species from the dex to load it.</div>
 
-    <div id="mapPanel">
-      <h3>What to show</h3>
-      <div id="mapGroups"></div>
-      <p id="mapHint">Green edges are imports and blue ones join a test to what it checks.</p>
-    </div>
-    <div id="mapRead"></div>
+    <iframe id="mapFrame" aria-label="The Pokemon Lab filesystem, as a node map"></iframe>
   </div>
 
   <aside class="col" id="side">
@@ -450,6 +448,12 @@
                 data-more="The sound is placed in the world, at the head when one has been annotated and at the middle of the skeleton otherwise, so it shifts and fades as the camera moves.">Play cry</button>
         <span class="mono" id="cryRead"></span>
       </div>
+      <div class="row" data-tip="How loud the cry is."
+           data-more="This is the sound-effects volume the viewers share, and turning it up also unmutes it — a mute set in another tool on this server silences cries here with nothing on this page saying so.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Volume</span>
+        <input type="range" id="cryVol" min="0" max="1" step="0.01" value="1">
+        <span class="mono" id="cryVolRead" style="flex:none;">100%</span>
+      </div>
 
       <h3 data-tip="The Pokemon Stadium soundtrack, as background music.">Music</h3>
       <div class="row">
@@ -600,8 +604,6 @@ import {
   buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness, setBend, boneRotations, boneOrder,
 } from './pokemon-hang.js';
 import { describeStatus } from './disk-store.js';
-import { loadScan, createMapView } from './pokemon-map-view.js';
-import { GROUPS, defaultToggles } from './pokemon-map-scope.js';
 import { createEnvironmentAudio } from './environment-audio.js';
 import {
   LAB_FILE, createLabStore, readLibrary, loadManifest, dexEntries, modelURL, clipLabels,
@@ -719,11 +721,9 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
   controls.enabled = true;
 });
 
-// Declared here rather than beside the rest of the map tab because resize() runs immediately below,
-// and a `let` read before its declaration throws instead of reading undefined — optional chaining
-// does not save you from a temporal dead zone.
+// Declared above resize(), which runs immediately below: a `let` read before its declaration throws
+// rather than reading undefined, and optional chaining does not save you from a temporal dead zone.
 let tab = 'browse';
-let mapView = null;
 
 let lastW = 0, lastH = 0;
 function resize() {
@@ -736,7 +736,6 @@ function resize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
-  mapView?.resize(w, h);      // the map shares this canvas, so it shares the resize
 }
 new ResizeObserver(resize).observe(stage);
 resize();
@@ -1672,13 +1671,13 @@ function refreshPartButtons(info) {
   const n = info?.count ?? 0;
   $('setRootBtn').disabled = n !== 1;
   for (const id of ['setSpineBtn', 'setHeadBtn', 'setContactBtn', 'addLimbBtn']) $(id).disabled = !n;
-  // Which limb the selection currently IS, so pressing Take on one is never a surprise. The list is only
-  // rebuilt on an edit, and hovering a bone is not one, so these two follow the selection here instead.
+  // Which limb the selection currently IS, so Assign is never a surprise. The list is only rebuilt on an
+  // edit, and hovering a bone is not one, so these two follow the selection here instead.
   for (const [id, el] of limbRows) {
     const chain = limbChains.get(id) || [];
     el.classList.toggle('sel', chain.length === n && n > 0 && chain.every(b => skel.selected.has(b)));
-    const take = el.querySelector('.ltake');
-    if (take) take.disabled = !n;
+    const assign = el.querySelector('.lassign');
+    if (assign) assign.disabled = !n;
   }
 }
 
@@ -1804,28 +1803,29 @@ function limbRow(ap, limbs) {
     const n = Math.max(0, Math.min(9, Math.round(Number(row.value) || 0)));
     editParts((x, rig) => updateAppendage(x, rig, ap.id, { row: n }));
   });
-  const take = document.createElement('button');
-  take.className = 'ltake';
-  take.textContent = 'Take';
-  take.disabled = !skel.selected.size;
-  take.dataset.tip = 'Make the selected bones this limb\'s bones.';
-  take.addEventListener('click', () => editParts((x, rig) => updateAppendage(x, rig, ap.id, { chain: [...skel.selected] })));
-  ctl.append(row, take);
+  const assign = document.createElement('button');
+  assign.className = 'lassign';
+  assign.textContent = 'Assign';
+  assign.disabled = !skel.selected.size;
+  assign.dataset.tip = 'Assign the selected bones to this limb.';
+  assign.dataset.more = 'It replaces the limb\'s bones rather than adding to them, so click the limb first if you meant to correct what is already there.';
+  assign.addEventListener('click', () => editParts((x, rig) => updateAppendage(x, rig, ap.id, { chain: [...skel.selected] })));
+  ctl.append(row, assign);
 
   const pair = document.createElement('div');
   pair.className = 'lctl';
   const others = limbs.filter(o => o.id !== ap.id);
   const mirror = document.createElement('select');
-  mirror.dataset.tip = 'Which limb is this one\'s opposite number.';
+  mirror.dataset.tip = 'Which limb is this one\'s opposite number, if it has one.';
   mirror.dataset.more = 'A declared pair, never a computed one. Symmetry is a guess; saying which limb answers which is a fact, and it is what halves the work.';
-  mirror.append(new Option('No mirror', ''));
-  for (const o of others) mirror.append(new Option(o.id, o.id));
+  mirror.append(new Option('Not paired', ''));
+  for (const o of others) mirror.append(new Option(`Paired with ${o.id}`, o.id));
   mirror.value = ap.mirror || '';
   mirror.addEventListener('change', () => editParts(x => declareMirror(x, ap.id, mirror.value || null)));
   const other = document.createElement('button');
-  other.textContent = 'Other side';
+  other.textContent = 'Copy to other side';
   other.disabled = !ap.chain?.length;
-  other.dataset.tip = 'Build the matching limb on the other side and pair the two.';
+  other.dataset.tip = 'Build the matching limb on the other side of the body and pair the two.';
   other.dataset.more = 'Matched on mirrored rest geometry rather than on the bone tree, because two mirrored limbs are routinely built from different numbers of bones. Any bone it could not match is reported rather than guessed at.';
   other.addEventListener('click', () => mirrorLimb(ap));
   pair.append(mirror, other);
@@ -2918,68 +2918,43 @@ addEventListener('keydown', (ev) => {
 
 // --- the map tab ------------------------------------------------------------------------------------
 //
-// The Pokemon-specific filesystem as a node graph, on the SAME renderer as the model viewer. A second
-// WebGPU device for a picture of twenty files would cost a whole extra render path, and two animation
-// loops on one canvas fight, so the tab swaps which scene is drawn.
+// The map is `tools/filesystem-map.html` with `?scope=pokemon`, in an iframe. That page already draws the
+// filesystem the way we want it drawn — force-directed hubs, bloom, depth of field, the growth timeline,
+// the filter panels — and reimplementing any of that here would be a worse copy of a page that works.
+// The scope parameter narrows its scan to this subsystem before it builds anything, so every panel and
+// count in it is about the Lab.
 //
-// Everything is built on the first click rather than at load: browse mode should not pay for a repo scan
-// it may never show.
-let mapToggles = defaultToggles();      // `tab` and `mapView` are declared above resize()
+// Being its own document is the point: it brings its own renderer and its own OrbitControls, so nothing
+// here has to be shared, disabled or fought over. It is created on the first click, and hidden rather
+// than removed, so coming back does not re-scan the repo and re-settle the layout.
+const MAP_URL = 'tools/filesystem-map.html?scope=pokemon';
 
-async function buildMap() {
-  if (mapView) return mapView;
-  $('stageMsg').textContent = 'Scanning the repository…';
-  $('stageMsg').style.display = 'flex';
-  const scan = await loadScan();
-  mapView = createMapView({ THREE, OrbitControls, renderer, scan });
-  buildMapGroups();
-  refreshMap({ frame: true });
-  const w = stage.clientWidth, h = stage.clientHeight;
-  mapView.resize(w, h);
-  $('stageMsg').style.display = 'none';
-  return mapView;
+// --- the side columns -------------------------------------------------------------------------------
+//
+// Collapsing is a view control and nothing is authored by it, so it is not saved anywhere: a reload opens
+// with both columns showing.
+const panes = { left: true, right: true };
+let panesBeforeMap = null;
+
+function applyPanes() {
+  $('app').classList.toggle('no-left', !panes.left);
+  $('app').classList.toggle('no-right', !panes.right);
+  $('paneLeft').classList.toggle('off', !panes.left);
+  $('paneRight').classList.toggle('off', !panes.right);
+  // The track transition is asynchronous, so the stage is still its old width on this line and the
+  // ResizeObserver is what actually drives the canvas as the columns move. This call is for the case
+  // where there is no transition to observe -- reduced motion, or a track that snaps.
+  resize();
 }
 
-function buildMapGroups() {
-  const host = $('mapGroups');
-  host.textContent = '';
-  for (const g of GROUPS) {
-    const row = document.createElement('label');
-    row.className = 'grp' + (g.locked ? ' locked' : '');
-    row.dataset.tip = g.hint;
-    const box = document.createElement('input');
-    box.type = 'checkbox';
-    box.checked = !!mapToggles[g.id];
-    box.disabled = !!g.locked;
-    box.addEventListener('change', () => {
-      mapToggles = { ...mapToggles, [g.id]: box.checked };
-      refreshMap({ frame: false });
-    });
-    const sw = document.createElement('span');
-    sw.className = 'sw';
-    sw.style.background = `#${g.color.toString(16).padStart(6, '0')}`;
-    const nm = document.createElement('span');
-    nm.className = 'nm';
-    nm.textContent = g.label;
-    const ct = document.createElement('span');
-    ct.className = 'ct';
-    ct.dataset.group = g.id;
-    row.append(box, sw, nm, ct);
-    host.appendChild(row);
-  }
+function setPane(side, open) {
+  if (panes[side] === open) return;
+  panes[side] = open;
+  applyPanes();
 }
 
-// A rebuild re-lays out from a fixed seed, so toggling a group does not throw the rest of the map
-// somewhere new — only framing is optional, because a settled camera is worth keeping.
-function refreshMap({ frame = false } = {}) {
-  if (!mapView) return;
-  const info = mapView.rebuild(mapToggles);
-  if (frame) mapView.frame();
-  for (const el of $('mapGroups').querySelectorAll('.ct')) {
-    el.textContent = info.counts[el.dataset.group] || '';
-  }
-  $('tabNote').textContent = `${info.nodes} nodes, ${info.edges} edges.`;
-}
+$('paneLeft').addEventListener('click', () => setPane('left', !panes.left));
+$('paneRight').addEventListener('click', () => setPane('right', !panes.right));
 
 function setTab(next) {
   if (next === tab) return;
@@ -2987,32 +2962,29 @@ function setTab(next) {
   const onMap = tab === 'map';
   $('tabBrowse').classList.toggle('on', !onMap);
   $('tabMap').classList.toggle('on', onMap);
-  $('mapPanel').style.display = onMap ? 'block' : 'none';
-  $('mapRead').style.display = 'none';
-  // Exactly one set of OrbitControls listens at a time; two on one canvas both act on every drag.
-  controls.enabled = !onMap;
-  mapView?.setActive(onMap);
-  $('tabNote').textContent = onMap ? $('tabNote').textContent : '';
-  if (!onMap) $('stageMsg').style.display = current ? 'none' : 'flex';
+
+  // The map wants the width, and it carries its own panels, so both columns fold on the way in and are
+  // put back exactly as they were on the way out. Browse always looks the way you left it.
+  if (onMap) {
+    panesBeforeMap = { ...panes };
+    panes.left = panes.right = false;
+  } else if (panesBeforeMap) {
+    Object.assign(panes, panesBeforeMap);
+    panesBeforeMap = null;
+  }
+  applyPanes();
+
+  const frame = $('mapFrame');
+  if (onMap && !frame.src) frame.src = MAP_URL;
+  frame.style.display = onMap ? 'block' : 'none';
+  // The model viewer keeps its canvas but stops being driven; see the render loop.
+  renderer.domElement.style.visibility = onMap ? 'hidden' : '';
+  $('stageMsg').style.display = onMap || current ? 'none' : 'flex';
+  $('tabNote').textContent = onMap ? 'tools/filesystem-map.html, scoped to this subsystem.' : '';
 }
 
 $('tabBrowse').addEventListener('click', () => setTab('browse'));
-$('tabMap').addEventListener('click', () => {
-  setTab('map');
-  buildMap().then(() => refreshMap({ frame: true })).catch((err) => {
-    $('stageMsg').textContent = String(err.message || err);
-    $('stageMsg').style.display = 'flex';
-  });
-});
-
-// Hover readout. Only while the map is up, and only when the pointer is not dragging the camera.
-renderer.domElement.addEventListener('pointermove', (ev) => {
-  if (tab !== 'map' || !mapView) return;
-  const node = mapView.pick(ev);
-  const lines = mapView.describe(node);
-  $('mapRead').style.display = lines ? 'block' : 'none';
-  if (lines) $('mapRead').textContent = lines.join('\n');
-});
+$('tabMap').addEventListener('click', () => setTab('map'));
 
 // --- the loop -------------------------------------------------------------------------------------
 const clock = new THREE.Clock();
@@ -3034,13 +3006,16 @@ envAudio.loadMusicHttp({ listUrl: '/api/list-pokemon-music', baseUrl: './pokemon
 // files spell their own way (Farfetchd, Mr-Mime). Decoded buffers are kept per species.
 const cryFiles = new Map();
 const cryBuffers = new Map();
-fetch('/api/list-pokemon-cries').then(r => r.json()).then((data) => {
-  for (const name of data?.files || []) {
-    const m = /^(\d+)/.exec(name);
-    if (m) cryFiles.set(Number(m[1]), name);
-  }
-  refreshCry();
-}).catch(() => {});
+function loadCryListing() {
+  return fetch('/api/list-pokemon-cries').then(r => r.json()).then((data) => {
+    for (const name of data?.files || []) {
+      const m = /^(\d+)/.exec(name);
+      if (m) cryFiles.set(Number(m[1]), name);
+    }
+    refreshCry();
+  }).catch(() => {});
+}
+loadCryListing();
 
 function cryBuffer(dex) {
   const name = cryFiles.get(dex);
@@ -3085,9 +3060,28 @@ function refreshCry() {
 $('cryBtn').addEventListener('click', async () => {
   if (!current) return;
   envAudio.noteGesture();
+  if (!cryFiles.size) await loadCryListing();   // the load-time fetch can predate a server (re)start
   const buf = await cryBuffer(current.entry.dex);
-  if (!buf) { $('cryRead').textContent = 'No cry file for this species.'; return; }
+  if (!buf) {
+    $('cryRead').textContent = cryFiles.size ? 'No cry file for this species.' : 'The cry listing did not load. Is serve.py current?';
+    return;
+  }
+  const state = envAudio.getState();
+  if (state.masterMuted || state.sfxMuted || state.sfxVolume === 0 || state.masterVolume === 0) {
+    $('cryRead').textContent = 'The saved settings have sounds muted. Turn the volume up here.';
+  } else {
+    $('cryRead').textContent = '';
+  }
   envAudio.playBufferAt(buf, cryPosition(), 1, { refDistance: 2, maxDistance: 80 });
+});
+
+// The sound-effects volume the viewers share, saved per origin. Moving it also unmutes, since a mute
+// set in another tool would otherwise silence cries with nothing on this page saying so.
+$('cryVol').addEventListener('input', () => {
+  envAudio.setMuted('sfx', false);
+  envAudio.setMuted('master', false);
+  if (envAudio.getState().masterVolume === 0) envAudio.setVolume('master', 1);
+  envAudio.setVolume('sfx', Number($('cryVol').value));
 });
 
 // --- the music player ---------------------------------------------------------------------------
@@ -3095,7 +3089,14 @@ const musicPlayBtn = $('musicPlayBtn');
 const musicTrackSel = $('musicTrackSel');
 $('musicPrevBtn').addEventListener('click', () => { envAudio.noteGesture(); envAudio.prevTrack(); });
 $('musicNextBtn').addEventListener('click', () => { envAudio.noteGesture(); envAudio.nextTrack(); });
-musicPlayBtn.addEventListener('click', () => { envAudio.noteGesture(); envAudio.togglePlayback(); });
+musicPlayBtn.addEventListener('click', async () => {
+  envAudio.noteGesture();
+  // The load-time listing can predate a server (re)start; an empty playlist is retried, not final.
+  if (!envAudio.getState().playlist.length) {
+    await envAudio.loadMusicHttp({ listUrl: '/api/list-pokemon-music', baseUrl: './pokemon/Stadium Music/', select: true });
+  }
+  envAudio.togglePlayback();
+});
 $('musicShuffleBtn').addEventListener('click', () => envAudio.setShuffle(!envAudio.getState().shuffle));
 musicTrackSel.addEventListener('change', () => {
   envAudio.noteGesture();
@@ -3112,6 +3113,9 @@ $('musicSeek').addEventListener('change', () => { envAudio.seekMusic(Number($('m
 envAudio.subscribe((state) => {
   musicPlayBtn.textContent = state.musicPlaying ? 'Pause' : 'Play';
   $('musicShuffleBtn').classList.toggle('on', state.shuffle);
+  const sfx = (state.sfxMuted || state.masterMuted) ? 0 : state.sfxVolume;
+  $('cryVol').value = String(sfx);
+  $('cryVolRead').textContent = Math.round(sfx * 100) + '%';
   $('musicVol').value = String(state.musicVolume);
   $('musicVolRead').textContent = Math.round(state.musicVolume * 100) + '%';
   $('musicOutSel').value = state.musicOutput;
@@ -3181,14 +3185,9 @@ addEventListener('pointerup', () => {
 
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
-  // The map is a second scene on the same renderer, drawn instead of the model rather than beside it.
-  // Nothing in the browse pipeline is stepped while it is up, so a hidden tab costs nothing.
-  if (tab === 'map' && mapView) {
-    mapView.update(dt);
-    if (viewHelper) renderer.clear();
-    renderer.render(mapView.scene, mapView.camera);
-    return;
-  }
+  // Nothing is stepped or drawn while the map is up: the iframe is doing its own rendering, and two
+  // WebGPU contexts both running full tilt for one visible picture is waste.
+  if (tab === 'map') return;
   advance(dt);
   controls.update();
   envAudio.update();

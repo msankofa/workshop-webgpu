@@ -488,7 +488,7 @@ check('the limb list follows the selection without being rebuilt', () => {
   // Rebuilding it on hover would throw away a dropdown mid-open and re-render on every pointer move.
   const fn = code.match(/function refreshPartButtons\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(fn.length > 200, `refreshPartButtons is ${fn.length} chars, so this is reading the wrong slice`);
-  assert(/limbRows/.test(fn) && /ltake/.test(fn), 'Take and the highlight must track the selection here');
+  assert(/limbRows/.test(fn) && /lassign/.test(fn), 'Assign and the highlight must track the selection here');
   const sel = code.match(/function refreshSelection\([\s\S]*?\n\}/)?.[0] ?? '';
   assert(/refreshPartButtons\(/.test(sel) && !/renderLimbs\(/.test(sel),
     'a hover must reach the cheap path only');
@@ -997,6 +997,30 @@ check('the canvas box can shrink, so the resize observer settles', () => {
   // And the handler must not re-write a size that has not changed, which is the other half of the loop.
   const fn = code.match(/function resize\(\)[\s\S]*?\n\}/)?.[0] ?? '';
   assert(/lastW|lastH/.test(fn), 'resize() must skip when the size is unchanged');
+});
+
+check('the side columns collapse, and the map folds them on its way in', () => {
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  // Zero tracks, not narrow ones: the buttons that bring a column back live in the tab strip.
+  assert(/#app\.no-left\s*\{[^}]*grid-template-columns:\s*0\s/.test(css), 'no-left must zero the first track');
+  assert(/#app\.no-right\s*\{[^}]*grid-template-columns:[^}]*\s0\s*;/.test(css), 'no-right must zero the last track');
+  assert(/#app\.no-left\s+#dexCol/.test(css) && /#app\.no-right\s+#side/.test(css),
+    'a collapsed column must be taken out of the layout, not just squeezed to nothing');
+
+  const fn = code.match(/function setTab\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/panesBeforeMap = \{ \.\.\.panes \}/.test(fn), 'entering the map must remember the column state');
+  assert(/panes\.left = panes\.right = false/.test(fn), 'entering the map must fold both columns');
+  assert(/Object\.assign\(panes, panesBeforeMap\)/.test(fn), 'leaving the map must put them back');
+  // A remembered state that is never cleared would restore stale columns on the second visit.
+  assert(/panesBeforeMap = null/.test(fn), 'the remembered state must be cleared once it is used');
+
+  // Both toggles have to be reachable, and both have to say what they do.
+  for (const id of ['paneLeft', 'paneRight']) {
+    assert(markup.includes(`id="${id}"`), `${id} is missing from the markup`);
+    assert(code.includes(`$('${id}').addEventListener`), `${id} has no click handler`);
+  }
+  const apply = code.match(/function applyPanes\(\)[\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/resize\(\)/.test(apply), 'collapsing must tell the canvas its box changed');
 });
 
 check('the page says how to run it', () => {

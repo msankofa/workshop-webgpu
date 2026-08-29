@@ -28,8 +28,7 @@ inferred or eyeballed.
 | `pokemon-hang.js` | A ragdoll from a rig, and particles back to bone rotations. | shipped |
 | `pokemon-drive.js` | What moves each bone: the clip, nothing, or the ragdoll. | shipped |
 | `pokemon-map-scope.js` | Which files count as this subsystem, and what imports what. | shipped |
-| `pokemon-map-view.js` | The Map tab's scene, on the page's own renderer. | shipped |
-| `filesystem-map-core.js` | Tree, force layout and clusters. Generic; infra, not lab. | shipped |
+| `test-pokemon-map-scope.mjs` | 103 checks, against the real repo listing. | shipped |
 | `pokemon-lab.html` | The page. | browse, segments, picking, posing and annotating shipped |
 | `test-pokemon-rig.mjs` | 38 checks, mostly over all 151 models. | shipped |
 | `test-pokemon-annotation.mjs` | 65 checks, built against real rigs. | shipped |
@@ -549,7 +548,7 @@ centre, which is why the deadband is a parameter and why the dropdown is right t
 The **type is not** guessed. Most of the dex is legs, but writing `leg` into a file as `author: "hand"`
 records a decision nobody made, so a new limb starts as `other`.
 
-### Other side
+### Copy to other side
 
 `suggestMirror` matches on mirrored rest geometry rather than on the bone tree, because two mirrored
 limbs are routinely built from different numbers of bones. The page excludes every bone already claimed
@@ -573,7 +572,7 @@ joint, a name no bone has. The module already knows what is broken; the page's o
 it.
 
 The limb list is rebuilt on an edit, and hovering a bone is not one. Which limb the selection currently
-**is**, and whether Take can do anything, follow the selection through the cheap path instead — a rebuild
+**is**, and whether Assign can do anything, follow the selection through the cheap path instead — a rebuild
 on every pointer move would throw away a dropdown mid-open.
 
 ## Posing: drag a bone, the chain above it answers
@@ -1056,7 +1055,12 @@ matched **by the three-digit dex prefix**, never by name — the files spell nam
 (`Farfetchd`, `Mr-Mime`). The Play cry button fetches and decodes the buffer once per species (a failed
 load is retried, not cached), then plays it through the controller's newly exported `playBufferAt` — the
 same panner chain positional SFX use — at the annotated head's position, or the mean of all bone
-positions when no head has been annotated. Bones, not the mesh bounding box, because the mesh bounding
+positions when no head has been annotated. Both listings retry on demand — a press with an empty cry
+map re-fetches, as does play with an empty playlist — so a page loaded before a server restart heals
+without a reload. The Cry section's volume row is the shared SFX volume (the per-origin saved settings
+every viewer reads), and moving it also unmutes SFX and master: a mute saved by another tool would
+otherwise silence cries with nothing on this page saying so, and the click handler says as much when it
+plays into a muted mixer. Bones, not the mesh bounding box, because the mesh bounding
 volumes on these models are garbage (vertices are authored bone-local). Orbiting the camera pans and
 attenuates the cry.
 
@@ -1101,69 +1105,66 @@ hidden by default. The check reads the stylesheet for those ids and forbids show
 
 ## The Map tab
 
-The Pokémon-specific filesystem as a force-directed node graph, at the top of the page beside Browse.
-It answers a question the file table cannot: what this subsystem actually touches, and where it touches
-things it does not own.
+`tools/filesystem-map.html` with `?scope=pokemon`, in an iframe. That page already draws a filesystem the
+way we want one drawn — force-directed hubs, bloom, depth of field, the growth timeline, the filter
+panels — so the tab embeds it rather than reimplementing any of it.
 
-It runs on the page's **existing** renderer. A second `WebGPURenderer` on a page already driving a
-151-model viewer would cost a whole extra render path for a picture of forty files, and two
-`setAnimationLoop` owners on one canvas fight over it, so the tab swaps which scene is drawn and steps
-nothing else while it is up. Exactly one `OrbitControls` is enabled at a time, for the same reason.
-Everything is built on the first click, so browse mode never pays for a repo scan it may not show.
+The scope parameter is read before anything is built from the scan, so every panel, filter and count in
+the page is about this subsystem and nothing else in it needed changing. Without the parameter the tool
+behaves exactly as it always did.
+
+Being a separate document is the point: it brings its own renderer and its own `OrbitControls`, so there
+is nothing to share, disable or fight over. The Lab's render loop returns early while the map is up. The
+iframe is created on first click and hidden rather than removed, so coming back does not re-scan the repo
+and re-settle the layout.
+
+### The side columns fold
+
+Both side columns collapse, from the two buttons at the right of the tab strip. A collapsed column is a
+zero-width grid track *and* `display: none`, so it is out of the layout rather than squeezed to nothing;
+the buttons that bring it back live in the tab strip, which is always there, so the column does not have
+to keep a handle on screen.
+
+**Selecting the map folds both**, since it wants the width and carries its own panels. The state you had
+is remembered on the way in and restored on the way out, so browse always looks the way you left it, and
+the remembered state is cleared once used — otherwise the second visit would restore a stale one.
+
+Nothing is authored by this, so it is not saved anywhere: a reload opens with both columns showing. The
+track transition is asynchronous, so the `ResizeObserver` is what actually drives the canvas while the
+columns move; `applyPanes` calls `resize()` directly only for the case where there is no transition to
+observe.
 
 ### Scope is rules, not a list
 
-`pokemon-map-scope.js` decides membership with patterns rather than filenames, because the list goes
-stale faster than anyone updates it — the Lab gained five modules in a single night. A rule picks up
-`pokemon-gates.js` the day it is written.
+`pokemon-map-scope.js` decides membership with patterns rather than filenames, because the list goes stale
+faster than anyone updates it — the Lab gained five modules in a single night. A rule picks up
+`pokemon-gates.js` the day it is written. It is the only thing this subsystem added; the drawing is all
+the tool's.
 
-Six groups. `lab`, `docs`, `data` and `borrowed` are on by default; **`moves` and `old` are off and
-toggle on**, because they are neighbours rather than parts: nothing imports either one today.
+Six groups. `lab`, `docs`, `data` and `borrowed` are on; **`moves` and `old` are off and toggle on**,
+because they are neighbours rather than parts — nothing imports either one today. All six are built into
+the graph and the toggles filter it live, using the same mechanism as the extension checkboxes, so a
+click costs nothing.
 
 **Group is a role, path is a fact, and the path wins.** The moves tests physically live in
-`pokemon-park-old/`, so they are drawn inside the archive with a note saying what they really are.
-Grouping by location keeps the toggles predictable — turning off `old` empties that cluster and nothing
-else.
+`pokemon-park-old/`, so they are drawn inside the archive. Grouping by location keeps the toggles
+predictable — turning off `old` empties that cluster and nothing else.
 
-`models/stadium` collapses to one weighted node. Expanded it is 151 model files against twenty code
-files, and it would be the entire picture. Its label counts extensions rather than assuming, because the
-directory holds 151 models **and** the manifest, and calling it "152 models" would be wrong in a way
-nobody would ever check.
+`models/stadium` collapses to one node. Expanded it is 151 model files against twenty code files and would
+be the whole picture. Its label counts extensions rather than assuming, because the directory holds 151
+models **and** the manifest, and "152 models" would be wrong in a way nobody would check.
 
-### The edges are the point
+Measured: 9,915 entries in the repo scan, 100 after scoping, across ten directories.
 
-Tree edges say where a file lives, which a listing already tells you. The two that earn the map are
-drawn over them: green for an import, blue joining a test to what it checks. Test edges are derived from
-the naming convention, so a new test needs no edit. Import edges are hand-written, because they are facts
-about the code that no directory listing knows — and `test-pokemon-map-scope.mjs` reads every one back
-out of the source, then checks the other direction too, so an import the page gains cannot go undrawn.
-That check has already earned itself twice: it caught `environment-audio.js` becoming a dependency, and
-it caught the map's own modules.
+### The import edges
 
-### The one that got away from the static checks
+Hand-written, because they are facts about the code that no directory listing knows.
+`test-pokemon-map-scope.mjs` reads every one back out of the source and checks the other direction too, so
+an import the page gains cannot go undrawn. It has earned itself twice: it caught `environment-audio.js`
+becoming a page dependency, and it caught a set of edges pointing at modules that no longer existed.
 
-`tab` and `mapView` are declared above `resize()` rather than beside the rest of the map tab, and must
-stay there. `resize()` is called immediately below its own definition, so a `let` declared further down is
-still in its temporal dead zone — the read **throws** rather than seeing `undefined`, and `?.` does not
-save you, because the throw is on the read itself. The page died on load with the map tab never opened.
-`_check_pokemon-lab.html.mjs` now asserts that `resize()` only reads what is declared above it.
+### What it shows that the table does not
 
-### The tab strip added a row, and the row needed a minimum
-
-`#stage` must keep **both** `min-width: 0` and `min-height: 0`. A grid item defaults to `min-*: auto` and
-refuses to shrink below its content; the canvas is 100% of that box, so the canvas size feeds the track
-size which feeds the canvas size, and the browser reports *ResizeObserver loop completed with undelivered
-notifications*. `min-width` was always there and `.col` already had `min-height` — the vertical half was
-simply never needed until the tab strip gave `#app` a second row. `resize()` also returns early when the
-size has not changed, which is the other half of the same loop.
-
-### Two things it shows that the table does not
-
-`pokemon-pose.js` floats unconnected — written, tested, imported by nothing. And `filesystem-map-core.js`
-sits in `borrowed` rather than `lab`, because it is generic infra shared with `tools/filesystem-map.html`.
-
-**That page still carries its own copy of the layout math.** It predates this module and was not
-refactored, so the two are twins that must be changed together; the header of `filesystem-map-core.js`
-says so. The one deliberate difference is that randomness is injected here rather than taken from
-`Math.random`, so a seeded layout is reproducible — which is what stops the graph jumping every time a
-toggle is clicked, and what lets a test assert a position at all.
+`pokemon-pose.js` floats unconnected — written, tested, imported by nothing. And `tools/filesystem-map.html`
+sits in `borrowed` rather than `lab`: the map draws the page that draws it, which is a fair description of
+the arrangement.

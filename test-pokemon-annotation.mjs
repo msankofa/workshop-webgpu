@@ -294,7 +294,7 @@ check('flipping a side is its own inverse, and centre has no other side', () => 
 });
 
 check('the whole mirror gesture leaves a valid annotation, not just a valid suggestion', () => {
-  // The sequence the page's "Other side" button performs: suggest against everything not already spoken
+  // The sequence the page's "Copy to other side" button performs: suggest against everything not spoken
   // for, add the limb on the opposite side, declare the pair. Composing three correct calls wrongly is
   // its own way to corrupt a file, so the composition is what is asserted.
   for (const slug of ['rattata', 'squirtle', 'sandslash']) {
