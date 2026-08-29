@@ -747,6 +747,21 @@ export const BODY_DESIGN_DEFAULTS = Object.freeze({
   gear: [],
 });
 
+// Node materials, not classic ones, so each can carry a heat tag for the thermal visor
+// (vision-modes.js). heatTag() has to assign colorNode/emissiveNode, and a classic material cannot
+// take a node: the renderer converts it internally at shader-build time and the app never gets a
+// handle on the result. Untagged, a body renders as a lit colour object in a heat frame -- which is
+// backwards, since people are what a thermal sight is for.
+//
+// THREE is injected here rather than imported, so a build without node materials (the plain WebGL
+// three) falls back to the classic constructor and behaves exactly as before.
+function nodeMaterialTypes(THREE) {
+  return {
+    Standard: THREE.MeshStandardNodeMaterial || THREE.MeshStandardMaterial,
+    Basic: THREE.MeshBasicNodeMaterial || THREE.MeshBasicMaterial,
+  };
+}
+
 function mergeDesign(design) {
   const d = { ...BODY_DESIGN_DEFAULTS, ...(design || {}) };
   d.waist = { ...BODY_DESIGN_DEFAULTS.waist, ...(design?.waist || {}) };
@@ -875,22 +890,23 @@ export function createProceduralPlayerBody({ THREE, scene, terrainHeight, mode =
   // ------------------------------ materials --------------------------------
   // In instanced mode the shared batch pool owns the materials; each body only carries role
   // colors (above), so skip per-body material allocation entirely.
-  const shellMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.shell, roughness: 0.65, metalness: 0.05 });
-  const plateMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.plate, roughness: 0.55, metalness: 0.1 });
-  const trimMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.trim, roughness: 0.4, metalness: 0.15 });
-  const eyeMat = instanced ? null : new THREE.MeshBasicMaterial({ color: 0x080808, side: THREE.DoubleSide });
-  const accentMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.accent, roughness: 0.5, metalness: 0.2 });
-  const metalMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.metal, roughness: 0.3, metalness: 0.25 });
-  const rubberMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.rubber, roughness: 0.95, metalness: 0 });
-  const fabricMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.fabric, roughness: 0.98, metalness: 0 });
-  const visorMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.visor, roughness: 0.1, metalness: 0.3 });
+  const { Standard, Basic } = nodeMaterialTypes(THREE);
+  const shellMat = instanced ? null : new Standard({ color: palette.shell, roughness: 0.65, metalness: 0.05 });
+  const plateMat = instanced ? null : new Standard({ color: palette.plate, roughness: 0.55, metalness: 0.1 });
+  const trimMat = instanced ? null : new Standard({ color: palette.trim, roughness: 0.4, metalness: 0.15 });
+  const eyeMat = instanced ? null : new Basic({ color: 0x080808, side: THREE.DoubleSide });
+  const accentMat = instanced ? null : new Standard({ color: palette.accent, roughness: 0.5, metalness: 0.2 });
+  const metalMat = instanced ? null : new Standard({ color: palette.metal, roughness: 0.3, metalness: 0.25 });
+  const rubberMat = instanced ? null : new Standard({ color: palette.rubber, roughness: 0.95, metalness: 0 });
+  const fabricMat = instanced ? null : new Standard({ color: palette.fabric, roughness: 0.98, metalness: 0 });
+  const visorMat = instanced ? null : new Standard({ color: palette.visor, roughness: 0.1, metalness: 0.3 });
   // Face roles. Kept out of tintMaterials on purpose: a team recolour must not repaint skin.
-  const skinMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.skin, roughness: 0.72, metalness: 0 });
-  const hairMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.hair, roughness: 0.85, metalness: 0 });
-  const scleraMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.sclera, roughness: 0.35, metalness: 0 });
-  const pupilMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.pupil, roughness: 0.30, metalness: 0 });
-  const mouthMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.mouth, roughness: 0.55, metalness: 0 });
-  const clothMat = instanced ? null : new THREE.MeshStandardMaterial({ color: palette.cloth, roughness: 0.94, metalness: 0 });
+  const skinMat = instanced ? null : new Standard({ color: palette.skin, roughness: 0.72, metalness: 0 });
+  const hairMat = instanced ? null : new Standard({ color: palette.hair, roughness: 0.85, metalness: 0 });
+  const scleraMat = instanced ? null : new Standard({ color: palette.sclera, roughness: 0.35, metalness: 0 });
+  const pupilMat = instanced ? null : new Standard({ color: palette.pupil, roughness: 0.30, metalness: 0 });
+  const mouthMat = instanced ? null : new Standard({ color: palette.mouth, roughness: 0.55, metalness: 0 });
+  const clothMat = instanced ? null : new Standard({ color: palette.cloth, roughness: 0.94, metalness: 0 });
   const tintMaterials = instanced ? [] : [shellMat, plateMat, trimMat, accentMat];
   const materials = instanced ? [] : [shellMat, plateMat, trimMat, eyeMat, accentMat, metalMat, rubberMat, fabricMat, visorMat,
     skinMat, hairMat, scleraMat, pupilMat, mouthMat, clothMat];

@@ -1390,7 +1390,10 @@ function droneHudLine() {
 // Presentation only: bodies consume predicted/authoritative global state and can never move the capsule.
 // Held weapons: one mount system for every body (instanced GLBs, shared anchors and poses).
 const weaponLoader = attachDracoLoader(new GLTFLoader());
-const weaponSystem = createWeaponMountSystem({ THREE, scene, loadGLB: (url) => weaponLoader.loadAsync(url), getWeapon });
+// convertMaterial: three's own classic-to-node conversion, so a GLB weapon can carry a heat tag
+// for the visor. Without it every gun renders lit and in colour under thermal.
+const weaponSystem = createWeaponMountSystem({ THREE, scene, loadGLB: (url) => weaponLoader.loadAsync(url), getWeapon,
+  convertMaterial: (material) => renderer.library.fromMaterial(material) });
 const playerBodies = createBaseGamePlayerBodies({ THREE, scene, worldQuery, worldCoordinates, weaponSystem });
 const playerHitRigDebug = createPlayerHitRigDebug({ THREE, scene, worldCoordinates });
 // Local weapon state: the active slot, an aim hold (right mouse), a fire hold (left mouse) and a

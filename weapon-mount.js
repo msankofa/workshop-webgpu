@@ -188,7 +188,7 @@ export function defaultReloadSequence(poseData, rawAnchors) {
  * @param {object|Function} [o.aimBlend]                           AIM_BLEND_DEFAULTS-shaped config or a getter for a live one
  */
 export function createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, loadData = null, aimBlend = AIM_BLEND_DEFAULTS,
-  castShadow = false, anchorsUrl = './weapon-anchors.json', posesUrl = './weapon-poses.json' }) {
+  castShadow = false, anchorsUrl = './weapon-anchors.json', posesUrl = './weapon-poses.json', convertMaterial = null }) {
   const S = scratch(THREE);
   const templates = new Map();   // weaponId -> Promise<{ bakedAnchors, instanceParts, bounds, reducedParts }>
   const stowPartsCache = new Map();   // weaponId -> Promise<parts[] | null>, the reduced stow list
@@ -197,6 +197,21 @@ export function createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, load
   let frameCounter = 0;
   const stats = { mounts: 0, flushed: 0 };
   const aimCfg = () => (typeof aimBlend === 'function' ? aimBlend() : aimBlend);
+
+  // GLTFLoader hands back classic materials, which cannot hold a TSL node and so cannot carry a heat
+  // tag for the thermal visor -- an unconverted gun renders in full lit colour in a heat frame. The
+  // page passes a converter (three's own renderer.library.fromMaterial) and it runs once per distinct
+  // material at template load, not per instance: the template cache already owns these, and several
+  // meshes in one GLB usually share one material.
+  const convertedMaterials = new Map();
+  function convertPartMaterial(material) {
+    if (!convertMaterial || !material) return material;
+    const one = (m) => {
+      if (!convertedMaterials.has(m)) convertedMaterials.set(m, convertMaterial(m) || m);
+      return convertedMaterials.get(m);
+    };
+    return Array.isArray(material) ? material.map(one) : one(material);
+  }
 
   // Shared with the held gun on purpose: a template first loaded from the stow path would bake
   // empty anchors, and the held path would then find a cached template with no muzzle or grips.
@@ -234,7 +249,7 @@ export function createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, load
           if (!obj.isMesh) return;
           // Skinned meshes get their never-animated bone pose frozen into static geometry.
           const geometry = obj.isSkinnedMesh ? bakeSkinnedGeometry(THREE, obj) : obj.geometry;
-          instanceParts.push({ geometry, material: obj.material, localMatrix: obj.matrixWorld.clone() });
+          instanceParts.push({ geometry, material: convertPartMaterial(obj.material), localMatrix: obj.matrixWorld.clone() });
         });
         const bounds = new THREE.Box3().setFromObject(template);
         // Stowed copies (phase 4) use the biggest parts only; ordering by vertex count is free here.

@@ -1824,7 +1824,11 @@ without watching every chunk itself), debug views (wireframe, `MeshNormalNodeMat
 `Box3Helper` tile bounds, a magenta contact marker on the probed ground under the player) and a
 `stats` block (source kind/key/version/algorithm/bounds, lod, resident/stale/target/queued/in-flight
 tiles, draws, triangles, installs per second, `lastUpdateMs`, epoch, worker, `lastSourceError`,
-collision-provider id/enabled/colliderId). `setActive()` switches collision and visuals together;
+collision-provider id/enabled/colliderId). Two caveats on that block, from the 2026-08-29 terrain
+audit: `installedTotal` / `installsPerSecond` count residency *growth*, so both read zero during
+steady travel when the window neither grows nor shrinks (`F-15`), and `staleTiles` can only ever be
+zero while `restream` drops rather than retains (`F-10`). `frameCost` is the per-frame split and now
+reuses one object — read it, copy it if you keep it. `setActive()` switches collision and visuals together;
 `setVisible(false)` hides chunks but keeps collision authoritative; `setSource()` swaps the streamed
 and collided source with an epoch bump and drops the old chunks immediately (the far LOD shows the new ground; `restream({ drop: false })` keeps the old keep-until-replaced behaviour); `groundHeight(x, z)` is the surface a
 body stands on in the current mode (the density surface via `source.surfaceYAt` when volumetric, the
@@ -2591,7 +2595,10 @@ project fills it from its authored `cfg.sea_level`, the analytic source takes th
 `applyLocalSeaLevel()`; with a v5 project active the slider shows the project's value and snaps back).
 `base-game-terrain.js` exposes `seaLevel` / `setSeaLevel(level)`: the vertex-tint height bands sit on it
 (chunks and batches recolour on change), `spawnPosition()` lands on `max(ground, seaLevel) + clearance`,
-and `setSource` takes the new descriptor's value. The server world does the same (`sim.seaLevel`,
+and `setSource` takes the new descriptor's value — including into `tileCover`, which holds its own
+copy of the waterline to decide that a texel is drowned; before 2026-08-29 only `setSeaLevel` wrote
+that copy, so applying a project with a different sea level derived flora cover against the previous
+world's shoreline (terrain audit `F-08`, pinned by `test-base-game-sea-level.mjs`). The server world does the same (`sim.seaLevel`,
 spawn above the water). The wave spectrum (`waveCount … waveSeed`, the `water-waves.js`
 `buildWaveTable` inputs) lives in the Water panel section as shared world keys, so the room owner
 tunes it and every peer simulates the same surface; `waveOptionsFromWorld(world)` maps them back

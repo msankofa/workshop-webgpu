@@ -25,30 +25,46 @@
 // eye role is never colored (null) so its instanceColor stays unallocated and every
 // eye uses the flat-black material.
 
+// Node materials, not classic ones, so each can carry a heat tag for the thermal visor
+// (vision-modes.js). heatTag() has to assign colorNode/emissiveNode, and a classic material cannot
+// take a node: the renderer converts it internally at shader-build time and the app never gets a
+// handle on the result. Untagged, a body renders as a lit colour object in a heat frame -- which is
+// backwards, since people are what a thermal sight is for.
+//
+// THREE is injected here rather than imported, so a build without node materials (the plain WebGL
+// three) falls back to the classic constructor and behaves exactly as before.
+function nodeMaterialTypes(THREE) {
+  return {
+    Standard: THREE.MeshStandardNodeMaterial || THREE.MeshStandardMaterial,
+    Basic: THREE.MeshBasicNodeMaterial || THREE.MeshBasicMaterial,
+  };
+}
+
 // roughness/metalness copied from the per-mesh materials in player-procedural-body.js
 // so the instanced look matches the legacy mesh path exactly.
 function roleMaterials(THREE) {
+  const { Standard, Basic } = nodeMaterialTypes(THREE);
   return {
-    shell: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.65, metalness: 0.05 }),
-    plate: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0.10 }),
-    trim:  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.40, metalness: 0.15 }),
-    accent: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.50, metalness: 0.20 }),
+    shell: new Standard({ color: 0xffffff, roughness: 0.65, metalness: 0.05 }),
+    plate: new Standard({ color: 0xffffff, roughness: 0.55, metalness: 0.10 }),
+    trim:  new Standard({ color: 0xffffff, roughness: 0.40, metalness: 0.15 }),
+    accent: new Standard({ color: 0xffffff, roughness: 0.50, metalness: 0.20 }),
     // untinted roles carry their own colour (no per-instance tint allocated)
-    metal: new THREE.MeshStandardMaterial({ color: 0x6f7681, roughness: 0.42, metalness: 0.25 }),
-    rubber: new THREE.MeshStandardMaterial({ color: 0x14171b, roughness: 0.95, metalness: 0 }),
-    fabric: new THREE.MeshStandardMaterial({ color: 0x8d7c58, roughness: 0.98, metalness: 0 }),
+    metal: new Standard({ color: 0x6f7681, roughness: 0.42, metalness: 0.25 }),
+    rubber: new Standard({ color: 0x14171b, roughness: 0.95, metalness: 0 }),
+    fabric: new Standard({ color: 0x8d7c58, roughness: 0.98, metalness: 0 }),
     // dark tinted glass; the lit/fresnel version lives in bot-viewer-visuals' botMaterials
-    visor: new THREE.MeshStandardMaterial({ color: 0x2a1e08, roughness: 0.10, metalness: 0.30 }),
-    eye:   new THREE.MeshBasicMaterial({ color: 0x080808, side: THREE.DoubleSide }),
+    visor: new Standard({ color: 0x2a1e08, roughness: 0.10, metalness: 0.30 }),
+    eye:   new Basic({ color: 0x080808, side: THREE.DoubleSide }),
     // human face (bot-face.js). skin/hair are white-based and per-instance tinted like shell, so
     // one bucket carries a whole squad's worth of skin tones; the eye/mouth colours are shared.
-    skin:  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72, metalness: 0 }),
-    hair:  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 }),
-    sclera: new THREE.MeshStandardMaterial({ color: 0xe6ded0, roughness: 0.35, metalness: 0 }),
-    pupil: new THREE.MeshStandardMaterial({ color: 0x141110, roughness: 0.30, metalness: 0 }),
-    mouth: new THREE.MeshStandardMaterial({ color: 0x6b3630, roughness: 0.55, metalness: 0 }),
+    skin:  new Standard({ color: 0xffffff, roughness: 0.72, metalness: 0 }),
+    hair:  new Standard({ color: 0xffffff, roughness: 0.85, metalness: 0 }),
+    sclera: new Standard({ color: 0xe6ded0, roughness: 0.35, metalness: 0 }),
+    pupil: new Standard({ color: 0x141110, roughness: 0.30, metalness: 0 }),
+    mouth: new Standard({ color: 0x6b3630, roughness: 0.55, metalness: 0 }),
     // uniform fabric — white-based and per-instance tinted like skin
-    cloth: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.94, metalness: 0 }),
+    cloth: new Standard({ color: 0xffffff, roughness: 0.94, metalness: 0 }),
   };
 }
 
