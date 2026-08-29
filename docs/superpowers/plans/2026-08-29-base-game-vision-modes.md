@@ -1,6 +1,18 @@
 # Base Game visor: NVG and thermal
 
-Status: PLAN ONLY, nothing built. Written 2026-08-29.
+Status: Phases 0, 1 and 2 SHIPPED 2026-08-29, unseen in a browser. Phases 3 (tuning sliders) and 4
+(scope tint, IR laser, muzzle-flash check) still open. Written 2026-08-29.
+
+Two things the plan got wrong, corrected below and in `docs/subsystems/base-game.md`:
+
+- **2.2's per-instance colour worry does not apply.** three multiplies `instanceColor` into
+  `colorNode` only, which feeds `diffuseColor`; a lit material's heat rides `emissiveNode`, which it
+  never touches. So none of the three candidate fixes was needed.
+- **A blocker the plan missed, and it was the dangerous one.** `heatTag` rebuilds `colorNode` from
+  the material's flat `.color`, so sweeping base-game's scene destroyed the terrain splat, the sky
+  gradient and the water in *every* mode, not just under IR. Fixed in `vision-modes.js` by wrapping
+  a prior graph instead of replacing it — which also removed the need to hand-wrap eight modules
+  with `heatMix`, so Phase 2 got much smaller than planned.
 
 The ask: base-game gets a helmet visor with night vision and thermal, the way `demos/flight-sim.html`
 has them. This is what the flight sim actually does, what stops base-game from copying it, and the

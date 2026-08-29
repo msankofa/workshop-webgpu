@@ -31,7 +31,7 @@ systems, pool ceilings, effect kinds and the rules a caller has to keep to.
 | `post-grade.js` | Pure-JS CPU reference for the color-grade math used inline in `post-fx.js`'s `gradeNode`. Node-tested. | 34 |
 | `effect-renderer.js` | Combat-effect draw layer: tracers, impact sparks, muzzle flashes, layered explosions, smoke puffs, blood spray, blood stain + ground splatter decals. Stateless — every sub-particle is regenerated each frame from the wire object + id hash + age. Browser/THREE only. | 686 |
 | `entity-types/effect.js` | Pure `EffectEntity` (`create`/`update`/`serialize`) — the authoritative wire shapes and defaults for every effect kind. No THREE. | 151 |
-| `vision-modes.js` | RGB / NVG / white-hot / black-hot for a WebGPU scene where heat is a property of materials, not of lighting. `heatTag`, `heatMix`, `tagScene`, `createVisionComposite`. Node-tested (tagging, sweep, palettes). First consumer: `demos/flight-sim.html`. | 150 |
+| `vision-modes.js` | RGB / NVG / white-hot / black-hot for a WebGPU scene where heat is a property of materials, not of lighting. `heatTag`, `heatMix`, `tagScene`, `createVisionComposite`. Node-tested (tagging, sweep, palettes). Consumers: `demos/flight-sim.html` (own composite), `base-game.html` (`visionNode` into the shared pipeline). | 165 |
 | `rain.js` | GPU rain for the TSL stack: `createRainSystem` (instanced streaks + splash rings, no buffers — seeds are `hash(instanceIndex)`), `bakeOccluderMap` (top-down height texture so drops cut at roofs and splashes land on them), `applyWetSurface` (darken/gloss/ripple-normal decoration for any `MeshStandardNodeMaterial`). Wired into `demos/rain.html`, `demos/flight-sim.html` and `bot-viewer-v3.html`. | ~400 |
 | `explosion-tier.js` | Pure port of html-game-v2's `reserveExplosionVisualTier` (320 ms window; 2 full / 5 medium primary, 1 / 4 secondary). Injected clock. Node-tested. Wired into `demos/volumetric-smoke.html`, `bot-viewer-v3.html` and `demos/flight-sim.html`, in all three to scale debris. | 93 |
 | `blast-debris-sim.js` | Pure port of html-game-v2's persistent debris pools: shrapnel (bounce, friction, flicker recolour, glow, smoke trails), rubble (thrown along the kill vector, non-uniform, smoulder + ember sparks + rising smoke + light values), ground slabs (drop-pod preset with secondary shrapnel bursts), sparks, smoke. Injected `groundAt` and `random`; caps 900/260/80/2600 with oldest-recycle. Two departures from the original, both for the flight sim: an inherited `velocity` spawn option, and settled pieces that stop being simulated. Node-tested. | 454 |
@@ -47,14 +47,24 @@ value instead. `heatTag(material, heat)` rewires a **node** material in terms of
 `.emissive`, `.opacity`, so pooled particles still tint and fade): under `uIR` a lit material's
 diffuse goes black, its emissive becomes the heat grey, its roughness goes to 1 and metalness to 0
 so the sun cannot glint through; an unlit material's colour becomes the heat grey. Materials that
-own a colour graph (a TSL terrain, a sky) opt in with `heatMix(rgbNode, heat)` inside that graph and
-mark `userData.irTagged`. Classic (non-node) materials cannot be reached and are reported by
+own a colour graph (a TSL terrain, a sky) can either opt in with `heatMix(rgbNode, heat)` inside
+that graph and mark `userData.irTagged`, or be left to `heatTag`, which **wraps** a prior `colorNode`
+rather than overwriting it (and likewise keeps a prior emissive/roughness/metalness node). Wrapping
+matters: `heatTag` otherwise rebuilds `colorNode` from the material's flat `.color`, which throws a
+terrain splat or a sky gradient away in **every** mode, not just under IR. Two details it leans on,
+both read out of the r184 build: `vec4()` of a vec3 node pads alpha with `1.0`, so one line covers
+both widths; and the wrap is `.toVar()`, without which the graph is inlined once for `.rgb` and again
+for `.a` — on the terrain, the whole splat computed twice. `userData.irWrapped` records which
+happened. Classic (non-node) materials cannot be reached and are reported by
 `tagScene`, which sweeps a scene and tags anything left with `DEFAULT_HEAT` — a cool, visible
 object — so nothing reads as a lit thing in a thermal frame. `HEAT` is the convention table.
 
 `createVisionComposite(renderer, scene, camera)` is a `PostProcessing` graph — scene pass →
 `renderOutput` → palette — with `outputColorTransform = false` because it applies `renderOutput`
-itself (RGB mode must equal the plain render exactly). NVG is an intensifier tube: monochrome
+itself (RGB mode must equal the plain render exactly). `visionNode(color)` is that palette on its
+own, for a page that already owns a pipeline — `createVisionComposite` is a thin wrapper around it,
+and `base-game.html` uses `visionNode` directly so the visor and its depth of field share one
+pipeline instead of rendering the scene twice. NVG is an intensifier tube: monochrome
 luminance with gain, a noise floor and vignette in phosphor green; on a daylight scene it is a
 green daylight scene, and that is honest. White-hot maps the (already grey) heat frame with a
 little contrast and noise; black-hot inverts it. `PALETTE` holds CPU twins of the three curves,

@@ -2788,6 +2788,79 @@ the Traversal Lab shows a flat count and the terrain world does not. The mirror 
 list (`excludeFromReflection`); grass is on it, because half-resolution reflected blades are
 invisible detail for the cost of re-rendering the whole field.
 
+### The visor: night vision and thermal (shipped 2026-08-29, unseen in a browser)
+
+`H` cycles plain sight, night vision, thermal white-hot and thermal black-hot. The palette itself is
+`vision-modes.js`, shared with `demos/flight-sim.html`; see `docs/subsystems/fx.md` for how it works
+and `docs/superpowers/plans/2026-08-29-base-game-vision-modes.md` for the plan this came from.
+
+**One pipeline, not two.** The page already had a `RenderPipeline` for depth of field.
+`createVisionComposite` builds its own around its own `pass(scene, camera)`, so using it would have
+rendered the whole scene twice a frame and made the visor and depth of field mutually exclusive.
+Instead the page imports `visionNode(color)` and puts the palette in the pipeline it already had:
+
+```js
+postPipeline.outputColorTransform = false;
+postPipeline.outputNode = visionNode(renderOutput(depthOfField.node));
+```
+
+Depth of field runs first and the palette after it, which is the order a real sensor works in: the
+optics blur before the sensor sees. Plain sight with depth of field off still takes the direct
+`renderer.render` path and costs no full-screen pass.
+
+Two bugs came out of sharing the pipeline, both pre-existing:
+
+- `outputColorTransform` defaults to `true`, which wraps `outputNode` in a second `renderOutput`.
+  The page already applied one by hand, so the depth-of-field path tone mapped and sRGB-encoded
+  **twice** while the plain path did it once. Read out of the r184 build, not measured on screen.
+- `depthOfField`'s `enabled` uniform was never compared or written — only ever passed as `true`.
+  Harmless while depth of field owned the only route into the pipeline; with the visor also using
+  it, the frame would have blurred with the setting off.
+
+**Heat is a property of things.** Under IR every tagged material emits its heat and its diffuse goes
+black, so lighting cannot reach the picture and the sun cannot make grass read hot. That only works
+if every material can carry a tag, and three of the page's could not:
+
+| was | now |
+|---|---|
+| `player-procedural-body.js`, 15 classic materials | the node twins, with a fallback for a build without them |
+| `body-part-batches.js`, 15 classic materials | same |
+| GLB weapons, classic from GLTFLoader | `convertMaterial` on the weapon mount, given three's own `renderer.library.fromMaterial`; runs once per distinct material at template load |
+
+A classic material cannot hold a TSL node: the renderer converts it inside `NodeBuilder` at
+shader-build time and the app never gets a handle on the result. Untagged, every player, bot and gun
+would have rendered in full lit colour inside a heat frame — backwards, since people are what a
+thermal sight is for.
+
+`VISOR_HEATS` maps scene-graph names to heats. Bodies are `HEAT.skin` and are the warmest thing that
+is not on fire; the sky dome is `HEAT.sky` so bodies read against it; water is `HEAT.water`; the
+terrain takes the default, which is already `HEAT.terrain`. Everything else is swept at the default.
+`sky.js` names its dome `skyDome` for this. Terrain chunks and trees stream in long after boot, so
+the sweep repeats once a second while the visor is up; a tagged material is skipped, so steady state
+is one walk over a few hundred objects.
+
+Fog thins to 35% under IR (`BASE_GAME_IR_FOG_SCALE`), as in the flight sim: a thermal sensor sees
+through haze that stops the eye.
+
+**Per-instance colour does not tint the heat, on lit materials.** three multiplies `instanceColor`
+into `colorNode` only, and that feeds `diffuseColor`; `heatTag` sends a lit material's heat out on
+`emissiveNode`, which `instanceColor` never touches. So a bot's team colour cannot change how hot it
+reads. On an *unlit* material the colour is the output and the tint does reach the heat — the
+limitation `vision-modes.js` records for the flight sim's debris pools. The one unlit body role, the
+eye, is never given a per-instance colour.
+
+**Known gaps.** `effect-renderer.js`'s sprite pool is a single unlit material shared by muzzle flash,
+sparks, smoke and blood and tinted per instance, so one heat cannot be right for all of them; it is
+left at the default rather than guessed at. The scope overlay is DOM and sits outside the pipeline,
+so it stays full-colour while the world goes green. Nothing here has been looked at in a browser, so
+every heat and every palette number is arithmetic, not observation.
+
+**Multiplayer:** none of this is replicated. A vision mode is a local render setting, so there is no
+protocol change and no version bump. A visor other players could *see* on your head would be a
+different feature.
+
+Tested by `test-base-game-visor.mjs` (43 checks) and `test-vision-modes.mjs`.
+
 ### Isolation, persistence, and measurement requirements
 
 Every introduced component is controlled live in the game UI, included in `DEFAULT_SETTINGS`,
