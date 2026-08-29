@@ -1062,9 +1062,9 @@ began are on the wire, the curve between them is not, and stepping it at the 20 
 would stutter a motion lasting half a second. A finished holster stays down until the draw says
 otherwise.
 
-**Input and HUD (4.3).** Every way of changing what is in hand goes through one `selectSlot`: keys
-1–4, `Q` for the last weapon, and the mouse wheel, which `cycleSlot` walks through the filled slots
-only. The wheel is the weapon wheel while the pointer is locked, **shift+wheel** is the third-person boom,
+**Input and HUD (4.3).** Every way of changing what is in hand goes through one `selectSlot`: the
+number keys, `Q` for the last weapon, and the mouse wheel, which `cycleSlot` walks through the filled
+slots only. The wheel is the weapon wheel while the pointer is locked, **shift+wheel** is the third-person boom,
 and with the pointer free the plain wheel is the boom again (there is no weapon to change while you
 are setting the scene up). Camera distance also keeps its own slider. The shift path exists because
 the first cut left the boom reachable only from the panel while playing, which is exactly when you
@@ -1322,6 +1322,19 @@ damages, page markers). `test-combat.mjs`, `test-bot-aim.mjs`, `test-bot-project
 Plan: [2026-08-27-base-game-drones.md](../superpowers/plans/2026-08-27-base-game-drones.md); the
 wider picture is [base-game-flight-integration.md](../base-game-flight-integration.md). This is the
 first non-player thing the room replicates, and the first flight code in Base Game.
+
+**Slot 7, the launcher (protocol 15).** `BASE_GAME_WEAPON_SLOTS` gained a seventh entry, `launcher`,
+defaulting to the `rpg`; key 7 selects it and `weaponLauncher` is its dropdown. It takes any weapon,
+not only the rpg — the sanitizer's only rule is the existing one, that a gadget belongs in a gadget
+slot. The page no longer keeps a parallel list of number keys: `WEAPON_SLOT_SETTINGS` and `SLOT_KEYS`
+are both derived from the slot list, since a hand-kept `['Digit1'...'Digit6']` is exactly how the keys
+would have stopped at 6 while the slots went to 7. NPC bots are given `launcher: 'none'`, so adding
+the slot did not quietly hand every bot on the map a rocket launcher.
+
+The version bump is load-bearing rather than cosmetic: the wire `slot` is an integer bounded by
+`BASE_GAME_WEAPON_SLOTS.length`, so a relay still on 14 would clamp slot 6 to 0 and silently hand you
+the rifle, and drop the `launcher` key out of the loadout. `validateHandshake` rejecting the version
+turns that into a visible refusal instead.
 
 **What it is.** Two gadget slots, `gadget` (key 5, quad) and `gadget2` (key 6, UAV), each hold a `quad` or a `uav` (protocol 13:
 `BASE_GAME_GADGET_IDS`, `isBaseGameGadget`; gadgets ride the weapon-id vocabulary so `weapon` on the

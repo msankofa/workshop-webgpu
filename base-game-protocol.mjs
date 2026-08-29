@@ -8,7 +8,7 @@ import {
   sanitizeBaseGameBodyModel,
 } from './base-game-body-models.js';
 
-export const BASE_GAME_PROTOCOL_VERSION = 12;
+export const BASE_GAME_PROTOCOL_VERSION = 15;   // 15: a seventh slot, `launcher`, holding the rpg
 // Firing (phase 3): the tick's `fire` is consumed by the server, ammo and health are authoritative,
 // and snapshots carry one-shot `hits` / `deaths` events for feedback.
 export const BASE_GAME_LAG_COMP_MS = 100;             // rewind victims by the client interpolation delay
@@ -17,10 +17,28 @@ export const BASE_GAME_FIRE_ACTION_TICKS = 12;        // a fire action stays vis
 export const BASE_GAME_MAX_HEALTH = 100;
 // Weapons (phase 1): a loadout is four slots; the tick carries the active slot and the server echoes
 // the resolved weapon id. Only ids in BASE_GAME_WEAPON_IDS are accepted; 'none' empties a slot.
-export const BASE_GAME_WEAPON_IDS = Object.freeze(['none', 'm1911', 'five_seven', 'm24', 'cz_805_bren', 'knife', 'grenade', 'rpg']);
+// Gadgets ride the weapon-id vocabulary so `weapon` on the wire can say what is in the hands; they
+// are not weapons.js entries (getWeapon returns undefined for them) and only the gadget slot holds one.
+export const BASE_GAME_GADGET_IDS = Object.freeze(['none', 'quad', 'uav']);
+export const BASE_GAME_WEAPON_IDS = Object.freeze(['none', 'm1911', 'five_seven', 'm24', 'cz_805_bren', 'knife', 'grenade', 'rpg', 'quad', 'uav']);
+export const isBaseGameGadget = (id) => id === 'quad' || id === 'uav';
+// A player carries this many of each drone per life; a throw spends one, and the next has to be
+// brought out ("reloaded") before it can be thrown. The throw itself is a wind-up: the drone leaves
+// the hands THROW_TICKS after the press, and the arm action runs THROW_ACTION_TICKS.
+export const BASE_GAME_GADGET_STOCK = Object.freeze({ quad: 2, uav: 2 });
+export const BASE_GAME_GADGET_THROW_TICKS = 42;          // 0.35 s at 120 Hz: release
+export const BASE_GAME_GADGET_THROW_ACTION_TICKS = 84;   // 0.7 s: the whole arm motion
+export const BASE_GAME_GADGET_RELOAD_TICKS = 240;        // 2 s to bring the next one out
+export function defaultGadgetStock() { return { ...BASE_GAME_GADGET_STOCK }; }
+export function sanitizeGadgetStock(g) {
+  const out = defaultGadgetStock();
+  if (!g || typeof g !== 'object') return out;
+  for (const k of Object.keys(out)) if (Number.isInteger(g[k]) && g[k] >= 0 && g[k] <= 99) out[k] = g[k];
+  return out;
+}
 export const BASE_GAME_RELOADABLE_WEAPONS = Object.freeze(['m1911', 'five_seven', 'm24', 'cz_805_bren', 'rpg']);
-export const BASE_GAME_WEAPON_SLOTS = Object.freeze(['primary', 'sidearm', 'melee', 'throwable']);
-export const BASE_GAME_DEFAULT_LOADOUT = Object.freeze({ primary: 'cz_805_bren', sidearm: 'five_seven', melee: 'knife', throwable: 'grenade' });
+export const BASE_GAME_WEAPON_SLOTS = Object.freeze(['primary', 'sidearm', 'melee', 'throwable', 'gadget', 'gadget2', 'launcher']);
+export const BASE_GAME_DEFAULT_LOADOUT = Object.freeze({ primary: 'cz_805_bren', sidearm: 'five_seven', melee: 'knife', throwable: 'grenade', gadget: 'quad', gadget2: 'uav', launcher: 'rpg' });
 // Posture. Travels as an index, not a string: it rides every tick. bot-stance.js owns the names and
 // all the maths; this is only the wire form. 'crouch' has no key bound yet but stays in the ladder
 // because the stance fallback chain (prone -> kneel -> crouch -> stand) reads it.
@@ -56,6 +74,24 @@ export const BASE_GAME_SHARED_KEYS = Object.freeze([
   // A match rule, not decoration: ammo is server-authoritative, so an unlimited magazine has to be
   // the owner's to set and everyone's to obey, exactly like whether there is a sea.
   'unlimitedAmmo',
+  // NPC rules: whether bots come back, how fast they notice, how well they shoot, whether a bullet
+  // hurts the shooter's own side, and how far the enemy marker sits from the players.
+  'npcRespawn',
+  'npcNoticeMs',
+  'npcAccuracy',
+  'npcFriendlyFire',
+  'npcSpawnDistance',
+  // Player physics is lockstep and server-authoritative. These are room rules, not local feel:
+  // prediction and the relay must configure the same controller before simulating a tick.
+  'playerMoveSpeed',
+  'playerSprintMultiplier',
+  'playerJumpSpeed',
+  'playerGravity',
+  'playerGroundDeceleration',
+  'playerSlopeSlideDeceleration',
+  'playerSlopeLimit',
+  'playerStepHeight',
+  'playerSnapDistance',
   'primaryBody',
   'todEnabled',
   'todHour',
@@ -109,9 +145,25 @@ export const BASE_GAME_SHARED_KEYS = Object.freeze([
   'lightningIntervalSpread',
   'lightningDistMin',
   'lightningDistMax',
+  // Stellar sky: what is UP THERE is shared — the planets are landmarks two players in one room
+  // should both stand under (the weatherSeed argument). How a client draws stars/discs stays local.
+  'skySeed',
+  'skyPlanetCount',
+  'skyMoonCount',
+  'skyBodyScale',
+  'skyMilkyWay',
 ]);
 
 const NUMBER_LIMITS = Object.freeze({
+  playerMoveSpeed: [1, 15],
+  playerSprintMultiplier: [1, 3],
+  playerJumpSpeed: [2, 16],
+  playerGravity: [1, 60],
+  playerGroundDeceleration: [0, 100],
+  playerSlopeSlideDeceleration: [0, 40],
+  playerSlopeLimit: [1, 85],
+  playerStepHeight: [0, 1.2],
+  playerSnapDistance: [0, 1.2],
   waveCount: [1, 40],
   waveBaseLength: [1, 5000],
   waveLengthMul: [0.05, 1],
@@ -147,10 +199,17 @@ const NUMBER_LIMITS = Object.freeze({
   lightningIntervalSpread: [0, 1],
   lightningDistMin: [20, 20000],
   lightningDistMax: [50, 40000],
+  skySeed: [0, 1e9],
+  skyPlanetCount: [0, 16],
+  skyMoonCount: [0, 12],
+  skyBodyScale: [0.1, 6],
+  npcNoticeMs: [0, 10000],
+  npcAccuracy: [0, 1],
+  npcSpawnDistance: [5, 2000],
 });
 
 const STRING_VALUES = Object.freeze({ primaryBody: ['sun', 'moon'] });
-const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying', 'waveDispersion', 'waterEnabled', 'lightningEnabled', 'unlimitedAmmo']);
+const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying', 'waveDispersion', 'waterEnabled', 'lightningEnabled', 'unlimitedAmmo', 'skyMilkyWay', 'npcRespawn', 'npcFriendlyFire']);
 const MAX_ABS_YAW = 1e6;
 const MAX_ABS_COORDINATE = 1e9;
 const MAX_ABS_VELOCITY = 1e4;
@@ -182,6 +241,7 @@ export function sanitizeBaseGameWorldPatch(input) {
   if (clean.todHour === 24) clean.todHour = 0;
   if (clean.waveCount != null) clean.waveCount = Math.round(clean.waveCount);
   if (clean.waveSeed != null) clean.waveSeed = Math.round(clean.waveSeed);
+  for (const key of ['skySeed', 'skyPlanetCount', 'skyMoonCount']) if (clean[key] != null) clean[key] = Math.round(clean[key]);
   return clean;
 }
 
@@ -300,7 +360,7 @@ function finiteVec3(value, limit) {
 }
 
 export function neutralBaseGameInput(yaw = 0, pitch = 0) {
-  return { moveX: 0, moveZ: 0, yaw, pitch, sprint: false, crouch: false, stance: 0, jump: false, slot: 0, aim: false, reload: false, fire: false, throw: false };
+  return { moveX: 0, moveZ: 0, yaw, pitch, sprint: false, crouch: false, stance: 0, jump: false, slot: 0, aim: false, reload: false, fire: false, throw: false, drone: null };
 }
 
 export function sanitizeBaseGameLoadout(loadout) {
@@ -308,7 +368,8 @@ export function sanitizeBaseGameLoadout(loadout) {
   if (!loadout || typeof loadout !== 'object') return clean;
   for (const slot of BASE_GAME_WEAPON_SLOTS) {
     const id = loadout[slot];
-    if (typeof id === 'string' && BASE_GAME_WEAPON_IDS.includes(id)) clean[slot] = id;
+    if (typeof id !== 'string') continue;
+    if (slot.startsWith('gadget') ? BASE_GAME_GADGET_IDS.includes(id) : (BASE_GAME_WEAPON_IDS.includes(id) && !isBaseGameGadget(id))) clean[slot] = id;
   }
   return clean;
 }
@@ -343,6 +404,51 @@ export function sanitizeBaseGameTickInput(input) {
     reload: input.reload === true,
     fire: input.fire === true,
     throw: input.throw === true,   // quick-throw: the throwable slot, without holstering the held weapon
+    drone: sanitizeBaseGameDroneInput(input.drone),   // the stick and orders for an owned drone; null is hands off
+  };
+}
+
+// ─── drones ──────────────────────────────────────────────────────────────────
+export const BASE_GAME_DRONE_KINDS = Object.freeze(['quad', 'uav']);
+export const BASE_GAME_DRONE_MODES = Object.freeze(['auto', 'manual']);
+export const BASE_GAME_DRONE_STATES = Object.freeze(['launch', 'follow', 'goto', 'hold', 'return', 'manual', 'deadstick']);
+const clamp1 = (x) => Math.max(-1, Math.min(1, Number(x) || 0));
+const finiteVec3Lim = (a, lim) => Array.isArray(a) && a.length === 3 && a.every((x) => Number.isFinite(x) && Math.abs(x) <= lim);
+const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+// The stick, from the tick input. `id` names which owned drone; mode 1 is hands on.
+export function sanitizeBaseGameDroneInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  return {
+    id: typeof input.id === 'string' && input.id.length > 0 && input.id.length <= 32 ? input.id : null,
+    mode: input.mode === 1 ? 1 : 0,
+    pitch: clamp1(input.pitch), roll: clamp1(input.roll), yaw: clamp1(input.yaw), throttle: clamp1(input.throttle),
+    sweep: input.sweep === true,   // Shift: afterburner on the plane, folded wings on the bird
+    flap: input.flap === true,
+    send: finiteVec3Lim(input.send, MAX_ABS_COORDINATE) ? [...input.send] : null,
+    recall: input.recall === true,
+  };
+}
+
+export function sanitizeBaseGameDroneState(s) {
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+  if (typeof s.id !== 'string' || !s.id || s.id.length > 32) return null;
+  if (!BASE_GAME_DRONE_KINDS.includes(s.kind)) return null;
+  if (!finiteVec3Lim(s.p, MAX_ABS_COORDINATE)) return null;
+  const v = s.v ?? [0, 0, 0];
+  if (!finiteVec3Lim(v, MAX_ABS_VELOCITY)) return null;
+  const ang = (x) => (Number.isFinite(x) ? wrapPi(x) : 0);
+  return {
+    id: s.id, kind: s.kind,
+    owner: typeof s.owner === 'string' ? s.owner : null,
+    team: Number.isInteger(s.team) ? s.team : 0,
+    p: [...s.p], v: [...v],
+    yaw: ang(s.yaw), pitch: ang(s.pitch), bank: ang(s.bank),
+    hp: Number.isFinite(s.hp) ? Math.max(0, s.hp) : 0,
+    mode: BASE_GAME_DRONE_MODES.includes(s.mode) ? s.mode : 'auto',
+    state: BASE_GAME_DRONE_STATES.includes(s.state) ? s.state : 'follow',
+    target: finiteVec3Lim(s.target, MAX_ABS_COORDINATE) ? [...s.target] : null,
+    q: Array.isArray(s.q) && s.q.length === 4 && s.q.every(Number.isFinite) && Math.abs(Math.hypot(...s.q) - 1) < 1e-3 ? [...s.q] : null,
   };
 }
 
@@ -430,6 +536,43 @@ export function sanitizeBaseGameInputPacket(packet) {
   return { clientTime, ticks };
 }
 
+// ─── teams, NPCs, faces ───────────────────────────────────────────────────────
+// Players are team 1 by default; NPCs are spawned onto 1 (friendly) or 2 (enemy).
+export const BASE_GAME_TEAMS = Object.freeze({ friendly: 1, enemy: 2 });
+export const BASE_GAME_NPC_ROLE_IDS = Object.freeze(['rifleman', 'medic', 'squadleader', 'sniper', 'technical']);
+export const BASE_GAME_NPC_ACTIONS = Object.freeze(['spawn', 'clear']);
+export const BASE_GAME_NPC_MAX_PER_REQUEST = 64;
+// bot-face.js's tables by name; the module itself is not imported here so this file stays tiny.
+export const BASE_GAME_APPEARANCE = Object.freeze({
+  skin: Object.freeze(['pale', 'tan', 'olive', 'brown', 'deep']),
+  hair: Object.freeze(['black', 'brown', 'auburn', 'blond', 'grey']),
+  expression: Object.freeze(['neutral', 'determined', 'angry', 'shout', 'grin', 'worried', 'pain', 'dead']),
+});
+export const BASE_GAME_DEFAULT_APPEARANCE = Object.freeze({ skin: 'tan', hair: 'brown', expression: 'neutral' });
+export function sanitizeBaseGameAppearance(a) {
+  const pick = (list, v, d) => (typeof v === 'string' && list.includes(v) ? v : d);
+  return {
+    skin: pick(BASE_GAME_APPEARANCE.skin, a?.skin, BASE_GAME_DEFAULT_APPEARANCE.skin),
+    hair: pick(BASE_GAME_APPEARANCE.hair, a?.hair, BASE_GAME_DEFAULT_APPEARANCE.hair),
+    expression: pick(BASE_GAME_APPEARANCE.expression, a?.expression, BASE_GAME_DEFAULT_APPEARANCE.expression),
+  };
+}
+// `base:npc` from the room owner: spawn `count` bots of `role` on `team`, at `at` (the spawner's
+// aimed point) or the side's marker when null; or clear every NPC (of one team when given).
+export function sanitizeBaseGameNpcRequest(msg) {
+  if (!msg || typeof msg !== 'object') return null;
+  const action = BASE_GAME_NPC_ACTIONS.includes(msg.action) ? msg.action : null;
+  if (!action) return null;
+  const team = msg.team === BASE_GAME_TEAMS.enemy ? BASE_GAME_TEAMS.enemy : msg.team === BASE_GAME_TEAMS.friendly ? BASE_GAME_TEAMS.friendly : null;
+  if (action === 'spawn' && team === null) return null;
+  const count = Number.isInteger(msg.count) ? Math.max(1, Math.min(BASE_GAME_NPC_MAX_PER_REQUEST, msg.count)) : 1;
+  const role = BASE_GAME_NPC_ROLE_IDS.includes(msg.role) ? msg.role : 'rifleman';
+  const at = finiteVec3(msg.at, MAX_ABS_COORDINATE) ? [...msg.at] : null;
+  // `aimed`: the spawner. The server casts the requester's own look ray for the point; the client
+  // never names one, so a point it cannot see cannot be asked for.
+  return { action, team, count, role, at, aimed: msg.aimed === true };
+}
+
 export function sanitizeBaseGamePlayerState(state) {
   if (!state || typeof state !== 'object' || Array.isArray(state)) return null;
   if (!finiteVec3(state.position, MAX_ABS_COORDINATE)) return null;
@@ -465,6 +608,12 @@ export function sanitizeBaseGamePlayerState(state) {
     bodyModel,
     hitProfile: hitProfileForBodyModel(bodyModel),
     poseEpoch: nonNegativeInteger(state.poseEpoch) ? state.poseEpoch : 0,
+    controlling: typeof state.controlling === 'string' && state.controlling.length <= 32 ? state.controlling : null,   // the drone this body is flying
+    gadgets: sanitizeGadgetStock(state.gadgets),
+    gadgetReady: state.gadgetReady !== false,   // one is in the hands (or will be, once the reload action ends)
+    team: Number.isInteger(state.team) && state.team >= 0 ? state.team : BASE_GAME_TEAMS.friendly,
+    npc: state.npc === true,
+    appearance: sanitizeBaseGameAppearance(state.appearance),
   };
 }
 

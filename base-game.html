@@ -355,6 +355,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   weaponThrowable: BASE_GAME_DEFAULT_LOADOUT.throwable,
   weaponGadget: BASE_GAME_DEFAULT_LOADOUT.gadget,
   weaponGadget2: BASE_GAME_DEFAULT_LOADOUT.gadget2,
+  weaponLauncher: BASE_GAME_DEFAULT_LOADOUT.launcher,
   unlimitedAmmo: false,
   // NPC bots (shared room rules; the counts are spawn commands, not settings)
   npcRespawn: true,
@@ -610,6 +611,7 @@ const STRING_VALUES = Object.freeze({
   bodyDesign: BASE_GAME_BODY_DESIGNS.map((d) => d.key),
   weaponPrimary: [...BASE_GAME_WEAPON_IDS], weaponSidearm: [...BASE_GAME_WEAPON_IDS],
   weaponMelee: [...BASE_GAME_WEAPON_IDS], weaponThrowable: [...BASE_GAME_WEAPON_IDS], weaponGadget: [...BASE_GAME_GADGET_IDS], weaponGadget2: [...BASE_GAME_GADGET_IDS],
+  weaponLauncher: [...BASE_GAME_WEAPON_IDS],
   fpPreset: ['hybrid', 'arcade', 'embodied', 'custom'],
   weaponHoldMode: ['authored', 'body'],
   bodyFacing: ['look', 'travel'],
@@ -1905,8 +1907,15 @@ function renderCombatStatus(now) {
 }
 const aimRayOrigin = new THREE.Vector3(), aimRayDirection = new THREE.Vector3(), aimPointScratchArray = [0, 0, 0];
 const aimPointLocal = new THREE.Vector3();
+// One slot list, three derived things: the settings key per slot, the number key that selects it,
+// and the loadout the page sends. They used to be hand-kept parallel lists, which is how the number
+// keys ended at 6 while the slots went to 7.
+const WEAPON_SLOT_SETTINGS = BASE_GAME_WEAPON_SLOTS.map(name => `weapon${name[0].toUpperCase()}${name.slice(1)}`);
+const SLOT_KEYS = BASE_GAME_WEAPON_SLOTS.map((_, index) => `Digit${index + 1}`);   // 1..9; a tenth slot needs its own key
 function currentLoadout() {
-  return { primary: settings.weaponPrimary, sidearm: settings.weaponSidearm, melee: settings.weaponMelee, throwable: settings.weaponThrowable, gadget: settings.weaponGadget, gadget2: settings.weaponGadget2 };
+  const loadout = {};
+  for (let i = 0; i < BASE_GAME_WEAPON_SLOTS.length; i++) loadout[BASE_GAME_WEAPON_SLOTS[i]] = settings[WEAPON_SLOT_SETTINGS[i]];
+  return loadout;
 }
 function localWeaponId() { return weaponForSlot(currentLoadout(), weaponState.slot); }
 // The bodies and the viewmodel only know weapons.js ids; a gadget in hand shows through the drone view.
@@ -2759,7 +2768,7 @@ function changed(key) {
   } else if (key?.startsWith('flashlight') || key?.startsWith('laser')) {
     applyFlashlight();
     applyLaser();
-  } else if (key === 'weaponPrimary' || key === 'weaponSidearm' || key === 'weaponMelee' || key === 'weaponThrowable' || key === 'weaponGadget' || key === 'weaponGadget2') {
+  } else if (key.startsWith('weapon') && WEAPON_SLOT_SETTINGS.includes(key)) {
     applyWeaponSelection();
   } else if (key === 'fpPreset') {
     applyFpPreset(settings.fpPreset);
@@ -3063,6 +3072,7 @@ addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_ID
 const gadgetLabel = id => ({ none: 'None', quad: 'Quadcopter', uav: 'UAV' })[id] ?? id;
 addSelect(playerSec, 'weaponGadget', 'Gadget (5)', [...BASE_GAME_GADGET_IDS], BASE_GAME_GADGET_IDS.map(gadgetLabel));
 addSelect(playerSec, 'weaponGadget2', 'Gadget (6)', [...BASE_GAME_GADGET_IDS], BASE_GAME_GADGET_IDS.map(gadgetLabel));
+addSelect(playerSec, 'weaponLauncher', 'Launcher (7)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addToggle(playerSec, 'reticleEnabled', 'Reticle');
 addToggle(playerSec, 'reticleSpread', 'Reticle opens with the spread cone');
 const reticleNote = document.createElement('div'); reticleNote.className = 'note';
@@ -3446,7 +3456,7 @@ function refreshGrassRuntimeLine() {
 // trees to the next rung, hiding one takes them off the screen, which is what isolates a rung's
 // raster cost.
 addToggle(plantsSec, 'treesEnabled', 'Trees');
-addRange(plantsSec, 'treesPerHectare', 'Trees per hectare (asked)', 0, 400, 1, value => value.toFixed(0));
+addCommitRange(plantsSec, 'treesPerHectare', 'Trees per hectare (asked)', 0, 400, 1, value => value.toFixed(0));
 addCommitRange(plantsSec, 'treeSpecies', 'Species', 1, 8, 1, value => value.toFixed(0));
 addCommitRange(plantsSec, 'treeMaxSize', 'Max tree size', 0.05, 3, 0.05, value => value.toFixed(2));
 addRange(plantsSec, 'treeVerticalOffset', 'Trunk vertical bias (m)', -1, 1, 0.01, value => `${value.toFixed(2)} m`);
@@ -3469,7 +3479,7 @@ const forestRuntimeLine = document.createElement('div');
 forestRuntimeLine.className = 'note';
 plantsSec.append(forestRuntimeLine);
 function refreshForestRuntimeLine() {
-  const f = forest.stats;
+  const f = forest.sampleDetail();   // per-rung counts are a scan; this is the interval that pays for it
   if (!f.enabled) { forestRuntimeLine.textContent = 'Trees off.'; return; }
   if (!f.built) { forestRuntimeLine.textContent = `Trees waiting on the palette${f.lastError ? `: ${f.lastError}` : ' and the terrain field.'}`; return; }
   const asked = Math.round(f.requestedTrees);
@@ -4082,8 +4092,7 @@ addEventListener('keydown', event => {
   // already in stands you back up, and either key takes you straight there from the other.
   if (event.code === 'KeyC' && !event.repeat) playerStance = playerStance === 'kneel' ? 'stand' : 'kneel';
   if (event.code === 'KeyZ' && !event.repeat) playerStance = playerStance === 'prone' ? 'stand' : 'prone';
-  const slotKeys = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6'];
-  const slotIndex = slotKeys.indexOf(event.code);
+  const slotIndex = SLOT_KEYS.indexOf(event.code);
   if (slotIndex >= 0 && !event.repeat) selectSlot(slotIndex);
   if (event.code === 'KeyQ' && !event.repeat) selectSlot(weaponState.lastSlot);
 });
@@ -4215,7 +4224,7 @@ function captureContext() {
       reflectLastMs: +water.reflectStats.lastMs.toFixed(2),
     },
     flora: {
-      trees: { ...forest.stats },
+      trees: { ...forest.sampleDetail() },
       grass: { ...flora.stats },
       placementCoverage: terrain.fields ? +terrain.fields.coverage.toFixed(3) : null,
       contactCoverage: terrain.contactField ? +terrain.contactField.coverage.toFixed(3) : null,

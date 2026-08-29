@@ -1,8 +1,10 @@
 import {
   BASE_GAME_PROTOCOL_VERSION,
-  BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_WEAPON_ACTION, BASE_GAME_WEAPON_SLOTS, BASE_GAME_RELOAD_TICKS, sanitizeBaseGameLoadout, weaponForSlot, stanceName, stanceIndex,
+  BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_WEAPON_ACTION, BASE_GAME_WEAPON_SLOTS, BASE_GAME_RELOAD_TICKS, sanitizeBaseGameLoadout, weaponForSlot, stanceName, stanceIndex, isBaseGameGadget,
+  BASE_GAME_GADGET_THROW_TICKS, BASE_GAME_GADGET_THROW_ACTION_TICKS, BASE_GAME_GADGET_RELOAD_TICKS, defaultGadgetStock,
   BASE_GAME_LAG_COMP_MS, BASE_GAME_RESPAWN_TICKS, BASE_GAME_FIRE_ACTION_TICKS, wireAmmo,
   BASE_GAME_POSITION_HISTORY,
+  BASE_GAME_TEAMS, sanitizeBaseGameNpcRequest,
   DEFAULT_BASE_GAME_BODY_MODEL, bodyModelById, hitProfileForBodyModel, sanitizeBaseGameBodyModel,
   BASE_GAME_ROOM_GRACE_MS,
   BASE_GAME_ROOM_PLAYER_CAP,
@@ -36,13 +38,15 @@ import {
 } from '../player-hit-rig.js';
 import { createPlayerCombatFacade } from '../player-combat.js';
 import { createAmmoStore } from '../player-ammo.js';
-import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor, createSwapState, beginSwap, swapPhase } from '../base-game-fire.js';
+import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor, createSwapState, beginSwap, swapPhase, lookDirection } from '../base-game-fire.js';
+import { createBaseGameDrone, stepBaseGameDrone, sendDroneTo, recallDrone, takeOverDrone, releaseDrone, droneWireState } from '../base-game-drones.js';
 import { createProjectileManager } from '../bot-projectiles.js';
 import { blastDamageAt } from '../entity-types/explosion.js';
 import { isSurfaceDetonation } from '../entity-types/combat-projectile.js';
 import { botSeedFromId } from '../bot-activity.js';
 import { BASE_GAME_PLAYER_DEFAULT_CONFIG } from '../base-game-player-controller.js';
 import { getWeapon } from '../weapons.js';
+import { createRoomNpcs, findNpcSpawn, appearanceFor, NPC_WALK_SPEED, NPC_RUN_MULTIPLIER } from './base-game-npcs.js';
 import { randomUUID } from 'node:crypto';
 
 function defaultToken() {
@@ -214,24 +218,31 @@ export function createBaseGameRoomService({
   // environment-viewer's applyExplosionBlast on the room roster: blastDamageAt falloff, friendly
   // fire and self-damage on, every victim gets a hit event so clients flash the same way.
   function detonateProjectile(room, point, proj, init = null) {
-    const weapon = proj.weaponId ? getWeapon(proj.weaponId) : null;
-    const radius = proj.state.blastRadius, damage = proj.state.damage;
-    const owner = proj.ownerId ? room.clients.get(proj.ownerId) ?? null : null;
-    room.events.explosions.push({ p: [...point], radius, owner: proj.ownerId, weapon: proj.weaponId, contact: isSurfaceDetonation(init?.cause), tick: room.tick });
+    detonateBlast(room, point, { radius: proj.state.blastRadius, damage: proj.state.damage, ownerId: proj.ownerId, weaponId: proj.weaponId, contact: isSurfaceDetonation(init?.cause) });
+  }
+  // One blast: the event every client presents, and the damage to every rig in reach. Projectiles
+  // and crashing drones both come through here.
+  function detonateBlast(room, point, { radius, damage, ownerId = null, weaponId = null, contact = true }) {
+    const weapon = weaponId ? getWeapon(weaponId) : null;
+    const owner = ownerId ? room.clients.get(ownerId) ?? null : null;
+    room.events.explosions.push({ p: [...point], radius, owner: ownerId, weapon: weaponId, contact, tick: room.tick });
     for (const victim of room.clients.values()) {
       if (!victim.controller) continue;
       updateClientHitPose(victim);
       if (!victim.hitPose.alive) continue;
       const dmg = blastDamageAt(damage, distanceToPlayerHitRig(point, victim.hitPose), radius);
       if (dmg <= 0) continue;
-      applyDamage(room, victim, dmg, { shooter: owner, point, weaponId: weapon?.id ?? proj.weaponId, source: 'explosion' });
+      applyDamage(room, victim, dmg, { shooter: owner, point, weaponId: weapon?.id ?? weaponId, source: 'explosion' });
     }
   }
 
   function applyDamage(room, victim, amount, { shooter = null, point = null, normal = null, weaponId = null, source = 'gun', zone = null, side = 'center' } = {}) {
     const wasAlive = room.combat.getSnapshot(victim.id).alive;
     if (!wasAlive) return;
+    // Friendly fire is a room rule (default on); self-damage always counts.
+    if (room.world.npcFriendlyFire === false && shooter && shooter !== victim && (shooter.team ?? BASE_GAME_TEAMS.friendly) === (victim.team ?? BASE_GAME_TEAMS.friendly)) return;
     const after = room.combat.applyDamage({ targetId: victim.id, amount, source, attackerId: shooter?.id ?? null, hitPoint: point, weaponId });
+    room.npcs?.damaged(victim, shooter, amount);
     room.events.hits.push({ shooter: shooter?.id ?? null, victim: victim.id, point: point ?? victim.controller.getPosition(), normal, damage: amount, zone, side, head: zone === 'head', tick: room.tick });
     if (after.alive) return;
     victim.deaths++;
@@ -247,10 +258,29 @@ export function createBaseGameRoomService({
     client.controller = createBaseGamePlayerController({
       worldQuery: sim.worldQuery,
       spawn: sim.spawn,
-      config: { fixedHz: simHz },
+      config: { fixedHz: simHz, ...playerConfigFromWorld(client.room.world) },
       waterSurfaceAt: (x, z, t) => client.room.water.heightAt(x, z, t),
     });
     updateClientHitPose(client);
+  }
+
+  function playerConfigFromWorld(world) {
+    const fields = {
+      playerMoveSpeed: 'moveSpeed', playerSprintMultiplier: 'sprintMultiplier',
+      playerJumpSpeed: 'jumpSpeed', playerGravity: 'gravity',
+      playerGroundDeceleration: 'groundDeceleration',
+      playerSlopeSlideDeceleration: 'slopeSlideDeceleration',
+      playerSlopeLimit: 'slopeLimitDegrees', playerStepHeight: 'stepHeight',
+      playerSnapDistance: 'snapDistance',
+    };
+    const config = {};
+    for (const [key, field] of Object.entries(fields)) if (Number.isFinite(world?.[key])) config[field] = world[key];
+    return config;
+  }
+
+  function syncRoomPlayerConfig(room) {
+    const config = playerConfigFromWorld(room.world);
+    for (const client of room.clients.values()) client.controller?.configure(config);
   }
 
   function updateClientHitPose(client) {
@@ -286,7 +316,7 @@ export function createBaseGameRoomService({
     const controller = client.controller;
     return {
       id: client.id,
-      connected: client.ws?.readyState === 1,
+      connected: !!client.npc || client.ws?.readyState === 1,
       owner: client.id === room.ownerId,
       spawnRevision: client.spawnRevision,
       tick: room.tick,
@@ -314,6 +344,12 @@ export function createBaseGameRoomService({
       bodyModel: client.bodyModel,
       hitProfile: client.hitProfile,
       poseEpoch: client.poseEpoch,
+      controlling: client.controlling,
+      gadgets: { ...client.gadgets },
+      gadgetReady: client.gadgetReady,
+      team: client.team ?? BASE_GAME_TEAMS.friendly,
+      npc: !!client.npc,
+      appearance: client.appearance ?? null,
     };
   }
 
@@ -342,6 +378,7 @@ export function createBaseGameRoomService({
       shots,
       explosions,
       projectiles: room.projectiles ? room.projectiles.list.map(projectileEntry) : [],
+      drones: [...room.drones.values()].map(droneWireState),
     };
   }
   function emptyEvents() { return { hits: [], deaths: [], shots: [], explosions: [] }; }
@@ -409,6 +446,12 @@ export function createBaseGameRoomService({
       poseEpoch: 1,
       hitPose: createPlayerBodyPose(),
       rewindPose: createPlayerBodyPose(),
+      controlling: null,    // id of the drone this player is flying
+      gadgetHeld: false,    // fire edge for the gadget slot
+      gadgets: defaultGadgetStock(),   // drones left this life, per kind
+      gadgetReady: true,    // one is in the hands
+      gadgetThrow: null,    // { kind, atTick, yaw, pitch }: a wind-up in progress
+      gadgetReloadAt: 0,    // tick the next one is in the hands
     };
     room.combat.ensurePlayer(id);
     room.clients.set(id, client);
@@ -462,6 +505,9 @@ export function createBaseGameRoomService({
       ammo: createAmmoStore(),
       poseHistory: new Map(),
       projectiles: null,   // bot-projectiles.js manager, built with the world in attachProjectiles
+      drones: new Map(),   // id -> base-game-drones.js record; stepped after the players each tick
+      npcs: null,          // server/base-game-npcs.js: the room's bot brain, built with the world
+      npcSeq: 0,
     };
     room.ammo.setUnlimited(room.world.unlimitedAmmo === true);   // the creator's match rule, before anyone joins
     rooms.set(code, room);
@@ -516,6 +562,8 @@ export function createBaseGameRoomService({
     if (Object.keys(patch).length === 0) return true;
     Object.assign(room.world, patch);
     syncRoomWater(room);
+    syncRoomPlayerConfig(room);
+    syncNpcSettings(room);
     room.ammo.setUnlimited(room.world.unlimitedAmmo === true);
     room.revision++;
     room.worldUpdatedAt = now();
@@ -545,6 +593,8 @@ export function createBaseGameRoomService({
       room.revision++;
       room.projectiles = null;   // the manager holds the old ground; rebuild on the new one
       attachProjectiles(room);
+      for (const c of [...room.clients.values()]) if (c.npc) removeNpc(c);   // bots belong to the ground they were placed on
+      room.npcs = null;
       for (const c of room.clients.values()) {
         c.controller = null;
         c.poseEpoch++;
@@ -631,7 +681,7 @@ export function createBaseGameRoomService({
   // Respawn is a request, not a transform: the server resets the controller to its own spawn,
   // bumps the spawn revision, and resyncs the client's tick numbering.
   function respawnClient(client) {
-    client.controller?.reset(client.room.sim?.spawn);
+    client.controller?.reset(client.npc ? client.npcSpawn : client.room.sim?.spawn);
     client.lastInput = neutralBaseGameInput(client.lastInput.yaw, client.lastInput.pitch);
     client.room.combat.revive(client.id);
     client.room.ammo.resetPlayer(client.id);
@@ -640,6 +690,9 @@ export function createBaseGameRoomService({
     client.swap = createSwapState();
     client.respawnAtTick = 0;
     client.action = BASE_GAME_WEAPON_ACTION.idle;
+    dropStick(client);
+    client.gadgetHeld = false;
+    client.gadgets = defaultGadgetStock(); client.gadgetReady = true; client.gadgetThrow = null; client.gadgetReloadAt = 0;
     if (client.pendingBodyModel) {
       client.bodyModel = client.pendingBodyModel;
       client.hitProfile = hitProfileForBodyModel(client.bodyModel);
@@ -651,6 +704,7 @@ export function createBaseGameRoomService({
     rememberPose(client);
     client.spawnRevision++;
     client.respawns = (client.respawns ?? 0) + 1;
+    if (client.npc) { client.room.npcs?.revived(client); return; }
     requestResync(client);
   }
 
@@ -690,14 +744,165 @@ export function createBaseGameRoomService({
     if (msg.type === 'base:terrain_put') return putTerrain(ws, msg);
     if (msg.type === 'base:terrain_get') return getTerrain(ws, msg);
     if (msg.type === 'base:input') return receiveInput(ws, msg);
+    if (msg.type === 'base:npc') return npcCommand(ws, msg);
     return false;
+  }
+
+  // ─── NPC bots ──────────────────────────────────────────────────────────────
+  // A bot is a client with no socket: bot-brain.js decides, the same controller, trigger, hurt
+  // rig and snapshot as a player do the rest. See server/base-game-npcs.js.
+  function attachNpcs(room) {
+    if (room.npcs || !room.sim) return;
+    room.npcs = createRoomNpcs({
+      room,
+      heightAt: roomGroundY(room),
+      raycast: worldOccluder(room) ?? (() => null),
+      seaLevel: () => (room.water?.enabled ? room.water.level : -Infinity),
+      roomMs: () => roomMs(room),
+      log: process.env.BASE_GAME_NPC_LOG ? (...a) => console.log('[npc]', ...a) : null,
+    });
+    syncNpcSettings(room);
+  }
+  function syncNpcSettings(room) {
+    if (!room.npcs) return;
+    const w = room.world;
+    const patch = {};
+    if (Number.isFinite(w.npcNoticeMs)) patch.botAimSettings = { reactionMs: w.npcNoticeMs };
+    room.npcs.configure(patch);
+  }
+  function makeNpcClient(room, { team, role, spawn }) {
+    const id = `npc_${team === BASE_GAME_TEAMS.enemy ? 'e' : 'f'}_${++room.npcSeq}`;
+    const client = {
+      id, token: null, room, ws: null, npc: { team, role },
+      team,
+      disconnectedAt: null, controller: null, queue: [], lastConsumedTick: 0,
+      lastInput: neutralBaseGameInput(), lastInputClientTime: null, awaitingResync: false, stalledTicks: 0,
+      spawnRevision: 1, rate: createBaseGameRateLimiter(), rejectedInputs: 0, serverSteps: 0,
+      loadout: { ...BASE_GAME_DEFAULT_LOADOUT, gadget: 'none', gadget2: 'none', launcher: 'none' },
+      slot: 0, aiming: false, action: BASE_GAME_WEAPON_ACTION.idle, actionTick: 0, actionUntilTick: 0,
+      respawnAtTick: 0, kills: 0, deaths: 0,
+      trigger: createTriggerState(), throwTrigger: createTriggerState(), swap: createSwapState(),
+      bodyModel: DEFAULT_BASE_GAME_BODY_MODEL, pendingBodyModel: null, hitProfile: hitProfileForBodyModel(DEFAULT_BASE_GAME_BODY_MODEL),
+      poseEpoch: 1, hitPose: createPlayerBodyPose(), rewindPose: createPlayerBodyPose(),
+      controlling: null, gadgetHeld: false, gadgets: defaultGadgetStock(), gadgetReady: false, gadgetThrow: null, gadgetReloadAt: 0,
+      appearance: appearanceFor(id),
+      npcSpawn: [...spawn],
+    };
+    const role$ = getRoleWeapon(role);
+    if (role$) client.loadout.primary = role$;
+    room.combat.ensurePlayer(id);
+    room.clients.set(id, client);
+    client.controller = createBaseGamePlayerController({
+      worldQuery: room.sim.worldQuery, spawn,
+      config: { fixedHz: simHz, ...playerConfigFromWorld(room.world), moveSpeed: NPC_WALK_SPEED, sprintMultiplier: NPC_RUN_MULTIPLIER },
+      waterSurfaceAt: (x, z, t) => room.water.heightAt(x, z, t),
+    });
+    updateClientHitPose(client);
+    room.npcs.attach(client, { team, roleId: role, spawn });
+    return client;
+  }
+  function getRoleWeapon(role) { return role === 'medic' ? 'five_seven' : role === 'sniper' ? 'm24' : null; }
+  // Where the requester is looking: the world query first, then the ground marched out along the
+  // look (the drone send-point rule), so a bot can be placed on a far hill.
+  function aimedGroundPoint(room, client) {
+    if (!client?.controller) return null;
+    updateClientHitPose(client);
+    const origin = playerPoseAnchor(client.hitPose, 'eye');
+    const dir = lookDirection(client.lastInput.yaw, client.lastInput.pitch);
+    const ray = worldOccluder(room);
+    const hit = ray ? ray(origin, dir, 300) : null;
+    if (hit?.point) return [hit.point[0], hit.point[1], hit.point[2]];
+    const ground = roomGroundY(room);
+    let prev = origin;
+    for (let d = 10; d <= 1500; d += 10) {
+      const p = [origin[0] + dir[0] * d, origin[1] + dir[1] * d, origin[2] + dir[2] * d];
+      if (p[1] <= ground(p[0], p[2])) return [p[0], ground(p[0], p[2]), p[2]];
+      prev = p;
+    }
+    return null;
+  }
+  function npcSideMarker(room, team, requester) {
+    const from = requester?.controller?.getPosition() ?? room.sim.spawn;
+    if (team === BASE_GAME_TEAMS.friendly) return [from[0] + 3, from[1], from[2] + 3];
+    const d = Number.isFinite(room.world.npcSpawnDistance) ? room.world.npcSpawnDistance : 60;
+    const yaw = requester?.lastInput?.yaw ?? 0;
+    // ahead of the requester along their look, on the ground
+    const x = from[0] - Math.sin(yaw) * d, z = from[2] - Math.cos(yaw) * d;
+    return [x, roomGroundY(room)(x, z), z];
+  }
+  function spawnNpcs(room, req, requester) {
+    attachNpcs(room);
+    if (!room.npcs) return [];
+    const ground = roomGroundY(room);
+    const sea = room.water?.enabled ? room.water.level : -Infinity;
+    const aimed = req.aimed ? aimedGroundPoint(room, requester) : null;
+    const near = aimed ?? (req.at ? [req.at[0], ground(req.at[0], req.at[2]), req.at[2]] : npcSideMarker(room, req.team, requester));
+    const bodies = [...room.clients.values()].map(c => c.controller?.getPosition()).filter(Boolean);
+    room.npcs.noteSpawnAnchor(near);
+    const made = [];
+    for (let i = 0; i < req.count; i++) {
+      const spawn = findNpcSpawn({ near, spread: req.at ? 2.5 : 6, heightAt: ground, seaLevel: sea, bodies });
+      spawn[1] += 0.05;
+      const client = makeNpcClient(room, { team: req.team, role: req.role, spawn });
+      bodies.push(spawn);
+      made.push(client);
+    }
+    room.revision++;
+    return made;
+  }
+  function removeNpc(client) {
+    const room = client.room;
+    room.npcs?.detach(client);
+    room.clients.delete(client.id);
+    room.combat.removePlayer(client.id);
+    room.poseHistory.delete(client.id);
+    room.revision++;
+  }
+  function npcCommand(ws, msg) {
+    if (!validateHandshake(ws, msg)) return true;
+    const client = socketClients.get(ws);
+    if (!client) { fail(ws, 'not_joined', 'Join a base-game room first'); return true; }
+    const room = client.room;
+    if (room.ownerId !== client.id) { fail(ws, 'not_owner', 'Only the room owner can add or remove bots'); return true; }
+    if (!client.rate.allow(now())) { client.rejectedInputs++; return true; }
+    if (!room.sim) { fail(ws, 'world_not_ready', 'The world is still loading'); return true; }
+    const req = sanitizeBaseGameNpcRequest(msg);
+    if (!req) { fail(ws, 'invalid_npc', 'Bad NPC request'); return true; }
+    advance(room);
+    if (req.action === 'clear') {
+      for (const c of [...room.clients.values()]) if (c.npc && (req.team === null || c.team === req.team)) removeNpc(c);
+    } else {
+      if (req.aimed && !aimedGroundPoint(room, client)) { fail(ws, 'no_ground', 'Nothing under the aim to stand on'); return true; }
+      spawnNpcs(room, req, client);
+    }
+    broadcast(room);
+    return true;
+  }
+  // One sim tick for a bot: the brain's intent becomes this tick's input, then the ordinary path.
+  function stepNpcClient(client) {
+    const room = client.room;
+    const alive = room.combat.getSnapshot(client.id).alive;
+    if (!alive) {
+      client.controller.stepOnce(neutralBaseGameInput(client.lastInput.yaw, client.lastInput.pitch), false);
+      rememberPose(client);
+      if (room.tick >= client.respawnAtTick) {
+        if (room.world.npcRespawn === false) removeNpc(client);
+        else respawnClient(client);
+      }
+      return;
+    }
+    const next = room.npcs.tickInputFor(client, client.lastConsumedTick + 1);
+    client.queue.push(next);
+    consumeTick(client);
   }
 
   function consumeTick(client) {
     const next = client.queue.shift();
     client.lastConsumedTick = next.tick;
     client.lastInput = next;
-    client.controller.stepOnce({ tick: next.tick, moveX: next.moveX, moveZ: next.moveZ, yaw: next.yaw, sprint: next.sprint, crouch: next.crouch, stance: stanceName(next.stance) }, next.jump);
+    // An operator at the stick stands still: the movement keys are the drone's while `controlling`.
+    const flying = !!client.controlling;
+    client.controller.stepOnce({ tick: next.tick, moveX: flying ? 0 : next.moveX, moveZ: flying ? 0 : next.moveZ, yaw: next.yaw, sprint: flying ? false : next.sprint, crouch: next.crouch, stance: stanceName(next.stance) }, flying ? false : next.jump);
     // Slot and aim are taken as sent. The trigger step (base-game-fire.js, on combat.js's
     // validateShot and player-ammo.js) decides whether a round leaves; hits resolve below.
     // A swap puts one weapon away and brings the next up, and neither can shoot on the way. It is
@@ -723,7 +928,12 @@ export function createBaseGameRoomService({
     if (client.action !== BASE_GAME_WEAPON_ACTION.idle && next.tick >= client.actionUntilTick) client.action = BASE_GAME_WEAPON_ACTION.idle;
     const room = client.room;
     const weaponId = weaponForSlot(client.loadout, client.slot);
-    const shot = stepTrigger(client.trigger, room.ammo, { playerId: client.id, weaponId, tick: next.tick, fire: next.fire, reload: next.reload, aim: next.aim, alive: room.combat.getSnapshot(client.id).alive, blocked: phase !== 'idle', simHz });
+    // A gadget in hand is not a gun: fire launches the drone, and the trigger steps with no weapon.
+    const gadget = isBaseGameGadget(weaponId);
+    if (gadget) launchGadget(client, weaponId, next, phase);
+    stepGadgetTimers(client, next);
+    applyDroneInput(client, next);
+    const shot = stepTrigger(client.trigger, room.ammo, { playerId: client.id, weaponId: gadget ? null : weaponId, tick: next.tick, fire: gadget ? false : next.fire, reload: next.reload, aim: next.aim, alive: room.combat.getSnapshot(client.id).alive, blocked: phase !== 'idle', simHz });
     if (shot.reloadStarted) {
       client.action = BASE_GAME_WEAPON_ACTION.reload;
       client.actionTick = next.tick;
@@ -748,6 +958,105 @@ export function createBaseGameRoomService({
       fireShot(client, throwable, next, client.throwTrigger);
     }
     rememberPose(client);
+  }
+
+  // ─── drones ────────────────────────────────────────────────────────────────
+  // Ground under a drone: the terrain source when there is one, the lab's spawn floor otherwise.
+  function roomGroundY(room) {
+    const sim = room.sim;
+    if (typeof sim?.heightAt === 'function') return sim.heightAt;
+    const floor = (sim?.spawn?.[1] ?? 1.5) - 1.5;
+    return () => floor;
+  }
+  function ownedDrone(room, ownerId, kind) {
+    for (const rec of room.drones.values()) if (rec.ownerId === ownerId && rec.kind === kind && !rec.done) return rec;
+    return null;
+  }
+  // Fire edge on the gadget slot, once the draw has finished and with one in the hands: the throw
+  // starts (the arm action), and the drone leaves THROW_TICKS later from spawnGadget. R with empty
+  // hands and stock left brings the next one out over RELOAD_TICKS. One of each kind aloft per player.
+  function launchGadget(client, kind, next, phase) {
+    const edge = next.fire && !client.gadgetHeld;
+    client.gadgetHeld = next.fire;
+    const room = client.room;
+    const alive = room.combat.getSnapshot(client.id).alive;
+    if (next.reload && alive && phase === 'idle' && !client.gadgetReady && !client.gadgetThrow && !client.gadgetReloadAt && (client.gadgets[kind] ?? 0) > 0 && client.action === BASE_GAME_WEAPON_ACTION.idle) {
+      client.action = BASE_GAME_WEAPON_ACTION.reload;
+      client.actionTick = next.tick;
+      client.actionUntilTick = next.tick + BASE_GAME_GADGET_RELOAD_TICKS;
+      client.gadgetReloadAt = client.actionUntilTick;
+    }
+    if (!edge || phase !== 'idle') return;
+    if (!alive || !client.gadgetReady || client.gadgetThrow || client.gadgetReloadAt || (client.gadgets[kind] ?? 0) <= 0 || ownedDrone(room, client.id, kind)) return;
+    client.gadgets[kind] -= 1;
+    client.gadgetReady = false;
+    client.gadgetThrow = { kind, atTick: next.tick + BASE_GAME_GADGET_THROW_TICKS };
+    client.action = BASE_GAME_WEAPON_ACTION.throw;
+    client.actionTick = next.tick;
+    client.actionUntilTick = next.tick + BASE_GAME_GADGET_THROW_ACTION_TICKS;
+  }
+  function stepGadgetTimers(client, next) {
+    if (client.gadgetThrow && next.tick >= client.gadgetThrow.atTick) { const t = client.gadgetThrow; client.gadgetThrow = null; spawnGadget(client, t.kind, next); }
+    if (client.gadgetReloadAt && next.tick >= client.gadgetReloadAt) { client.gadgetReloadAt = 0; client.gadgetReady = true; }
+  }
+  function spawnGadget(client, kind, next) {
+    const room = client.room;
+    if (!room.combat.getSnapshot(client.id).alive || ownedDrone(room, client.id, kind)) return;
+    updateClientHitPose(client);
+    const eye = playerPoseAnchor(client.hitPose, 'eye');
+    const look = lookDirection(next.yaw, next.pitch);
+    const groundY = roomGroundY(room);
+    const rec = createBaseGameDrone(kind, {
+      ownerId: client.id, team: 0,
+      from: [eye[0], eye[1] + 0.5, eye[2]], look, throwSpeed: 8,
+      groundY: groundY(eye[0], eye[2]),
+      id: `d${room.tick.toString(36)}-${client.id.slice(0, 6)}-${kind}`,
+    });
+    room.drones.set(rec.id, rec);
+  }
+  function dropStick(client) {
+    if (!client.controlling) return;
+    const rec = client.room.drones.get(client.controlling);
+    if (rec) releaseDrone(rec);
+    client.controlling = null;
+  }
+  // Orders and the stick. Only the owner's input reaches a drone; mode 0 while flying releases it.
+  function applyDroneInput(client, next) {
+    const di = next.drone;
+    const room = client.room;
+    const rec = di?.id ? room.drones.get(di.id) : null;
+    if (!di || !rec || rec.ownerId !== client.id || rec.done) { dropStick(client); return; }
+    if (di.send) { sendDroneTo(rec, di.send); if (client.controlling === rec.id) client.controlling = null; return; }
+    if (di.recall) { recallDrone(rec); if (client.controlling === rec.id) client.controlling = null; return; }
+    if (di.mode !== 1) { if (client.controlling === rec.id) dropStick(client); return; }
+    if (rec.mode !== 'manual') {
+      if (client.controlling && client.controlling !== rec.id) dropStick(client);
+      if (takeOverDrone(rec, { groundY: roomGroundY(room) })) client.controlling = rec.id;
+    }
+    if (rec.mode === 'manual') { rec.input.pitch = di.pitch; rec.input.roll = di.roll; rec.input.yaw = di.yaw; rec.input.throttle = di.throttle; rec.input.sweep = di.sweep; rec.input.flap = di.flap; }
+  }
+  const _droneWorld = { ownerPos: null, ownerYaw: 0, ownerAlive: false, groundY: null, input: null };
+  function stepDrones(room) {
+    if (!room.drones.size) return;
+    const dt = stepMs / 1000;
+    const groundY = roomGroundY(room);
+    for (const rec of room.drones.values()) {
+      const owner = room.clients.get(rec.ownerId);
+      const alive = !!owner?.controller && room.combat.getSnapshot(owner.id).alive;
+      _droneWorld.ownerPos = alive ? owner.controller.getPosition() : null;
+      _droneWorld.ownerYaw = alive ? owner.lastInput.yaw : 0;
+      _droneWorld.ownerAlive = alive;
+      _droneWorld.groundY = groundY;
+      _droneWorld.input = rec.input;
+      stepBaseGameDrone(rec, dt, _droneWorld);
+      // The module can drop the stick on its own (a crash, a dead owner); the roster follows it.
+      if (owner && owner.controlling === rec.id && rec.mode !== 'manual') owner.controlling = null;
+      if (rec.done) {
+        // Into the ground, or shot to pieces: it goes off where it ends, on whoever is standing there.
+        if (rec.crash && rec.def.crashBlast) detonateBlast(room, rec.crash, { ...rec.def.crashBlast, ownerId: rec.ownerId, weaponId: `${rec.kind}_crash`, contact: true });
+        room.drones.delete(rec.id);
+      }
+    }
   }
 
   // Fixed-capacity articulated hit-pose history, keyed on room time for deterministic rewind.
@@ -863,6 +1172,7 @@ export function createBaseGameRoomService({
   function stepClient(client) {
     const controller = client.controller;
     if (!controller) return;
+    if (client.npc) return stepNpcClient(client);
     const connected = client.ws?.readyState === 1;
     if (!client.room.combat.getSnapshot(client.id).alive) {
       // A dead body holds still; its ticks are consumed so numbering stays in step, then the
@@ -895,6 +1205,24 @@ export function createBaseGameRoomService({
     if (client.queue.length > drainDepth) consumeTick(client);
   }
 
+  // Service profiler: one log line per second whenever a wake-up ran long, with the phase split,
+  // so a laggy session says where the server's time went instead of leaving us to guess.
+  const prof = { lastWake: 0, maxGap: 0, maxWake: 0, sumWake: 0, wakes: 0, ticks: 0, prepare: 0, think: 0, clients: 0, projectiles: 0, drones: 0, bcast: 0, bytes: 0, since: 0 };
+  const PROF_WAKE_WARN_MS = 12;
+  function profReport(at) {
+    if (at - prof.since < 1000) return;
+    const npcs = [...rooms.values()].reduce((n, r) => n + (r.npcs?.count?.() ?? 0), 0);
+    if (prof.maxWake >= PROF_WAKE_WARN_MS || prof.maxGap >= 50 || (npcs && process.env.BASE_GAME_PROF)) {
+      const f = v => v.toFixed(1);
+      const s = [...rooms.values()].find(r => r.npcs)?.npcs?.stats;
+      console.log(`[base-game prof] wake max ${f(prof.maxWake)} ms avg ${f(prof.sumWake / Math.max(1, prof.wakes))} ms gap max ${f(prof.maxGap)} ms | ticks ${prof.ticks} prepare ${f(prof.prepare)} think ${f(prof.think)} clients ${f(prof.clients)} proj ${f(prof.projectiles)} drones ${f(prof.drones)} | snapshots ${f(prof.bcast)} ms ${(prof.bytes / 1024).toFixed(0)} KB | npcs ${npcs}`
+        + (s ? ` sync ${f(s.syncMs)} brain ${f(s.thinkMs)} input ${f(s.inputMs)} rays ${s.raycasts} heightAt ${s.heightAt} bakes ${s.bakes}` : ''));
+      for (const r of rooms.values()) r.npcs?.resetStats?.();
+    }
+    for (const k of Object.keys(prof)) if (k !== 'lastWake') prof[k] = 0;
+    prof.since = at;
+  }
+
   function stepRoom(room, at) {
     const elapsed = Math.max(0, at - room.lastStepAt);
     room.lastStepAt = at;
@@ -903,20 +1231,34 @@ export function createBaseGameRoomService({
     const sim = room.sim;
     while (room.accumulatorMs + 1e-6 >= stepMs) {
       room.accumulatorMs -= stepMs;
-      room.tick++;
+      room.tick++; prof.ticks++;
+      let t = performance.now();
       // Volumetric worlds build collision around the players first; a player whose chunk is not
       // collidable yet holds this tick (input stays queued) rather than moving on no ground.
       if (sim.prepare) sim.prepare([...room.clients.values()].filter(c => c.controller).map(c => c.controller.getPosition()));
-      for (const client of room.clients.values()) {
+      let t2 = performance.now(); prof.prepare += t2 - t; t = t2;
+      room.npcs?.think(stepMs / 1000);   // every bot decides before any body moves this tick
+      t2 = performance.now(); prof.think += t2 - t; t = t2;
+      for (const client of [...room.clients.values()]) {
         if (sim.covers && client.controller) { const p = client.controller.getPosition(); if (!sim.covers(p[0], p[2])) continue; }
         stepClient(client); enforceKillPlane(client);
       }
+      t2 = performance.now(); prof.clients += t2 - t; t = t2;
       if (room.projectiles?.list.length) room.projectiles.update(stepMs / 1000);
+      t2 = performance.now(); prof.projectiles += t2 - t; t = t2;
+      stepDrones(room);
+      prof.drones += performance.now() - t;
     }
   }
 
   function step(at = now()) {
+    const t0 = performance.now();
+    if (prof.lastWake) prof.maxGap = Math.max(prof.maxGap, t0 - prof.lastWake);
+    prof.lastWake = t0;
     for (const room of rooms.values()) if (room.sim) stepRoom(room, at);
+    const wake = performance.now() - t0;
+    prof.maxWake = Math.max(prof.maxWake, wake); prof.sumWake += wake; prof.wakes++;
+    profReport(t0);
   }
 
   function transferOwner(room) {
@@ -958,7 +1300,15 @@ export function createBaseGameRoomService({
   }
 
   function broadcastSnapshots() {
-    for (const room of rooms.values()) if (connectedClients(room).length) broadcast(room);
+    const t0 = performance.now();
+    for (const room of rooms.values()) {
+      const clients = connectedClients(room);
+      if (!clients.length) continue;
+      const payload = JSON.stringify(snapshot(room));
+      prof.bytes += payload.length * clients.length;
+      for (const client of clients) if (client.ws.readyState === 1) client.ws.send(payload);
+    }
+    prof.bcast += performance.now() - t0;
   }
 
   return {

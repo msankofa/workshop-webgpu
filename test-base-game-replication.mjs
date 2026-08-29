@@ -11,6 +11,8 @@ import {
   weaponForSlot,
   BASE_GAME_WEAPON_ACTION,
   BASE_GAME_RELOAD_TICKS,
+  BASE_GAME_WEAPON_SLOTS,
+  BASE_GAME_DEFAULT_LOADOUT,
 } from './base-game-protocol.mjs';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
@@ -30,7 +32,18 @@ const P = BASE_GAME_PROTOCOL_VERSION;
 const SWAP_SETTLE_TICKS = 160;   // longer than the slowest holster + draw (rifle 600 + 550 ms at 120 Hz)
 
 // ---- protocol sanitizers ----
-ok(P === 12, 'protocol is version 12');
+ok(P === 15, 'protocol is version 15');
+// The seventh slot. The wire `slot` is an integer bounded by the slot list's length, so a stale
+// relay would clamp slot 6 to 0 and silently hand you the rifle instead of the launcher; the version
+// bump is what makes the handshake reject it rather than let that happen quietly.
+ok(BASE_GAME_WEAPON_SLOTS.length === 7 && BASE_GAME_WEAPON_SLOTS[6] === 'launcher', 'the launcher is the seventh slot');
+ok(weaponForSlot(BASE_GAME_DEFAULT_LOADOUT, 6) === 'rpg', 'and it holds the rpg by default');
+ok(sanitizeBaseGameLoadout({ launcher: 'm24' }).launcher === 'm24', 'the launcher slot takes any weapon, not only the rpg');
+ok(sanitizeBaseGameLoadout({ launcher: 'quad' }).launcher === 'rpg', 'but not a gadget: those belong to the gadget slots');
+ok(sanitizeBaseGameLoadout({ launcher: 'none' }).launcher === 'none', 'and it can be emptied');
+const slotTick = (slot) => sanitizeBaseGameTickInput({ tick: 1, moveX: 0, moveZ: 0, yaw: 0, pitch: 0, slot });
+ok(slotTick(6).slot === 6, 'slot 6 survives the tick sanitizer');
+ok(slotTick(7).slot === 0, 'and an eighth slot does not');
 const goodTick = sanitizeBaseGameTickInput({ tick: 5, moveX: 3, moveZ: -0.5, yaw: 1.2, pitch: 9, sprint: 1, jump: true });
 ok(goodTick && goodTick.moveX === 1 && goodTick.moveZ === -0.5 && near(goodTick.pitch, Math.PI / 2, 1e-9)
   && goodTick.sprint === false && goodTick.jump === true, 'tick sanitizer clamps movement and keeps booleans strict');
