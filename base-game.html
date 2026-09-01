@@ -52,6 +52,8 @@
   #ctrl .button-row button { margin: 2px 0; }
   #ctrl .state-status { min-height: 16px; margin-top: 4px; color: var(--wui-muted); font-size: 11px; }
   #ctrl .note { margin: 5px 0; color: var(--wui-muted); font-size: 11px; }
+  #ctrl .species-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px; margin-top: 5px; }
+  #ctrl .species-picker label { display: flex; gap: 5px; align-items: center; color: var(--wui-muted); font-size: 11px; }
   #ctrl .capture-label { width: 100%; box-sizing: border-box; margin: 4px 0 10px; }
   #ctrl .capture-status { min-height: 30px; margin-top: 7px; color: var(--wui-muted); font-size: 11px; line-height: 1.4; }
   #state-file { display: none; }
@@ -110,8 +112,9 @@ import { createSlotSection } from './bot-viewer-slots.js';
 import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld, BASE_GAME_TEAMS, BASE_GAME_NPC_ROLE_IDS } from './base-game-protocol.mjs';
 import { createBaseGameWater } from './base-game-water.js';
 import { createBaseGameFlora, BASE_GAME_FLORA_DEFAULTS } from './base-game-flora.js';
-import { createBaseGameForest, BASE_GAME_FOREST_DEFAULTS } from './base-game-forest.js';
+import { createBaseGameForest, BASE_GAME_FOREST_DEFAULTS, BASE_GAME_FOREST_SHADOW_LAYER } from './base-game-forest.js';
 import { BASE_GAME_TREE_DEFAULTS } from './base-game-trees.js';
+import { BASE_GAME_TREE_SPECIES, DEFAULT_BASE_GAME_TREE_SPECIES, selectedTreeSpeciesIds } from './base-game-tree-species.js';
 import { createBaseGameClouds, deckHorizonAngle } from './base-game-clouds.js';
 import { createBaseGameRain, rainResponse } from './base-game-rain.js';
 import { applyWetSurface, createRainBed, playThunder } from './rain.js';
@@ -127,7 +130,7 @@ import { createBaseGamePauseMenu, showBaseGameStartMenu } from './base-game-menu
 import { createTerrainProjectStore, createBaseGameTerrainStudio } from './base-game-terrain-studio.js';
 import { loadStreamedSplatTextures, createStreamedSplatMaterial, updateStreamedSplat } from './terrain-splat-streamed.js';
 import { sanitizeBaseGameTerrainConfig } from './base-game-protocol.mjs';
-import { createBaseGameTerrain, terrainSourceFromDescriptor } from './base-game-terrain.js';
+import { createBaseGameTerrain, terrainSourceFromDescriptor, BASE_GAME_TERRAIN_DEFAULTS } from './base-game-terrain.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
 import { v5Descriptor } from './terrain-source-v5.js';
 import { migrateProjectToUnbounded } from './terrain-project-v5.js';
@@ -135,6 +138,7 @@ import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createWorldQueryService } from './world-query.js';
 import { createBaseGameTraversalLab } from './base-game-traversal-lab.js';
 import { createBaseGamePlayerController } from './base-game-player-controller.js';
+import { createBaseGamePointerLook } from './base-game-pointer-look.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { attachDracoLoader } from './draco-loader.js';
 import { createWeaponMountSystem } from './weapon-mount.js';
@@ -182,6 +186,8 @@ import {
 const STATE_FORMAT = 'pcw-base-game-state';
 const STATE_VERSION = 2;
 const AUTOSAVE_KEY = 'pcw:base-game:autosave';
+const AUTOSAVE_TERRAIN_KEY = 'pcw:base-game:autosave:terrain';
+const AUTOSAVE_UI_KEY = 'pcw:base-game:autosave:ui';
 const WORLD_SIZE = 300;
 const TOD_SUN_WARM = '#ffb066';
 const TOD_SUN_NEUTRAL = '#fff4e0';
@@ -193,6 +199,7 @@ const TOD_MOON_MAX = 0.35;
 // save/load coverage.
 const DEFAULT_SETTINGS = Object.freeze({
   frameCap: 'unlimited',
+  frameCapSnap: false,
   worldMode: 'traversalLab',
   labCollisionDebug: false,
   labOriginMarker: true,
@@ -200,7 +207,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   terrainVolumetric: true,
   terrainSeaLevel: 0,
   waterEnabled: true,
-  waterReflection: 'planar',
+  // A planar mirror renders the visible world a second time. Keep it opt-in: at the old radius-6
+  // terrain default that made every other frame submit roughly 169 extra chunk draws.
+  waterReflection: 'sky',
   waterCaustics: true,
   waterUnderwaterFog: true,
   waterLook: 'hybrid',            // look preset; the wave spectrum below always wins over its waves
@@ -228,7 +237,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   treesEnabled: BASE_GAME_TREE_DEFAULTS.treesEnabled,
   treesPerHectare: BASE_GAME_TREE_DEFAULTS.treesPerHectare,
   treeMaxSize: BASE_GAME_TREE_DEFAULTS.treeMaxSize,
-  treeSpecies: BASE_GAME_TREE_DEFAULTS.treeSpecies,
+  treeSpeciesSelection: DEFAULT_BASE_GAME_TREE_SPECIES,
+  treeTexMode: BASE_GAME_FOREST_DEFAULTS.treeTexMode,
   treeVariantsPerSpecies: BASE_GAME_FOREST_DEFAULTS.treeVariantsPerSpecies,
   treeVerticalOffset: BASE_GAME_TREE_DEFAULTS.treeVerticalOffset,
   treeLeafSize: BASE_GAME_FOREST_DEFAULTS.treeLeafSize,
@@ -341,7 +351,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   terrainTextures: true,
   terrainTextureTile: 4,
   terrainTextureFade: 1400,
-  terrainDrawRadius: 6,
+  // Keep the page and terrain subsystem on one default. Radius 3 is 49 chunks; the old page-only
+  // radius 6 was 169 chunks and silently invalidated the terrain audit's draw-count baseline.
+  terrainDrawRadius: BASE_GAME_TERRAIN_DEFAULTS.renderRadius,
   terrainWireframe: false,
   terrainNormals: false,
   terrainTileBounds: false,
@@ -468,6 +480,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   playerStepHeight: BASE_GAME_PLAYER_DEFAULT_CONFIG.stepHeight,
   playerSnapDistance: BASE_GAME_PLAYER_DEFAULT_CONFIG.snapDistance,
   cameraDistance: 5.83,
+  droneCameraZoom: 1,   // chase distance as a multiple of the craft's own framing, so one number suits both drones
   cameraFollowRate: 14,
   cameraSensitivity: 0.002,
   cameraObstructionPadding: 0.22,
@@ -521,6 +534,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   ambientLightEnabled: true,
   moonLightEnabled: true,
   shadowsEnabled: true,
+  shadowUpdateEvery: 1,
+  shadowFilter: 'soft',
   primaryBody: 'sun',
   todEnabled: false,
   todHour: 12,
@@ -546,7 +561,7 @@ const NUMBER_LIMITS = Object.freeze({
   playerMoveSpeed: [1, 15], playerSprintMultiplier: [1, 3], playerJumpSpeed: [2, 16],
   playerGravity: [1, 60], playerSlopeLimit: [1, 85], playerStepHeight: [0, 1.2],
   playerGroundDeceleration: [0, 100], playerSlopeSlideDeceleration: [0, 40],
-  playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], cameraFollowRate: [1, 40],
+  playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], droneCameraZoom: [0.35, 4], cameraFollowRate: [1, 40],
   cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
   cameraSideOffset: [-1.5, 1.5], cameraHeightOffset: [-1, 1.5], cameraForwardOffset: [-1.5, 1.5], cameraFov: [30, 100], fpFov: [30, 110],
   fpCameraSideOffset: [-1.5, 1.5], fpCameraHeightOffset: [-1, 1.5], fpCameraForwardOffset: [-1.5, 1.5],
@@ -557,6 +572,7 @@ const NUMBER_LIMITS = Object.freeze({
   laserBeamOpacity: [0, 1], laserBeamRadius: [0, 1], laserRange: [1, 300],
   npcNoticeMs: [0, 10000], npcAccuracy: [0, 1], npcSpawnDistance: [5, 2000],
   dofFocusDistance: [0.3, 80], dofAperture: [0.05, 3], dofMaxRadius: [2, 40], dofFarScale: [0.5, 4],
+  shadowUpdateEvery: [1, 8],
   interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
   armRunSwing: [0, 2], armRunPump: [0, 1], armJumpLift: [0, 2.5], armLandSwing: [0, 1.5],
@@ -607,6 +623,7 @@ const NUMBER_LIMITS = Object.freeze({
 });
 const STRING_VALUES = Object.freeze({
   frameCap: ['unlimited', '60', '45', '30'],
+  shadowFilter: ['soft', 'pcf', 'basic'],
   weatherFogSource: ['sky', 'custom'],
   rainGroundSource: ['fine', 'coarse', 'off'],
   primaryBody: ['sun', 'moon'],
@@ -679,8 +696,9 @@ function connectOnlineSession({ mode, roomCode }) {
 // data, not a slider. The studio is a full-screen overlay hosting the v5 editor.
 let studioWasPaused = true;
 let terrainPanelRefresh = () => {};
+let terrainAutosaveDirty = true;
 const terrainStore = createTerrainProjectStore({
-  onChange: () => { terrainPanelRefresh(); scheduleAutosaveSafe(); },
+  onChange: () => { terrainAutosaveDirty = true; terrainPanelRefresh(); scheduleAutosaveSafe(); },
   // The Apply transaction's runtime half: build a candidate source, prove it can generate the
   // tile under the player, then swap the live source. Throws (and the store keeps the old
   // active project) if any step fails.
@@ -1241,6 +1259,8 @@ const playerController = createBaseGamePlayerController({
 });
 const playerFixedDt = 1 / playerController.config.fixedHz;
 const playerView = createBaseGamePlayerView({ scene, camera, worldQuery, worldCoordinates });
+const pointerLook = createBaseGamePointerLook();
+const pointerLookDelta = { deltaYaw: 0, deltaPitch: 0, clamped: false };
 const prediction = createBaseGamePrediction({
   controller: playerController,
   onTick: entry => { networkSession?.queueTick(entry); },
@@ -1289,16 +1309,17 @@ function stepGadgetHands(now, canControl) {
   return { kind, overhead, phases: p, inHand: !!kind && inHand };
 }
 // A remote's arms from the action it replicated (throw and reload run on the server's tick).
-function remoteGadgetPhases(sample) {
+function remoteGadgetPhases(sample, out = { overhead: null, phases: null, inHand: false, phaseScratch: { throw: null, reload: null } }) {
   const kind = isBaseGameGadget(sample.weapon) ? sample.weapon : null;
-  if (!kind) return { overhead: null, phases: null, inHand: false };
+  if (!kind) { out.overhead = null; out.phases = null; out.inHand = false; return out; }
   const age = Math.max(0, (sample.tick ?? 0) - (sample.actionTick ?? 0));
-  const phases = {
-    throw: sample.action === BASE_GAME_WEAPON_ACTION.throw && age < BASE_GAME_GADGET_THROW_ACTION_TICKS ? age / BASE_GAME_GADGET_THROW_ACTION_TICKS : null,
-    reload: sample.action === BASE_GAME_WEAPON_ACTION.reload && age < BASE_GAME_GADGET_RELOAD_TICKS ? age / BASE_GAME_GADGET_RELOAD_TICKS : null,
-  };
+  const phases = out.phaseScratch;
+  phases.throw = sample.action === BASE_GAME_WEAPON_ACTION.throw && age < BASE_GAME_GADGET_THROW_ACTION_TICKS ? age / BASE_GAME_GADGET_THROW_ACTION_TICKS : null;
+  phases.reload = sample.action === BASE_GAME_WEAPON_ACTION.reload && age < BASE_GAME_GADGET_RELOAD_TICKS ? age / BASE_GAME_GADGET_RELOAD_TICKS : null;
   const inHand = phases.throw != null ? phases.throw < THROW_RELEASE : phases.reload != null ? phases.reload > 0.72 : sample.gadgetReady !== false;
-  return { overhead: inHand || phases.throw != null || phases.reload != null ? kind : null, phases, inHand };
+  out.overhead = inHand || phases.throw != null || phases.reload != null ? kind : null;
+  out.phases = phases; out.inHand = inHand;
+  return out;
 }
 const localHeadLocal = [0, 0, 0];
 function localDroneOwnerId() { return isOnline() ? (networkSession?.clientId ?? 'local') : 'local'; }
@@ -1385,7 +1406,8 @@ function droneHudLine() {
   const kind = heldGadgetKind();
   const stockLine = kind ? `<br>${kind} ×${gadgetLocal.stock[kind] ?? 0} ${gadgetLocal.ready ? 'in hand · [click] throw' : gadgetLocal.reloadStart ? 'coming out…' : (gadgetLocal.stock[kind] ?? 0) > 0 ? '[R] bring out the next' : 'none left'}` : '';
   if (!parts.length) return stockLine;
-  return `${stockLine}<br>drone ${parts.join(' · ')}<br>[F] ${droneCtl.active ? 'release' : 'fly'} · [B] send · [N] recall`;
+  const boom = droneCtl.active ? ` · [shift+wheel] view ${settings.droneCameraZoom.toFixed(2)}x` : '';
+  return `${stockLine}<br>drone ${parts.join(' · ')}<br>[F] ${droneCtl.active ? 'release' : 'fly'} · [B] send · [N] recall${boom}`;
 }
 // Presentation only: bodies consume predicted/authoritative global state and can never move the capsule.
 // Held weapons: one mount system for every body (instanced GLBs, shared anchors and poses).
@@ -1403,24 +1425,36 @@ const playerHitRigDebug = createPlayerHitRigDebug({ THREE, scene, worldCoordinat
 // eased from it inside the controller on the fixed clock, so nothing here snaps.
 let playerStance = 'stand';
 const weaponState = { slot: 0, lastSlot: 1, aiming: false, reloadEdge: false, firing: false, throwEdge: false };
-// The spawner (key 9): a tool mode over the held sidearm, not a weapon of its own. Click asks the
-// room to put a bot where you aim (the server casts your look ray); R cycles the side and role.
-const spawner = { active: false, side: 'enemy', roleIndex: 0, clickEdge: false, note: '' };
+// The dev gun (key 9): a tool mode over the held sidearm, not a weapon of its own. 9 cycles
+// off -> bots -> lights -> off. Bots: click asks the room to put a bot where you aim (the server
+// casts your look ray), R cycles side and role — the old spawner, unchanged. Lights: hold click
+// to charge and release to shoot a light out, E drops one at the crosshair, R cycles the kind.
+// Lights are purely local, like the flashlight.
+const DEV_LIGHT_CHARGE_MS = 1500;   // environment-viewer's LG_MAX_CHARGE_MS
+const devGun = {
+  active: false, tool: 'bots',
+  side: 'enemy', roleIndex: 0, clickEdge: false,          // bots tool
+  chargeStartMs: null, fireRatio: null, dropEdge: false,  // lights tool
+  note: '', noteUntil: 0,
+};
 const SPAWNER_SIDES = ['enemy', 'friendly'];
+function devGunNote(text) { devGun.note = text; devGun.noteUntil = performance.now() + 1500; }
 function cycleSpawner() {
-  const next = spawner.roleIndex + 1;
-  if (next >= BASE_GAME_NPC_ROLE_IDS.length) { spawner.roleIndex = 0; spawner.side = SPAWNER_SIDES[(SPAWNER_SIDES.indexOf(spawner.side) + 1) % SPAWNER_SIDES.length]; }
-  else spawner.roleIndex = next;
+  const next = devGun.roleIndex + 1;
+  if (next >= BASE_GAME_NPC_ROLE_IDS.length) { devGun.roleIndex = 0; devGun.side = SPAWNER_SIDES[(SPAWNER_SIDES.indexOf(devGun.side) + 1) % SPAWNER_SIDES.length]; }
+  else devGun.roleIndex = next;
 }
 function spawnerPlace() {
-  const ok = sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS[spawner.side], count: 1, role: BASE_GAME_NPC_ROLE_IDS[spawner.roleIndex], aimed: true });
-  spawner.note = ok ? `placed ${spawner.side} ${BASE_GAME_NPC_ROLE_IDS[spawner.roleIndex]}` : (npcNote.textContent || 'not placed');
-  spawner.noteUntil = performance.now() + 1500;
+  const ok = sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS[devGun.side], count: 1, role: BASE_GAME_NPC_ROLE_IDS[devGun.roleIndex], aimed: true });
+  devGunNote(ok ? `placed ${devGun.side} ${BASE_GAME_NPC_ROLE_IDS[devGun.roleIndex]}` : (npcNote.textContent || 'not placed'));
 }
-function spawnerHudLine() {
-  if (!spawner.active) return '';
-  const note = spawner.noteUntil > performance.now() ? ` — ${spawner.note}` : '';
-  return `<br>[9] spawner: ${spawner.side} ${BASE_GAME_NPC_ROLE_IDS[spawner.roleIndex]}${note}<br><span class="dim">click places, R cycles</span>`;
+function devGunHudLine() {
+  if (!devGun.active) return '';
+  const note = devGun.noteUntil > performance.now() ? ` — ${devGun.note}` : '';
+  if (devGun.tool === 'bots') {
+    return `<br>[9] dev gun: bots — ${devGun.side} ${BASE_GAME_NPC_ROLE_IDS[devGun.roleIndex]}${note}<br><span class="dim">click places, R cycles, 9 again for lights</span>`;
+  }
+  return `<br>[9] dev gun: lights — ${settings.devLightKind}${note}<br><span class="dim">hold click charges a shot, E drops, R cycles the kind</span>`;
 }
 const localTrigger = createTriggerState();
 const localThrowTrigger = createTriggerState();
@@ -1823,7 +1857,7 @@ const projectileTracks = new Map();   // id -> { track, weapon }
 const _projSample = { position: [0, 0, 0] };
 function projectileMeshAt(index) {
   let mesh = projectileMeshes[index];
-  if (!mesh) { mesh = new THREE.Mesh(projectileGeom, rocketMat); mesh.frustumCulled = false; scene.add(mesh); projectileMeshes[index] = mesh; }
+  if (!mesh) { mesh = new THREE.Mesh(projectileGeom, rocketMat); mesh.name = 'base-game-projectile'; mesh.frustumCulled = false; scene.add(mesh); projectileMeshes[index] = mesh; }
   return mesh;
 }
 function ingestProjectiles(snapshot) {
@@ -1983,7 +2017,7 @@ function renderCombatStatus(now) {
   // The visor recolours the whole frame, so it is obvious it is on; the line says WHICH mode, which
   // is not obvious between the two thermal palettes.
   const visor = settings.visorMode === 'rgb' ? '' : `<br>[H] visor ${VISION_LABEL[settings.visorMode]}`;
-  const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${torch}${visor}${droneHudLine()}${spawnerHudLine()}${killed}${slots}`;
+  const markup = `${hit}${hp}<br>${gun}${throwable}${posture}${torch}${visor}${droneHudLine()}${devGunHudLine()}${killed}${slots}`;
   if (markup !== shownCombatStatus) { shownCombatStatus = markup; combatStatus.innerHTML = markup; }
   const flash = now < combatState.damageUntil ? String(Math.min(1, (combatState.damageUntil - now) / 400)) : '0';
   if (flash !== shownDamageFlash) { shownDamageFlash = flash; damageFlash.style.opacity = flash; }
@@ -2143,6 +2177,7 @@ function resetPlayer() {
 
 function clearPlayerInput() {
   playerKeys.clear();
+  pointerLook.clear();
   jumpEdgeQueued = false;
   playerController.clearJump();
   playerController.setInput({ moveX: 0, moveZ: 0, yaw: playerView.yaw, sprint: false });
@@ -2249,6 +2284,8 @@ rig.dirLight.shadow.camera.left = -90;
 rig.dirLight.shadow.camera.right = 90;
 rig.dirLight.shadow.camera.top = 90;
 rig.dirLight.shadow.camera.bottom = -90;
+// The forest's shadow-only meshes live on this layer; only the shadow camera looks there.
+rig.dirLight.shadow.camera.layers.enable(BASE_GAME_FOREST_SHADOW_LAYER);
 
 const TOD_MOON_LIGHT = '#aec6ff';
 const moonLight = new THREE.DirectionalLight(0xaec6ff, 0);
@@ -2303,6 +2340,7 @@ const sky = createSky({
   sunDir: dirFromAzEl(settings.sunElevation, settings.sunAzimuth, _sunDir),
   palette: skyPaletteOverrides(),
 });
+sky.group.name = 'sky';
 scene.add(sky.group);
 // The sea: one wave surface at the terrain's sea level (base-game-water.js). Its look (colours,
 // fresnel, foam) comes from water-config.json's `ocean` body; the wave spectrum is the room's.
@@ -2370,8 +2408,8 @@ forest.onMeshes(meshes => {
   forestMirrorMeshes = meshes.slice();
   for (const mesh of forestMirrorMeshes) if (!reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh);
 });
-const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'treeMaxSize', 'treeSpecies',
-  'treeVariantsPerSpecies', 'treeLeafSize', 'treeTrunkHeight', 'treeTrunkWidth',
+const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'treeMaxSize', 'treeSpeciesSelection',
+  'treeTexMode', 'treeVariantsPerSpecies', 'treeLeafSize', 'treeTrunkHeight', 'treeTrunkWidth',
   'treeVerticalOffset', 'treeDrawRadius', 'treeLodR0', 'treeLodR1', 'treeLodR2',
   'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway',
   'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows'];
@@ -2506,6 +2544,9 @@ function profiledMs() {
 function sceneCensus() {
   const owners = new Map();
   let visited = 0, renderables = 0, unculled = 0, maxDepth = 0;
+  // The owner is the top-level scene child, folded by the prefix before the first ':' so the
+  // forest's forest:v0:branchesL0 ... rows read as one owner.
+  const ownerKey = (obj) => { const n = obj.name || obj.type; const at = n.indexOf(':'); return at > 0 ? n.slice(0, at) : n; };
   function walk(obj, owner, depth) {
     if (!obj.visible) return;
     visited++;
@@ -2513,15 +2554,19 @@ function sceneCensus() {
     if (obj.isMesh || obj.isPoints || obj.isLine || obj.isSprite) {
       renderables++;
       let e = owners.get(owner);
-      if (!e) { e = { renderables: 0, batched: 0, instanced: 0, unculled: 0, instances: 0 }; owners.set(owner, e); }
+      if (!e) { e = { renderables: 0, batched: 0, instanced: 0, unculled: 0, instances: 0, kinds: {} }; owners.set(owner, e); }
       e.renderables++;
       if (obj.isBatchedMesh) e.batched++;
       if (obj.isInstancedMesh) { e.instanced++; e.instances += obj.count | 0; }
       if (obj.frustumCulled === false) { e.unculled++; unculled++; }
+      // What the owner is made of, so a row that is still just 'Mesh' can be attributed.
+      const mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+      const kind = `${obj.name || obj.geometry?.type || obj.type}/${mat?.type ?? 'none'}`;
+      e.kinds[kind] = (e.kinds[kind] ?? 0) + 1;
     }
-    for (const child of obj.children) walk(child, owner ?? (child.name || child.type), depth + 1);
+    for (const child of obj.children) walk(child, owner ?? ownerKey(child), depth + 1);
   }
-  for (const child of scene.children) walk(child, child.name || child.type, 1);
+  for (const child of scene.children) walk(child, ownerKey(child), 1);
   // Heaviest owners first; a long tail of one-mesh groups is not what we are looking for.
   const top = [...owners.entries()].sort((a, b) => b[1].renderables - a[1].renderables).slice(0, 18);
   return {
@@ -2600,6 +2645,8 @@ function applySkySettings() {
   if (rebuild) sky.setPalette(skyPaletteOverrides());   // one rebuild per commit; reads every key
 }
 
+const SHADOW_FILTER_TYPES = { soft: THREE.PCFSoftShadowMap, pcf: THREE.PCFShadowMap, basic: THREE.BasicShadowMap };
+let shadowFrame = 0;
 function updateWorld(dt) {
   const traversalLabVisible = settings.worldMode === 'traversalLab';
   terrain.setActive(settings.worldMode === 'terrain');
@@ -2650,6 +2697,13 @@ function updateWorld(dt) {
   applySkyComponentVisibility();
   applySkySettings();
   renderer.shadowMap.enabled = settings.shadowsEnabled;
+  // The filter is part of every material's cache key, so changing it rebuilds their pipelines once.
+  const shadowType = SHADOW_FILTER_TYPES[settings.shadowFilter] ?? THREE.PCFSoftShadowMap;
+  if (renderer.shadowMap.type !== shadowType) renderer.shadowMap.type = shadowType;
+  // Update rate: the ShadowNode redraws its map when autoUpdate or needsUpdate says so.
+  const shadowEvery = Math.max(1, Math.round(settings.shadowUpdateEvery) || 1);
+  rig.dirLight.shadow.autoUpdate = shadowEvery === 1;
+  if (shadowEvery > 1 && (shadowFrame++ % shadowEvery) === 0) rig.dirLight.shadow.needsUpdate = true;
 
   let sunIntensity = 0;
   let moonIntensity = 0;
@@ -2848,7 +2902,7 @@ function changed(key) {
     // As in v3: picking a model writes its recommended lead into the slider instead of applying it invisibly.
     settings.bodyStepLeadScale = GAIT_MODELS[settings.bodyGaitModel]?.stepLeadScale ?? settings.bodyStepLeadScale;
     syncAllControls();
-  } else if (key === 'treeSpecies' || key === 'treeVariantsPerSpecies') {
+  } else if (key === 'treeSpeciesSelection' || key === 'treeVariantsPerSpecies') {
     controlRegistry.get('treeVariantsPerSpecies')?.sync();
   } else if (key === 'cameraOffsetTarget') {
     syncAllControls();   // the three offset sliders now show the other mode's numbers
@@ -2970,6 +3024,38 @@ function addSelect(host, key, label, values, labels = null) {
   select.addEventListener('change', () => { settings[key] = select.value; changed(key); });
   registerControl(key, () => { select.value = settings[key]; }, select);
 }
+function addMultiChecks(host, key, label, options) {
+  const wrap = document.createElement('div'); wrap.className = 'control';
+  const row = document.createElement('div'); row.className = 'control-line';
+  const text = document.createElement('label'); text.textContent = label;
+  const output = document.createElement('output');
+  const picker = document.createElement('div'); picker.className = 'species-picker';
+  const inputs = options.map(option => {
+    const item = document.createElement('label');
+    const input = document.createElement('input'); input.type = 'checkbox'; input.value = option.id;
+    const name = document.createElement('span'); name.textContent = option.label;
+    item.append(input, name); picker.append(item);
+    input.addEventListener('change', () => {
+      const ids = options.filter((_, i) => inputs[i].checked).map(entry => entry.id);
+      if (!ids.length) { input.checked = true; return; }
+      settings[key] = selectedTreeSpeciesIds(ids).join(',');
+      output.textContent = `${ids.length} selected`;
+      changed(key);
+    });
+    return input;
+  });
+  const sync = () => {
+    const fallback = selectedTreeSpeciesIds(DEFAULT_BASE_GAME_TREE_SPECIES);
+    const ids = selectedTreeSpeciesIds(settings[key], fallback);
+    settings[key] = ids.join(',');
+    const selected = new Set(ids);
+    for (let i = 0; i < inputs.length; i++) inputs[i].checked = selected.has(options[i].id);
+    output.textContent = `${ids.length} selected`;
+  };
+  row.append(text, output); wrap.append(row, picker); host.append(wrap);
+  registerControl(key, sync, wrap);
+  return wrap;
+}
 function addColor(host, key, label) {
   const row = document.createElement('label'); row.className = 'control-line control';
   const text = document.createElement('span'); text.textContent = label;
@@ -2988,6 +3074,12 @@ function addAction(host, label, onClick) {
 }
 function syncAllControls() {
   for (const entry of controlRegistry.values()) entry.sync();
+}
+function panelElementVisible(element) {
+  return !ctrlRoot.classList.contains('collapsed') && !element.closest('.sec.collapsed');
+}
+function setTextIfChanged(element, text) {
+  if (element.textContent !== text) element.textContent = text;
 }
 
 const sessionSec = createSection(ctrlBody, 'Session', { collapsed: false });
@@ -3022,6 +3114,7 @@ const atmosphereSec = createSection(weatherSec, 'Atmosphere response', { collaps
 
 addSelect(captureSec, 'frameCap', 'Frame cap', ['unlimited', '60', '45', '30'],
   ['Unlimited', '60 fps', '45 fps', '30 fps']);
+addToggle(captureSec, 'frameCapSnap', 'Snap the cap to the display rate');
 
 const captureLabelLabel = document.createElement('label');
 captureLabelLabel.textContent = 'Optional label';
@@ -3134,7 +3227,7 @@ addToggle(terrainWorldSec, 'terrainCollisionDebug', 'Collision contact marker');
 const terrainRuntimeLine = document.createElement('div');
 terrainRuntimeLine.className = 'note';
 terrainWorldSec.append(terrainRuntimeLine);
-let terrainRuntimeTick = 0;
+let runtimeStatusNextMs = 0;
 function refreshTerrainRuntimeLine() {
   const st = terrain.stats;
   const volNote = settings.terrainVolumetric && !terrain.source?.densityAt ? ' Volumetric needs an applied v5 project.' : '';
@@ -3143,9 +3236,9 @@ function refreshTerrainRuntimeLine() {
     : fl.kind === 'volume-cascade'
       ? ` Far LOD (volume cascade): ${fl.levels.map(l => `${l.spacing} m ${l.resident}/${l.target}${l.inFlight ? `+${l.inFlight}` : ''}`).join(', ')} to ${(fl.outerHalfExtent / 1000).toFixed(1)} km, ${fl.draws} draws / ${fl.triangles} tris, ${fl.lastUpdateMs} ms${fl.levels.some(l => l.lastSourceError) ? `, error: ${fl.levels.find(l => l.lastSourceError).lastSourceError}` : ''}.`
       : ` Far LOD (rings): ${fl.levels} rings to ${(fl.outerHalfExtent / 1000).toFixed(1)} km, coverage ${fl.coverage.join('/')}, ${fl.triangles} tris, ${fl.tilesInFlight} tiles in flight, ${fl.lastUpdateMs} ms${fl.lastError ? `, error: ${fl.lastError}` : ''}.`;
-  terrainRuntimeLine.textContent = st.active
+  setTextIfChanged(terrainRuntimeLine, st.active
     ? `${st.volumetric ? 'volumetric' : 'heightfield'}: ${st.residentTiles}/${st.targetTiles} tiles resident, ${st.queuedTiles} queued, ${st.inFlightTiles} in flight, ${st.draws} draws / ${st.triangles} tris, update ${st.lastUpdateMs.toFixed(2)} ms${st.lastSourceError ? `, error: ${st.lastSourceError}` : ''}${volNote}${far}`
-    : `Terrain inactive.${volNote}`;
+    : `Terrain inactive.${volNote}`);
 }
 refreshTerrainRuntimeLine();
 const labSummary = document.createElement('div');
@@ -3242,7 +3335,7 @@ addAction(npcButtons, 'Add enemy', () => sendNpc({ action: 'spawn', team: BASE_G
 addAction(npcButtons, 'Add 4 enemy', () => sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS.enemy, count: 4 }));
 addAction(npcButtons, 'Clear bots', () => sendNpc({ action: 'clear', team: null }));
 const npcHelp = document.createElement('div'); npcHelp.className = 'note';
-npcHelp.textContent = 'Friendlies spawn beside you and never aim at players; enemies spawn ahead of you at the spawn distance. Key 9 holds the spawner: click places a bot where you aim, R cycles the side and role.';
+npcHelp.textContent = 'Friendlies spawn beside you and never aim at players; enemies spawn ahead of you at the spawn distance. Key 9 holds the dev gun: first press is the bot spawner (click places a bot where you aim, R cycles the side and role), second press is the light tool, third puts it away.';
 npcSec.append(npcHelp);
 
 // Weapon spread: bot-viewer-v3's labels and ranges, over shot-spread.js instead of botAimSettings.
@@ -3320,6 +3413,9 @@ addRange(playerSec, 'playerSlopeLimit', 'Slope limit', 1, 85, 1, value => `${val
 addRange(playerSec, 'playerStepHeight', 'Step height', 0, 1.2, 0.05, value => `${value.toFixed(2)} m`);
 addRange(playerSec, 'playerSnapDistance', 'Snap down', 0, 1.2, 0.05, value => `${value.toFixed(2)} m`);
 addRange(playerSec, 'cameraDistance', 'Third-person distance', 1, 12, 0.25, value => `${value.toFixed(2)} m`);
+addRange(playerSec, 'droneCameraZoom', 'Drone chase distance', 0.35, 4, 0.05, value => `${value.toFixed(2)}x`).title =
+  "How far the chase camera sits behind a drone you are flying, as a multiple of that craft's own framing. "
+  + 'SHIFT and the wheel change it at the stick, the way they move the third-person boom on foot.';
 addRange(playerSec, 'cameraFollowRate', 'Camera damping rate', 1, 40, 1, value => `${value.toFixed(0)} /s`);
 addRange(playerSec, 'cameraSensitivity', 'Mouse sensitivity', 0.0005, 0.01, 0.0005, value => value.toFixed(4));
 addRange(playerSec, 'cameraObstructionPadding', 'Camera wall padding', 0.05, 0.8, 0.01, value => `${value.toFixed(2)} m`);
@@ -3480,13 +3576,15 @@ for (const [key, label] of [
   ['sunLightEnabled', 'Directional sunlight'], ['ambientLightEnabled', 'Ambient light'],
   ['moonLightEnabled', 'Moonlight'], ['shadowsEnabled', 'Shadows'],
 ]) addToggle(lightSec, key, label);
+addRange(lightSec, 'shadowUpdateEvery', 'Shadow map update', 1, 8, 1, value => value <= 1 ? 'every frame' : `every ${value.toFixed(0)} frames`);
+addSelect(lightSec, 'shadowFilter', 'Shadow filter', ['soft', 'pcf', 'basic'], ['Soft (many taps)', 'PCF (cheaper)', 'Hard (cheapest)']);
 addRange(lightSec, 'sunElevation', 'Manual elevation', -90, 90, 1, value => `${value.toFixed(0)}°`);
 addRange(lightSec, 'sunAzimuth', 'Manual azimuth', 0, 360, 1, value => `${value.toFixed(0)}°`);
 addRange(lightSec, 'sunIntensity', 'Sun maximum', 0, 4, 0.05, value => value.toFixed(2));
 addRange(lightSec, 'ambientIntensity', 'Day ambient', 0, 2, 0.05, value => value.toFixed(2));
 // Wave spectrum: shared world keys (the room owner tunes, everyone simulates the same surface).
 addToggle(waterSec, 'waterEnabled', 'Sea (at the terrain sea level)');
-addSelect(waterSec, 'waterReflection', 'Reflection', ['sky', 'planar', 'ssr'], ['Sky only', 'Planar mirror (half resolution, every 2nd frame)', 'Screen-space']);
+addSelect(waterSec, 'waterReflection', 'Reflection', ['sky', 'planar', 'ssr'], ['Sky only (stable-cost default)', 'Planar mirror (extra scene render every 2nd frame)', 'Screen-space']);
 addToggle(waterSec, 'waterCaustics', 'Caustics on the seabed (and the wet tide line)');
 addToggle(waterSec, 'waterUnderwaterFog', 'Underwater tint and fog');
 addSelect(waterSec, 'waterLook', 'Look preset', [...BASE_GAME_WATER_LOOKS], ['Open ocean', 'Hybrid']);
@@ -3531,8 +3629,8 @@ grassRuntimeLine.className = 'note';
 plantsSec.append(grassRuntimeLine);
 function refreshGrassRuntimeLine() {
   const g = flora.stats;
-  if (!g.enabled) { grassRuntimeLine.textContent = 'Grass off.'; return; }
-  if (!g.built) { grassRuntimeLine.textContent = 'Grass waiting on the terrain field.'; return; }
+  if (!g.enabled) { setTextIfChanged(grassRuntimeLine, 'Grass off.'); return; }
+  if (!g.built) { setTextIfChanged(grassRuntimeLine, 'Grass waiting on the terrain field.'); return; }
   const clamped = g.requestedRadius > g.radius ? ` (asked ${g.requestedRadius.toFixed(0)})` : '';
   const thinned = g.dispatchClamped
     ? ` Thread budget thinned it from ${g.requestedDensity.toFixed(1)}; raise the budget or drop the radius.`
@@ -3540,10 +3638,10 @@ function refreshGrassRuntimeLine() {
   const over = g.truncating
     ? ` Wants ~${(g.expected / 1e6).toFixed(1)}M blades but the buffer holds ${(g.capacity / 1e6).toFixed(1)}M, so the far edge truncates.`
     : '';
-  grassRuntimeLine.textContent = `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity}): `
+  setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity}): `
     + `~${(g.expected / 1e3).toFixed(0)}k blades, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull, `
     + `ground ${g.groundSamplesTextures ? 'textures' : 'tint'}, field ${(g.coverage * 100).toFixed(0)}% streamed.`
-    + `${thinned}${over}`;
+    + `${thinned}${over}`);
 }
 
 // ---- Trees (tree plan T2) ----
@@ -3553,11 +3651,18 @@ function refreshGrassRuntimeLine() {
 // raster cost.
 addToggle(plantsSec, 'treesEnabled', 'Trees');
 addCommitRange(plantsSec, 'treesPerHectare', 'Trees per hectare (asked)', 0, 400, 1, value => value.toFixed(0));
-addCommitRange(plantsSec, 'treeSpecies', 'Species', 1, 8, 1, value => value.toFixed(0));
+addMultiChecks(plantsSec, 'treeSpeciesSelection', 'Species present', BASE_GAME_TREE_SPECIES);
+// The ez-tree presets carry white bark and leaf colours meant to multiply these photos, so
+// procedural shows them washed out. Rebuild-class: the leaf geometry differs by mode.
+addSelect(plantsSec, 'treeTexMode', 'Tree textures', ['authored', 'procedural'],
+  ['Bark photos and leaf atlas', 'Procedural bark grain, flat leaves']);
 // Species x variants is the variant count, and the variant count is the draw count and the
 // material count both. Rebuild-class: it rebakes the palette.
 addCommitRange(plantsSec, 'treeVariantsPerSpecies', 'Variants per species', 1, 8, 1,
-  value => `${value.toFixed(0)} · ${(settings.treeSpecies * value).toFixed(0)} variants, ${(settings.treeSpecies * value * 7).toFixed(0)} draws`);
+  value => {
+    const species = selectedTreeSpeciesIds(settings.treeSpeciesSelection).length;
+    return `${value.toFixed(0)} · ${(species * value).toFixed(0)} variants, ${(species * value * 7).toFixed(0)} draws`;
+  });
 addCommitRange(plantsSec, 'treeMaxSize', 'Max tree size', 0.05, 3, 0.05, value => value.toFixed(2));
 // Shape, not scale: these three move the trunk and the leaves against each other, where max
 // tree size moves the whole tree. Rebuild-class, so they commit on release.
@@ -3585,20 +3690,21 @@ forestRuntimeLine.className = 'note';
 plantsSec.append(forestRuntimeLine);
 function refreshForestRuntimeLine() {
   const f = forest.sampleDetail();   // per-rung counts are a scan; this is the interval that pays for it
-  if (!f.enabled) { forestRuntimeLine.textContent = 'Trees off.'; return; }
+  if (!f.enabled) { setTextIfChanged(forestRuntimeLine, 'Trees off.'); return; }
   if (!f.built) {
-    forestRuntimeLine.textContent = f.lastError ? `Trees unavailable: ${f.lastError}`
-      : 'Trees: baking the palette and compiling shaders. The forest appears when it is ready.';
+    setTextIfChanged(forestRuntimeLine, f.lastError ? `Trees unavailable: ${f.lastError}`
+      : 'Trees: baking the palette and compiling shaders. The forest appears when it is ready.');
     return;
   }
   const asked = Math.round(f.requestedTrees);
   const thinned = asked > 0 ? ` (asked ${asked}, cover thinned ${(f.coverThinning * 100).toFixed(0)}%)` : '';
   const over = f.truncating ? ` Capacity ${f.capacity} is full, so ${f.dropped} trees are not drawn; raise instances per variant.` : '';
-  forestRuntimeLine.textContent = `${f.trees} trees${thinned} over ${f.resident} chunks: `
+  setTextIfChanged(forestRuntimeLine, `${f.trees} trees${thinned} over ${f.resident} chunks: `
     + `${f.draws} main + ${f.shadowDraws} shadow mesh submissions, ~${(f.triangles / 1000).toFixed(0)}k triangles, `
-    + `${f.lod0}/${f.lod1}/${f.lod2} at LOD0/1/2, ${f.visibleVariants} of ${f.variants} variants, `
+    + `${f.lod0}/${f.lod1}/${f.lod2} at LOD0/1/2, ${f.visibleVariants} visible, `
+    + `${f.readyVariants} of ${f.variants} variants ready, textures ${f.textureMode}${f.textureMode === 'authored' && !f.texturesReady ? ' (loading)' : ''}, `
     + `palette ${f.paletteMs.toFixed(0)} ms elapsed, render warmup ${f.compileMs.toFixed(0)} ms, `
-    + `compute warmup ${f.computeCompileMs.toFixed(0)} ms, placing ${f.placeMs.toFixed(2)} ms.${over}`;
+    + `compute warmup ${f.computeCompileMs.toFixed(0)} ms, placing ${f.placeMs.toFixed(2)} ms.${over}`);
 }
 
 // ---- Weather: clouds (phase C1; rain, lightning and the shared master land in later phases) ----
@@ -3893,7 +3999,13 @@ syncNetworkControlPermissions();
 renderNetworkStatus();
 
 // --------------------- state capture / apply ---------------------
-function captureAllState() {
+function captureUiState() {
+  return {
+    panelCollapsed: ctrlRoot.classList.contains('collapsed'),
+    sections: readSectionStates(ctrlBody),
+  };
+}
+function captureAllState({ includeTerrain = true } = {}) {
   const savedSettings = {};
   for (const key of Object.keys(DEFAULT_SETTINGS)) savedSettings[key] = settings[key];
   return {
@@ -3906,15 +4018,12 @@ function captureAllState() {
       fov: camera.fov,
     },
     world: { renderOrigin: worldCoordinates.getOrigin() },
-    terrain: terrainStore.capture(),
+    ...(includeTerrain ? { terrain: terrainStore.capture() } : {}),
     player: {
       ...playerController.captureState(),
       view: playerView.captureState(),
     },
-    ui: {
-      panelCollapsed: ctrlRoot.classList.contains('collapsed'),
-      sections: readSectionStates(ctrlBody),
-    },
+    ui: captureUiState(),
   };
 }
 
@@ -4042,11 +4151,42 @@ const restoreButton = document.createElement('button');
 restoreButton.textContent = 'Restore last session';
 sessionSec.append(restoreButton);
 function readAutosave() {
-  try { return JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null'); } catch { return null; }
+  const readRecord = key => {
+    try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; }
+  };
+  const saved = readRecord(AUTOSAVE_KEY);
+  if (!saved?.data) return saved;
+  const terrain = readRecord(AUTOSAVE_TERRAIN_KEY);
+  const ui = readRecord(AUTOSAVE_UI_KEY);
+  return {
+    ...saved,
+    data: {
+      ...saved.data,
+      ...(terrain?.data ? { terrain: terrain.data } : {}),
+      ...(ui?.data ? { ui: ui.data } : {}),
+    },
+  };
+}
+function writeUiAutosave(savedAt = new Date().toISOString()) {
+  try {
+    localStorage.setItem(AUTOSAVE_UI_KEY, JSON.stringify({ savedAt, data: captureUiState() }));
+  } catch { /* A UI-state save is optional. */ }
 }
 function writeAutosave() {
+  const savedAt = new Date().toISOString();
   try {
-    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ savedAt: new Date().toISOString(), data: captureAllState() }));
+    // The common snapshot stays small. Full terrain projects live under their own key and are
+    // serialized only after the terrain store changes, not after every settings or panel click.
+    let wroteTerrain = false;
+    if (terrainAutosaveDirty) {
+      localStorage.setItem(AUTOSAVE_TERRAIN_KEY, JSON.stringify({ savedAt, data: terrainStore.capture() }));
+      wroteTerrain = true;
+    }
+    // Commit the lightweight record last: if a large terrain write hits quota, the previous complete
+    // autosave remains intact rather than being replaced by a snapshot with no terrain record.
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ savedAt, data: captureAllState({ includeTerrain: false }) }));
+    if (wroteTerrain) terrainAutosaveDirty = false;
+    writeUiAutosave(savedAt);
     restoreButton.disabled = false;
   } catch { /* localStorage may be unavailable or full; explicit JSON export remains available */ }
 }
@@ -4062,22 +4202,46 @@ restoreButton.addEventListener('click', () => {
   catch (error) { stateStatus.textContent = `restore failed: ${error.message}`; }
 });
 let autosaveTimer = 0;
-function scheduleAutosave() {
+let autosaveIdle = 0;
+let uiAutosaveTimer = 0;
+function cancelScheduledAutosave() {
   clearTimeout(autosaveTimer);
-  autosaveTimer = setTimeout(writeAutosave, 3000);
+  autosaveTimer = 0;
+  if (autosaveIdle && window.cancelIdleCallback) window.cancelIdleCallback(autosaveIdle);
+  autosaveIdle = 0;
+}
+function scheduleAutosave() {
+  cancelScheduledAutosave();
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = 0;
+    if (window.requestIdleCallback) {
+      autosaveIdle = window.requestIdleCallback(() => { autosaveIdle = 0; writeAutosave(); }, { timeout: 2000 });
+    } else {
+      autosaveTimer = setTimeout(() => { autosaveTimer = 0; writeAutosave(); }, 0);
+    }
+  }, 3000);
+}
+function scheduleUiAutosave() {
+  clearTimeout(uiAutosaveTimer);
+  uiAutosaveTimer = setTimeout(() => { uiAutosaveTimer = 0; writeUiAutosave(); }, 250);
 }
 ctrlRoot.addEventListener('input', scheduleAutosave);
-ctrlRoot.addEventListener('click', scheduleAutosave);
+ctrlRoot.addEventListener('click', event => {
+  if (event.target.closest('#panel-btn,#sections-btn,.sec-head')) scheduleUiAutosave();
+  else scheduleAutosave();
+});
 controls.addEventListener('change', scheduleAutosave);
-addEventListener('pagehide', () => { writeAutosave(); networkSession?.flushInput(); networkSession?.destroy(); });
+addEventListener('pagehide', () => { cancelScheduledAutosave(); clearTimeout(uiAutosaveTimer); writeAutosave(); networkSession?.flushInput(); networkSession?.destroy(); });
 updateRestoreButton();
 
 document.getElementById('panel-btn').addEventListener('click', () => {
-  ctrlRoot.classList.toggle('collapsed'); scheduleAutosave();
+  ctrlRoot.classList.toggle('collapsed');
+  if (!ctrlRoot.classList.contains('collapsed')) runtimeStatusNextMs = 0;
 });
 document.getElementById('sections-btn').addEventListener('click', () => {
   const anyOpen = [...ctrlBody.querySelectorAll('.sec')].some(section => !section.classList.contains('collapsed'));
-  setAllSectionsCollapsed(ctrlBody, anyOpen); scheduleAutosave();
+  setAllSectionsCollapsed(ctrlBody, anyOpen);
+  if (!anyOpen) runtimeStatusNextMs = 0;
 });
 
 function pauseSessionLabel() {
@@ -4176,10 +4340,16 @@ addEventListener('keydown', event => {
     changed('playerViewMode');
   }
   if (event.code === 'KeyT' && !event.repeat) { resetPlayer(); scheduleAutosave(); }
-  if (event.code === 'KeyR' && !event.repeat) { if (spawner.active) cycleSpawner(); else weaponState.reloadEdge = true; }
+  if (event.code === 'KeyR' && !event.repeat) {
+    if (devGun.active && devGun.tool === 'bots') cycleSpawner();
+    else if (devGun.active && devGun.tool === 'lights') devLightCycleKind();
+    else weaponState.reloadEdge = true;
+  }
   if (event.code === 'Digit9' && !event.repeat) {
-    spawner.active = !spawner.active;
-    if (spawner.active && weaponState.slot !== 1) selectSlot(1);   // the sidearm carries the laser
+    if (!devGun.active) { devGun.active = true; devGun.tool = 'bots'; }
+    else if (devGun.tool === 'bots') { devGun.tool = 'lights'; }
+    else { devGun.active = false; devGun.chargeStartMs = null; devGun.fireRatio = null; }
+    if (devGun.active && weaponState.slot !== 1) selectSlot(1);   // the sidearm carries the laser
   }
   // H for helmet. V is the view toggle and N is the drone recall, so neither obvious letter was free.
   // The key writes the setting, so the panel dropdown and the key are one switch rather than two.
@@ -4190,6 +4360,7 @@ addEventListener('keydown', event => {
     scheduleAutosaveSafe();
   }
   if (event.code === 'KeyG' && !event.repeat) weaponState.throwEdge = true;
+  if (event.code === 'KeyE' && !event.repeat && devGun.active && devGun.tool === 'lights') devGun.dropEdge = true;
   if (event.code === 'KeyF' && !event.repeat) droneCtl.toggleEdge = true;
   if (event.code === 'KeyB' && !event.repeat) droneCtl.sendEdge = true;
   if (event.code === 'KeyN' && !event.repeat) droneCtl.recallEdge = true;
@@ -4219,10 +4390,26 @@ addEventListener('keydown', event => {
 // Right mouse button aims while held (pointer-locked play only).
 renderer.domElement.addEventListener('mousedown', (event) => {
   if (event.button === 2) weaponState.aiming = true;
-  if (event.button === 0 && document.pointerLockElement === renderer.domElement) { if (spawner.active) spawner.clickEdge = true; else weaponState.firing = true; }
+  if (event.button === 0 && document.pointerLockElement === renderer.domElement) {
+    if (devGun.active && devGun.tool === 'lights') devGun.chargeStartMs = performance.now();
+    else if (devGun.active) devGun.clickEdge = true;
+    else weaponState.firing = true;
+  }
 });
-addEventListener('mouseup', (event) => { if (event.button === 2) weaponState.aiming = false; if (event.button === 0) weaponState.firing = false; });
-document.addEventListener('pointerlockchange', () => { if (document.pointerLockElement !== renderer.domElement) weaponState.firing = false; });
+addEventListener('mouseup', (event) => {
+  if (event.button === 2) weaponState.aiming = false;
+  if (event.button === 0) {
+    weaponState.firing = false;
+    if (devGun.chargeStartMs !== null) {
+      devGun.fireRatio = Math.min(1, (performance.now() - devGun.chargeStartMs) / DEV_LIGHT_CHARGE_MS);
+      devGun.chargeStartMs = null;
+    }
+  }
+});
+document.addEventListener('pointerlockchange', () => {
+  pointerLook.clear();
+  if (document.pointerLockElement !== renderer.domElement) { weaponState.firing = false; devGun.chargeStartMs = null; }
+});
 renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
 addEventListener('keyup', event => playerKeys.delete(event.code));
 addEventListener('blur', clearPlayerInput);
@@ -4234,9 +4421,16 @@ addEventListener('mousemove', event => {
   if (gameplayPaused || settings.playerControlMode !== 'player'
     || document.pointerLockElement !== renderer.domElement) return;
   if (droneCtl.active) return;   // at the stick the mouse is not the look: the flight sim's keys fly, the body's view stays put
-  playerView.addLook(-event.movementX * settings.cameraSensitivity, -event.movementY * settings.cameraSensitivity);
+  pointerLook.add(event.movementX, event.movementY);
 });
 function zoomCamera(direction) {
+  // At the stick the boom being moved is the drone's, on the same gesture and the same 8% per notch.
+  if (droneCtl.active) {
+    settings.droneCameraZoom = Math.max(0.35, Math.min(4, settings.droneCameraZoom * (1 + direction * 0.08)));
+    controlRegistry.get('droneCameraZoom')?.sync();
+    scheduleAutosave();
+    return true;
+  }
   if (settings.playerViewMode !== 'thirdPerson') return false;   // nothing to pull back from in first person
   settings.cameraDistance = Math.max(1, Math.min(12, settings.cameraDistance * (1 + direction * 0.08)));
   controlRegistry.get('cameraDistance')?.sync();
@@ -4251,7 +4445,7 @@ renderer.domElement.addEventListener('wheel', event => {
   // it was reachable only from the panel once the wheel changed jobs. Pointer free = zoom, since
   // there is no weapon to change while you are setting the scene up.
   if (document.pointerLockElement !== renderer.domElement) { zoomCamera(direction); return; }
-  if (event.shiftKey) { zoomCamera(direction); return; }
+  if (event.shiftKey || droneCtl.active) { zoomCamera(direction); return; }   // flying, the wheel is the boom: the gun is not in your hands
   cycleSlot(direction);
 }, { passive: true });
 
@@ -4274,8 +4468,13 @@ function frameCapHolds(now) {
   const rafGap = now - frameCapPrevRaf;
   if (frameCapPrevRaf && rafGap > 0 && rafGap < 100) frameCapRafMs += (rafGap - frameCapRafMs) * 0.1;
   frameCapPrevRaf = now;
-  const fps = Number(settings.frameCap);
+  let fps = Number(settings.frameCap);
   if (!Number.isFinite(fps) || fps <= 0) { frameCapNext = 0; frameCapFps = 0; return false; }
+  // A cap that does not divide the display rate alternates one and two refreshes (45 on a 75 Hz
+  // screen is 13 ms, 27 ms, 13 ms ...: the average is 45, the feel is a judder). Snapping moves it
+  // to the nearest exact division instead, 37.5 here. The display rate is rounded to whole hertz
+  // first so the EMA's drift cannot restart the grid every frame.
+  if (settings.frameCapSnap) { const display = Math.round(1000 / frameCapRafMs); fps = display / Math.max(1, Math.round(display / fps)); }
   if (fps !== frameCapFps) { frameCapFps = fps; frameCapNext = 0; }   // a new cap starts its grid now
   const period = 1000 / fps;
   // Half a display frame of slack, or a 60 cap on a 60 Hz screen loses every other frame to jitter.
@@ -4286,6 +4485,9 @@ function frameCapHolds(now) {
 }
 const remoteAudioLocal = [0, 0, 0];
 const remoteAudioPos = { x: 0, y: 0, z: 0 };
+const remoteAudioFeed = { dt: 0, position: remoteAudioPos, grounded: true, action: 0, actionTick: 0, weapon: null };
+const remoteBodyFeed = { globalFoot: null, velocity: null, yaw: 0, pitch: 0, grounded: true, weapon: null, aiming: false, action: 0, actionTick: 0, bodyModel: 'default', stance: 0, overhead: null, overheadPhase: null, team: 1, npc: false, appearance: null };
+const remoteGadgetFeed = { overhead: null, phases: null, inHand: false, phaseScratch: { throw: null, reload: null } };
 const audioVelocityScratch = [0, 0, 0];
 const audioStepRight = new THREE.Vector3();
 const audioStepFeet = { x: 0, y: 0, z: 0 };
@@ -4562,12 +4764,14 @@ function updateStats(frameMs) {
       : `${networkSession?.roomCode || 'online'} ${networkSession?.owner ? 'owner' : 'player'} ${networkStatus.state || ''}`;
   statsEl.textContent = `${shownFps.toFixed(0)} fps · worst ${shownWorst.toFixed(1)} ms · `
     + `${lastRenderInfo.drawCalls} draws · ${formatTriangles(lastRenderInfo.triangles)} tris · ${dropped} dropped · ${sessionText}`;
-  if (settings.todPlaying) controlRegistry.get('todHour')?.sync();
-  renderNetworkDebug();
-  const playerPosition = playerController.getPosition();
-  playerStatus.textContent = `WASD / Shift / Space / Ctrl / ${settings.playerViewMode} / `
-    + `${playerController.swimming ? 'swimming' : playerController.grounded ? 'grounded' : 'airborne'} / `
-    + `xyz ${playerPosition.map(value => value.toFixed(2)).join(', ')}`;
+  if (settings.todPlaying && panelElementVisible(timeSec)) controlRegistry.get('todHour')?.sync();
+  if (panelElementVisible(networkDebug)) renderNetworkDebug();
+  if (panelElementVisible(playerStatus)) {
+    const playerPosition = playerController.getPosition();
+    setTextIfChanged(playerStatus, `WASD / Shift / Space / Ctrl / ${settings.playerViewMode} / `
+      + `${playerController.swimming ? 'swimming' : playerController.grounded ? 'grounded' : 'airborne'} / `
+      + `xyz ${playerPosition.map(value => value.toFixed(2)).join(', ')}`);
+  }
 }
 
 async function animate() {
@@ -4589,6 +4793,12 @@ async function animate() {
     const gadgetHands = stepGadgetHands(performance.now(), canControl);
     const droneInput = canControl ? buildDroneInput() : null;
     const atStick = droneCtl.active;   // the movement keys are the drone's; the body stands (the server's rule too)
+    if (canControl && !atStick && document.pointerLockElement === renderer.domElement) {
+      pointerLook.consume(settings.cameraSensitivity, pointerLookDelta);
+      playerView.addLook(pointerLookDelta.deltaYaw, pointerLookDelta.deltaPitch);
+    } else {
+      pointerLook.clear();
+    }
     const input = canControl ? {
       moveX: atStick ? 0 : (playerKeys.has('KeyD') ? 1 : 0) - (playerKeys.has('KeyA') ? 1 : 0),
       moveZ: atStick ? 0 : (playerKeys.has('KeyW') ? 1 : 0) - (playerKeys.has('KeyS') ? 1 : 0),
@@ -4599,10 +4809,12 @@ async function animate() {
       stance: stanceIndex(playerStance),
       slot: weaponState.slot,
       aim: !atStick && weaponState.aiming,   // the right button is not a zoom while flying
-      fire: weaponState.firing && !spawner.active,
+      fire: weaponState.firing && !devGun.active,
     } : { moveX: 0, moveZ: 0, yaw: playerView.yaw, pitch: playerView.pitch, sprint: false, crouch: false, stance: stanceIndex(playerStance), slot: weaponState.slot, aim: false, fire: false };
-    if (!canControl) { weaponState.reloadEdge = false; weaponState.throwEdge = false; spawner.clickEdge = false; }
-    if (spawner.clickEdge) { spawner.clickEdge = false; spawnerPlace(); }
+    if (!canControl) { weaponState.reloadEdge = false; weaponState.throwEdge = false; devGun.clickEdge = false; devGun.chargeStartMs = null; devGun.fireRatio = null; devGun.dropEdge = false; }
+    if (devGun.clickEdge) { devGun.clickEdge = false; spawnerPlace(); }
+    if (devGun.fireRatio !== null) { const r = devGun.fireRatio; devGun.fireRatio = null; devLightFire(r); }
+    if (devGun.dropEdge) { devGun.dropEdge = false; devLightDrop(); }
     // The jump edge is cleared only when a simulation tick actually consumes it: a frame with zero
     // fixed steps (high refresh rates, pacing below 1x) must not swallow the key press.
     if (!canControl) jumpEdgeQueued = false;
@@ -4679,7 +4891,7 @@ async function animate() {
         comfortRateY: comfortOn ? comfort.y : 0,
       });
       applyAimOptics();   // FOV/zoom/eye push before the gun frame reads the camera
-      if (droneCtl.active) droneView.placeCamera(camera, droneCtl.id, dt);   // at the stick, the camera rides the drone (it owns the fov, as the sim's chase view does)
+      if (droneCtl.active) droneView.placeCamera(camera, droneCtl.id, dt, { zoom: settings.droneCameraZoom });   // at the stick, the camera rides the drone (it owns the fov, as the sim's chase view does)
     } else {
       if (settings.playerControlMode === 'orbit') controls.update();
       playerView.syncCapsule(playerRenderPosition, {
@@ -4768,34 +4980,20 @@ async function animate() {
           if (!record.sample) continue;
           worldCoordinates.toRenderLocal(record.sample.position, remoteAudioLocal);
           remoteAudioPos.x = remoteAudioLocal[0]; remoteAudioPos.y = remoteAudioLocal[1]; remoteAudioPos.z = remoteAudioLocal[2];
-          audioDirector.updateRemote(id, {
-            dt,
-            position: remoteAudioPos,
-            grounded: record.sample.grounded,
-            action: record.sample.action,
-            actionTick: record.sample.actionTick,
-            weapon: record.sample.weapon,
-          });
-          playerBodies.updateRemote(dt, id, {
-            globalFoot: record.sample.position,
-            velocity: record.sample.velocity,
-            yaw: record.sample.yaw,
-            pitch: record.sample.pitch,
-            grounded: record.sample.grounded,
-            weapon: isBaseGameGadget(record.sample.weapon) ? null : record.sample.weapon,
-            aiming: record.sample.aiming,
-            action: record.sample.action,
-            actionTick: record.sample.actionTick,
-            bodyModel: record.sample.bodyModel,
-            stance: record.sample.stance,
-            overhead: remoteGadgetPhases(record.sample).overhead,
-            overheadPhase: remoteGadgetPhases(record.sample).phases,
-            team: record.sample.team, npc: record.sample.npc, appearance: record.sample.appearance,
-          });
+          remoteAudioFeed.dt = dt; remoteAudioFeed.grounded = record.sample.grounded;
+          remoteAudioFeed.action = record.sample.action; remoteAudioFeed.actionTick = record.sample.actionTick; remoteAudioFeed.weapon = record.sample.weapon;
+          audioDirector.updateRemote(id, remoteAudioFeed);
+          const rg = remoteGadgetPhases(record.sample, remoteGadgetFeed);
+          remoteBodyFeed.globalFoot = record.sample.position; remoteBodyFeed.velocity = record.sample.velocity;
+          remoteBodyFeed.yaw = record.sample.yaw; remoteBodyFeed.pitch = record.sample.pitch; remoteBodyFeed.grounded = record.sample.grounded;
+          remoteBodyFeed.weapon = isBaseGameGadget(record.sample.weapon) ? null : record.sample.weapon; remoteBodyFeed.aiming = record.sample.aiming;
+          remoteBodyFeed.action = record.sample.action; remoteBodyFeed.actionTick = record.sample.actionTick; remoteBodyFeed.bodyModel = record.sample.bodyModel;
+          remoteBodyFeed.stance = record.sample.stance; remoteBodyFeed.overhead = rg.overhead; remoteBodyFeed.overheadPhase = rg.phases;
+          remoteBodyFeed.team = record.sample.team; remoteBodyFeed.npc = record.sample.npc; remoteBodyFeed.appearance = record.sample.appearance;
+          playerBodies.updateRemote(dt, id, remoteBodyFeed);
           // A gadget in a remote's hands is drawn overhead by the drone view, not the weapon mount.
           const remoteHands = playerBodies.heldAnchor(id, remoteHeadLocal);
           if (!remoteHands) { worldCoordinates.toRenderLocal(record.sample.position, remoteHeadLocal); remoteHeadLocal[1] += 2.3; }
-          const rg = remoteGadgetPhases(record.sample);
           droneView.showHeld(id, rg.inHand ? record.sample.weapon : null, remoteHeadLocal, remoteHands ? remoteHands.yaw : record.sample.yaw, !remoteHands);
         }
       }
@@ -4826,7 +5024,12 @@ async function animate() {
       water.update(dt, camera.position, playerController.waterTime + playerInterpolationAlpha * playerFixedDt);
       if (water.underwater !== underwaterAudio) { underwaterAudio = water.underwater; envAudio.setUnderwater?.(underwaterAudio); }
     });
-    if ((terrainRuntimeTick = (terrainRuntimeTick + 1) % 15) === 0) { refreshTerrainRuntimeLine(); refreshGrassRuntimeLine(); refreshForestRuntimeLine(); }
+    if (frameStart >= runtimeStatusNextMs) {
+      runtimeStatusNextMs = frameStart + 1000;
+      if (panelElementVisible(terrainRuntimeLine)) refreshTerrainRuntimeLine();
+      if (panelElementVisible(grassRuntimeLine)) refreshGrassRuntimeLine();
+      if (panelElementVisible(forestRuntimeLine)) refreshForestRuntimeLine();
+    }
     // Terrain chunks, trees and grass stream in long after boot, and a material built while the visor
     // is already up would have no heat and render as a lit colour object in a heat frame. Re-sweeping
     // once a second catches them. It only runs with the visor up, and a tagged material is skipped,
