@@ -49,7 +49,7 @@ The codebase is organized into independently-loadable subsystems, each with a re
 | Rocks / scree | `rocks.md` | `rocks.js`, `rocks-placement.js`, `dressing-gpu.js` (standalone; not yet wired into `environment-viewer.html`) |
 | Water | `water.md` | `water.js`, `water-hybrid.js`, `water-waves.js` |
 | Sky / atmosphere | `sky.md` | `sky.js`, `sky-field.js`, `clouds.js`, `stars.js`, `celestial-bodies.js` |
-| Lighting | `lighting.md` | `lights.js`, `clustered-lights.js` |
+| Lighting | `lighting.md` | `lights.js`, `clustered-lights.js`, `point-light-pool.js` |
 | Particles / FX | `fx.md` | `particle-field.js`, `particles.js`, `post-fx.js`, `effect-renderer.js`, `projected-decals.js`, `wound-mask.js`, `blood-tuning.js`, `entity-types/effect.js`, `vision-modes.js` (RGB/NVG/thermal where heat is a material property), `damage-simulator.html` (standalone single-bot harness for tuning hit effects), `explosion-tier.js`, `blast-debris-sim.js`, `blast-debris.js`, `demos/volumetric-smoke.html` (explosion viewer: marched volume + html-game-v2 debris port) |
 | Creature sim | `creature.md` | `port-creature-bridge.js`, `port-creature-system.js`, `creature-plan.js`, `creature-locomotion.js` |
 | Model studio (spec + gates) | `model-studio.md` | `model-primitives.js`, `model-modifiers.js`, `model-csg.js`, `model-spec.js`, `model-targets/` |
@@ -99,6 +99,16 @@ only as the fallback a page opened without the server can still read. `serve.py`
 for maps, stats, traces, layouts, notes, slot saves, body tuning, damage tuning, water config and stadium
 tuning — add one there rather than inventing a new mechanism. `demos/stadium-walker.html` is the worked
 example; `docs/subsystems/stadium.md` explains the arrangement.
+
+## Look at how the other pages already do it
+
+Before implementing or diagnosing a feature in one page, check whether another page in this repo
+already has it, and read how it is wired there. `environment-viewer.html`, `bot-viewer-v3.html` and
+the `demos/` pages share the same modules, so most features have a working reference somewhere:
+find it with `code-map.html` or by grepping for the module's exports, and build the new page's
+version to match rather than reinventing half of it. A page that imports a module without following
+the path that module was designed around (for example ez-tree presets without `tree-textures.js`)
+is the usual cause of a "works in Node, wrong in the browser" bug.
 
 ## Patterns worth knowing
 

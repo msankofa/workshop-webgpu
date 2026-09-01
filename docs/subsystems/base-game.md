@@ -101,6 +101,15 @@ or server room logic.
 Only one directional light owns shadows per frame: sunlight by day, moonlight when its effective
 intensity exceeds the sun. This avoids two world-scale directional shadow passes.
 
+Two shadow knobs in the Lighting section (2026-08-30), both local: **Shadow map update** (every 1–8
+frames; above 1 the page sets `rig.dirLight.shadow.autoUpdate = false` and flips `needsUpdate` on
+the frame's turn, which the `ShadowNode` honours; the map is then up to N−1 frames stale while you
+move) and **Shadow filter** (`soft` = `PCFSoftShadowMap`, the default; `pcf`; `basic`). The filter
+type is part of every material's cache key, so changing it rebuilds the pipelines once, like the
+flashlight-shadow toggle does. The sun's shadow camera also enables
+`BASE_GAME_FOREST_SHADOW_LAYER` (4) so the forest's shadow-only meshes reach the map — see
+`docs/subsystems/vegetation.md`, "Shadows come from a shadow list".
+
 `updateWorld()` runs every frame and re-applies every setting, so its callees must be cheap when
 nothing changed: the sun colour is re-blended only when the twilight factor moves, the player
 controller is reconfigured only when one of its seven settings moved (`configure()` validates and
@@ -309,8 +318,20 @@ Three details are the whole implementation, and each is a way a naive cap goes w
   seconds and the cap is effectively off for as long as the average takes to decay.
 
 A stall resyncs rather than firing every missed frame back to back. Coverage is
-`test-base-game-frame-cap.mjs` (17 checks), which extracts the function from the page and drives it
-against simulated 60/45/144 Hz displays with jitter.
+`test-base-game-frame-cap.mjs` (24 checks), which extracts the function from the page and drives it
+against simulated 60/45/75/144 Hz displays with jitter.
+
+**A cap that does not divide the display rate alternates, and the record shows it (2026-08-30).**
+The 45 cap on a 75 Hz display in the 2026-08-30 captures averaged 45–49 fps with a frame-time p50
+of 26.6 ms: the grid can only run a frame after one refresh (13.3 ms) or two (26.7 ms), so it
+alternates them, and the p50 lands on the long gap. Read `fps.effective` (frames over elapsed
+frame time) next to `fps.p50` before calling a capped capture slow; the two disagree exactly when
+this is happening. **Snap the cap to the display rate** (`frameCapSnap`, off by default, in the
+same section) rounds the cap to the nearest exact division of the display rate — 37.5 for a 45 cap
+on 75 Hz, 75 for a 60 cap on 75 Hz, 28.8 for a 30 cap on 144 Hz — so every gap is the same. The
+display rate comes from the cap's own refresh EMA, rounded to whole hertz so its drift cannot
+restart the grid. The plain cap stays available; the snap is recorded in `settingsAtStart` like
+the cap is.
 
 ## Performance captures
 
@@ -652,7 +673,10 @@ walk/run/dash carries, aim and the reload choreography. Nothing fires yet.
 - **`weapon-mount.js`** is the mount (Contract 6) extracted from `bot-viewer-v3.html` as a module:
   `createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, loadData? })` owns the instanced pool
   (`weapon-part-batches.js`), the anchor/pose JSON and a GLB template cache (`bakedAnchors`,
-  `instanceParts`, `bounds`, `reducedParts`). `createMount(body, weaponId)` is async (GLB fetch) and
+  `instanceParts`, `bounds`, `reducedParts`). Since 2026-08-30 `instanceParts` is one part per
+  MATERIAL (`mergePartsByMaterial`, see `docs/subsystems/bots.md`), not one per GLB sub-mesh: the
+  2026-08-30 captures had 74 always-on `WeaponBatch` buckets for one player's guns, the largest
+  owner in the scene census, and every one of them is a separate encode. `createMount(body, weaponId)` is async (GLB fetch) and
   resolves null for a weapon with no model or third-person hold. `updateMount(mount, dt, frame)`
   takes `{ feetY, bodyX, bodyZ, yaw, stance, stanceWeights, speed, aiming, aimPoint, bob, sway,
   headYaw, aimChannels, viewFrame?, viewBlend?, drawBlend? }`, places the ground-anchored root at
@@ -1055,7 +1079,7 @@ prints `∞`.
 (`STOW_PLACEMENTS`, `stowPlacementFor`, `buildStowParts`, `stowedWeaponIds`, and the system's
 `createStow()`), and `bot-viewer-v3.html` now calls it instead of its own copy — the same
 extract-then-switch that phase 1.5 did for the mount. A stowed copy is a reduced part list (largest
-sub-meshes covering 90 % of the vertices, at most two) on a per-frame matrix into the SAME instanced
+parts covering 90 % of the vertices, at most two — parts being material groups since 2026-08-30) on a per-frame matrix into the SAME instanced
 pool as the held gun, so it costs no draw call: long guns across the back, pistols on the right hip.
 It rides the torso joint, so a body without one hangs nothing, and it is skipped when the body is
 hidden — in first person the local rig is masked away, and a gun floating where the torso used to be
@@ -1422,7 +1446,7 @@ empties the hands. With empty hands and stock left, R runs the reload action for
 player state carries `gadgets` and `gadgetReady`; remotes play both motions from `action` and
 `actionTick` against their replicated `tick`; the local body plays them from the key edge so the
 arms move on the press. Solo runs the same timers in `stepGadgetHands`/`stepSoloDrones`. The UAV
-flies as the plane but draws as the `recon` model at its authored size (2.01 m span), and the chase distance is **measured in wingspans off the drawn mesh**, not hand-authored: `CHASE[kind].spans` × the mesh's own bounding box, with the sim's `up = 0.26` and `ahead = 1.6` fractions of that distance. The UAV's 2.26 spans is the sim's own plane framing (`chaseDist` 26 m / 11.5 m span), so the wing fills the same share of the screen the sim's plane does. A hand-authored distance went stale the moment the UAV's `meshScale` changed and put the camera 43% too far back; measuring the mesh is what stops that recurring.
+flies as the plane but draws as the `recon` model at its authored size (2.01 m span), and the chase distance is **measured in wingspans off the drawn mesh**, not hand-authored: `CHASE[kind].spans` × the mesh's own bounding box, times `settings.droneCameraZoom`, with the sim's `up = 0.26` and `ahead = 1.6` fractions of that distance. The zoom is the player's own boom gesture — SHIFT and the wheel, 8% a notch, and the wheel alone at the stick since there is no weapon to change while flying — routed through the same `zoomCamera` and clamped to 0.35x–4x. It is a multiple of the craft's framing rather than metres, so one number reads the same on the 1.4 m quad and the 2 m wing. The UAV's 2.26 spans is the sim's own plane framing (`chaseDist` 26 m / 11.5 m span), so the wing fills the same share of the screen the sim's plane does. A hand-authored distance went stale the moment the UAV's `meshScale` changed and put the camera 43% too far back; measuring the mesh is what stops that recurring.
 
 **Proof the physics are the sim's** (`test-base-game-drones.mjs`, "bit for bit"): the sim's own
 `makeFlyer('plane')` and the base-game drone under the stick, fed one identical 60 s script (pull,
@@ -1516,11 +1540,26 @@ the spawner refusing a point in the sea (today it falls back to the aimed point)
   `npcAccuracy`, `npcSpawnDistance` (all shared keys, so guests see them disabled); a role
   select; buttons Add friendly / Add 4 friendly / Add enemy / Add 4 enemy / Clear bots, sent by
   `session.sendNpc`. Solo shows a note: bots need a room for now (the loopback room is not built).
-- **The spawner, key 9.** A tool mode over the held sidearm rather than a seventh slot: `9`
-  toggles it and draws the sidearm (so the laser has a muzzle), click sends `base:npc` with
-  `aimed: true` and the server casts the requester's own look ray (`aimedGroundPoint`: world
-  query to 300 m, then the ground marched out to 1.5 km), `R` cycles side and role, the combat HUD
-  shows the current pick and the last result. The trigger stays quiet while the spawner is up.
+- **The dev gun, key 9.** A tool mode over the held sidearm rather than a seventh slot: `9`
+  cycles off → bots → lights → off and draws the sidearm (so the laser has a muzzle). The trigger
+  stays quiet while any tool is up; the combat HUD shows the current tool, pick and last result.
+  - **Bots** (first press — the old spawner, unchanged): click sends `base:npc` with
+    `aimed: true` and the server casts the requester's own look ray (`aimedGroundPoint`: world
+    query to 300 m, then the ground marched out to 1.5 km); `R` cycles side and role.
+  - **Lights** (second press): hold click to charge (1.5 s window, environment-viewer's) and
+    release to shoot a light out; `E` drops one at the crosshair (`updateLocalAimPoint`, called
+    directly since it otherwise only runs while aiming); `R` cycles the kind preset. The sim is
+    the environment-viewer entity layer run purely locally — `entity-registry.js` with
+    `entity-types/light.js` + `entity-types/projectile.js`, ticked in the fx frame block with
+    the global-space ground (`terrain.groundHeight`, `-1e9` in map worlds, so non-floating
+    lights fall out of maps) — rendered through `point-light-pool.js`, a fixed pool of
+    `DEV_LIGHT_SLOTS = 8` resident `THREE.PointLight`s (intensity-driven, never `.visible`;
+    reject-newest past the pool, with a HUD note). A ninth resident point light is the held
+    lantern: on while the light tool is up (`devLightHeld`), ramped like the flashlight, showing
+    the live `devLight*` colour/reach at the muzzle. Kinds (`lantern`/`ember`/`floater`/`flare`)
+    are presets that write the `devLightKind`/`devLight*` settings; touching a slider flips the
+    kind to `custom` (the `fpPreset` rule). Panel section "Dev gun lights (9)" under Player.
+    Nothing is replicated — like the flashlight, the lights are yours alone.
 - `npcAccuracy` is on the wire and in the panel but **not read by the server yet**: an NPC's spread
   is the player trigger's. `npcNoticeMs` reaches the brain as `reactionMs`.
 
@@ -2716,6 +2755,16 @@ trust any subsystem's self-report, the capture walks the graph the way the rende
 invisible subtrees exactly as `projectObject` does -- and reports `visitedObjects`, `renderables`,
 `unculled` (`frustumCulled: false`, which always encodes), `maxDepth`, and a `byOwner` breakdown
 attributing every renderable to the top-level scene child it hangs under.
+
+Since 2026-08-30 the owner key is the child's name up to its first `:` (so `forest:v0:branchesL0`
+and its siblings fold into one `forest` row), and each row carries `kinds`, a count per
+`name-or-geometry-type/material-type`, so a row that is still called `Mesh` says what it is made of.
+The 2026-08-30 captures had 106 renderables under `Mesh` and 27 under `Group` because the forest,
+grass, cloud decks, debris, effect pools, projectiles, drone craft, the sky group and the hit marker
+were all added to the scene unnamed; they are named now (`forest:v<n>:<part>`, `base-game-grass`,
+`base-game-cloud-deck-<n>`, `debris-instanced`/`debris-smoke`, `fx-lines`/`fx-points`/
+`fx-sprite-pool`/`fx-decal-pool`, `base-game-projectile`, `drone-view:<kind>`, `sky`,
+`player-hit-marker`).
 
 Read it against `drawCallsReported` from the same frame. A large `renderables` count, or an owner
 with far more meshes than its subsystem claims, is the thing to fix -- not the mirror's rate.

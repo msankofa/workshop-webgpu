@@ -21,6 +21,8 @@ unit-tested in Node without a GPU.
 | `clustered-lights.js` | GPU clustered point-light system: allocates `StorageBufferAttribute` buffers, runs a per-frame TSL compute pass that culls lights into froxels, and exposes a TSL `pointLightTerm` shading function (Cook-Torrance GGX) for materials to sample. | 274 |
 | `light-cluster.js` | Pure-JS (no three.js) reference implementation of the froxel culling math — exponential Z-slicing, view-space froxel AABBs, sphere/AABB tests, exact per-froxel assignment, and the Z-bin + per-tile bitmask scheme. Importable/testable in plain Node. | 142 |
 | `test-light-cluster.mjs` (repo root) | Node test script that imports `light-cluster.js` and checks its math. | 100 |
+| `point-light-pool.js` | Fixed pool of resident `THREE.PointLight`s that serialized light entities (`entity-types/light.js` / `entity-types/projectile.js` wire shape) borrow by id — the THREE-light twin of `light-entity-renderer.js`'s clustered slot pool, for pages without clustered lights (`base-game.html`'s dev-gun lights). Same slot rules: reject-newest, slots freed by vanished ids available the next sync, intensity-driven residents (never `.visible`, the WebGPU pipeline-hash rule). Keep it and `light-entity-renderer.js` in mind together when the entity wire shape changes. | 60 |
+| `test-point-light-pool.mjs` (repo root) | Node test of the pool's slot logic against a stub THREE. | 66 |
 
 ## Public API
 
@@ -63,6 +65,16 @@ export function buildZBins(sortedLights, cfg)
 export function buildTileBitmask(lights, cfg, tilesX, tilesY)
 export function froxelLightSet(tx, ty, s, zBins, bitmask, order, tilesX)
 ```
+
+`point-light-pool.js`:
+```js
+export function createPointLightPool({ THREE, scene, count = 8, decay = 2 })
+```
+Returns `{ sync(entities, toLocal), dispose(), lights }`. `entities` is the serialized entity
+wire shape (`{ id, p:[x,y,z], color:[r,g,b 0..1], radius, intensity }`); `toLocal(p, out)`
+converts a position into the scene's space (`worldCoordinates.toRenderLocal` in base-game).
+Call `sync` once per frame with the full current entity list — ids not in the list release
+their slot to intensity 0.
 
 ## Wiring (in `environment-viewer.html`)
 
