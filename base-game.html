@@ -159,7 +159,11 @@ import { createEffectRenderer, bloodIntensityForHealth } from './effect-renderer
 import { evaluateWhizz, createWhizzVoice, pickImpactVoice } from './ballistic-audio.js';
 import { BLOOD_BASE, BLOOD_TUNING, sprayParams, stainParams, splatterParams } from './blood-tuning.js';
 import { createFlashLights, BLAST_FLASH } from './flash-lights.js';
-import { createWeaponLight, WEAPON_LIGHT_DEFAULTS } from './weapon-light.js';
+import { createEntityRegistry } from './entity-registry.js';
+import { LightEntity } from './entity-types/light.js';
+import { ProjectileEntity } from './entity-types/projectile.js';
+import { createPointLightPool } from './point-light-pool.js';
+import { createWeaponLight, WEAPON_LIGHT_DEFAULTS, rampToward } from './weapon-light.js';
 import { createWeaponLaser, WEAPON_LASER_DEFAULTS, tapKind } from './weapon-laser.js';
 import { createDebrisSim, TIER_DEBRIS_SCALE } from './blast-debris-sim.js';
 import { createProjectileManager } from './bot-projectiles.js';
@@ -1578,6 +1582,21 @@ const flashLights = createFlashLights({ THREE, scene, getViewPosition: () => cam
 // The weapon flashlight: one resident SpotLight on the bore plus its lens spill. Resident and
 // intensity-driven for the same reason the flash pool is — see the WebGPU note in weapon-light.js.
 const weaponLight = createWeaponLight({ THREE, scene, options: { shadows: false } });
+// The held lantern: while the dev gun's light tool is up, the muzzle carries the light you are
+// about to make, so you can judge its colour and reach before committing one to the pool. One
+// resident PointLight, intensity-ramped like the flashlight (the WebGPU visibility rule).
+const devHeldLight = new THREE.PointLight(0xffffff, 0, 30, 2);
+devHeldLight.name = 'devGunHeldLight';
+scene.add(devHeldLight);
+let devHeldLevel = 0;
+function updateDevHeldLight(dt, gunLight) {
+  const want = devGun.active && devGun.tool === 'lights' && settings.devLightHeld === true ? 1 : 0;
+  devHeldLevel = rampToward(devHeldLevel, want, dt, WEAPON_LIGHT_DEFAULTS.rampRate);
+  if (gunLight?.muzzle) devHeldLight.position.set(gunLight.muzzle[0], gunLight.muzzle[1], gunLight.muzzle[2]);
+  devHeldLight.color.setRGB(settings.devLightR / 255, settings.devLightG / 255, settings.devLightB / 255);
+  devHeldLight.distance = settings.devLightRadius;
+  devHeldLight.intensity = settings.devLightBrightness * devHeldLevel;
+}
 const _weaponLightMuzzle = [0, 0, 0], _weaponLightDir = [0, 0, 0], _weaponLightVec = new THREE.Vector3();
 const _weaponLightSource = { muzzle: _weaponLightMuzzle, direction: _weaponLightDir };
 function applyFlashlight() {
@@ -1924,6 +1943,54 @@ const soloProjectiles = createProjectileManager({
     emitTrailPuff(proj.weaponId, l[0], l[1], l[2]);
   },
 });
+
+// Dev-gun lights: the environment-viewer entity layer, run purely locally. Entities simulate in
+// GLOBAL space (soloProjectiles' convention); the pool converts to render-local at draw time.
+// Nothing here is replicated — a dropped light is yours alone, like the flashlight beam.
+const DEV_LIGHT_SLOTS = 8;
+const devLightRegistry = createEntityRegistry();
+devLightRegistry.registerType(LightEntity);
+devLightRegistry.registerType(ProjectileEntity);
+const devLightPool = createPointLightPool({ THREE, scene, count: DEV_LIGHT_SLOTS });
+const devLightGround = (x, z) => (settings.worldMode === 'terrain' ? terrain.groundHeight(x, z) : -1e9);
+const devLightToLocal = (p, out) => worldCoordinates.toRenderLocal(p, out);
+function devLightParams() {
+  return {
+    trajectory: settings.devLightArc ? 'arc' : 'straight',
+    float: settings.devLightFloat, drift: settings.devLightDrift,
+    lifespan: settings.devLightLifespan,
+    r: settings.devLightR, g: settings.devLightG, b: settings.devLightB,
+    brightness: settings.devLightBrightness, radius: settings.devLightRadius,
+  };
+}
+function devLightRoom() {
+  if (devLightRegistry.list().length < DEV_LIGHT_SLOTS) return true;
+  devGunNote('light pool is full');
+  return false;
+}
+function devLightFire(chargeRatio) {
+  if (!devLightRoom()) return;
+  const src = weaponLightSource(true);
+  if (!src) return;   // dead: nothing to shoot from
+  const origin = worldCoordinates.toGlobal([src.muzzle[0], src.muzzle[1], src.muzzle[2]]);
+  devLightRegistry.create('projectile', {
+    origin, dir: [src.direction[0], src.direction[1], src.direction[2]], chargeRatio,
+    payload: { type: 'light', params: devLightParams() }, ownerId: 'local',
+  }, { now: performance.now() / 1000 });
+  devGunNote(`shot ${settings.devLightKind}`);
+}
+function devLightDrop() {
+  if (!devLightRoom()) return;
+  // updateLocalAimPoint refreshes aimPointLocal from the camera ray; it only runs on its own
+  // while aiming, so the drop asks for it directly.
+  const aim = updateLocalAimPoint();
+  const p = worldCoordinates.toGlobal([aim.x, aim.y, aim.z]);
+  const params = devLightParams();
+  devLightRegistry.create('light', {
+    x: p[0], y: p[1] + (params.float ? 1.5 : 0.2), z: p[2], params, ownerId: 'local',
+  }, { now: performance.now() / 1000 });
+  devGunNote(`dropped ${settings.devLightKind}`);
+}
 
 // bot-viewer-v3's onTrail puffs, emitted client-side at the manager's 0.035 s cadence — the sim
 // lives on the server, so the trail rides the rendered (interpolated) flight path instead.
@@ -5087,7 +5154,7 @@ async function animate() {
     // once a second catches them. It only runs with the visor up, and a tagged material is skipped,
     // so the steady-state cost is one scene walk over a few hundred objects.
     if (settings.visorMode !== 'rgb' && (visorSweepTick += dt) >= 1) { visorSweepTick = 0; applyVisor(); }
-    frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); const gunLight = weaponLightSource(canControl); weaponLight.update(dt, gunLight); weaponLaser.update(dt, gunLight); });
+    frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); devLightRegistry.tick(dt, { now: performance.now() / 1000, terrainHeight: devLightGround }); devLightPool.sync(devLightRegistry.renderList(), devLightToLocal); const gunLight = weaponLightSource(canControl); weaponLight.update(dt, gunLight); weaponLaser.update(dt, gunLight); updateDevHeldLight(dt, gunLight); });
     // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
     await frameProfiler.timeAsync('grassGpu', () => flora.update(frameStart / 1000));
     await frameProfiler.timeAsync('forestGpu', () => forest.update());
