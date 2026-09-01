@@ -398,6 +398,13 @@ const DEFAULT_SETTINGS = Object.freeze({
   flashlightWarmth: WEAPON_LIGHT_DEFAULTS.warmth,
   flashlightSpill: WEAPON_LIGHT_DEFAULTS.spillIntensity,
   flashlightShadows: false,
+  // Dev gun lights (key 9, second press). Purely local, like the flashlight. The kind is a
+  // preset that writes the sliders; touching a slider flips it to custom (the fpPreset rule).
+  devLightKind: 'lantern',
+  devLightLifespan: 30, devLightR: 255, devLightG: 180, devLightB: 80,
+  devLightBrightness: 60, devLightRadius: 25,
+  devLightFloat: false, devLightDrift: false, devLightArc: true,
+  devLightHeld: true,
   // Laser sight (double-tap L). The DOT is a real light: a spot with a cone a fifth of a degree
   // wide and no decay, which is what a collimated beam is. Only the beam in the air is drawn, since
   // no light source can express one. Aimed down the bore, so it shows where the GUN points, which is
@@ -568,6 +575,8 @@ const NUMBER_LIMITS = Object.freeze({
   tpAimMagnification: [1, 8],
   flashlightIntensity: [0, 2000], flashlightRange: [1, 300], flashlightAngle: [1, 80],
   flashlightSoftness: [0, 1], flashlightWarmth: [0, 1], flashlightSpill: [0, 40],
+  devLightLifespan: [1, 120], devLightR: [0, 255], devLightG: [0, 255], devLightB: [0, 255],
+  devLightBrightness: [0, 500], devLightRadius: [1, 100],
   laserHue: [0, 1], laserDotAngle: [0.01, 45], laserIntensity: [0, 500],
   laserBeamOpacity: [0, 1], laserBeamRadius: [0, 1], laserRange: [1, 300],
   npcNoticeMs: [0, 10000], npcAccuracy: [0, 1], npcSpawnDistance: [5, 2000],
@@ -1582,6 +1591,26 @@ function applyFlashlight() {
     shadows: settings.flashlightShadows === true,
   });
   weaponLight.setOn(settings.flashlightOn === true);
+}
+// Dev-gun light kinds: each preset writes the devLight sliders wholesale, so the sliders always
+// show what the next light will be. Order matters — R walks it.
+const DEV_LIGHT_KINDS = Object.freeze({
+  lantern: { devLightLifespan: 30, devLightR: 255, devLightG: 180, devLightB: 80,  devLightBrightness: 60,  devLightRadius: 25, devLightFloat: false, devLightDrift: false, devLightArc: true },
+  ember:   { devLightLifespan: 20, devLightR: 255, devLightG: 90,  devLightB: 30,  devLightBrightness: 30,  devLightRadius: 12, devLightFloat: false, devLightDrift: false, devLightArc: true },
+  floater: { devLightLifespan: 25, devLightR: 150, devLightG: 200, devLightB: 255, devLightBrightness: 60,  devLightRadius: 30, devLightFloat: true,  devLightDrift: true,  devLightArc: true },
+  flare:   { devLightLifespan: 8,  devLightR: 255, devLightG: 40,  devLightB: 40,  devLightBrightness: 140, devLightRadius: 45, devLightFloat: false, devLightDrift: false, devLightArc: false },
+});
+const DEV_LIGHT_KIND_ORDER = Object.keys(DEV_LIGHT_KINDS);
+function applyDevLightKind() {
+  const preset = DEV_LIGHT_KINDS[settings.devLightKind];
+  if (preset) Object.assign(settings, preset);
+}
+function devLightCycleKind() {
+  const at = DEV_LIGHT_KIND_ORDER.indexOf(settings.devLightKind);
+  settings.devLightKind = DEV_LIGHT_KIND_ORDER[(at + 1) % DEV_LIGHT_KIND_ORDER.length];   // custom -> lantern
+  applyDevLightKind();
+  syncAllControls();
+  scheduleAutosaveSafe();
 }
 // The visor: night vision and the two thermal palettes, from vision-modes.js. The palette itself is
 // already in the post pipeline; this is the switch, plus the two things a mode change has to do to
@@ -2910,6 +2939,12 @@ function changed(key) {
     applyUnlimitedAmmo();
   } else if (key === 'visorMode') {
     applyVisor();
+  } else if (key === 'devLightKind') {
+    applyDevLightKind();
+    syncAllControls();
+  } else if (key?.startsWith('devLight')) {
+    // A touched slider is no longer any preset. The values themselves are read live each frame.
+    if (settings.devLightKind !== 'custom') { settings.devLightKind = 'custom'; syncAllControls(); }
   } else if (key?.startsWith('flashlight') || key?.startsWith('laser')) {
     applyFlashlight();
     applyLaser();
@@ -3304,6 +3339,23 @@ const laserNote = document.createElement('div'); laserNote.className = 'note';
 laserNote.textContent = 'The dot is a real light with a cone a fraction of a degree wide and no falloff, which is what a collimated beam is — so it lands on whatever is actually there, bends over edges, and is the same brightness near and far. Only the beam in the air is drawn, because no light can express one. The laser is aimed down the barrel, so its dot and the reticle do not agree: that is the point of carrying one. Turning off “blocked by cover” drops a shadow pass but then the dot also appears on the wall behind whatever it hit. Like the flashlight, other players cannot see it.';
 torchSec.append(laserNote);
 
+// Dev gun lights: what the 9-key light tool makes. Kinds are presets over the sliders; touching
+// a slider flips the kind to custom, the fpPreset rule.
+const devLightSec = createSection(playerSec, 'Dev gun lights (9)', { collapsed: true });
+addSelect(devLightSec, 'devLightKind', 'Kind (R cycles)', [...DEV_LIGHT_KIND_ORDER, 'custom']);
+addToggle(devLightSec, 'devLightHeld', 'Held lantern while the tool is up');
+addRange(devLightSec, 'devLightLifespan', 'Lifespan', 1, 120, 1, value => `${value.toFixed(0)} s`);
+addRange(devLightSec, 'devLightR', 'Red', 0, 255, 1, value => value.toFixed(0));
+addRange(devLightSec, 'devLightG', 'Green', 0, 255, 1, value => value.toFixed(0));
+addRange(devLightSec, 'devLightB', 'Blue', 0, 255, 1, value => value.toFixed(0));
+addRange(devLightSec, 'devLightBrightness', 'Brightness', 0, 500, 1, value => value.toFixed(0));
+addRange(devLightSec, 'devLightRadius', 'Reach', 1, 100, 1, value => `${value.toFixed(0)} m`);
+addToggle(devLightSec, 'devLightFloat', 'Float in the air');
+addToggle(devLightSec, 'devLightDrift', 'Drift while floating');
+addToggle(devLightSec, 'devLightArc', 'Shots arc under gravity');
+const devLightNote = document.createElement('div'); devLightNote.className = 'note';
+devLightNote.textContent = 'Press 9 twice for the light tool: hold click to charge a shot, E drops a light at the crosshair, R cycles the kind. Eight lights can burn at once; the ninth is refused until one expires. Like the flashlight, they are yours alone: other players do not see them.';
+devLightSec.append(devLightNote);
 
 addToggle(playerSec, 'unlimitedAmmo', 'Unlimited ammo');
 const unlimitedAmmoNote = document.createElement('div'); unlimitedAmmoNote.className = 'note';
