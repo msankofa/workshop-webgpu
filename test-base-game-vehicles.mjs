@@ -447,4 +447,24 @@ function wrapPiTest(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
     `walking east puts it behind the owner to the west (${rec.body.x.toFixed(2)}, ${rec.body.z.toFixed(2)})`);
 }
 
+// A parked UGV never rotates on the spot. The old follow state eased its yaw toward the owner's,
+// assigned directly rather than driven through the wheels, so it span with its tyres pointing
+// straight ahead.
+{
+  const groundY = () => 0;
+  const rec = createBaseGameVehicle('ugv', { ownerId: 'o', from: [0, 0, 3], yaw: 0, groundY });
+  const world = { groundY, ownerPos: [0, 0, 0], ownerYaw: 0, ownerVel: [0, 0, 0], ownerAlive: true, seaLevel: -Infinity };
+  for (let i = 0; i < 900; i++) stepBaseGameVehicle(rec, 1 / 120, world);   // let it take station and settle
+  const parkedYaw = rec.body.yaw, parkedAt = [rec.body.x, rec.body.z];
+  for (let turn = 1; turn <= 6; turn++) {
+    world.ownerYaw = turn * Math.PI / 3;
+    for (let i = 0; i < 120; i++) stepBaseGameVehicle(rec, 1 / 120, world);
+  }
+  const turned = Math.abs(wrapPiLocal(rec.body.yaw - parkedYaw));
+  const moved = Math.hypot(rec.body.x - parkedAt[0], rec.body.z - parkedAt[1]);
+  ok(turned < 0.05, `a parked UGV holds its heading while the owner turns (${turned.toFixed(3)} rad)`);
+  ok(moved < 0.6, `and stays put (${moved.toFixed(2)} m)`);
+}
+function wrapPiLocal(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
+
 console.log('base-game-vehicles: all assertions passed');

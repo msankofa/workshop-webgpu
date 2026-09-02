@@ -189,9 +189,9 @@ function autonomyInput(rec, world) {
     const p = shadowPoint(rec, world);
     result = driveToward(rec, p[0], p[1], rec.def.followRadius, world.groundY);
     if (!result.moving && rec.state === 'return') enter(rec, 'follow');
-    if (!result.moving && rec.state === 'follow' && rec.body.speed < 0.3) {
-      rec.body.yaw += wrapPi((Number(world.ownerYaw) || 0) - rec.body.yaw) * Math.min(1, FIXED_STEP * 3);
-    }
+    // Nothing turns a parked UGV to face anywhere. A four-wheel car cannot rotate on the spot, and
+    // this was assigning yaw directly rather than driving the wheels: it span in place with its
+    // tyres pointing straight ahead. It now keeps whatever heading it arrived on.
   } else if (rec.state === 'goto') {
     if (!rec.target) { enter(rec, 'follow'); return { ...ZERO_INPUT }; }
     result = driveToward(rec, rec.target[0], rec.target[2], rec.def.stopRadius, world.groundY);

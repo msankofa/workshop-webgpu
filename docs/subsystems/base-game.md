@@ -1786,6 +1786,18 @@ ladder and heading were all drawn for a viewpoint that was not on the screen. At
 now takes its frame from the camera, reports rounds remaining, and drops the aircraft's `PULL UP`
 descent warning, which a ground vehicle cannot earn.
 
+**Four things driving it exposed (2026-09-02).** The tint: every craft was drawn with the flight
+sim's pale `CRAFT_TINT`, which reads as white plastic on a hull in a forest, so each vehicle def now
+carries its reference colour and the view falls back to the owner tint. The follow heading:
+`shadowPoint` took `ownerYaw`, the *camera* yaw, so standing still and turning your head walked the
+UGV 4.42 m round you — it now takes the heading from the owner's velocity above a walking pace and
+holds it below. The steering: the 10 Hz grade probe returns one of three headings and the wheels
+were commanded straight off the heading error, so it stepped up to 35 degrees ten times a second;
+the probe answer is eased and every steer branch goes through a rate-limited slew, taking the worst
+per-tick movement from 54.69 to 10.65 mrad over the same drive. And the spin: a parked UGV eased
+`body.yaw` toward the owner's directly rather than through the wheels, so it rotated on the spot
+with its tyres pointing straight ahead. It now keeps the heading it arrived on.
+
 **Still one-sided.** Nothing can shoot a vehicle back: `damageBaseGameVehicle` exists and nothing
 calls it, and there is no `vehicleHitVolumes` beside the drones'. Step 3 of the plan.
 
