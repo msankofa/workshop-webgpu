@@ -466,3 +466,11 @@ are exported so anything planted ON the ground can match it instead of guessing:
   remainder.
 - `terrain.groundColorNode()` -- global height and normal-Y in, `vec3` out, blending the two by the
   ground-textures toggle. Grass tints toward this (`docs/subsystems/vegetation.md`).
+
+Base Game also uses this mechanism for its world plan (2026-09-01): a 30 m post, 16-tile-per-side
+CPU-only window on a dedicated one-worker scheduler. Its `planWalk` u8 field is derived from each
+height tile's apron: zero means water or cliff and 1..255 classifies increasingly easy ground.
+`createFieldWindow({gpu:false})` keeps the same CPU/readiness contract without allocating or
+uploading `DataTexture`s. `touch()` and `stampAlong()` allow a derived resident channel such as
+flora cover to be changed along a polyline and publish one new window version without scanning the
+polyline's whole bounding box.

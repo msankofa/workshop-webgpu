@@ -74,7 +74,18 @@ Returns `{ sync(entities, toLocal), dispose(), lights }`. `entities` is the seri
 wire shape (`{ id, p:[x,y,z], color:[r,g,b 0..1], radius, intensity }`); `toLocal(p, out)`
 converts a position into the scene's space (`worldCoordinates.toRenderLocal` in base-game).
 Call `sync` once per frame with the full current entity list — ids not in the list release
-their slot to intensity 0.
+their slot to intensity 0. `radius` is the light's cutoff distance, clamped to 600 in
+`entity-types/light.js`; three's punctual falloff inside it is `1 / d^decay` windowed by
+`(1 - (d/radius)^4)^2`, so a large radius widens where a light reaches without slowing how fast
+it dims. `decay` is the exponent, per entity, clamped 0..4 and defaulting to 2; an entity that
+omits it falls back to the pool's constructor `decay`. It reaches the shader as
+`PointLightNode.decayExponentNode`, a render-group uniform written from `light.decay` each frame,
+so changing it costs a uniform write and never a recompile — unlike `castShadow`, which is in the
+lights hash.
+
+`clustered-lights.js` does **not** carry decay: `setLightDirect` takes no such field and its TSL
+hardcodes the windowed inverse square. So decay is honoured on the `point-light-pool.js` path
+(base-game) and ignored on the clustered path (environment-viewer).
 
 ## Wiring (in `environment-viewer.html`)
 

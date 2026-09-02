@@ -58,8 +58,14 @@ check(getWeapon('cz_805_bren') && getWeapon('cz_805_bren').automatic === true, '
 check(getWeapon('knife')?.damage === 50, 'knife should be a two-hit kill against 100 HP');
 check(getWeapon('knife')?.fireIntervalMs === 1500, 'knife should use the 1.5-second attack interval');
 
-// All weapon model paths must be strings under models/guns/.
+// All CARRIED weapon model paths must be strings under models/guns/. A vehicle-mounted gun is
+// drawn as part of its vehicle's mesh and has no GLB of its own, so it is the one entry with
+// no model at all.
 for (const w of Object.values(WEAPONS)) {
+  if (w.vehicleOnly) {
+    check(w.model === undefined, `${w.id} is vehicleOnly, so it should carry no hand model`);
+    continue;
+  }
   check(typeof w.model === 'string' && w.model.startsWith('models/guns/'),
     `${w.id}.model should be a string starting with 'models/guns/' â€” got ${JSON.stringify(w.model)}`);
 }

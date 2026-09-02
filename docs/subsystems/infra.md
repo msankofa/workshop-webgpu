@@ -47,6 +47,7 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 | File | Responsibility | Lines |
 |---|---|---|
 | `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 140 |
+| `gpu-pipeline-meter.js` | Wraps a `GPUDevice`'s four pipeline factories to report how much of a frame went into building WebGPU pipelines, and how many arrived. Node-tested against a fake device (`test-gpu-pipeline-meter.mjs`). | 55 |
 | `environment-ui.js` | Builds the six-destination `#workshop-ui` in-game inspector (World, Entities, Player, Assets, Audio, Tools), re-parents the existing live panels, and builds the performance, preset, and audio control content. | 1300 |
 | `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
 | `environment-audio.js` | Standalone Web Audio controller (`createEnvironmentAudio(options)`) extracted from the shooter (`html-game-v2/src/game/main.js`) with no `main.js` coupling: mixer + persistence, camera-listener positional SFX, `sound-map.json` folder loading, streamed `music_menu`/`music_game` with processing graph + pitch worklet, and a front/behind/orbit/above speaker orb. Backed by support modules `sound-events.js`, `music-pitch-processor.js` (AudioWorkletProcessor), `asset-paths.js`, `file-handles.js`, `live-updates.js`. | 1050 |
@@ -56,8 +57,39 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 | `audit-doc.js` | Pure parser (no DOM, no deps) for the `improve-webgpu` audit-doc shape — frontmatter + `## F-NN` findings + prose. Node-testable by design. | 175 |
 | `audit-viewer.html` | Browsable UI for audit-doc files: rollup header (counts, `steps_not_run`/`steps_partial`), filterable/searchable finding list, per-finding detail with deep-linking. | 300 |
 | `tools/filesystem-map.html` | Standalone holographic 3D **node-link** map of the repo filesystem — WebGPURenderer + TSL `PostProcessing`/`bloom`/`dof` (repo convention, not the WebGL EffectComposer addons; DOF via three's own `dof()` TSL node reading the scene pass's real depth buffer, not the hand-rolled CoC pass from `demos/sdf-bug-v2.html` that inspired it — that demo raymarches and has no depth buffer to read). Directories are laid out with a Coulomb-repulsion + Hooke-spring simulation in 3D (organic volumetric clustering, not a flat ring/grid), damped rather than cooling-scheduled so it can also run live or be scoped to an `active[]` subset; each folder's files are scattered onto a Fibonacci sphere stored as a *local offset* from its hub (so a moving hub carries its files for free), never entering the O(n²) physics themselves. Node materials are opaque (not additive) with real depth writes so dense clusters stay legible instead of clipping to a white blob; tone mapping is ACES; fog is linear and tied to camera range, not layout radius. The Render/DOF/Layout/Style HUD panel (collapsible, like Filters) exposes live sliders for exposure/bloom/DOF focus-distance-focal-length-bokeh (with an auto-focus-on-orbit-target option) and edge length, a "live rearrange" toggle, shuffle/re-layout buttons, and toggles for node size (file size vs. uniform) and color (extension vs. relative/absolute file age). A separate Growth Timeline panel replays the repo's construction in chronological order using each file's creation time (`ctime` — best-effort, not authoritative; see `/api/fs-scan` below) as its "birth": directories reveal and physically emerge from their already-active parent as playback crosses their birth time, restricting `forceStep()` to the currently-active subset so the graph visibly reorganizes as it grows, not just reveals at pre-settled positions. Clicking a node smoothly flies the camera to focus on it (position+target lerp composes with `OrbitControls.update()` since it re-derives its spherical state from `camera.position` each call). Filters by file extension, modified-date range, and name; fetches `GET /api/fs-scan` live, no manifest to regenerate. | 830 |
+| `tools/filesystem-map.html` (scope) | Takes an optional `?scope=<name>` that narrows the scan before anything is built from it, so every panel, filter and count is about that subsystem. `pokemon` loads `pokemon-map-scope.js` and adds a Groups panel filtered live through the existing `matchesFilter`, the way extensions already are. `pokemon-lab.html`'s Map tab is this page in an iframe with that parameter. Without it the page is unchanged. | +45 |
 
 ## Public API
+
+### `gpu-pipeline-meter.js`
+
+**Why it exists.** WebGPU builds a render or compute pipeline lazily, on the first frame the thing
+that needs it actually draws, and three.js creates it *synchronously* inside `render()` unless
+`compileAsync()` handed it a promises array (`three.webgpu.js`: `if (promises === null)
+device.createRenderPipeline(...)`). The cost therefore lands inside whatever profiler slot wraps the
+render call, where no amount of splitting that slot can separate it from drawing. The 2026-08-28
+tree audit missed exactly this, because every number in it came from Node, where there is no backend
+and so nothing compiles.
+
+```js
+const pipelineMeter = createPipelineMeter(renderer.backend?.device);   // after await renderer.init()
+const cost = pipelineMeter.take();   // { ms, renderMs, computeMs, render, compute, async }
+```
+
+`take()` drains everything since the last call and reuses its result object, so a host reading it
+once per frame allocates nothing — read it, do not hold it. `installed` is false when there is no
+device with those factories (a WebGL fallback, `file://`, a stub), and every field then reads 0
+rather than throwing. `dispose()` restores the device's own methods.
+
+Only the blocking part of the async factories is timed, because their compile is off-thread and is
+not the frame's cost; their `async` count is still reported, since a pipeline arriving at all is
+what a warmup exists to prevent.
+
+**Reading it.** Drain every frame, profiling or not — the counters are cumulative, so skipping idle
+frames hands the first profiled frame every pipeline built since load. In Base Game the drain feeds
+`passPipelineMs` and a live `N pipelines X ms` segment on the stats line that appears only when
+something compiled. In a saved capture, `passes.passPipelineMs.frames` is the number of frames in
+the window that paid for a pipeline, and `pipelinesBuilt.max` is the worst single frame.
 
 ### `frame-profiler.js`
 
@@ -722,3 +754,16 @@ rather than another endpoint; `/api/save-glass-plankton` predates it and still w
 
 `name` is client input and is matched against `^[a-z0-9-]{1,64}$` before it is used as a filename, and
 the body must parse as JSON before anything is written.
+
+## world-map.js and the Base Game
+
+`drawArrow` is exported as of 2026-09-02 so `base-game-world-map.js` draws the same arrow rather than
+keeping a second copy. That module is the Base Game's map: it reuses `bakeMapPixels` and the arrow,
+and replaces `bakeMapCanvas` with a bake that follows the player, because the Base Game streams an
+unbounded terrain window and has no bounded authored map to bake once. See "A map, and a mouse that
+does something while you fly" in `base-game.md`.
+
+Two documented details of this file have drifted from the code and are worth fixing next time it is
+touched: `createWorldMapOverlay` is documented with a `getOverlayLabel` parameter it does not have,
+and `bakeMapCanvas`'s documented return shape omits `terrainDetailCanvas`, which both host pages
+actually blit.

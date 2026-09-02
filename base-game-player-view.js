@@ -1,4 +1,13 @@
 import * as THREE from 'three';
+
+export function obstructionDistance(worldQuery, origin, target, padding = 0, direction = new THREE.Vector3()) {
+  direction.subVectors(target, origin);
+  const distance = direction.length();
+  if (distance <= 1e-6) return 0;
+  direction.multiplyScalar(1 / distance);
+  const hit = worldQuery.raycast({ origin: origin.toArray(), direction: direction.toArray(), maxDistance: distance });
+  return hit ? Math.max(0.12, hit.distance - padding) : distance;
+}
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { dampAlpha } from './bot-camera-control.js';
 
@@ -73,19 +82,6 @@ export function createBaseGamePlayerView({
     material.color.setHex(grounded ? 0x65d9ff : 0xffb85c);
   }
 
-  function obstructionDistance(origin, target, padding) {
-    rayDirection.subVectors(target, origin);
-    const distance = rayDirection.length();
-    if (distance <= 1e-6) return 0;
-    rayDirection.multiplyScalar(1 / distance);
-    const hit = worldQuery.raycast({
-      origin: origin.toArray(),
-      direction: rayDirection.toArray(),
-      maxDistance: distance,
-    });
-    return hit ? Math.max(0.12, hit.distance - padding) : distance;
-  }
-
   function updateCamera(dt, globalFootPosition, {
     mode = 'thirdPerson',
     distance = 5,
@@ -147,7 +143,7 @@ export function createBaseGamePlayerView({
     const cp = Math.cos(pitch);
     forward.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
     desiredCamera.copy(smoothedFocus).addScaledVector(forward, -Math.max(0.5, distance));
-    const clearDistance = obstructionDistance(smoothedFocus, desiredCamera, obstructionPadding);
+    const clearDistance = obstructionDistance(worldQuery, smoothedFocus, desiredCamera, obstructionPadding, rayDirection);
     const obstructed = clearDistance + 1e-4 < distance;
     if (clearDistance < boomDistance) boomDistance = clearDistance;
     else boomDistance += (Math.max(0.5, distance) - boomDistance) * dampAlpha(safeDt, 4);
@@ -157,7 +153,7 @@ export function createBaseGamePlayerView({
 
     // Damping must never place the camera through a wall. Clamp the smoothed result as a second,
     // camera-only query; body collision and camera obstruction remain distinct systems.
-    const smoothedClear = obstructionDistance(smoothedFocus, smoothedCamera, obstructionPadding);
+    const smoothedClear = obstructionDistance(worldQuery, smoothedFocus, smoothedCamera, obstructionPadding, rayDirection);
     rayDirection.subVectors(smoothedCamera, smoothedFocus);
     const smoothedDistance = rayDirection.length();
     if (smoothedDistance > 1e-6 && smoothedClear < smoothedDistance) {

@@ -43,8 +43,14 @@ export function createForestGPU(opts) {
   // that fourth region would allocate, finalize and precompile resources which can never draw.
   const HAS_BILLBOARDS = opts.billboards !== false;
   const LODS = HAS_BILLBOARDS ? 4 : 3;
+  // Shadow list (Base Game): a host that names a layer gets one extra region per variant holding
+  // every instance within uShadowReach, cone or not, drawn by two shadow-only meshes on that layer.
+  const SHADOW_LAYER = Number.isInteger(opts.shadowLayer) ? opts.shadowLayer : null;
+  const SHADOW_LIST = SHADOW_LAYER !== null;
+  const SHADOW_SLOT = LODS;
+  const SLOTS = LODS + (SHADOW_LIST ? 1 : 0);
   const SRC_TOTAL = V * CAP;
-  const DRAW_TOTAL = V * LODS * CAP;
+  const DRAW_TOTAL = V * SLOTS * CAP;
 
   // ---- GPU buffers ----
   // source (CPU-filled on chunk change): V*CAP instances x 2 vec4
@@ -56,8 +62,8 @@ export function createForestGPU(opts) {
   // per-variant live source count (CPU-uploaded), and VxLODS survivor counters (atomic)
   const countsAttr = new StorageBufferAttribute(new Uint32Array(V), 1);
   const srcCounts = storage(countsAttr, 'uint', V);
-  const survAttr = new StorageBufferAttribute(new Uint32Array(V * LODS), 1);
-  const survAtomics = storage(survAttr, 'uint', V * LODS).toAtomic();
+  const survAttr = new StorageBufferAttribute(new Uint32Array(V * SLOTS), 1);
+  const survAtomics = storage(survAttr, 'uint', V * SLOTS).toAtomic();
 
   // Seven indirect buffers per variant, plus the optional billboard; element(1) is instanceCount.
   const indirectAttrs = [];
@@ -78,6 +84,7 @@ export function createForestGPU(opts) {
       coarseLeavesL2: mk(v.leavesCoarse),
     };
     if (HAS_BILLBOARDS) a.billboardL3 = mkBill();
+    if (SHADOW_LIST) { a.barkShadow = mk(v.branches); a.leafShadow = mk(v.shadow); }
     indirectAttrs.push(a);
     const sn = (attr) => storage(attr, 'uint', 5);
     const nodes = {
@@ -90,6 +97,7 @@ export function createForestGPU(opts) {
       coarseLeavesL2: sn(a.coarseLeavesL2),
     };
     if (HAS_BILLBOARDS) nodes.billboardL3 = sn(a.billboardL3);
+    if (SHADOW_LIST) { nodes.barkShadow = sn(a.barkShadow); nodes.leafShadow = sn(a.leafShadow); }
     indirectNodes.push(nodes);
   }
 
@@ -120,6 +128,7 @@ export function createForestGPU(opts) {
   const uConeMargin = uniform(opts.coneMargin ?? 0.5);
   const uRearMargin = uniform(0.1);
   const uConeEnabled = uniform(1);
+  const uShadowReach = uniform(0);   // metres; 0 = the shadow list is empty
   function variantCanopyRadius(variant) {
     if (!variant.branches.boundingBox) variant.branches.computeBoundingBox();
     if (!variant.leaves.boundingBox) variant.leaves.computeBoundingBox();
@@ -139,7 +148,7 @@ export function createForestGPU(opts) {
   let originX = 0, originY = 0, originZ = 0;
 
   // ---- compute kernels: reset (clear V counters) -> cull+compact -> finalize ----
-  const reset = Fn(() => { atomicStore(survAtomics.element(instanceIndex), uint(0)); })().compute(V * LODS);
+  const reset = Fn(() => { atomicStore(survAtomics.element(instanceIndex), uint(0)); })().compute(V * SLOTS);
 
   const cull = Fn(() => {
     const idx = int(instanceIndex);                 // 0 .. V*CAP-1
@@ -156,6 +165,18 @@ export function createForestGPU(opts) {
 
       // ---- Milestone 3: hard far cutoff (before LOD/cone work) ----
       const farLive = dist.lessThanEqual(uMaxDrawRadius);
+
+      if (SHADOW_LIST) {
+        // Casters are everything within reach, behind the camera included: a tree beside you
+        // casts across your feet. The cone below is for what the eye sees, not the light.
+        If(dist2.lessThanEqual(uShadowReach.mul(uShadowReach)).and(uShadowReach.greaterThan(float(0))), () => {
+          const ci = uint(g.mul(int(SLOTS)).add(int(SHADOW_SLOT)));
+          const s = atomicAdd(survAtomics.element(ci), uint(1));
+          const outBase = uint(g.mul(int(SLOTS * CAP)).add(int(SHADOW_SLOT * CAP))).add(s).mul(uint(2));
+          draw.element(outBase).assign(rec0);
+          draw.element(outBase.add(uint(1))).assign(rec1);
+        });
+      }
 
       // ---- Milestone 2: behind-camera / outside-padded-cone rejection ----
       // Same math as forest-cull.js's classifyInstance() cone branch: normalize the
@@ -180,30 +201,30 @@ export function createForestGPU(opts) {
         const r0sq = uLodR0.mul(uLodR0);
         const r1sq = uLodR1.mul(uLodR1);
         const r2sq = uLodR2.mul(uLodR2);
-        const lodCap = int(LODS * CAP);
+        const lodCap = int(SLOTS * CAP);
         const varBase = g.mul(lodCap);
 
         const lodChain = If(dist2.lessThanEqual(r0sq), () => {
-          const ci = uint(g.mul(int(LODS)));
+          const ci = uint(g.mul(int(SLOTS)));
           const s = atomicAdd(survAtomics.element(ci), uint(1));
           const outBase = uint(varBase).add(s).mul(uint(2));
           draw.element(outBase).assign(rec0);
           draw.element(outBase.add(uint(1))).assign(rec1);
         }).ElseIf(dist2.lessThanEqual(r1sq), () => {
-          const ci = uint(g.mul(int(LODS)).add(int(1)));
+          const ci = uint(g.mul(int(SLOTS)).add(int(1)));
           const s = atomicAdd(survAtomics.element(ci), uint(1));
           const outBase = uint(varBase.add(int(CAP))).add(s).mul(uint(2));
           draw.element(outBase).assign(rec0);
           draw.element(outBase.add(uint(1))).assign(rec1);
         }).ElseIf(dist2.lessThanEqual(r2sq), () => {
-          const ci = uint(g.mul(int(LODS)).add(int(2)));
+          const ci = uint(g.mul(int(SLOTS)).add(int(2)));
           const s = atomicAdd(survAtomics.element(ci), uint(1));
           const outBase = uint(varBase.add(int(2 * CAP))).add(s).mul(uint(2));
           draw.element(outBase).assign(rec0);
           draw.element(outBase.add(uint(1))).assign(rec1);
         });
         if (HAS_BILLBOARDS) lodChain.Else(() => {
-          const ci = uint(g.mul(int(LODS)).add(int(3)));
+          const ci = uint(g.mul(int(SLOTS)).add(int(3)));
           const s = atomicAdd(survAtomics.element(ci), uint(1));
           const outBase = uint(varBase.add(int(3 * CAP))).add(s).mul(uint(2));
           draw.element(outBase).assign(rec0);
@@ -217,8 +238,9 @@ export function createForestGPU(opts) {
   const finalizersA = [], finalizersB = [];
   for (let g = 0; g < V; g++) {
     const nodes = indirectNodes[g];
-    const c0idx = g * LODS + 0, c1idx = g * LODS + 1;
-    const c2idx = g * LODS + 2;
+    const c0idx = g * SLOTS + 0, c1idx = g * SLOTS + 1;
+    const c2idx = g * SLOTS + 2;
+    const csidx = g * SLOTS + SHADOW_SLOT;
     finalizersA.push(Fn(() => {
       const c0 = atomicLoad(survAtomics.element(c0idx));
       const c1 = atomicLoad(survAtomics.element(c1idx));
@@ -229,19 +251,29 @@ export function createForestGPU(opts) {
       nodes.leavesL1.element(1).assign(c1);
     })().compute(1));
     if (HAS_BILLBOARDS) {
-      const c3idx = g * LODS + 3;
+      const c3idx = g * SLOTS + 3;
       finalizersB.push(Fn(() => {
         const c2 = atomicLoad(survAtomics.element(c2idx));
         const c3 = atomicLoad(survAtomics.element(c3idx));
         nodes.branchesL2.element(1).assign(c2);
         nodes.coarseLeavesL2.element(1).assign(c2);
         nodes.billboardL3.element(1).assign(c3);
+        if (SHADOW_LIST) {
+          const cs = atomicLoad(survAtomics.element(csidx));
+          nodes.barkShadow.element(1).assign(cs);
+          nodes.leafShadow.element(1).assign(cs);
+        }
       })().compute(1));
     } else {
       finalizersB.push(Fn(() => {
         const c2 = atomicLoad(survAtomics.element(c2idx));
         nodes.branchesL2.element(1).assign(c2);
         nodes.coarseLeavesL2.element(1).assign(c2);
+        if (SHADOW_LIST) {
+          const cs = atomicLoad(survAtomics.element(csidx));
+          nodes.barkShadow.element(1).assign(cs);
+          nodes.leafShadow.element(1).assign(cs);
+        }
       })().compute(1));
     }
   }
@@ -298,13 +330,18 @@ export function createForestGPU(opts) {
   }
 
   function lodSlotOffset(g, l) {
-    return g * LODS * CAP + l * CAP;
+    return g * SLOTS * CAP + l * CAP;
   }
-  function drawMesh(geom, mat, indirectAttr, castShadow) {
+  function drawableGeometry(geom, indirectAttr) {
     const g2 = geom.clone();
     g2.instanceCount = CAP;
     g2.indirect = indirectAttr;
+    return g2;
+  }
+  function drawMesh(geom, mat, indirectAttr, castShadow, name = '') {
+    const g2 = drawableGeometry(geom, indirectAttr);
     const mesh = new THREE.Mesh(g2, mat);
+    mesh.name = name;   // so a scene census can attribute the forest's always-on meshes
     mesh.frustumCulled = false;
     mesh.castShadow = castShadow;
     mesh.receiveShadow = true;
@@ -348,7 +385,7 @@ export function createForestGPU(opts) {
   }
 
   const uBillBrightness = uniform(1.0);
-  const branchMats = [], leafMats = [], coarseLeafMats = [], billboardMats = [], meshes = [];
+  const branchMats = [], leafMats = [], coarseLeafMats = [], billboardMats = [], shadowMats = [], meshes = [];
   // P5/Milestone 6: materials whose `.side` the "Tree leaves double-sided" perfAB toggle flips
   // at runtime (L1 leaves, coarse L2 leaves, billboards -- see the comment above where they're
   // created). L0 leaf materials are intentionally excluded; they stay hardcoded DoubleSide.
@@ -426,23 +463,41 @@ export function createForestGPU(opts) {
     coarseLeafMats.push(coarseMat);
     if (billMat) billboardMats.push(billMat);
 
-    meshes.push(drawMesh(variant.branches, branchMat, indirectAttrs[g].branchesL0, true));
-    meshes.push(drawMesh(variant.leaves, leafMat, indirectAttrs[g].leavesL0, false));
-    meshes.push(drawMesh(variant.shadow, leafMat, indirectAttrs[g].shadowL0, true));
-    meshes.push(drawMesh(branchesL1Geo, branchMat1, indirectAttrs[g].branchesL1, true));
-    meshes.push(drawMesh(variant.leaves, leafMat1, indirectAttrs[g].leavesL1, false));
-    meshes.push(drawMesh(branchesL2Geo, branchMat2, indirectAttrs[g].branchesL2, true));
-    meshes.push(drawMesh(variant.leavesCoarse, coarseMat, indirectAttrs[g].coarseLeavesL2, false));
+    meshes.push(drawMesh(variant.branches, branchMat, indirectAttrs[g].branchesL0, true, `forest:v${g}:branchesL0`));
+    meshes.push(drawMesh(variant.leaves, leafMat, indirectAttrs[g].leavesL0, false, `forest:v${g}:leavesL0`));
+    meshes.push(drawMesh(variant.shadow, leafMat, indirectAttrs[g].shadowL0, true, `forest:v${g}:shadowL0`));
+    meshes.push(drawMesh(branchesL1Geo, branchMat1, indirectAttrs[g].branchesL1, true, `forest:v${g}:branchesL1`));
+    meshes.push(drawMesh(variant.leaves, leafMat1, indirectAttrs[g].leavesL1, false, `forest:v${g}:leavesL1`));
+    meshes.push(drawMesh(branchesL2Geo, branchMat2, indirectAttrs[g].branchesL2, true, `forest:v${g}:branchesL2`));
+    meshes.push(drawMesh(variant.leavesCoarse, coarseMat, indirectAttrs[g].coarseLeavesL2, false, `forest:v${g}:coarseLeavesL2`));
 
     if (HAS_BILLBOARDS) {
       const billGeo = variantBillboardGeo(variant);
       billGeo.instanceCount = CAP;
       billGeo.indirect = indirectAttrs[g].billboardL3;
       const billMesh = new THREE.Mesh(billGeo, billMat);
+      billMesh.name = `forest:v${g}:billboard`;
       billMesh.frustumCulled = false;
       billMesh.castShadow = false;
       billMesh.receiveShadow = true;
       meshes.push(billMesh);
+    }
+
+    if (SHADOW_LIST) {
+      // Shadow-only pair: full trunk plus the reduced leaf cards, on the shadow layer so the main
+      // camera never sees them. One bark caster replaces the three per-rung ones.
+      const nS = instanceNodes(lodSlotOffset(g, SHADOW_SLOT), uTreeScale);
+      const nSLeaf = instanceNodes(lodSlotOffset(g, SHADOW_SLOT), uTreeScale.mul(uLeafScale), true);
+      const barkShadowMat = makeMat(0.9, false);
+      const leafShadowMat = makeMat(1.0, true);
+      barkShadowMat.positionNode = nS.world; barkShadowMat.normalNode = nS.nWorld;
+      leafShadowMat.positionNode = nSLeaf.world; leafShadowMat.normalNode = nSLeaf.nWorld;
+      shadowMats.push({ bark: barkShadowMat, leaf: leafShadowMat });
+      // Bark casts from the L2 trunk geometry: at ~9cm shadow texels the full branches add nothing.
+      const barkShadow = drawMesh(branchesL2Geo, barkShadowMat, indirectAttrs[g].barkShadow, true, `forest:v${g}:barkShadow`);
+      const leafShadow = drawMesh(variant.shadow, leafShadowMat, indirectAttrs[g].leafShadow, true, `forest:v${g}:leafShadow`);
+      for (const m of [barkShadow, leafShadow]) { m.layers.set(SHADOW_LAYER); m.receiveShadow = false; }
+      meshes.push(barkShadow, leafShadow);
     }
   }
 
@@ -457,6 +512,9 @@ export function createForestGPU(opts) {
   let submittedDraws = 0;     // main-pass meshes actually left visible; shadow passes are separate
   let submittedShadowDraws = 0;
   const variantPopulated = new Uint8Array(V);
+  const variantReady = new Uint8Array(V);
+  variantReady.fill(opts.progressive ? 0 : 1);
+  let readyVariantCount = opts.progressive ? 0 : V;
   const renderParts = {
     bark: true, leaves: true, billboards: HAS_BILLBOARDS,
     barkShadows: true, leafShadows: true,
@@ -465,7 +523,10 @@ export function createForestGPU(opts) {
   // A disabled rung's trees VANISH rather than falling back to the next rung — that is the point:
   // it isolates one rung's raster cost. The cull still runs over the full V*CAP and still writes
   // every rung's indirect count, so this measures raster cost only.
-  const MESH_RUNG = HAS_BILLBOARDS ? [0, 0, 0, 1, 1, 2, 2, 3] : [0, 0, 0, 1, 1, 2, 2];
+  const MAIN_RUNG = HAS_BILLBOARDS ? [0, 0, 0, 1, 1, 2, 2, 3] : [0, 0, 0, 1, 1, 2, 2];
+  const MAIN_MESHES = MAIN_RUNG.length;
+  // The shadow-only pair (bark, leaf cards) follows the main meshes; -1 = belongs to no rung.
+  const MESH_RUNG = SHADOW_LIST ? [...MAIN_RUNG, -1, -1] : MAIN_RUNG;
   const MESHES_PER_VARIANT = MESH_RUNG.length;
   const lodEnabled = new Array(LODS).fill(true);
   // Which rungs cast. A rung whose near edge is past the shadow camera rasterises into a map it
@@ -490,8 +551,9 @@ export function createForestGPU(opts) {
 
   function syncRenderParts() {
     let draws = 0, shadowDraws = 0;
+    const shadowsOn = SHADOW_LIST && uShadowReach.value > 0;
     for (let g = 0; g < V; g++) {
-      const active = variantPopulated[g] === 1;
+      const active = variantReady[g] === 1 && variantPopulated[g] === 1;
       const b = g * MESHES_PER_VARIANT;
       const mask = [
         renderParts.bark,
@@ -503,14 +565,23 @@ export function createForestGPU(opts) {
         renderParts.leaves,
       ];
       if (HAS_BILLBOARDS) mask.push(renderParts.billboards && renderParts.bark && renderParts.leaves);
-      for (let m = 0; m < MESHES_PER_VARIANT; m++) {
-        meshes[b + m].visible = active && mask[m] && lodEnabled[MESH_RUNG[m]];
+      for (let m = 0; m < MAIN_MESHES; m++) {
+        meshes[b + m].visible = active && mask[m] && lodEnabled[MAIN_RUNG[m]];
         if (meshes[b + m].visible) draws++;
       }
-      for (const m of [0, 3, 5]) meshes[b + m].castShadow = renderParts.barkShadows && shadowRungs[MESH_RUNG[m]];
-      meshes[b + 2].castShadow = renderParts.leafShadows && shadowRungs[MESH_RUNG[2]];
-      for (let m = 0; m < MESHES_PER_VARIANT; m++) {
-        if (meshes[b + m].visible && meshes[b + m].castShadow) shadowDraws++;
+      if (SHADOW_LIST) {
+        // Main meshes never cast; the shadow-only pair carries every caster within reach.
+        for (let m = 0; m < MAIN_MESHES; m++) meshes[b + m].castShadow = false;
+        const bark = meshes[b + MAIN_MESHES], leaf = meshes[b + MAIN_MESHES + 1];
+        bark.visible = active && shadowsOn && renderParts.barkShadows;
+        leaf.visible = active && shadowsOn && renderParts.leafShadows;
+        shadowDraws += (bark.visible ? 1 : 0) + (leaf.visible ? 1 : 0);
+      } else {
+        for (const m of [0, 3, 5]) meshes[b + m].castShadow = renderParts.barkShadows && shadowRungs[MESH_RUNG[m]];
+        meshes[b + 2].castShadow = renderParts.leafShadows && shadowRungs[MESH_RUNG[2]];
+        for (let m = 0; m < MESHES_PER_VARIANT; m++) {
+          if (meshes[b + m].visible && meshes[b + m].castShadow) shadowDraws++;
+        }
       }
     }
     submittedDraws = draws;
@@ -535,13 +606,16 @@ export function createForestGPU(opts) {
       for (const r of records) {
         const g = r.speciesIdx * variantsPerSpecies + variantSel(r.slot);
         if (g < 0 || g >= V) continue;
+        if (!variantReady[g]) continue;
         const slot = countsArray[g];
         if (slot >= CAP) { dropped++; continue; }         // variant window full; drop extras
         countsArray[g] = slot + 1;
         const base = (g * CAP + slot) * 8;
         // Records are global; the buffer is render-local, and the cull compares against a
-        // render-local camera. heightAt is asked in global coordinates and answers in them.
-        const y = heightAt(r.x, r.z) + treeBaseOffset - originY;
+        // render-local camera. A record that carries its ground height is trusted; heightAt is
+        // the fallback, asked in global coordinates and answering in them.
+        const ground = Number.isFinite(r.ground) ? r.ground : heightAt(r.x, r.z);
+        const y = ground + treeBaseOffset - originY;
         srcArray[base] = r.x - originX; srcArray[base + 1] = y; srcArray[base + 2] = r.z - originZ; srcArray[base + 3] = r.scale;
         srcArray[base + 4] = r.yaw; srcArray[base + 5] = 0; srcArray[base + 6] = 0; srcArray[base + 7] = 0;
         total++;
@@ -658,9 +732,91 @@ export function createForestGPU(opts) {
   });
 
   const computeNodes = [reset, cull, ...finalizersA, ...finalizersB];
+  const activeFinalizersA = [], activeFinalizersB = [];
+  function syncActiveFinalizers() {
+    activeFinalizersA.length = 0;
+    activeFinalizersB.length = 0;
+    for (let g = 0; g < V; g++) if (variantReady[g]) {
+      activeFinalizersA.push(finalizersA[g]);
+      activeFinalizersB.push(finalizersB[g]);
+    }
+  }
+  syncActiveFinalizers();
+
+  async function warmNodes(nodes, yieldFn, shouldContinue) {
+    for (let i = 0; i < nodes.length; i++) {
+      if (!shouldContinue()) return false;
+      await renderer.computeAsync(nodes[i]);
+      if (i + 1 < nodes.length) await yieldFn();
+    }
+    markDirty();
+    return nodes.length;
+  }
 
   return {
     meshes,
+    variantMeshes(g) {
+      if (!Number.isInteger(g) || g < 0 || g >= V) return [];
+      const start = g * MESHES_PER_VARIANT;
+      return meshes.slice(start, start + MESHES_PER_VARIANT);
+    },
+    installVariant(g, variant) {
+      if (!Number.isInteger(g) || g < 0 || g >= V || !variant) return false;
+      const branchesL1Geo = variant.branchesLod1 ?? variant.branches;
+      const branchesL2Geo = variant.branchesLod2 ?? variant.branches;
+      const geos = [
+        variant.branches, variant.leaves, variant.shadow,
+        branchesL1Geo, variant.leaves, branchesL2Geo, variant.leavesCoarse,
+      ];
+      const attrs = indirectAttrs[g];
+      const indirect = [
+        attrs.branchesL0, attrs.leavesL0, attrs.shadowL0,
+        attrs.branchesL1, attrs.leavesL1, attrs.branchesL2, attrs.coarseLeavesL2,
+      ];
+      const start = g * MESHES_PER_VARIANT;
+      for (let m = 0; m < 7; m++) {
+        const old = meshes[start + m].geometry;
+        meshes[start + m].geometry = drawableGeometry(geos[m], indirect[m]);
+        old.dispose();
+        indirect[m].array[0] = geos[m].index.count;
+        indirect[m].needsUpdate = true;
+      }
+      if (HAS_BILLBOARDS) {
+        const billGeo = variantBillboardGeo(variant);
+        billGeo.instanceCount = CAP;
+        billGeo.indirect = attrs.billboardL3;
+        const old = meshes[start + 7].geometry;
+        meshes[start + 7].geometry = billGeo;
+        old.dispose();
+      }
+      if (SHADOW_LIST) {
+        const pairs = [[MAIN_MESHES, variant.branchesLod2 ?? variant.branches, attrs.barkShadow], [MAIN_MESHES + 1, variant.shadow, attrs.leafShadow]];
+        for (const [m, geo, attr] of pairs) {
+          const old = meshes[start + m].geometry;
+          meshes[start + m].geometry = drawableGeometry(geo, attr);
+          old.dispose();
+          attr.array[0] = geo.index.count;
+          attr.needsUpdate = true;
+        }
+      }
+      palette.variants[g] = variant;
+      uTreeRadius.value = Math.max(uTreeRadius.value, variantCanopyRadius(variant));
+      markDirty();
+      return true;
+    },
+    setVariantReady(g, ready = true) {
+      if (!Number.isInteger(g) || g < 0 || g >= V) return false;
+      const next = ready ? 1 : 0;
+      if (variantReady[g] === next) return false;
+      variantReady[g] = next;
+      readyVariantCount += next ? 1 : -1;
+      syncActiveFinalizers();
+      syncRenderParts();
+      // Source counts intentionally exclude unfinished variants. Rebuild once so activating a
+      // wave uploads its matching records, or deactivating one removes them from cull work.
+      needsRebuild = true;
+      return true;
+    },
     // Drive the same material binding the baked path uses: fn(branchMat, leafMat) is
     // called for every variant (procedural bark colorNode, or authored bark/leaf maps).
     applyTextureSet(fn) {
@@ -669,6 +825,7 @@ export function createForestGPU(opts) {
         fn(bm.L0, lm.L0);
         fn(bm.L1, lm.L1);
         fn(bm.L2, coarseLeafMats[g]);
+        if (SHADOW_LIST) fn(shadowMats[g].bark, shadowMats[g].leaf);   // the leaf cutout needs its map
       }
     },
     get billboardMaterials() { return billboardMats; },
@@ -748,6 +905,17 @@ export function createForestGPU(opts) {
       if (changed) syncRenderParts();
     },
     get shadowRungs() { return [...shadowRungs]; },
+    // Shadow list radius. 0 empties the list and hides the shadow-only meshes; without a shadow
+    // layer this is a no-op and the per-rung castShadow flags above still decide.
+    setShadowReach(m) {
+      const next = Number.isFinite(m) ? Math.max(0, m) : 0;
+      if (uShadowReach.value === next) return;
+      uShadowReach.value = next;
+      markDirty();
+      syncRenderParts();
+    },
+    get shadowReach() { return uShadowReach.value; },
+    get shadowLayer() { return SHADOW_LAYER; },
     setLodDistances(r0, r1, r2) {
       let changed = false;
       if (uLodR0.value !== r0) { uLodR0.value = r0; changed = true; }
@@ -801,7 +969,7 @@ export function createForestGPU(opts) {
       uCam.value.set(camX, camZ);
       uCamFwd.value.set(camFx, camFz);
       uFovCos.value = camFovCos;
-      await renderer.computeAsync([reset, cull, ...finalizersA, ...finalizersB]);
+      await renderer.computeAsync([reset, cull, ...activeFinalizersA, ...activeFinalizersB]);
       lastCamX = camX;
       lastCamZ = camZ;
       lastCamFx = camFx;
@@ -829,20 +997,22 @@ export function createForestGPU(opts) {
     // Three's computeAsync initializes the renderer asynchronously but creates a missing compute
     // pipeline synchronously after that. Warm one node per yielded task while the host still shows
     // its loading state, so the first visible recull does not discover the entire chain at once.
-    async warmupCompute(yieldFn = async () => {}, shouldContinue = () => true) {
-      for (let i = 0; i < computeNodes.length; i++) {
-        if (!shouldContinue()) return false;
-        await renderer.computeAsync(computeNodes[i]);
-        if (i + 1 < computeNodes.length) await yieldFn();
-      }
-      markDirty();
-      return computeNodes.length;
+    warmupComputeShared(yieldFn = async () => {}, shouldContinue = () => true) {
+      return warmNodes([reset, cull], yieldFn, shouldContinue);
+    },
+    warmupVariant(g, yieldFn = async () => {}, shouldContinue = () => true) {
+      if (!Number.isInteger(g) || g < 0 || g >= V) return false;
+      return warmNodes([finalizersA[g], finalizersB[g]], yieldFn, shouldContinue);
+    },
+    warmupCompute(yieldFn = async () => {}, shouldContinue = () => true) {
+      return warmNodes(computeNodes, yieldFn, shouldContinue);
     },
     get summary() {
       return {
         draws: submittedDraws,
         shadowDraws: submittedShadowDraws,
         visibleVariants,
+        readyVariants: readyVariantCount,
         variants: V,
         instances: cpuInstances,
         capacity: SRC_TOTAL,
@@ -853,6 +1023,8 @@ export function createForestGPU(opts) {
         skippedReculls,
         lodCount: LODS,
         hasBillboards: HAS_BILLBOARDS,
+        shadowList: SHADOW_LIST,
+        shadowReach: uShadowReach.value,
         computePipelines: computeNodes.length,
       };
     },

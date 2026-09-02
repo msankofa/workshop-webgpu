@@ -1,0 +1,1398 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Chrysalis Engine</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #020307; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  #gui-container {
+    position: fixed; top: 0; right: 0; z-index: 20;
+    height: 100vh; height: 100dvh;
+    overflow-x: hidden; overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    touch-action: pan-y;
+  }
+  #gui-container > .lil-gui.root { max-height: none; }
+  #credit {
+    position: fixed; left: 12px; top: 10px; z-index: 10; max-width: 54ch;
+    font: 11px/1.55 ui-monospace, Menlo, Consolas, monospace;
+    color: #66809b; pointer-events: none; text-shadow: 0 1px 2px #000;
+  }
+  #credit a { color: #83ddff; text-decoration: none; pointer-events: auto; }
+  #status {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    color: #a7c2d8; background: rgba(3, 7, 13, 0.72);
+    border: 1px solid rgba(104, 183, 224, 0.15);
+    padding: 6px 9px; border-radius: 5px; pointer-events: none;
+  }
+  #help {
+    position: fixed; right: 12px; bottom: 10px; z-index: 9;
+    font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    color: #687a8e; text-align: right; pointer-events: none;
+  }
+  .lil-gui .controller.randomizable > .name {
+    display: flex; align-items: center; gap: 3px;
+  }
+  .lil-gui .randomize-toggle {
+    all: unset; box-sizing: border-box; display: inline-flex;
+    flex: 0 0 12px; width: 12px; height: 12px;
+    align-items: center; justify-content: center;
+    border: 1px solid #69717c; border-radius: 2px;
+    background: #30343a; cursor: pointer;
+  }
+  .lil-gui .randomize-toggle::after {
+    content: '✓'; color: #2cc9ff; font: 700 10px/1 sans-serif;
+    opacity: 0; transform: translateY(-0.5px);
+  }
+  .lil-gui .randomize-toggle.checked::after { opacity: 1; }
+  .lil-gui .randomize-toggle:focus-visible {
+    outline: 1px solid #2cc9ff; outline-offset: 1px;
+  }
+  @media (max-width: 760px) {
+    #credit { max-width: 44vw; font-size: 9px; }
+    #help { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id='gui-container'></div>
+<div id='credit'>
+  Chrysalis Engine synthesizes three MIT-licensed works by
+  <a href='https://codepen.io/sabosugi' target='_blank' rel='noopener'>Sabo Sugi</a>:
+  <a href='https://codepen.io/sabosugi/pen/xbgWxvN' target='_blank' rel='noopener'>Alien Cell</a>,
+  <a href='https://codepen.io/sabosugi/pen/JobXbPW' target='_blank' rel='noopener'>Xenolith Diamond</a>,
+  and <a href='https://codepen.io/sabosugi/pen/vEyOYEX' target='_blank' rel='noopener'>Abnormal Sphere Morphing</a>.
+  Its default shared anatomy comes from the repo's
+  <a href='../../demos/sdf-bug.html'>SDF bug</a>; the
+  <a href='../../demos/sdf-creature.html'>SDF creature</a> after
+  <a href='https://x.com/DrinLajci' target='_blank' rel='noopener'>Drin</a> remains selectable.
+</div>
+<div id='status'>loading...</div>
+<div id='help'>click: crystallize &nbsp; shift-click: heal<br>drag: orbit &nbsp; wheel: zoom</div>
+
+<script type='module'>
+/**
+ * One implicit body, not a composited stack:
+ *
+ * - Abnormal Sphere Morphing supplies the living radial warp.
+ * - Alien Cell supplies folded tissue, a hollow core, and orbit-trap vascular channels.
+ * - The repo's SDF bug supplies the default anatomy shared by both phases.
+ * - The repo's SDF creature remains an alternate shared anatomy.
+ * - Xenolith Diamond supplies the triangular lattice that facets the rigid phase.
+ *
+ * Directional growth seeds change the final distance field, coordinate stiffness, surface material, and
+ * internal density. Alien traps bend the propagation front; mature crystal suppresses organic warp.
+ */
+import * as THREE from '../../node_modules/three/build/three.module.js';
+import { GUI } from '../../node_modules/three/examples/jsm/libs/lil-gui.module.min.js';
+import { createDiskStore, describeStatus } from '../../disk-store.js';
+import { CHRYSALIS_GLSL, CHRYSALIS_MAX_SEEDS } from './chrysalis-field.js';
+
+const CONFIG = {
+  dpr: 1.0,
+  outerSteps: 96,
+  interiorSteps: 28,
+  stepSafety: 0.46,
+  showInterior: true,
+  animationSpeed: 1.0,
+  autoRotate: true,
+  rotationSpeed: 0.10,
+  cameraRadius: 4.7,
+  cameraZoom: 1.85,
+
+  growthRunning: true,
+  growthSpeed: 0.085,
+  growthFeather: 0.15,
+  veinAffinity: 0.72,
+  globalGrowth: 0.0,
+  selectedSeedIndex: 0,
+  selectedSeedRadius: 0.72,
+  selectedSeedStrength: 1.0,
+  selectedSeedSpeed: 1.0,
+
+  anatomyMode: 0,
+  bodyRadius: 1.18,
+  anatomyBodyWidth: 1.0,
+  anatomyAppendageLength: 1.0,
+  anatomyEyeSize: 1.0,
+  anatomyLegScale: 1.0,
+  bugAbdomenWidth: 1.0,
+  bugAbdomenHeight: 1.0,
+  bugAbdomenLength: 1.0,
+  bugHeadScale: 1.0,
+  bugGrooveDepth: 0.01,
+  bugAntennaElevation: -0.15,
+  bugAntennaPitch: -0.196,
+  bugAntennaThickness: 1.0,
+  bugFrontLegSpread: 1.0,
+  bugMiddleLegSpread: 1.0,
+  bugRearLegSpread: 1.0,
+  organicWarpAmp: 0.52,
+  organicWarpFalloff: 1.26,
+  organicWarpFrequency: 5.4,
+  organicWarpVelocity: -0.34,
+  organicNoiseScale: 3.1,
+  organicNoiseVelocity: 0.18,
+  organicRelief: 0.34,
+  organicPulse: 0.035,
+  organicPulseFrequency: 1.15,
+  organicPulseWavelength: 6.5,
+  cellStructure: 0.62,
+  alienFoldScale: 1.72,
+  alienFoldRotation: 1.0,
+  alienVeinWidth: 1.0,
+  foldDisplacement: 0.38,
+  veinEmboss: 0.045,
+  coreRadius: 0.24,
+
+  crystalScale: 1.42,
+  crystalRotX: 0.08,
+  crystalRotY: -0.32,
+  crystalRotZ: 0.12,
+  crystalStiffness: 1.45,
+  facetFrequency: 3.6,
+  facetRelief: 0.085,
+  frontRelief: 0.10,
+  latticeSkew: 0.0,
+  latticeAnisotropy: 1.0,
+
+  surfaceOpacity: 0.62,
+  interiorDensity: 1.05,
+  absorption: 0.24,
+  organicColor1: '#00eaff',
+  organicColor2: '#6a25ff',
+  organicColor3: '#8cff18',
+  crystalColor1: '#83e8ff',
+  crystalColor2: '#f4bdff',
+  frontColor: '#fff2b0',
+  backgroundColor: '#010207',
+  organicRoughness: 0.82,
+  crystalRoughness: 0.30,
+  organicSpecular: 0.45,
+  crystalSpecular: 1.45,
+  rimIntensity: 1.0,
+  keyAzimuth: -0.62,
+  keyElevation: 0.96,
+  fillAzimuth: 2.23,
+  fillElevation: 0.18,
+  keyIntensity: 0.62,
+  fillIntensity: 0.18,
+  exposure: 1.34,
+  gamma: 2.2,
+  debugMode: 0,
+};
+
+const DEFAULT_CONFIG = JSON.parse(JSON.stringify(CONFIG));
+const DEFAULT_SEEDS = [
+  { direction: [0.76, 0.22, -0.61], radius: 0.72, strength: 1.0, polarity: 1, speed: 1.00 },
+  { direction: [-0.48, 0.70, -0.52], radius: 0.46, strength: 0.92, polarity: 1, speed: 0.78 },
+  { direction: [0.18, -0.88, 0.44], radius: 0.22, strength: 0.86, polarity: 1, speed: 0.62 },
+];
+
+const cloneSeeds = (source = DEFAULT_SEEDS) => source.map((seed) => ({
+  direction: [...seed.direction],
+  radius: seed.radius,
+  strength: seed.strength,
+  polarity: seed.polarity,
+  speed: seed.speed,
+}));
+
+let seeds = cloneSeeds();
+let yaw = 0.34;
+let pitch = -0.08;
+let elapsed = 0;
+
+const vertexShader = /* glsl */ `
+  void main() {
+    gl_Position = vec4(position, 1.0);
+  }
+`;
+
+const fragmentShader = /* glsl */ `
+  precision highp float;
+  precision highp int;
+
+  uniform vec2 uResolution;
+  uniform float uCameraYaw;
+  uniform float uCameraPitch;
+  uniform float uCameraRadius;
+  uniform float uCameraZoom;
+  uniform int uOuterSteps;
+  uniform int uInteriorSteps;
+  uniform float uStepSafety;
+  uniform float uShowInterior;
+  uniform float uSurfaceOpacity;
+  uniform float uInteriorDensity;
+  uniform float uAbsorption;
+  uniform vec3 uOrganicColor1;
+  uniform vec3 uOrganicColor2;
+  uniform vec3 uOrganicColor3;
+  uniform vec3 uCrystalColor1;
+  uniform vec3 uCrystalColor2;
+  uniform vec3 uFrontColor;
+  uniform vec3 uBackgroundColor;
+  uniform float uOrganicRoughness;
+  uniform float uCrystalRoughness;
+  uniform float uOrganicSpecular;
+  uniform float uCrystalSpecular;
+  uniform float uRimIntensity;
+  uniform float uKeyAzimuth;
+  uniform float uKeyElevation;
+  uniform float uFillAzimuth;
+  uniform float uFillElevation;
+  uniform float uKeyIntensity;
+  uniform float uFillIntensity;
+  uniform float uExposure;
+  uniform float uGamma;
+  uniform int uDebugMode;
+
+  ${CHRYSALIS_GLSL}
+
+  vec3 chHolo(float t) {
+    t = fract(t);
+    if (t < 0.333333) return mix(uOrganicColor1, uOrganicColor2, smoothstep(0.0, 0.333333, t));
+    if (t < 0.666667) return mix(uOrganicColor2, uOrganicColor3, smoothstep(0.333333, 0.666667, t));
+    return mix(uOrganicColor3, uOrganicColor1, smoothstep(0.666667, 1.0, t));
+  }
+
+  float chIdMask(float id, float target) {
+    return 1.0 - smoothstep(0.15, 0.45, abs(id - target));
+  }
+
+  vec3 chDirectionalLight(float azimuth, float elevation) {
+    float horizontal = cos(elevation);
+    return normalize(vec3(
+      cos(azimuth) * horizontal,
+      sin(elevation),
+      sin(azimuth) * horizontal
+    ));
+  }
+
+  vec3 chNormal(vec3 p) {
+    const float e = 0.0035;
+    const vec2 k = vec2(1.0, -1.0);
+    return normalize(
+      k.xyy * chDistance(p + k.xyy * e) +
+      k.yyx * chDistance(p + k.yyx * e) +
+      k.yxy * chDistance(p + k.yxy * e) +
+      k.xxx * chDistance(p + k.xxx * e)
+    );
+  }
+
+  vec3 chRayDirection(vec3 ro, vec3 target, vec2 uv, float zoom) {
+    vec3 forward = normalize(target - ro);
+    vec3 referenceUp = abs(forward.y) > 0.96 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    vec3 right = normalize(cross(referenceUp, forward));
+    vec3 up = normalize(cross(forward, right));
+    return normalize(right * uv.x + up * uv.y + forward * zoom);
+  }
+
+  vec2 chRaySphere(vec3 ro, vec3 rd, float radius) {
+    float b = dot(ro, rd);
+    float c = dot(ro, ro) - radius * radius;
+    float h = b * b - c;
+    if (h < 0.0) return vec2(1.0, -1.0);
+    h = sqrt(h);
+    return vec2(-b - h, -b + h);
+  }
+
+  vec3 chSurfaceColor(vec3 ro, vec3 rd, vec3 p, vec3 n, ChrysalisSample state) {
+    float veins = chTrapVeins(state.trap);
+    float fresnel = pow(1.0 - max(dot(-rd, n), 0.0), 4.0);
+    vec3 reflected = reflect(rd, n);
+    float headMask = uAnatomyMode == 0 ? chIdMask(state.anatomy, 1.0) : 0.0;
+    float eyeMask = uAnatomyMode == 0
+      ? chIdMask(state.anatomy, 2.0)
+      : chIdMask(state.anatomy, 3.0);
+    float legMask = uAnatomyMode == 0 ? chIdMask(state.anatomy, 3.0) : 0.0;
+    float appendageMask = uAnatomyMode == 0
+      ? chIdMask(state.anatomy, 4.0)
+      : chIdMask(state.anatomy, 2.0);
+    float mouthMask = uAnatomyMode == 1 ? chIdMask(state.anatomy, 4.0) : 0.0;
+    float toothMask = uAnatomyMode == 1 ? chIdMask(state.anatomy, 5.0) : 0.0;
+
+    float organicPhase =
+      atan(reflected.z, reflected.x) / 6.2831853 +
+      reflected.y * 0.45 +
+      uTime * 0.025 +
+      veins * 0.55;
+    vec3 organic = chHolo(organicPhase);
+    organic *= 0.20 + veins * 0.88;
+    organic += mix(vec3(0.015), organic, 0.55) * fresnel * 1.35;
+    organic = mix(organic, uOrganicColor3 * 0.72, headMask * 0.24);
+    organic = mix(organic, uFrontColor * 0.74, appendageMask * 0.46);
+    organic = mix(organic, uOrganicColor2 * 1.25, eyeMask * 0.72);
+    organic = mix(organic, uOrganicColor1 * 0.60, legMask * 0.38);
+    organic = mix(organic, uOrganicColor3 * 0.18, mouthMask * 0.82);
+    organic = mix(organic, vec3(1.0, 0.88, 0.68), toothMask * 0.76);
+
+    float crystalBand = 0.5 + 0.5 * sin(
+      state.disturbance * 8.0 +
+      dot(p, vec3(2.8, 4.1, 3.3)) +
+      uTime * 0.22
+    );
+    vec3 crystal = mix(uCrystalColor1, uCrystalColor2, smoothstep(0.12, 0.90, crystalBand));
+    crystal *= 0.24 + state.disturbance * 0.38;
+    crystal += uCrystalColor1 * fresnel * 1.55;
+    crystal = mix(crystal, uCrystalColor2 * 0.74, headMask * 0.25);
+    crystal = mix(crystal, uFrontColor * (0.55 + fresnel), appendageMask * 0.42);
+    crystal = mix(crystal, uCrystalColor2 * 1.20, eyeMask * 0.62);
+    crystal = mix(crystal, uCrystalColor1 * 0.55, legMask * 0.34);
+    crystal = mix(crystal, uCrystalColor2 * 0.16, mouthMask * 0.86);
+    crystal = mix(crystal, vec3(1.0), toothMask * 0.78);
+
+    vec3 lightA = chDirectionalLight(uKeyAzimuth, uKeyElevation);
+    vec3 lightB = chDirectionalLight(uFillAzimuth, uFillElevation);
+    float diffuseA = max(dot(n, lightA), 0.0);
+    float diffuseB = max(dot(n, lightB), 0.0);
+    vec3 base = mix(organic, crystal, state.growth);
+    vec3 color = base * (0.10 + diffuseA * uKeyIntensity + diffuseB * uFillIntensity);
+
+    vec3 halfA = normalize(lightA - rd);
+    float organicPower = mix(180.0, 12.0, uOrganicRoughness);
+    float crystalPower = mix(180.0, 12.0, uCrystalRoughness);
+    float specPower = mix(organicPower, crystalPower, state.growth);
+    float specular = pow(max(dot(n, halfA), 0.0), specPower);
+    float specularStrength = mix(uOrganicSpecular, uCrystalSpecular, state.growth);
+    color += mix(uOrganicColor1, vec3(1.0), state.growth) * specular * specularStrength;
+
+    float frontEnergy = state.front * (0.55 + state.stress * 9.0);
+    float crack = pow(clamp(veins + state.disturbance * 0.20, 0.0, 1.0), 2.0);
+    color += uFrontColor * frontEnergy * (0.72 + crack * 1.45);
+    color += base * fresnel * mix(0.28, 0.70, state.growth) * uRimIntensity;
+    return color;
+  }
+
+  vec3 chInteriorColor(vec3 p, ChrysalisSample state, float density) {
+    float veins = chTrapVeins(state.trap);
+    float phase = atan(p.z, p.x) / 6.2831853 + p.y * 0.34 + uTime * 0.03 + veins * 0.45;
+    vec3 organic = chHolo(phase) * (0.18 + veins * 0.95);
+
+    float crystalPhase = state.disturbance * 7.5 + length(p.xy * 5.2);
+    vec3 crystal = mix(uCrystalColor1, uCrystalColor2, 0.5 + 0.5 * sin(crystalPhase));
+    crystal *= 0.26 + density * 0.68;
+
+    vec3 color = mix(organic, crystal, state.growth);
+    color = mix(color, uOrganicColor2, chIdMask(state.anatomy, 3.0) * 0.30);
+    color *= mix(1.0, 0.42, chIdMask(state.anatomy, 4.0));
+    color += uFrontColor * state.front * (0.28 + state.stress * 8.0);
+    return color;
+  }
+
+  vec3 chDebugColor(ChrysalisSample state, vec3 normal, float stepsUsed) {
+    if (uDebugMode == 1) return vec3(state.growth);
+    if (uDebugMode == 2) return vec3(state.front, state.stress * 8.0, 0.0);
+    if (uDebugMode == 3) return normal * 0.5 + 0.5;
+    if (uDebugMode == 4) return clamp(state.trap * 1.6, 0.0, 1.0);
+    if (uDebugMode == 5) return mix(vec3(0.04, 0.16, 0.48), vec3(1.0, 0.15, 0.02), stepsUsed);
+    if (uDebugMode == 6) {
+      vec3 anatomy = vec3(0.10, 0.74, 0.58);
+      if (uAnatomyMode == 0) {
+        anatomy = mix(anatomy, vec3(0.20, 0.90, 0.36), chIdMask(state.anatomy, 1.0));
+        anatomy = mix(anatomy, vec3(0.36, 0.24, 1.00), chIdMask(state.anatomy, 2.0));
+        anatomy = mix(anatomy, vec3(0.94, 0.36, 0.12), chIdMask(state.anatomy, 3.0));
+        anatomy = mix(anatomy, vec3(1.00, 0.88, 0.18), chIdMask(state.anatomy, 4.0));
+      } else {
+        anatomy = mix(anatomy, vec3(1.00, 0.70, 0.12), chIdMask(state.anatomy, 2.0));
+        anatomy = mix(anatomy, vec3(0.36, 0.24, 1.00), chIdMask(state.anatomy, 3.0));
+        anatomy = mix(anatomy, vec3(0.56, 0.02, 0.10), chIdMask(state.anatomy, 4.0));
+        anatomy = mix(anatomy, vec3(1.00, 0.96, 0.82), chIdMask(state.anatomy, 5.0));
+      }
+      return anatomy;
+    }
+    return vec3(-1.0);
+  }
+
+  vec3 chRender(vec3 ro, vec3 rd, vec2 uv) {
+    vec3 background = uBackgroundColor;
+    vec2 bounds = chRaySphere(ro, rd, 2.35);
+    if (bounds.y < 0.0) return background;
+
+    float t = max(bounds.x, 0.0);
+    float stepsUsed = 0.0;
+    bool hit = false;
+    vec3 hitPos = vec3(0.0);
+    ChrysalisSample hitSample;
+
+    for (int i = 0; i < 144; i++) {
+      if (i >= uOuterSteps) break;
+      vec3 p = ro + rd * t;
+      ChrysalisSample state = chEvaluate(p);
+      stepsUsed = float(i + 1) / 144.0;
+      if (state.d < 0.0045) {
+        hit = true;
+        hitPos = p;
+        hitSample = state;
+        break;
+      }
+      t += clamp(state.d * uStepSafety, 0.006, 0.16);
+      if (t > bounds.y) break;
+    }
+
+    if (!hit) return background;
+
+    vec3 normal = chNormal(hitPos);
+    vec3 debugColor = chDebugColor(hitSample, normal, stepsUsed);
+    if (debugColor.x >= 0.0) return debugColor;
+
+    vec3 surface = chSurfaceColor(ro, rd, hitPos, normal, hitSample);
+    vec3 interior = vec3(0.0);
+    float transmittance = 1.0;
+
+    if (uShowInterior > 0.5) {
+      float tInside = t + 0.026;
+      for (int j = 0; j < 56; j++) {
+        if (j >= uInteriorSteps) break;
+        vec3 p = ro + rd * tInside;
+        ChrysalisSample state = chEvaluate(p);
+        if (j > 2 && state.d > 0.055) break;
+
+        float inside = 1.0 - smoothstep(-0.02, 0.07, state.d);
+        float density = chInteriorDensity(p, state) * inside * uInteriorDensity;
+        vec3 sampleColor = chInteriorColor(p, state, density);
+        interior += transmittance * sampleColor * density * 0.050;
+        transmittance *= exp(-density * uAbsorption);
+        tInside += clamp(0.030 + abs(state.d) * 0.30, 0.026, 0.062);
+        if (transmittance < 0.025 || tInside > bounds.y) break;
+      }
+    }
+
+    vec3 color = interior + surface * uSurfaceOpacity;
+    color *= exp(-0.028 * t * t);
+    float vignette = 1.0 - smoothstep(0.34, 1.48, length(uv));
+    return color * vignette;
+  }
+
+  void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+    vec3 ro = vec3(
+      cos(uCameraYaw) * cos(uCameraPitch) * uCameraRadius,
+      sin(uCameraPitch) * uCameraRadius,
+      sin(uCameraYaw) * cos(uCameraPitch) * uCameraRadius
+    );
+    vec3 rd = chRayDirection(ro, vec3(0.0), uv, uCameraZoom);
+    vec3 color = chRender(ro, rd, uv);
+    if (uDebugMode == 0) {
+      color = 1.0 - exp(-max(color, 0.0) * uExposure);
+      color = pow(max(color, 0.0), vec3(1.0 / max(uGamma, 0.001)));
+    }
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
+const renderer = new THREE.WebGLRenderer({
+  antialias: false,
+  alpha: false,
+  powerPreference: 'high-performance',
+});
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.setClearColor(0x010207, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.Camera();
+const geometry = new THREE.BufferGeometry();
+geometry.setAttribute('position', new THREE.Float32BufferAttribute([
+  -1, -1, 0,
+   3, -1, 0,
+  -1,  3, 0,
+], 3));
+
+const seedDirectionUniforms = Array.from(
+  { length: CHRYSALIS_MAX_SEEDS },
+  () => new THREE.Vector4(0, 1, 0, 0),
+);
+const seedMetaUniforms = Array.from(
+  { length: CHRYSALIS_MAX_SEEDS },
+  () => new THREE.Vector4(0, 1, 1, 0),
+);
+
+const uniforms = {
+  uResolution: { value: new THREE.Vector2(1, 1) },
+  uTime: { value: 0 },
+  uCameraYaw: { value: yaw },
+  uCameraPitch: { value: pitch },
+  uCameraRadius: { value: CONFIG.cameraRadius },
+  uCameraZoom: { value: CONFIG.cameraZoom },
+  uOuterSteps: { value: CONFIG.outerSteps },
+  uInteriorSteps: { value: CONFIG.interiorSteps },
+  uStepSafety: { value: CONFIG.stepSafety },
+  uShowInterior: { value: CONFIG.showInterior ? 1 : 0 },
+
+  uAnatomyMode: { value: CONFIG.anatomyMode },
+  uBodyRadius: { value: CONFIG.bodyRadius },
+  uAnatomyBodyWidth: { value: CONFIG.anatomyBodyWidth },
+  uAnatomyAppendageLength: { value: CONFIG.anatomyAppendageLength },
+  uAnatomyEyeSize: { value: CONFIG.anatomyEyeSize },
+  uAnatomyLegScale: { value: CONFIG.anatomyLegScale },
+  uOrganicWarpAmp: { value: CONFIG.organicWarpAmp },
+  uOrganicWarpFalloff: { value: CONFIG.organicWarpFalloff },
+  uOrganicWarpFrequency: { value: CONFIG.organicWarpFrequency },
+  uOrganicWarpVelocity: { value: CONFIG.organicWarpVelocity },
+  uOrganicNoiseScale: { value: CONFIG.organicNoiseScale },
+  uOrganicNoiseVelocity: { value: CONFIG.organicNoiseVelocity },
+  uOrganicRelief: { value: CONFIG.organicRelief },
+  uOrganicPulse: { value: CONFIG.organicPulse },
+  uOrganicPulseFrequency: { value: CONFIG.organicPulseFrequency },
+  uOrganicPulseWavelength: { value: CONFIG.organicPulseWavelength },
+  uCellStructure: { value: CONFIG.cellStructure },
+  uAlienFoldScale: { value: CONFIG.alienFoldScale },
+  uAlienFoldRotation: { value: CONFIG.alienFoldRotation },
+  uAlienVeinWidth: { value: CONFIG.alienVeinWidth },
+  uFoldDisplacement: { value: CONFIG.foldDisplacement },
+  uVeinEmboss: { value: CONFIG.veinEmboss },
+  uCoreRadius: { value: CONFIG.coreRadius },
+  uBugAbdomenScale: { value: new THREE.Vector3(
+    CONFIG.bugAbdomenWidth,
+    CONFIG.bugAbdomenHeight,
+    CONFIG.bugAbdomenLength,
+  ) },
+  uBugHeadScale: { value: CONFIG.bugHeadScale },
+  uBugGrooveDepth: { value: CONFIG.bugGrooveDepth },
+  uBugAntennaElevation: { value: CONFIG.bugAntennaElevation },
+  uBugAntennaPitch: { value: CONFIG.bugAntennaPitch },
+  uBugAntennaThickness: { value: CONFIG.bugAntennaThickness },
+  uBugLegSpread: { value: new THREE.Vector3(
+    CONFIG.bugFrontLegSpread,
+    CONFIG.bugMiddleLegSpread,
+    CONFIG.bugRearLegSpread,
+  ) },
+
+  uCrystalScale: { value: CONFIG.crystalScale },
+  uCrystalRotation: { value: new THREE.Vector3(CONFIG.crystalRotX, CONFIG.crystalRotY, CONFIG.crystalRotZ) },
+  uCrystalStiffness: { value: CONFIG.crystalStiffness },
+  uFacetFrequency: { value: CONFIG.facetFrequency },
+  uFacetRelief: { value: CONFIG.facetRelief },
+  uFrontRelief: { value: CONFIG.frontRelief },
+  uLatticeSkew: { value: CONFIG.latticeSkew },
+  uLatticeAnisotropy: { value: CONFIG.latticeAnisotropy },
+
+  uSeedCount: { value: seeds.length },
+  uSeedDirRadius: { value: seedDirectionUniforms },
+  uSeedMeta: { value: seedMetaUniforms },
+  uGrowthFeather: { value: CONFIG.growthFeather },
+  uVeinAffinity: { value: CONFIG.veinAffinity },
+  uGlobalGrowth: { value: CONFIG.globalGrowth },
+
+  uSurfaceOpacity: { value: CONFIG.surfaceOpacity },
+  uInteriorDensity: { value: CONFIG.interiorDensity },
+  uAbsorption: { value: CONFIG.absorption },
+  uOrganicColor1: { value: new THREE.Color(CONFIG.organicColor1) },
+  uOrganicColor2: { value: new THREE.Color(CONFIG.organicColor2) },
+  uOrganicColor3: { value: new THREE.Color(CONFIG.organicColor3) },
+  uCrystalColor1: { value: new THREE.Color(CONFIG.crystalColor1) },
+  uCrystalColor2: { value: new THREE.Color(CONFIG.crystalColor2) },
+  uFrontColor: { value: new THREE.Color(CONFIG.frontColor) },
+  uBackgroundColor: { value: new THREE.Color(CONFIG.backgroundColor) },
+  uOrganicRoughness: { value: CONFIG.organicRoughness },
+  uCrystalRoughness: { value: CONFIG.crystalRoughness },
+  uOrganicSpecular: { value: CONFIG.organicSpecular },
+  uCrystalSpecular: { value: CONFIG.crystalSpecular },
+  uRimIntensity: { value: CONFIG.rimIntensity },
+  uKeyAzimuth: { value: CONFIG.keyAzimuth },
+  uKeyElevation: { value: CONFIG.keyElevation },
+  uFillAzimuth: { value: CONFIG.fillAzimuth },
+  uFillElevation: { value: CONFIG.fillElevation },
+  uKeyIntensity: { value: CONFIG.keyIntensity },
+  uFillIntensity: { value: CONFIG.fillIntensity },
+  uExposure: { value: CONFIG.exposure },
+  uGamma: { value: CONFIG.gamma },
+  uDebugMode: { value: CONFIG.debugMode },
+};
+
+const material = new THREE.ShaderMaterial({
+  uniforms,
+  vertexShader,
+  fragmentShader,
+  depthTest: false,
+  depthWrite: false,
+});
+const mesh = new THREE.Mesh(geometry, material);
+mesh.frustumCulled = false;
+scene.add(mesh);
+
+const drawingBufferSize = new THREE.Vector2();
+const MAX_RENDER_PIXELS = 2200000;
+
+function resizeRenderer() {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const requestedPixels = width * height * CONFIG.dpr * CONFIG.dpr;
+  const cap = Math.min(1, Math.sqrt(MAX_RENDER_PIXELS / Math.max(requestedPixels, 1)));
+  renderer.setPixelRatio(CONFIG.dpr * cap);
+  renderer.setSize(width, height, false);
+  renderer.getDrawingBufferSize(drawingBufferSize);
+  uniforms.uResolution.value.copy(drawingBufferSize);
+}
+window.addEventListener('resize', resizeRenderer);
+
+function pushSeeds() {
+  const count = Math.min(seeds.length, CHRYSALIS_MAX_SEEDS);
+  uniforms.uSeedCount.value = count;
+  for (let i = 0; i < CHRYSALIS_MAX_SEEDS; i++) {
+    const seed = i < count ? seeds[i] : null;
+    if (seed) {
+      const direction = new THREE.Vector3(...seed.direction).normalize();
+      seed.direction = direction.toArray();
+      seedDirectionUniforms[i].set(direction.x, direction.y, direction.z, seed.radius);
+      seedMetaUniforms[i].set(seed.strength, seed.polarity, seed.speed, 0);
+    } else {
+      seedDirectionUniforms[i].set(0, 1, 0, 0);
+      seedMetaUniforms[i].set(0, 1, 1, 0);
+    }
+  }
+}
+
+function pushAll() {
+  uniforms.uCameraRadius.value = CONFIG.cameraRadius;
+  uniforms.uCameraZoom.value = CONFIG.cameraZoom;
+  uniforms.uOuterSteps.value = Math.round(CONFIG.outerSteps);
+  uniforms.uInteriorSteps.value = Math.round(CONFIG.interiorSteps);
+  uniforms.uStepSafety.value = CONFIG.stepSafety;
+  uniforms.uShowInterior.value = CONFIG.showInterior ? 1 : 0;
+
+  uniforms.uAnatomyMode.value = Number(CONFIG.anatomyMode);
+  uniforms.uBodyRadius.value = CONFIG.bodyRadius;
+  uniforms.uAnatomyBodyWidth.value = CONFIG.anatomyBodyWidth;
+  uniforms.uAnatomyAppendageLength.value = CONFIG.anatomyAppendageLength;
+  uniforms.uAnatomyEyeSize.value = CONFIG.anatomyEyeSize;
+  uniforms.uAnatomyLegScale.value = CONFIG.anatomyLegScale;
+  uniforms.uOrganicWarpAmp.value = CONFIG.organicWarpAmp;
+  uniforms.uOrganicWarpFalloff.value = CONFIG.organicWarpFalloff;
+  uniforms.uOrganicWarpFrequency.value = CONFIG.organicWarpFrequency;
+  uniforms.uOrganicWarpVelocity.value = CONFIG.organicWarpVelocity;
+  uniforms.uOrganicNoiseScale.value = CONFIG.organicNoiseScale;
+  uniforms.uOrganicNoiseVelocity.value = CONFIG.organicNoiseVelocity;
+  uniforms.uOrganicRelief.value = CONFIG.organicRelief;
+  uniforms.uOrganicPulse.value = CONFIG.organicPulse;
+  uniforms.uOrganicPulseFrequency.value = CONFIG.organicPulseFrequency;
+  uniforms.uOrganicPulseWavelength.value = CONFIG.organicPulseWavelength;
+  uniforms.uCellStructure.value = CONFIG.cellStructure;
+  uniforms.uAlienFoldScale.value = CONFIG.alienFoldScale;
+  uniforms.uAlienFoldRotation.value = CONFIG.alienFoldRotation;
+  uniforms.uAlienVeinWidth.value = CONFIG.alienVeinWidth;
+  uniforms.uFoldDisplacement.value = CONFIG.foldDisplacement;
+  uniforms.uVeinEmboss.value = CONFIG.veinEmboss;
+  uniforms.uCoreRadius.value = CONFIG.coreRadius;
+  uniforms.uBugAbdomenScale.value.set(
+    CONFIG.bugAbdomenWidth,
+    CONFIG.bugAbdomenHeight,
+    CONFIG.bugAbdomenLength,
+  );
+  uniforms.uBugHeadScale.value = CONFIG.bugHeadScale;
+  uniforms.uBugGrooveDepth.value = CONFIG.bugGrooveDepth;
+  uniforms.uBugAntennaElevation.value = CONFIG.bugAntennaElevation;
+  uniforms.uBugAntennaPitch.value = CONFIG.bugAntennaPitch;
+  uniforms.uBugAntennaThickness.value = CONFIG.bugAntennaThickness;
+  uniforms.uBugLegSpread.value.set(
+    CONFIG.bugFrontLegSpread,
+    CONFIG.bugMiddleLegSpread,
+    CONFIG.bugRearLegSpread,
+  );
+
+  uniforms.uCrystalScale.value = CONFIG.crystalScale;
+  uniforms.uCrystalRotation.value.set(CONFIG.crystalRotX, CONFIG.crystalRotY, CONFIG.crystalRotZ);
+  uniforms.uCrystalStiffness.value = CONFIG.crystalStiffness;
+  uniforms.uFacetFrequency.value = CONFIG.facetFrequency;
+  uniforms.uFacetRelief.value = CONFIG.facetRelief;
+  uniforms.uFrontRelief.value = CONFIG.frontRelief;
+  uniforms.uLatticeSkew.value = CONFIG.latticeSkew;
+  uniforms.uLatticeAnisotropy.value = CONFIG.latticeAnisotropy;
+
+  uniforms.uGrowthFeather.value = CONFIG.growthFeather;
+  uniforms.uVeinAffinity.value = CONFIG.veinAffinity;
+  uniforms.uGlobalGrowth.value = CONFIG.globalGrowth;
+  uniforms.uSurfaceOpacity.value = CONFIG.surfaceOpacity;
+  uniforms.uInteriorDensity.value = CONFIG.interiorDensity;
+  uniforms.uAbsorption.value = CONFIG.absorption;
+  uniforms.uOrganicColor1.value.set(CONFIG.organicColor1);
+  uniforms.uOrganicColor2.value.set(CONFIG.organicColor2);
+  uniforms.uOrganicColor3.value.set(CONFIG.organicColor3);
+  uniforms.uCrystalColor1.value.set(CONFIG.crystalColor1);
+  uniforms.uCrystalColor2.value.set(CONFIG.crystalColor2);
+  uniforms.uFrontColor.value.set(CONFIG.frontColor);
+  uniforms.uBackgroundColor.value.set(CONFIG.backgroundColor);
+  uniforms.uOrganicRoughness.value = CONFIG.organicRoughness;
+  uniforms.uCrystalRoughness.value = CONFIG.crystalRoughness;
+  uniforms.uOrganicSpecular.value = CONFIG.organicSpecular;
+  uniforms.uCrystalSpecular.value = CONFIG.crystalSpecular;
+  uniforms.uRimIntensity.value = CONFIG.rimIntensity;
+  uniforms.uKeyAzimuth.value = CONFIG.keyAzimuth;
+  uniforms.uKeyElevation.value = CONFIG.keyElevation;
+  uniforms.uFillAzimuth.value = CONFIG.fillAzimuth;
+  uniforms.uFillElevation.value = CONFIG.fillElevation;
+  uniforms.uKeyIntensity.value = CONFIG.keyIntensity;
+  uniforms.uFillIntensity.value = CONFIG.fillIntensity;
+  uniforms.uExposure.value = CONFIG.exposure;
+  uniforms.uGamma.value = CONFIG.gamma;
+  uniforms.uDebugMode.value = Number(CONFIG.debugMode);
+  pushSeeds();
+  resizeRenderer();
+}
+
+const SAVED_KEYS = Object.keys(CONFIG);
+const SAVE_DOCUMENT_VERSION = 6;
+const MAX_NAMED_STATES = 64;
+const namedStates = new Map();
+const randomizableControls = new Map();
+const deferredRandomizeEnabled = new Map();
+const store = createDiskStore({
+  read: '/sabosugi-visuals/hybrid-tuning/chrysalis-engine.json',
+  write: '/api/save-hybrid?name=chrysalis-engine',
+  storage: typeof localStorage !== 'undefined' ? localStorage : null,
+  key: 'sabosugi:chrysalis-engine',
+});
+
+function validSeed(seed) {
+  return seed && Array.isArray(seed.direction) && seed.direction.length === 3
+    && seed.direction.every(Number.isFinite)
+    && Number.isFinite(seed.radius)
+    && Number.isFinite(seed.strength)
+    && Number.isFinite(seed.polarity)
+    && Number.isFinite(seed.speed);
+}
+
+function paintRandomizeToggle(toggle, enabled) {
+  toggle.classList.toggle('checked', enabled);
+  toggle.setAttribute('aria-checked', String(enabled));
+}
+
+function applyRandomizationPreferences(rawPreferences) {
+  if (!rawPreferences || typeof rawPreferences !== 'object' || Array.isArray(rawPreferences)) return;
+  for (const [key, rawEnabled] of Object.entries(rawPreferences)) {
+    if (!SAVED_KEYS.includes(key) || typeof rawEnabled !== 'boolean') continue;
+    deferredRandomizeEnabled.set(key, rawEnabled);
+    const entry = randomizableControls.get(key);
+    if (entry) {
+      entry.enabled = rawEnabled;
+      paintRandomizeToggle(entry.toggle, rawEnabled);
+    }
+  }
+}
+
+function applySaved(saved) {
+  if (!saved || typeof saved !== 'object') return;
+  const savedConfig = saved.config || saved;
+  for (const key of SAVED_KEYS) {
+    if (savedConfig[key] !== undefined && typeof savedConfig[key] === typeof CONFIG[key]) {
+      CONFIG[key] = savedConfig[key];
+    }
+  }
+  if (Array.isArray(saved.seeds)) {
+    const restored = saved.seeds.filter(validSeed).slice(0, CHRYSALIS_MAX_SEEDS);
+    seeds = cloneSeeds(restored);
+  }
+  if (saved.camera) {
+    if (Number.isFinite(saved.camera.yaw)) yaw = saved.camera.yaw;
+    if (Number.isFinite(saved.camera.pitch)) pitch = saved.camera.pitch;
+  }
+  if (Number.isFinite(saved.elapsed)) elapsed = Math.max(0, saved.elapsed);
+  syncSelectedSeedControls(false);
+  applyRandomizationPreferences(saved.randomization);
+}
+
+const snapshot = () => ({
+  config: Object.fromEntries(SAVED_KEYS.map((key) => [key, CONFIG[key]])),
+  seeds: cloneSeeds(seeds),
+  camera: { yaw, pitch },
+  elapsed,
+  randomization: Object.fromEntries(
+    [...randomizableControls].map(([key, entry]) => [key, entry.enabled]),
+  ),
+});
+
+function normalizeStateName(value) {
+  const name = String(value || '').trim().replace(/\s+/g, ' ').slice(0, 48);
+  if (['__proto__', 'prototype', 'constructor'].includes(name.toLowerCase())) return '';
+  return name;
+}
+
+function restoreNamedStates(rawStates) {
+  namedStates.clear();
+  if (!rawStates || typeof rawStates !== 'object' || Array.isArray(rawStates)) return;
+  for (const [rawName, state] of Object.entries(rawStates).slice(0, MAX_NAMED_STATES)) {
+    const name = normalizeStateName(rawName);
+    if (name && state && typeof state === 'object') namedStates.set(name, state);
+  }
+}
+
+const saveDocument = () => ({
+  version: SAVE_DOCUMENT_VERSION,
+  current: snapshot(),
+  states: Object.fromEntries(namedStates),
+});
+
+const save = (immediate = false) => store.setJSON(saveDocument(), { immediate });
+
+await store.load();
+const loadedDocument = store.json(null);
+if (loadedDocument?.current && typeof loadedDocument.current === 'object') {
+  restoreNamedStates(loadedDocument.states);
+  applySaved(loadedDocument.current);
+} else {
+  // Version 1 stored the current snapshot at the document root.
+  applySaved(loadedDocument);
+}
+pushAll();
+
+const statusEl = document.getElementById('status');
+let lastDiskStatus = store.status;
+let statusFrame = 0;
+let stateMessage = '';
+
+function refreshStatus() {
+  const growing = seeds.filter((seed) => seed.polarity >= 0).length;
+  const healing = seeds.length - growing;
+  const disk = describeStatus(lastDiskStatus, { file: 'chrysalis-engine.json' });
+  statusEl.textContent =
+    'seeds: ' + growing + ' crystal / ' + healing + ' heal' +
+    '  |  field: one coupled surface' +
+    '  |  states: ' + namedStates.size +
+    (stateMessage ? '  |  ' + stateMessage : '') +
+    (disk ? '  |  ' + disk : '');
+}
+store.onStatus((status) => {
+  lastDiskStatus = status;
+  refreshStatus();
+});
+
+function randomDirection() {
+  const y = Math.random() * 2 - 1;
+  const angle = Math.random() * Math.PI * 2;
+  const radius = Math.sqrt(Math.max(0, 1 - y * y));
+  return [Math.cos(angle) * radius, y, Math.sin(angle) * radius];
+}
+
+function syncSelectedSeedControls(refresh = true) {
+  if (!seeds.length) {
+    CONFIG.selectedSeedIndex = 0;
+    if (refresh) updateDisplays();
+    return;
+  }
+  CONFIG.selectedSeedIndex = Math.min(
+    Math.max(Math.round(CONFIG.selectedSeedIndex), 0),
+    seeds.length - 1,
+  );
+  const seed = seeds[CONFIG.selectedSeedIndex];
+  CONFIG.selectedSeedRadius = seed.radius;
+  CONFIG.selectedSeedStrength = seed.strength;
+  CONFIG.selectedSeedSpeed = seed.speed;
+  if (refresh) updateDisplays();
+}
+
+function applySelectedSeedControls() {
+  const seed = seeds[CONFIG.selectedSeedIndex];
+  if (!seed) return;
+  seed.radius = CONFIG.selectedSeedRadius;
+  seed.strength = CONFIG.selectedSeedStrength;
+  seed.speed = CONFIG.selectedSeedSpeed;
+  pushSeeds();
+  refreshStatus();
+  save();
+}
+
+function addSeed(direction, polarity = 1, radius = CONFIG.selectedSeedRadius) {
+  if (seeds.length >= CHRYSALIS_MAX_SEEDS) seeds.shift();
+  seeds.push({
+    direction: new THREE.Vector3(...direction).normalize().toArray(),
+    radius,
+    strength: CONFIG.selectedSeedStrength,
+    polarity,
+    speed: CONFIG.selectedSeedSpeed,
+  });
+  CONFIG.selectedSeedIndex = seeds.length - 1;
+  syncSelectedSeedControls(false);
+  pushSeeds();
+  refreshStatus();
+  save();
+}
+
+function pointerRay(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const uv = new THREE.Vector2(
+    (clientX - rect.left - rect.width * 0.5) / rect.height,
+    (rect.height * 0.5 - (clientY - rect.top)) / rect.height,
+  );
+  const ro = new THREE.Vector3(
+    Math.cos(yaw) * Math.cos(pitch) * CONFIG.cameraRadius,
+    Math.sin(pitch) * CONFIG.cameraRadius,
+    Math.sin(yaw) * Math.cos(pitch) * CONFIG.cameraRadius,
+  );
+  const forward = ro.clone().multiplyScalar(-1).normalize();
+  const referenceUp = Math.abs(forward.y) > 0.96
+    ? new THREE.Vector3(0, 0, 1)
+    : new THREE.Vector3(0, 1, 0);
+  const right = new THREE.Vector3().crossVectors(referenceUp, forward).normalize();
+  const up = new THREE.Vector3().crossVectors(forward, right).normalize();
+  const rd = right.multiplyScalar(uv.x)
+    .add(up.multiplyScalar(uv.y))
+    .add(forward.multiplyScalar(CONFIG.cameraZoom))
+    .normalize();
+  return { ro, rd };
+}
+
+function seedFromPointer(clientX, clientY, polarity) {
+  const { ro, rd } = pointerRay(clientX, clientY);
+  const radius = 1.65;
+  const b = ro.dot(rd);
+  const c = ro.lengthSq() - radius * radius;
+  const h = b * b - c;
+  if (h < 0) return;
+  const t = -b - Math.sqrt(h);
+  if (t <= 0) return;
+  addSeed(ro.addScaledVector(rd, t).normalize().toArray(), polarity);
+}
+
+let pointer = null;
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  pointer = {
+    id: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    lastX: event.clientX,
+    lastY: event.clientY,
+    moved: 0,
+    shiftKey: event.shiftKey,
+  };
+  renderer.domElement.setPointerCapture(event.pointerId);
+  renderer.domElement.classList.add('dragging');
+});
+
+renderer.domElement.addEventListener('pointermove', (event) => {
+  if (!pointer || pointer.id !== event.pointerId) return;
+  const dx = event.clientX - pointer.lastX;
+  const dy = event.clientY - pointer.lastY;
+  pointer.moved += Math.hypot(dx, dy);
+  if (pointer.moved > 3) {
+    yaw -= dx * 0.005;
+    pitch = THREE.MathUtils.clamp(pitch + dy * 0.005, -1.18, 1.18);
+  }
+  pointer.lastX = event.clientX;
+  pointer.lastY = event.clientY;
+});
+
+renderer.domElement.addEventListener('pointerup', (event) => {
+  if (!pointer || pointer.id !== event.pointerId) return;
+  if (pointer.moved < 5) {
+    seedFromPointer(event.clientX, event.clientY, pointer.shiftKey ? -1 : 1);
+  } else {
+    save();
+  }
+  renderer.domElement.releasePointerCapture(event.pointerId);
+  renderer.domElement.classList.remove('dragging');
+  pointer = null;
+});
+
+renderer.domElement.addEventListener('pointercancel', () => {
+  renderer.domElement.classList.remove('dragging');
+  pointer = null;
+});
+
+renderer.domElement.addEventListener('wheel', (event) => {
+  event.preventDefault();
+  CONFIG.cameraRadius = THREE.MathUtils.clamp(CONFIG.cameraRadius + event.deltaY * 0.0025, 3.15, 7.0);
+  uniforms.uCameraRadius.value = CONFIG.cameraRadius;
+  if (gui) {
+    for (const controller of gui.controllersRecursive()) controller.updateDisplay();
+  }
+  save();
+}, { passive: false });
+
+let gui = null;
+const EMPTY_STATE = '— no saved states —';
+const stateUI = { name: 'State 1', selected: EMPTY_STATE };
+let stateSelectController = null;
+let stateSaveController = null;
+
+function refreshStateOptions(preferredName = stateUI.selected) {
+  const names = [...namedStates.keys()].sort((a, b) => a.localeCompare(b));
+  const options = names.length ? names : [EMPTY_STATE];
+  stateUI.selected = names.includes(preferredName) ? preferredName : options[0];
+  if (stateSelectController) {
+    stateSelectController = stateSelectController.options(options);
+    stateSelectController.updateDisplay();
+    if (stateSaveController) {
+      stateSaveController.domElement.parentElement.insertBefore(
+        stateSelectController.domElement,
+        stateSaveController.domElement,
+      );
+    }
+  }
+  refreshStatus();
+}
+
+function saveNamedState() {
+  const name = normalizeStateName(stateUI.name);
+  if (!name) {
+    stateMessage = 'enter a state name';
+    refreshStatus();
+    return;
+  }
+  if (!namedStates.has(name) && namedStates.size >= MAX_NAMED_STATES) {
+    stateMessage = 'state limit reached';
+    refreshStatus();
+    return;
+  }
+  namedStates.set(name, { ...snapshot(), savedAt: new Date().toISOString() });
+  stateUI.name = name;
+  stateMessage = 'saved “' + name + '”';
+  refreshStateOptions(name);
+  updateDisplays();
+  save(true);
+}
+
+function loadNamedState() {
+  const name = stateUI.selected;
+  const state = namedStates.get(name);
+  if (!state) {
+    stateMessage = 'choose a saved state';
+    refreshStatus();
+    return;
+  }
+  applySaved(state);
+  stateUI.name = name;
+  stateMessage = 'loaded “' + name + '”';
+  pushAll();
+  updateDisplays();
+  save(true);
+}
+
+function deleteNamedState() {
+  const name = stateUI.selected;
+  if (!namedStates.delete(name)) {
+    stateMessage = 'choose a saved state';
+    refreshStatus();
+    return;
+  }
+  stateMessage = 'deleted “' + name + '”';
+  refreshStateOptions();
+  updateDisplays();
+  save(true);
+}
+
+function updateDisplays() {
+  if (!gui) return;
+  for (const controller of gui.controllersRecursive()) controller.updateDisplay();
+}
+
+function changed() {
+  pushAll();
+  save();
+  refreshStatus();
+}
+
+function resetToDefaults() {
+  Object.assign(CONFIG, JSON.parse(JSON.stringify(DEFAULT_CONFIG)));
+  for (const entry of randomizableControls.values()) {
+    entry.enabled = true;
+    paintRandomizeToggle(entry.toggle, true);
+  }
+  seeds = cloneSeeds();
+  syncSelectedSeedControls(false);
+  yaw = 0.34;
+  pitch = -0.08;
+  elapsed = 0;
+  pushAll();
+  updateDisplays();
+  save(true);
+}
+
+const actions = {
+  reset: resetToDefaults,
+  saveState: saveNamedState,
+  loadState: loadNamedState,
+  deleteState: deleteNamedState,
+  regenerate: () => {
+    CONFIG.globalGrowth = 0;
+    seeds = cloneSeeds();
+    CONFIG.selectedSeedIndex = 0;
+    syncSelectedSeedControls(false);
+    changed();
+    updateDisplays();
+  },
+  crystallizeAll: () => {
+    CONFIG.globalGrowth = 1;
+    changed();
+    updateDisplays();
+  },
+  healAll: () => {
+    CONFIG.globalGrowth = 0;
+    seeds = [];
+    syncSelectedSeedControls(false);
+    changed();
+    updateDisplays();
+  },
+  crystalShock: () => {
+    CONFIG.globalGrowth = 0;
+    for (let i = 0; i < 5; i++) addSeed(randomDirection(), 1, 0.06 + i * 0.025);
+    updateDisplays();
+  },
+};
+
+gui = new GUI({ container: document.getElementById('gui-container'), title: 'Chrysalis Engine' });
+gui.add(actions, 'reset').name('Reset everything to defaults');
+
+const stateFolder = gui.addFolder('States: named snapshots');
+stateFolder.add(stateUI, 'name').name('State name');
+stateSelectController = stateFolder.add(stateUI, 'selected', [EMPTY_STATE]).name('Saved state');
+stateSaveController = stateFolder.add(actions, 'saveState').name('Save / overwrite');
+stateFolder.add(actions, 'loadState').name('Load selected');
+stateFolder.add(actions, 'deleteState').name('Delete selected');
+refreshStateOptions();
+
+function registerRandomizable(controller, folder, key, min, max, step, name, onRandom) {
+  const toggle = document.createElement('span');
+  toggle.className = 'randomize-toggle';
+  toggle.setAttribute('role', 'checkbox');
+  toggle.setAttribute('tabindex', '0');
+  toggle.title = 'Include ' + name + ' when randomizing this section';
+  toggle.setAttribute('aria-label', toggle.title);
+  controller.domElement.classList.add('randomizable');
+  controller.domElement.querySelector(':scope > .name').prepend(toggle);
+
+  const entry = {
+    controller,
+    folder,
+    min,
+    max,
+    step,
+    onRandom,
+    enabled: deferredRandomizeEnabled.get(key) ?? true,
+    toggle,
+  };
+  paintRandomizeToggle(toggle, entry.enabled);
+  randomizableControls.set(key, entry);
+
+  const flip = () => {
+    entry.enabled = !entry.enabled;
+    paintRandomizeToggle(toggle, entry.enabled);
+    save();
+  };
+  toggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    flip();
+  });
+  toggle.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    event.stopPropagation();
+    flip();
+  });
+  return controller;
+}
+
+function bind(folder, key, min, max, step, name, onChange = changed) {
+  const controller = folder.add(CONFIG, key, min, max, step).name(name).onChange(onChange);
+  return registerRandomizable(controller, folder, key, min, max, step, name, onChange);
+}
+
+function snappedRandom(min, max, step) {
+  const steps = Math.max(1, Math.round((max - min) / step));
+  const value = min + Math.floor(Math.random() * (steps + 1)) * step;
+  const decimals = Math.min(8, Math.max(0, (String(step).split('.')[1] || '').length));
+  return Number(Math.min(max, value).toFixed(decimals));
+}
+
+function randomizeSection(folder) {
+  let changedCount = 0;
+  const callbacks = new Set();
+  for (const [key, entry] of randomizableControls) {
+    if (entry.folder !== folder || !entry.enabled) continue;
+    CONFIG[key] = snappedRandom(entry.min, entry.max, entry.step);
+    callbacks.add(entry.onRandom);
+    changedCount++;
+  }
+  if (!changedCount) return;
+  for (const callback of callbacks) callback();
+  updateDisplays();
+}
+
+function addSectionRandomizer(folder) {
+  const command = { randomize: () => randomizeSection(folder) };
+  folder.add(command, 'randomize').name('Randomize enabled');
+}
+
+const bindToggle = (folder, key, name) =>
+  folder.add(CONFIG, key).name(name).onChange(changed);
+const bindColor = (folder, key, name) =>
+  folder.addColor(CONFIG, key).name(name).onChange(changed);
+
+const growthFolder = gui.addFolder('Growth: tissue becomes lattice');
+addSectionRandomizer(growthFolder);
+bindToggle(growthFolder, 'growthRunning', 'Run fronts');
+bind(growthFolder, 'growthSpeed', 0, 0.35, 0.005, 'Front speed');
+bind(growthFolder, 'growthFeather', 0.02, 0.40, 0.005, 'Front feather');
+bind(growthFolder, 'veinAffinity', -1.5, 1.5, 0.01, 'Follow cell veins');
+bind(growthFolder, 'globalGrowth', 0, 1, 0.01, 'Whole-body phase');
+growthFolder.add(actions, 'regenerate').name('Restore authored seeds');
+growthFolder.add(actions, 'crystalShock').name('Five-point crystal shock');
+growthFolder.add(actions, 'crystallizeAll').name('Crystallize everything');
+growthFolder.add(actions, 'healAll').name('Heal everything');
+growthFolder.open();
+
+const seedFolder = gui.addFolder('Growth: selected seed');
+addSectionRandomizer(seedFolder);
+seedFolder.add(CONFIG, 'selectedSeedIndex', {
+  'Seed 1': 0,
+  'Seed 2': 1,
+  'Seed 3': 2,
+  'Seed 4': 3,
+  'Seed 5': 4,
+  'Seed 6': 5,
+  'Seed 7': 6,
+  'Seed 8': 7,
+}).name('Selected').onChange(() => syncSelectedSeedControls());
+bind(seedFolder, 'selectedSeedRadius', 0.01, Math.PI, 0.01, 'Radius', applySelectedSeedControls);
+bind(seedFolder, 'selectedSeedStrength', 0, 2, 0.01, 'Strength', applySelectedSeedControls);
+bind(seedFolder, 'selectedSeedSpeed', 0, 2, 0.01, 'Speed', applySelectedSeedControls);
+
+const organismFolder = gui.addFolder('Organism: shared anatomy');
+addSectionRandomizer(organismFolder);
+organismFolder.add(CONFIG, 'anatomyMode', {
+  'SDF bug': 0,
+  'SDF creature': 1,
+}).name('Anatomy').onChange(changed);
+bind(organismFolder, 'bodyRadius', 0.85, 1.55, 0.01, 'Anatomy scale');
+bind(organismFolder, 'anatomyBodyWidth', 0.65, 1.50, 0.01, 'Body width');
+bind(organismFolder, 'anatomyAppendageLength', 0.0, 2.0, 0.01, 'Horns / antennae');
+bind(organismFolder, 'anatomyEyeSize', 0.55, 1.50, 0.01, 'Eye size');
+bind(organismFolder, 'anatomyLegScale', 0.50, 1.80, 0.01, 'Leg scale / spread');
+bind(organismFolder, 'bugAbdomenWidth', 0.55, 1.65, 0.01, 'Bug abdomen width');
+bind(organismFolder, 'bugAbdomenHeight', 0.55, 1.65, 0.01, 'Bug abdomen height');
+bind(organismFolder, 'bugAbdomenLength', 0.55, 1.65, 0.01, 'Bug abdomen length');
+bind(organismFolder, 'bugHeadScale', 0.55, 1.60, 0.01, 'Bug head scale');
+bind(organismFolder, 'bugGrooveDepth', 0, 0.04, 0.001, 'Shell groove');
+bind(organismFolder, 'bugAntennaElevation', -0.70, 0.95, 0.01, 'Antenna elevation');
+bind(organismFolder, 'bugAntennaPitch', -0.90, 0.90, 0.01, 'Antenna pitch');
+bind(organismFolder, 'bugAntennaThickness', 0.35, 2.0, 0.01, 'Antenna thickness');
+bind(organismFolder, 'bugFrontLegSpread', 0.50, 1.80, 0.01, 'Front leg spread');
+bind(organismFolder, 'bugMiddleLegSpread', 0.50, 1.80, 0.01, 'Middle leg spread');
+bind(organismFolder, 'bugRearLegSpread', 0.50, 1.80, 0.01, 'Rear leg spread');
+
+const organicFolder = gui.addFolder('Organic: living tissue grammar');
+addSectionRandomizer(organicFolder);
+bind(organicFolder, 'organicWarpAmp', 0, 1.2, 0.01, 'Warp amplitude');
+bind(organicFolder, 'organicWarpFalloff', 0.65, 1.8, 0.01, 'Warp falloff');
+bind(organicFolder, 'organicWarpFrequency', 1, 9, 0.05, 'Warp frequency');
+bind(organicFolder, 'organicWarpVelocity', -1.2, 1.2, 0.01, 'Warp velocity');
+bind(organicFolder, 'organicNoiseScale', 0.25, 9, 0.05, 'Noise scale');
+bind(organicFolder, 'organicNoiseVelocity', -1.5, 1.5, 0.01, 'Noise velocity');
+bind(organicFolder, 'organicRelief', 0, 0.72, 0.01, 'Membrane relief');
+bind(organicFolder, 'organicPulse', 0, 0.15, 0.002, 'Pulse amplitude');
+bind(organicFolder, 'organicPulseFrequency', 0, 5, 0.01, 'Pulse frequency');
+bind(organicFolder, 'organicPulseWavelength', 0.5, 16, 0.05, 'Pulse wavelength');
+bind(organicFolder, 'cellStructure', 0, 1, 0.01, 'Folded tissue');
+bind(organicFolder, 'alienFoldScale', 1.20, 2.20, 0.01, 'Fold scale');
+bind(organicFolder, 'alienFoldRotation', 0, 2.5, 0.01, 'Fold rotation');
+bind(organicFolder, 'alienVeinWidth', 0.25, 3, 0.01, 'Vein width');
+bind(organicFolder, 'foldDisplacement', -0.8, 0.8, 0.01, 'Fold displacement');
+bind(organicFolder, 'veinEmboss', -0.16, 0.16, 0.002, 'Vein emboss');
+bind(organicFolder, 'coreRadius', 0, 0.48, 0.005, 'Hollow core');
+
+const crystalFolder = gui.addFolder('Crystal: rigid anatomy');
+addSectionRandomizer(crystalFolder);
+bind(crystalFolder, 'crystalScale', 0.9, 2.0, 0.01, 'Lattice scale');
+bind(crystalFolder, 'crystalRotX', -Math.PI, Math.PI, 0.01, 'Rotation X');
+bind(crystalFolder, 'crystalRotY', -Math.PI, Math.PI, 0.01, 'Rotation Y');
+bind(crystalFolder, 'crystalRotZ', -Math.PI, Math.PI, 0.01, 'Rotation Z');
+bind(crystalFolder, 'crystalStiffness', 0.25, 3.0, 0.01, 'Stiffening curve');
+bind(crystalFolder, 'facetFrequency', 0.5, 9, 0.05, 'Facet frequency');
+bind(crystalFolder, 'facetRelief', 0, 0.22, 0.002, 'Facet relief');
+bind(crystalFolder, 'frontRelief', 0, 0.28, 0.002, 'Front rupture');
+bind(crystalFolder, 'latticeSkew', -1.5, 1.5, 0.01, 'Lattice skew');
+bind(crystalFolder, 'latticeAnisotropy', 0.35, 2.5, 0.01, 'Lattice anisotropy');
+
+const interiorFolder = gui.addFolder('Interior: flow becomes crystal light');
+addSectionRandomizer(interiorFolder);
+bindToggle(interiorFolder, 'showInterior', 'Show interior');
+bind(interiorFolder, 'surfaceOpacity', 0, 1.5, 0.01, 'Surface opacity');
+bind(interiorFolder, 'interiorDensity', 0, 3, 0.01, 'Interior density');
+bind(interiorFolder, 'absorption', 0.01, 1.0, 0.01, 'Absorption');
+
+const colorFolder = gui.addFolder('Material');
+addSectionRandomizer(colorFolder);
+bindColor(colorFolder, 'organicColor1', 'Tissue cyan');
+bindColor(colorFolder, 'organicColor2', 'Tissue violet');
+bindColor(colorFolder, 'organicColor3', 'Vein green');
+bindColor(colorFolder, 'crystalColor1', 'Crystal edge');
+bindColor(colorFolder, 'crystalColor2', 'Crystal core');
+bindColor(colorFolder, 'frontColor', 'Stress front');
+bindColor(colorFolder, 'backgroundColor', 'Background');
+bind(colorFolder, 'organicRoughness', 0, 1, 0.01, 'Organic roughness');
+bind(colorFolder, 'crystalRoughness', 0, 1, 0.01, 'Crystal roughness');
+bind(colorFolder, 'organicSpecular', 0, 3, 0.01, 'Organic specular');
+bind(colorFolder, 'crystalSpecular', 0, 3, 0.01, 'Crystal specular');
+bind(colorFolder, 'rimIntensity', 0, 3, 0.01, 'Rim intensity');
+bind(colorFolder, 'exposure', 0.2, 3, 0.01, 'Exposure');
+bind(colorFolder, 'gamma', 1, 3, 0.01, 'Gamma');
+
+const lightingFolder = gui.addFolder('Lighting');
+addSectionRandomizer(lightingFolder);
+bind(lightingFolder, 'keyAzimuth', -Math.PI, Math.PI, 0.01, 'Key azimuth');
+bind(lightingFolder, 'keyElevation', -1.50, 1.50, 0.01, 'Key elevation');
+bind(lightingFolder, 'fillAzimuth', -Math.PI, Math.PI, 0.01, 'Fill azimuth');
+bind(lightingFolder, 'fillElevation', -1.50, 1.50, 0.01, 'Fill elevation');
+bind(lightingFolder, 'keyIntensity', 0, 2, 0.01, 'Key intensity');
+bind(lightingFolder, 'fillIntensity', 0, 2, 0.01, 'Fill intensity');
+
+const performanceFolder = gui.addFolder('Performance and camera');
+addSectionRandomizer(performanceFolder);
+bind(performanceFolder, 'dpr', 0.5, 2, 0.05, 'DPR');
+bind(performanceFolder, 'outerSteps', 40, 144, 1, 'Outer steps');
+bind(performanceFolder, 'interiorSteps', 0, 56, 1, 'Interior steps');
+bind(performanceFolder, 'stepSafety', 0.25, 0.75, 0.01, 'Step safety');
+bind(performanceFolder, 'animationSpeed', 0, 3, 0.01, 'Animation speed');
+bindToggle(performanceFolder, 'autoRotate', 'Auto rotate');
+bind(performanceFolder, 'rotationSpeed', -0.8, 0.8, 0.01, 'Rotation speed');
+bind(performanceFolder, 'cameraRadius', 3.15, 7, 0.01, 'Camera radius');
+bind(performanceFolder, 'cameraZoom', 1.1, 3, 0.01, 'Camera zoom');
+
+const debugFolder = gui.addFolder('Debug: prove the coupling');
+debugFolder.add(CONFIG, 'debugMode', {
+  'Final hybrid': 0,
+  'Growth changes geometry': 1,
+  'Front and mechanical stress': 2,
+  'Normals from final field': 3,
+  'Alien tissue traps': 4,
+  'March cost': 5,
+  'Anatomy material IDs': 6,
+}).name('View').onChange(changed);
+
+pushAll();
+refreshStatus();
+
+const timer = new THREE.Timer();
+timer.connect(document);
+function animate(timestamp) {
+  requestAnimationFrame(animate);
+  timer.update(timestamp);
+  const delta = Math.min(timer.getDelta(), 0.05);
+  elapsed += delta * CONFIG.animationSpeed;
+  if (CONFIG.growthRunning) {
+    for (const seed of seeds) {
+      seed.radius = Math.min(Math.PI + CONFIG.growthFeather, seed.radius + delta * CONFIG.growthSpeed * seed.speed);
+    }
+    pushSeeds();
+  }
+  if (CONFIG.autoRotate && !pointer) yaw += delta * CONFIG.rotationSpeed;
+  uniforms.uTime.value = elapsed;
+  uniforms.uCameraYaw.value = yaw;
+  uniforms.uCameraPitch.value = pitch;
+  uniforms.uCameraRadius.value = CONFIG.cameraRadius;
+  uniforms.uCameraZoom.value = CONFIG.cameraZoom;
+  renderer.render(scene, camera);
+  if ((statusFrame++ % 30) === 0) refreshStatus();
+}
+
+window.addEventListener('pagehide', () => save(true));
+resizeRenderer();
+animate();
+</script>
+</body>
+</html>

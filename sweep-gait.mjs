@@ -178,6 +178,24 @@ if (mode === 'baseline') {
       + `  steps/s ${r.tapping.stepRate.toFixed(2)}`
       + `  stride ${(r.tapping.medianTravel * 100).toFixed(0)}%`);
   }
+} else if (mode === 'retarget') {
+  console.log(`retarget invariants — ${SPECIES.length} species, ${MEASURE}s each, flat ground\n`);
+  const rows = SPECIES.map(species => {
+    const r = run(species);
+    if (!r) return { species, result: 'no legs' };
+    return {
+      species,
+      bendMin: +r.retarget.minBendSign.toFixed(3),
+      'knee p95°': +(r.retarget.kneeJumpP95 * 180 / Math.PI).toFixed(2),
+      'knee max°': +(r.retarget.maxKneeJump * 180 / Math.PI).toFixed(2),
+      'length max%': +(r.retarget.maxSegmentLengthError * 100).toFixed(4),
+      'joint max%': +(r.retarget.maxJointContinuityError * 100).toFixed(4),
+      'ground p95mm': +(r.retarget.plantedGroundErrorP95 * 1000).toFixed(2),
+      'ground maxmm': +(r.retarget.maxPlantedGroundError * 1000).toFixed(2),
+      fallbackPoles: r.retarget.lowConfidencePoles,
+    };
+  });
+  console.table(rows);
 } else if (mode === 'scale') {
   // What a stride is actually worth, in millimetres and in every unit the detectors might normalise by.
   // This exists because the first sweep reported strides of 500% of the stride envelope, which is either

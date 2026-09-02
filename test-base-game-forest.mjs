@@ -8,7 +8,7 @@
 // node test-base-game-forest.mjs
 
 import * as THREE from 'three';
-import { createBaseGameForest, BASE_GAME_FOREST_DEFAULTS, rungTriangles, proceduralBarkColorNode } from './base-game-forest.js';
+import { createBaseGameForest, BASE_GAME_FOREST_DEFAULTS, rungTriangles, proceduralBarkColorNode, bindTreeMaterials, BASE_GAME_FOREST_SHADOW_LAYER } from './base-game-forest.js';
 import { createBaseGameTerrain } from './base-game-terrain.js';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
@@ -88,16 +88,16 @@ const base = rig();
     `${s.instances} uploaded, ${s.trees} placed`);
   check('nothing was dropped at the default capacity', s.dropped === 0 && !s.truncating,
     `${s.dropped} dropped of capacity ${s.capacity}`);
-  check('Base Game constructs three rungs and no unreachable billboard objects',
+  check('Base Game constructs three rungs, no unreachable billboard objects, and a shadow-only pair per variant',
     base.forest.forestGPU.summary.lodCount === 3
       && base.forest.forestGPU.summary.hasBillboards === false
-      && base.forest.meshes.length === s.variants * 7,
+      && base.forest.meshes.length === s.variants * 9,
     `${base.forest.meshes.length} meshes, lodCount ${base.forest.forestGPU.summary.lodCount}`);
   // No billboards in v1 (D6): rung 3 is off, so a populated variant submits seven meshes.
   check('a populated variant submits seven draws, not eight', s.draws === s.visibleVariants * 7,
     `${s.draws} draws over ${s.visibleVariants} variants`);
-  check('the counter separates default shadow-pass mesh submissions',
-    s.shadowDraws === s.visibleVariants * 3,
+  check('the counter separates default shadow-pass mesh submissions: bark and leaf cards, one each',
+    s.shadowDraws === s.visibleVariants * 2,
     `${s.draws} main + ${s.shadowDraws} shadow over ${s.visibleVariants} variants`);
   // The per-frame path must NOT walk the instances: forestGPU.stats runs computeCullEstimate over
   // every live one, which measured 0.2 ms a frame at a draw radius the sliders reach.
@@ -264,6 +264,8 @@ section('the palette agrees with the placement');
     `max speciesIdx ${maxSpecies}`);
   check('the variant count is species times variants-per-species',
     r.forest.stats.variants === 6, `${r.forest.stats.variants}`);
+  check('family-interleaved baking preserves species-major GPU slot identity',
+    r.forest.palette.variants.every((v, g) => v.speciesIdx === Math.floor(g / 2) && v.variant === g % 2));
   // Rebaking must not leak the old geometry: the palette is the one thing env-viewer never frees.
   const oldMeshes = r.forest.meshes.slice();
   const oldPaletteGeos = r.forest.palette.variants.flatMap(v => [
@@ -278,6 +280,34 @@ section('the palette agrees with the placement');
   check('every old mesh left the scene', oldMeshes.every(m => !r.scene.children.includes(m)));
   check('and every baked palette geometry was disposed, which env-viewer never does',
     paletteDisposals === oldPaletteGeos.length, `${paletteDisposals} of ${oldPaletteGeos.length}`);
+  r.terrain.dispose();
+}
+
+section('explicit species ids control which authored trees are present');
+{
+  const r = rig({
+    treeSpeciesSelection: 'ez-oak_small,ez-pine_small',
+    treeVariantsPerSpecies: 1,
+    treeLeafCount: 3,
+  });
+  await r.forest.load();
+  r.forest.setEnabled(true);
+  await settle(r, 80);
+  let table = r.forest.trees.placementParams.speciesTable;
+  check('placement receives exactly the selected stable species ids',
+    table.map(species => species._tag.id).join(',') === 'ez-oak_small,ez-pine_small');
+  check('the palette bakes one slot for each selected species', r.forest.stats.variants === 2,
+    `${r.forest.stats.variants} variants`);
+  check('every record refers only to those selected palette slots',
+    [...r.forest.trees.records.values()].flat().every(record => record.speciesIdx === 0 || record.speciesIdx === 1));
+
+  r.forest.apply({ treeSpeciesSelection: 'ez-pine_small' });
+  await settle(r, 80);
+  table = r.forest.trees.placementParams.speciesTable;
+  check('changing the selection rebuilds placement and palette around the remaining species',
+    table.length === 1 && table[0]._tag.id === 'ez-pine_small' && r.forest.stats.variants === 1);
+  check('the rebuilt records use the remaining species slot',
+    [...r.forest.trees.records.values()].flat().every(record => record.speciesIdx === 0));
   r.terrain.dispose();
 }
 
@@ -326,12 +356,13 @@ section('a rebuild frees the GPU storage, not only the meshes');
   forest.apply({ treeLeafCount: 5 });     // a palette key: rebuild on the next update
   await settle(r, 30);
   // source + draw + counts + survivor atomics, then seven Base Game indirect buffers per variant.
-  check('every storage buffer the old forest owned was freed', deleted.size === 4 + variants * 7,
-    `${deleted.size} freed, expected ${4 + variants * 7} for ${variants} variants`);
+  // Four shared buffers, then per variant seven rung indirects plus the shadow pair's two.
+  check('every storage buffer the old forest owned was freed', deleted.size === 4 + variants * 9,
+    `${deleted.size} freed, expected ${4 + variants * 9} for ${variants} variants`);
   check('and the forest came back', forest.built && forest.stats.instances > 0,
     `${forest.stats.instances} instances`);
   forest.dispose();
-  check('teardown frees the new one too', deleted.size === (4 + variants * 7) * 2,
+  check('teardown frees the new one too', deleted.size === (4 + variants * 9) * 2,
     `${deleted.size} freed in total`);
   terrain.dispose();
 }
@@ -340,7 +371,8 @@ section('shaders compile before the forest reaches the scene');
 {
   // Every reachable material is warmed before its mesh draws. Base Game no longer constructs the
   // permanently-disabled billboard material/rung.
-  let compiled = null, forest = null, warmComputeCalls = 0;
+  const compiled = [];
+  let forest = null, warmComputeCalls = 0;
   const expectedWarmComputeCalls = 2 + SMALL.treeSpecies * SMALL.treeVariantsPerSpecies * 2;
   const scene = new THREE.Scene();
   const wc = createWorldCoordinateSpace();
@@ -352,20 +384,20 @@ section('shaders compile before the forest reaches the scene');
   const camera = new THREE.PerspectiveCamera(70, 16 / 9, 0.1, 2000);
   camera.position.set(0, 12, 0);
   const renderer = {
-    computeAsync: async () => {
-      if (warmComputeCalls < expectedWarmComputeCalls
-        && !forest?.meshes.some(m => scene.children.includes(m))) warmComputeCalls++;
+    computeAsync: async nodes => {
+      if (!Array.isArray(nodes)) warmComputeCalls++;
     },
     compileAsync: async (warm, cam, target) => {
       const meshes = [];
       warm.traverse(o => { if (o.isMesh) meshes.push(o); });
-      compiled = {
+      compiled.push({
         count: meshes.length,
         allVisible: meshes.every(m => m.visible),
         inSceneAlready: meshes.some(m => scene.children.includes(m)),
+        publishedBefore: forest?.meshes.length ?? 0,
         gotTargetScene: target === scene,
         gotCamera: cam === camera,
-      };
+      });
     },
   };
   forest = createBaseGameForest({ renderer, scene, camera, terrain, worldCoordinates: wc,
@@ -373,18 +405,23 @@ section('shaders compile before the forest reaches the scene');
   await forest.load();
   forest.setEnabled(true);
   await settle({ terrain, camera, forest, worldCoordinates: wc, scene }, 40);
-  check('compileAsync ran', !!compiled);
-  check('it was handed every mesh, hidden rungs included', compiled?.count === forest.meshes.length,
-    `${compiled?.count} compiled, ${forest.meshes.length} meshes`);
-  check('all of them visible, or a hidden one compiles later and stalls that frame', compiled?.allVisible);
-  check('and none of them was in the scene yet', compiled?.inSceneAlready === false);
-  check('the real scene came through as targetScene, so lights resolve', compiled?.gotTargetScene && compiled?.gotCamera);
+  check('compileAsync ran once per cross-family variant wave',
+    compiled.length === SMALL.treeVariantsPerSpecies, `${compiled.length} waves`);
+  check('each wave contains one complete variant from every family',
+    compiled.every(c => c.count === SMALL.treeSpecies * 9), compiled.map(c => c.count).join('/'));
+  check('the first family wave was published before the second compiled',
+    compiled[0]?.publishedBefore === 0 && compiled[1]?.publishedBefore === SMALL.treeSpecies * 9,
+    compiled.map(c => c.publishedBefore).join('/'));
+  check('all wave meshes compile visible, or a hidden rung stalls later', compiled.every(c => c.allVisible));
+  check('no wave compiles after its own meshes enter the scene', compiled.every(c => !c.inSceneAlready));
+  check('the real scene and camera reach every wave', compiled.every(c => c.gotTargetScene && c.gotCamera));
   check('every compute pipeline warmed before the forest entered the scene',
     warmComputeCalls === expectedWarmComputeCalls,
     `${warmComputeCalls} warmed, expected ${expectedWarmComputeCalls}`);
   check('the forest built and the mask is back in force', forest.built
-    && forest.meshes.filter(m => m.visible).length === forest.stats.draws,
-    `${forest.meshes.filter(m => m.visible).length} visible, ${forest.stats.draws} draws`);
+    && forest.stats.readyVariants === forest.stats.variants
+    && forest.meshes.filter(m => m.visible).length === forest.stats.draws + forest.stats.shadowDraws,
+    `${forest.meshes.filter(m => m.visible).length} visible, ${forest.stats.draws} draws + ${forest.stats.shadowDraws} shadow`);
   terrain.dispose();
 }
 
@@ -417,31 +454,78 @@ section('compile failures stay out of the scene and surface the real error');
   terrain.dispose();
 }
 
-section('rungs past the shadow camera do not cast');
+section('disabling during a family wave cancels disposed work safely');
 {
-  // The shadow camera is +/-90 m. A rung starting past that rasterises into a map it cannot appear
-  // in — measured in draws it is invisible, and in triangles it is the whole coarse population.
+  const scene = new THREE.Scene();
+  const wc = createWorldCoordinateSpace();
+  const terrain = createBaseGameTerrain({
+    scene, worldQuery: createWorldQueryService(), worldCoordinates: wc,
+    source: analyticDescriptor({ key: 'forest-progress-cancel', seaLevel: 0 }), useWorker: false,
+  });
+  terrain.setActive(true);
+  const camera = new THREE.PerspectiveCamera(70, 16 / 9, 0.1, 2000);
+  camera.position.set(0, 12, 0);
+  let releaseCompile = null;
+  const renderer = {
+    computeAsync: async () => {},
+    compileAsync: async () => new Promise(resolve => { releaseCompile = resolve; }),
+  };
+  const forest = createBaseGameForest({ renderer, scene, camera, terrain, worldCoordinates: wc,
+    settings: { ...SMALL }, yieldTask: async () => {} });
+  await forest.load();
+  forest.setEnabled(true);
+  await forest.update();
+  for (let i = 0; i < 30 && !releaseCompile; i++) await Promise.resolve();
+  check('the first all-family wave reached asynchronous compilation', !!releaseCompile);
+  forest.setEnabled(false);
+  releaseCompile?.();
+  for (let i = 0; i < 30 && forest.building; i++) await Promise.resolve();
+  check('cancellation leaves no progressive meshes or GPU shell behind',
+    !forest.built && forest.meshes.length === 0 && forest.forestGPU === null);
+  check('resuming the stale compile does not surface a disposed-GPU error', !forest.stats.lastError,
+    forest.stats.lastError);
+  terrain.dispose();
+}
+
+section('shadows come from a shadow-only pair per variant, culled by reach and not by the view cone');
+{
+  // Before 2026-08-30 the main meshes cast, so a tree beside or behind the camera -- outside the
+  // view cone the cull keeps -- cast nothing, and its shadow appeared when you turned toward it.
+  // Now every tree within the shadow camera's reach is in a separate list drawn by two meshes the
+  // main camera cannot see.
   const r = rig({ treeLodR0: 60, treeLodR1: 140, treeLodR2: 260, treeShadowReach: 90 });
   await r.forest.load();
   r.forest.setEnabled(true);
   await settle(r, 40);
-  const rungs = r.forest.forestGPU.shadowRungs;
-  check('rung 0 starts at 0 and casts', rungs[0] === true);
-  check('rung 1 starts at 60, inside 90, and casts', rungs[1] === true);
-  check('rung 2 starts at 140, past 90, and does not', rungs[2] === false);
+  const gpu = r.forest.forestGPU;
   const V = r.forest.stats.variants;
-  const casters = r.forest.meshes.filter(m => m.castShadow).length;
-  // Per variant: bark L0, leaf-shadow L0, bark L1 cast; bark L2 no longer does.
-  check('so each variant casts from three meshes, not four', casters === V * 3,
-    `${casters} casting meshes over ${V} variants`);
-  // Moving the reach past the rung brings it back, so this follows the light rather than a constant.
+  const casters = r.forest.meshes.filter(m => m.castShadow);
+  check('each variant casts from exactly two meshes: one bark, one leaf-card set', casters.length === V * 2,
+    `${casters.length} casting meshes over ${V} variants`);
+  check('the casters are named as the shadow pair', casters.every(m => /:(bark|leaf)Shadow$/.test(m.name)));
+  // The bark caster draws the L2 trunk, not the full branches: a ~9cm shadow texel cannot show the difference.
+  const l2Counts = r.forest.palette.variants.map(v => (v.branchesLod2 ?? v.branches).attributes.position.count);
+  check('the bark caster geometry is the L2 trunk mesh',
+    casters.filter(m => /:barkShadow$/.test(m.name)).every((m, i) => m.geometry.attributes.position.count === l2Counts[i]),
+    `caster ${casters.find(m => /:barkShadow$/.test(m.name))?.geometry.attributes.position.count} vs L2 ${l2Counts[0]}`);
+  const layer = BASE_GAME_FOREST_SHADOW_LAYER;
+  check(`the casters live on layer ${layer} only, so the main camera never draws them`,
+    casters.every(m => m.layers.mask === (1 << layer)));
+  check('the main meshes are on layer 0 and never cast',
+    r.forest.meshes.filter(m => !m.castShadow).every(m => m.layers.mask === 1 && m.name.indexOf('Shadow') < 0));
+  check('the shadow list reach is the shadow camera half-extent', gpu.summary.shadowList === true && gpu.shadowReach === 90,
+    `reach ${gpu.shadowReach}`);
+  check('two shadow submissions per populated variant', gpu.summary.shadowDraws === r.forest.stats.visibleVariants * 2,
+    `${gpu.summary.shadowDraws} shadow submissions`);
+  // Turning both parts off empties the list rather than leaving hidden meshes with a live count.
+  r.forest.apply({ treeBarkShadows: false, treeLeafShadows: false });
+  check('with both parts off the list radius is 0 and nothing is submitted',
+    gpu.shadowReach === 0 && gpu.summary.shadowDraws === 0, `reach ${gpu.shadowReach}, ${gpu.summary.shadowDraws} submissions`);
+  r.forest.apply({ treeBarkShadows: true, treeLeafShadows: false });
+  check('bark alone submits one per variant and restores the reach',
+    gpu.shadowReach === 90 && gpu.summary.shadowDraws === r.forest.stats.visibleVariants, `${gpu.summary.shadowDraws} submissions`);
   r.forest.apply({ treeShadowReach: 400 });
-  check('widening the shadow camera brings rung 2 back', r.forest.forestGPU.shadowRungs[2] === true);
-  check('and every variant casts from four again',
-    r.forest.meshes.filter(m => m.castShadow).length === V * 4);
-  check('the shadow submission estimate follows the widened reach',
-    r.forest.forestGPU.summary.shadowDraws === r.forest.stats.visibleVariants * 4,
-    `${r.forest.forestGPU.summary.shadowDraws} shadow submissions`);
+  check('the reach follows the light, not a constant', gpu.shadowReach === 400);
   r.terrain.dispose();
 }
 
@@ -502,6 +586,95 @@ section('trunk height, trunk width and leaf size each move their own thing');
     `${base.trunk.toFixed(3)} vs ${tall.trunk.toFixed(3)}`);
   check('and leaf size leaves it alone too', Math.abs(leafy.trunk - base.trunk) < 1e-6,
     `${base.trunk.toFixed(3)} vs ${leafy.trunk.toFixed(3)}`);
+}
+
+section('authored tree textures, wired the way environment-viewer wires them');
+{
+  // The ez-tree presets carry white bark and leaf colours that multiply photo maps. A forest that
+  // bakes those presets but never binds the maps draws white trees, which is what Base Game did.
+  check('the default is authored, as the other pages default', BASE_GAME_FOREST_DEFAULTS.treeTexMode === 'authored');
+
+  const fakeSet = (mode, { onReady } = {}) => {
+    const set = {
+      mode, ready: mode === 'procedural',
+      leafMap: mode === 'authored' ? { name: 'leafAtlas' } : null, leafAtlas: { cols: 2, rows: 2 }, leafAlphaTest: 0.5,
+      barkMap: mode === 'authored' ? { name: 'bark' } : null, barkNormalMap: mode === 'authored' ? { name: 'barkN' } : null,
+      barkVScale: 0.35, disposed: 0,
+      dispose() { set.disposed++; },
+      land() { set.ready = true; onReady?.(set); },
+    };
+    made.push(set);
+    return set;
+  };
+  const made = [];
+  const scene = new THREE.Scene();
+  const wc = createWorldCoordinateSpace();
+  const terrain = createBaseGameTerrain({
+    scene, worldQuery: createWorldQueryService(), worldCoordinates: wc,
+    source: analyticDescriptor({ key: 'forest-textures', seaLevel: 0 }), useWorker: false,
+  });
+  terrain.setActive(true);
+  const camera = new THREE.PerspectiveCamera(70, 16 / 9, 0.1, 2000);
+  camera.position.set(0, 12, 0);
+  const renderer = { computeAsync: async () => {} };
+  const forest = createBaseGameForest({ renderer, scene, camera, terrain, worldCoordinates: wc,
+    settings: { ...SMALL }, yieldTask: async () => {}, createTextureSource: fakeSet });
+  await forest.load();
+  forest.setEnabled(true);
+  const r = { terrain, camera, forest, worldCoordinates: wc, scene };
+  await settle(r, 30);
+
+  const mats = () => { const out = []; forest.forestGPU.applyTextureSet((b, l) => out.push({ b, l })); return out; };
+  check('one authored set was created for the build', made.length === 1 && made[0].mode === 'authored', `${made.length} sets`);
+  check('the texture set reached the palette bake', forest.stats.textureMode === 'authored' && !forest.stats.texturesReady);
+  check('leaves baked as atlas cards, not silhouettes, before the maps decoded',
+    forest.palette.variants.every(v => v.leaves.attributes.uv), 'no uv on a leaf geometry');
+  check('until the maps decode, the materials carry the procedural binding',
+    mats().every(m => m.b.colorNode && !m.b.map && !m.l.map && !m.l.transparent));
+
+  made[0].land();
+  const bound = mats();
+  check('when the maps land the bark maps are bound and the grain node is dropped',
+    bound.every(m => m.b.map === made[0].barkMap && m.b.normalMap === made[0].barkNormalMap && m.b.colorNode === null));
+  check('and the leaves cut out against the atlas, never blended',
+    bound.every(m => m.l.map === made[0].leafMap && m.l.transparent === false && m.l.alphaTest === 0.5));
+  check('the readout says so', forest.stats.texturesReady === true);
+  const variantsBefore = forest.stats.variants;
+
+  forest.apply({ treeTexMode: 'procedural' });
+  await settle(r, 30);
+  check('changing the mode rebakes the palette and keeps the forest', forest.built && forest.stats.variants === variantsBefore);
+  check('the procedural set replaced the authored one and the authored maps were released',
+    made.length === 2 && made[1].mode === 'procedural' && made[0].disposed === 1, `${made.length} sets, disposed ${made[0].disposed}`);
+  check('procedural binds the grain node and no maps', mats().every(m => m.b.colorNode && !m.b.map && !m.l.map));
+  check('the readout follows', forest.stats.textureMode === 'procedural' && forest.stats.texturesReady);
+
+  forest.dispose();
+  check('dispose releases the live set', made[1].disposed === 1);
+  terrain.dispose();
+
+  // Without an injected source and without a document, authored has nowhere to paint its atlas.
+  const scene2 = new THREE.Scene();
+  const wc2 = createWorldCoordinateSpace();
+  const terrain2 = createBaseGameTerrain({
+    scene: scene2, worldQuery: createWorldQueryService(), worldCoordinates: wc2,
+    source: analyticDescriptor({ key: 'forest-textures-headless', seaLevel: 0 }), useWorker: false,
+  });
+  terrain2.setActive(true);
+  const forest2 = createBaseGameForest({ renderer, scene: scene2, camera, terrain: terrain2, worldCoordinates: wc2,
+    settings: { ...SMALL }, yieldTask: async () => {} });
+  await forest2.load();
+  forest2.setEnabled(true);
+  await settle({ terrain: terrain2, camera, forest: forest2, worldCoordinates: wc2, scene: scene2 }, 30);
+  check('headless, authored falls back to procedural instead of throwing',
+    forest2.built && forest2.stats.textureMode === 'procedural', forest2.stats.lastError ?? '');
+  forest2.dispose();
+  terrain2.dispose();
+
+  // The binding itself, on bare materials.
+  const b = { }, l = { };
+  bindTreeMaterials(b, l, null);
+  check('a missing set binds procedural', b.colorNode && b.map === null && l.alphaTest === 0 && b.needsUpdate && l.needsUpdate);
 }
 
 section('the bark graph compiles');

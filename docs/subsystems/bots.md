@@ -182,8 +182,14 @@ functional, kept as the fast iteration loop for future FSM/nav changes).
   targets to the pose overlays. The stow block reads the template cache via `loadTemplate`.
   Base-game shares the same module (see `base-game.md`, "Weapons, phase 1").
 - `weapon-part-batches.js` — instanced-render pool for held weapon GLBs (2026-07-23), sibling of
-  `body-part-batches.js`: one `InstancedMesh` bucket per distinct sub-mesh geometry, keeping the
-  template's own GLB material (no per-instance color). Bot mounts no longer clone the weapon model
+  `body-part-batches.js`: one `InstancedMesh` bucket per template part, keeping the
+  template's own GLB material (no per-instance color). Since 2026-08-30 a part is one MATERIAL,
+  not one GLB sub-mesh: `mergePartsByMaterial` in `weapon-mount.js` bakes each sub-mesh's
+  `localMatrix` into a clone and merges the group with `mergeGeometries`, so a rifle of 30
+  sub-meshes is 3–5 always-on buckets instead of 30 (Base Game measured 74 buckets for one player's
+  guns). A group whose attribute sets or indexing differ, or a multi-material sub-mesh, is kept
+  unmerged rather than guessed at; `stats.partsMerged` counts what was folded. `buildStowParts`
+  now ranks the merged parts, so a stowed copy keeps its largest material groups. Bot mounts no longer clone the weapon model
   at all — `createBotWeaponMount` keeps a transform-only rig (groups + muzzle/grip markers) and
   each frame `flushWeaponMount` (per actor, from the animate loop) emits
   `weaponView.matrixWorld × bakedSubMeshLocal` into the pool,

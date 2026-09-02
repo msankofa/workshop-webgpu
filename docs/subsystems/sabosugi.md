@@ -153,6 +153,34 @@ version had only the shared function and the halves were running one function ov
 pixel, and the grid has 0.12 local units between vertices, so anything finer aliases. At zoom 1 the grid
 reads exactly the point the volume marches; the 0.05 default puts structure roughly 30× the vertex step.
 
+## Shape ordination (experimental)
+
+Chrysalis Engine has no mesh — it's a raymarched SDF driven by `CONFIG` (~30 scalars) plus a
+variable seed list — so comparing shapes means sphere-tracing a point cloud rather than measuring
+geometry directly. Four Node-only files, none of them wired into `chrysalis-engine.html`:
+
+| File | Role |
+|---|---|
+| `chrysalis-field-cpu.mjs` | Pure-JS port of `chEvaluate`/`chDistance` from `chrysalis-field.js`'s GLSL. Same "CPU/GPU math twin" pattern as `forest-cull.js` — not imported by the shader, kept in sync by hand. |
+| `chrysalis-point-cloud.mjs` | Sphere-traces one config + seed list into surface points (position, normal, growth, disturbance), radially from a Fibonacci sphere of directions using the shader's own stepping constants. |
+| `chrysalis-shape-embed.mjs` | Reduces a point cloud to a fixed-length descriptor: a rotation-invariant pairwise-distance histogram plus mean growth/disturbance, bounding radius, and seed count/polarity. |
+| `chrysalis-shape-corpus.mjs` | Loads the real saved states from `hybrid-tuning/chrysalis-engine.json` and generates synthetic configs from the same ranges as the page's sliders (`RANGES`, hand-copied — keep in sync if a slider range changes), since the real corpus alone (3 shapes as of writing) is too thin for PCA/MDS. |
+
+`test-chrysalis-shape-ordination.mjs` (repo root) feeds the resulting vectors through
+`ordination-vectors.js`'s `buildGram`/`eigenCoords` — the same Gram-matrix/PCA code
+`code-ordination.html` runs on source-file embeddings, unmodified, since none of it is
+text-specific. It also checks a structural sanity property directly: an all-crystal config sits
+farther from an all-organic one than from a second, differently-oriented all-crystal config.
+
+Radial tracing assumes the field is roughly star-shaped around the origin — a fold hidden behind
+another fold, invisible from every direction back to the center, won't get sampled. Points on the
+isosurface are compared, not the field's raw geometry, so `time` is fixed at 0 for every shape
+rather than each shape's own animation clock, to keep comparisons apples-to-apples.
+
+No browser viewer exists yet for the resulting map; the test only prints label/coordinate pairs for
+manual inspection. A scatter-plot page (following `code-ordination.html`'s layout) and a `score`
+stage against hand-tagged labels are both natural follow-ups, not built here.
+
 ## Two traps worth carrying to other pages here
 
 **A control gated by a different control is a defect.** The Field mix folder's six controls are read by

@@ -4,7 +4,7 @@ Reference library of third-party CodePen visuals by artist **sabosugi** (codepen
 folder as downloaded pen exports. None of these are wired into `environment-viewer.html` or any other app
 in this repo — this is a browsable catalog for finding inspiration/reference before porting a technique.
 
-**To browse them, run `python serve.py` and open `/sabosugi-visuals/gallery.html`.** It lists all 100
+**To browse them, run `python serve.py` and open `/sabosugi-visuals/gallery.html`.** It lists all 102
 entries with search and category filters, and loads the selected one in an iframe. `pens-manifest.json`
 drives that list; regenerate it with `python sabosugi-visuals/build-manifest.py` after adding a pen or
 editing this file, which is where the titles, categories and pen URLs come from.
@@ -225,11 +225,83 @@ credits its sources on screen.
 | Diamond on the Highway | Xenolith Diamond + Highway to Heaven | `hybrids/diamond-on-the-highway.html`, `hybrids/diamond-on-the-highway-webgpu.html` |
 | Glass Plankton | Vector Plankton + Glass Logo with Panorama | `hybrids/glass-plankton.html` |
 | Ether Trails | Trails Over Different Forms as a readout for fields harvested from seven pens | `hybrids/ether-trails.html` |
+| Chrysalis Engine | Alien Cell + Xenolith Diamond + Abnormal Sphere Morphing | `hybrids/chrysalis-engine.html` |
 
 The first three combine raymarched pens, which merge at the shader level: same architecture, so the
 helper functions concatenate into one `main()`, and the `-webgpu` variants port that to three r0.184
 WGSL/TSL. Glass Plankton is a different kind of join — neither source is a shader, so the two combine at
 the scene-graph level instead, sharing a parsed SVG rather than a ray march.
+
+### Chrysalis Engine — one evolving implicit organism
+
+Chrysalis Engine is a field synthesis, not several recognizable effects drawn together. It keeps one
+fullscreen triangle, one fragment program, one ray, one hit, and one final normal. Both phases evaluate
+the same selected anatomy. The repo's tested [`demos/sdf-bug.html`](../demos/sdf-bug.html) beetle is the
+default; [`demos/sdf-creature.html`](../demos/sdf-creature.html), after
+[Drin](https://x.com/DrinLajci), remains selectable. The Sabo Sugi sources enter at different points:
+
+- **Abnormal Sphere Morphing supplies the living coordinates.** Its staged sine warp and value noise
+  perturb the direction and radial membrane before any rigid form is evaluated.
+- **The SDF bug supplies the default shared anatomy.** Shell, head, six tapered legs, paired eyes, and
+  antennae are composed once with stable material IDs. The SDF creature is an alternate anatomy using
+  the same interface. The living and rigid branches call the selected function at different
+  coordinates; the crystal branch never substitutes a diamond silhouette.
+- **Alien Cell supplies living tissue.** Its sorted folds deform the creature surface, its orbit traps
+  become vascular shading, and those traps pull growth fronts along tissue.
+- **Xenolith Diamond supplies crystallization mechanics.** Once growth suppresses organic coordinate
+  warp, its triangular lattice cuts facet relief into the still-recognizable anatomy and fills the
+  transformed interior.
+
+The invariant is in `hybrids/chrysalis-field.js`: `chEvaluate(p)` returns distance,
+growth, front, mechanical stress, two evaluations of the shared anatomy distance, stable material IDs,
+facet disturbance, and the Alien orbit trap in one struct. Its final distance is the growth-dependent
+synthesis of organic and crystal treatments of the same geometry.
+Normals call `chDistance`, the surface marcher calls `chEvaluate`, and the internal
+volume mixes anatomy through that same state. Changing growth therefore changes silhouette, spatial
+frequency, shading, and internal structure together.
+
+Directional seeds make the transition spatial and reversible. A seed stores a unit direction, angular
+radius, strength, polarity, and speed. JavaScript advances only the radius; GLSL computes the front and
+uses Alien traps to bend it. Click places a positive crystallization seed by intersecting the camera ray
+with the organism's bounding sphere. Shift-click places a negative healing seed. Eight fixed uniform
+slots keep the loop legal for WebGL GLSL while allowing seeds to be added interactively.
+
+The control surface exposes the synthesis grammar, not only its top-level intensity. Organic noise and
+pulse spectra, Alien fold scale/rotation/vein coupling, beetle proportions and individual leg-pair
+spread, antenna pose, crystal lattice skew/anisotropy, phase-specific roughness/specularity, both light
+directions, and each selected seed's radius/strength/speed are live uniforms or analytic seed state.
+March tolerances, gradient epsilon, bounding volumes, and loop caps remain guarded implementation
+constants. Every creative numeric controller participates in its section randomizer and can be excluded
+individually with its compact checkbox.
+
+The page deliberately includes diagnostic views for growth, front/stress, final normals, orbit traps,
+and march cost. They answer the important hybrid question directly: if a front changes only color but
+not normals or geometry, the synthesis has broken. Quality controls change active break budgets inside
+constant-bound loops, and a bounding-sphere intersection avoids marching empty space.
+
+Tuning uses the shared route:
+
+    POST /api/save-hybrid?name=chrysalis-engine
+        -> hybrid-tuning/chrysalis-engine.json
+
+Configuration, seeds, camera orbit, and elapsed phase are saved together. The
+`States: named snapshots` GUI folder saves, overwrites, loads, and deletes complete named
+snapshots in the same versioned document as the live autosave; legacy root snapshots still load. Reset
+restores authored defaults captured before persisted state loads.
+
+The six numeric parameter folders each have a `Randomize enabled` action. An inline checkbox
+beside every numeric slider controls whether that slider participates; randomization stays inside its
+declared range, snaps to its step, and never changes toggles, colors, state actions, or debug modes.
+Those inclusion choices persist in both live and named snapshots, while reset re-enables them all.
+`test-chrysalis-engine.mjs` checks the
+single-field/single-pass contract, complete uniform wiring, controls, credits, and empty-seed
+persistence; browser validation must still compile the assembled GLSL because JavaScript parsing cannot
+detect reserved GLSL words or driver limits.
+
+For reuse in the game, `chrysalis-field.js` is the extraction seam. Port its field contract and
+growth-seed uniforms into a game-owned material or TSL node, then provide game time, world/object
+coordinates, and lifecycle. Do not port the demo camera, GUI, fullscreen geometry, animation loop, or
+disk store.
 
 ### Ether Trails — the field hybridiser
 
@@ -332,7 +404,7 @@ The general lesson, which applies to every page in this repo: a control whose ef
 different control is a defect, not a documentation problem. `test-ether-trails-coupling.mjs` asserts every
 one of the six arms.
 
-**Both hybrids reset.** `Reset everything to defaults` is the first control in each panel. The defaults are
+**The stateful hybrids reset.** `Reset everything to defaults` is the first control in each panel. The defaults are
 deep-copied before `applySaved` runs at boot, which is the only moment the authored values still exist, and
 the reset also restores what does not live in the config object — camera position and orbit target, the
 accumulated clocks, and in Glass Plankton the shape and the generated panorama. Without it a page that

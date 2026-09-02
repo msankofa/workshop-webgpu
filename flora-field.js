@@ -93,15 +93,17 @@ function normalYFromTile(heights, texels, step, ix, iz) {
 
 // Builds the derive step a field window runs when a tile lands: one coverAt per texel, written into
 // three u8 channels the window then treats like any other field.
-export function createTileCover({ seaLevel = 0, splatCfg = STREAMED_SPLAT_DEFAULTS, opts = FLORA_COVER_DEFAULTS, biomeNames } = {}) {
+export function createTileCover({ seaLevel = 0, splatCfg = STREAMED_SPLAT_DEFAULTS, opts = FLORA_COVER_DEFAULTS, biomeNames, clearance = null } = {}) {
   if (!Array.isArray(biomeNames)) throw new TypeError('tile cover needs the biome id -> name table');
   const merged = opts === FLORA_COVER_DEFAULTS ? FLORA_COVER_DEFAULTS : { ...FLORA_COVER_DEFAULTS, ...opts };
   let cfg = splatCfg;
   let sea = seaLevel;
+  let clearanceAt = typeof clearance === 'function' ? clearance : null;
   return {
     get splatCfg() { return cfg; },
     setSplatCfg(next) { cfg = next ?? STREAMED_SPLAT_DEFAULTS; },
     setSeaLevel(next) { sea = Number.isFinite(next) ? next : sea; },
+    setClearance(next) { clearanceAt = typeof next === 'function' ? next : null; },
     channels: COVER_CHANNELS,
     // Mutates the tile, attaching the three channels. Returns it so it can sit in a pipeline.
     derive(tile) {
@@ -117,9 +119,12 @@ export function createTileCover({ seaLevel = 0, splatCfg = STREAMED_SPLAT_DEFAUL
           const normalY = normalYFromTile(heights, texels, step, ix, iz);
           const cover = coverAt(biomeNames[biomeIds[i]] ?? null, moisture ? moisture[i] : 0,
             splatWeights(height, normalY, cfg), { height, seaLevel: sea, normalY, opts: merged });
-          grass[i] = quantizeCover(cover.grass);
-          plant[i] = quantizeCover(cover.plant);
-          tree[i] = quantizeCover(cover.tree);
+          const x = (tile.originX ?? 0) + ix * step;
+          const z = (tile.originZ ?? 0) + iz * step;
+          const clear = clamp01(clearanceAt ? clearanceAt(x, z) : 1);
+          grass[i] = quantizeCover(cover.grass * clear);
+          plant[i] = quantizeCover(cover.plant * clear);
+          tree[i] = quantizeCover(cover.tree * clear);
         }
       }
       tile.coverGrass = grass;

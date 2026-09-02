@@ -18,7 +18,7 @@ and AI fly the same model.
 | `flight-combat.js` | Weapon tables, missile flight, gun lead, locking, threat warning, bomb ballistics and the impact predictor | three, airframes, terrain |
 | `flight-drones.js` | The three releasable mini drones | three, combat |
 | `flight-autopilot.js` | Player-selectable orbit for any airframe, on `steerToward` | three, ai, terrain |
-| `flight-meshes.js` | The four craft as groups; materials come from the caller | three |
+| `flight-meshes.js` | The craft as groups (jet, quad, bird, recon UAV, two ground vehicles, the Sentinel wing); materials come from the caller | three |
 | `water-hybrid.js` | Optional ocean surface: Gerstner swell, foam, depth colour (shared with `demos/water-demo.html`) | three, `water-waves.js` |
 | `water-config.json` | The water settings themselves: written by `demos/water-demo.html`, read here | data |
 | `demos/flight-sim.html` | The viewer: meshes, HUD, audio, FX, panel, clipmap | all of the above |
@@ -26,7 +26,7 @@ and AI fly the same model.
 Tests: `test-flight-model.mjs`, `test-flight-terrain.mjs`, `test-flight-terrain-baked.mjs`,
 `test-flight-terrain-stream.mjs`, `test-ground-look.mjs`, `test-flight-ai.mjs`, `test-flight-combat.mjs`, `test-flight-drones.mjs`,
 `test-flight-autopilot.mjs`, `test-water-hybrid.mjs`, `test-water-waves.mjs`,
-`test-flight-meshes-recon.mjs`. Plain Node, no framework, per repo convention.
+`test-flight-meshes-recon.mjs`, `test-flight-meshes-sentinel.mjs`, `test-vehicle-meshes.mjs`. Plain Node, no framework, per repo convention.
 
 The demo needs a server (`python serve.py`) because of the ES module imports, then
 `http://127.0.0.1:8080/demos/flight-sim.html`. Add `?terrain=<name>` to fly a bake instead of the
@@ -43,6 +43,14 @@ proportions were measured off a press photograph rather than sketched — 2.02 m
 pusher propeller aft of the tail boom, 35-degree V-tail, paddle wingtips. Only the bot viewer flies
 it (its loitering munitions); the sim's own `plane` is still the jet and is untouched. It is the one
 craft here authored in real metres, so it wants a scale near 1 rather than the 0.22 the jet needed.
+
+`sentinel` (2026-09-01) is the second real-metre craft: a 20 m stealth flying wing whose planform,
+section and hump were measured off a three-view drawing of the RQ-170 Sentinel
+(`scratchpads/rq170-sentinel/intake-analysis.md`, the img2threejs reconstruction behind it). The wing is
+one loft — ribs at the measured stations, a flat upper skin and a lens underside, mirrored so both
+halves share the centreline vertices — with the hump, blisters, blunt tail, intake and exhaust as
+scaled spheres and boxes, 2.5k triangles, no landing gear because it only ever flies. Base Game flies
+it as its world drone; the sim does not use it.
 It hangs `userData.propeller`, a hub group that spins about **Z**, where the quad's
 `userData.rotors` are blades that spin about Y; a caller that animates one does not animate the
 other for free. The photographed blue-and-yellow livery is deliberately not reproduced, because the
@@ -93,7 +101,18 @@ generators read produces a NaN position one frame later, and a NaN is a far wors
 
 Two dispatches are now keyed on capability rather than identity, and both got better for it:
 
-- `buildCraftMesh` is a `BUILDERS` lookup that throws. `registerCraftMesh(kind, fn)` adds one.
+- `buildCraftMesh(kind, tint, materials, dims)` is a `BUILDERS` lookup that throws.
+  `registerCraftMesh(kind, fn)` adds one. `dims` is optional and only the two ground vehicles read
+  it: Base Game passes the vehicle's simulation def so the wheels are drawn on the same wheelbase,
+  track and clearance the ground fit samples. Aircraft callers pass three arguments as before.
+- `mergeByMaterial(root, skip)` bakes static parts into one geometry per material, relative to
+  `root` rather than the world so a nested animated group keeps its own offset. The ground vehicles
+  use it via `finishVehicle(g, wheels, groups)`; assembled from loose primitives they were 44 and 85
+  draw calls, and `buildCraftMesh` turns frustum culling off on every part. `groups` names the parts
+  that must stay articulated — the UGV passes its weapon station, which lands on `userData.turret`.
+- `loftRings(rings)` closes a ring loft along Z for hull tubs, whose cross-section changes station
+  to station and so cannot be extruded. Winding is not obvious: check enclosed volume is positive,
+  as `test-vehicle-meshes.mjs` does, because an inverted loft still passes every dimension check.
 - `poseMesh` reads what the mesh **exposes** — `userData.flame`, `.rotors`, `.wings` — so a new craft
   with an exhaust gets exhaust animation for free, and a craft with both a flame and rotors gets
   both. The key-shaped version could not express that at all.
@@ -878,10 +897,13 @@ claimed there was no air-to-ground ordnance; there is now, above. And it pointed
 repository**, and the bombing here was built against `bot-drones.js`'s release solve instead, at
 flight scale rather than its 50 m arena scale.
 
-The viewer layer is still one file. `flight-hud.js`, `flight-craft.js`, `flight-camera.js`,
-`flight-controls.js` and `entity-types/aircraft.js` from `docs/flight-harness-plan.md` do not exist;
-they are Three/DOM-bound and have no tests to save, so extracting them buys much less than the model
-did. `entity-types/aircraft.js` is what integration into `environment-viewer-v2.html` actually needs.
+The viewer layer is mostly still one file. `flight-hud.js` was the first piece to come out of it, on
+2026-09-02, because the Base Game needed the same display over its drones — and once it was a module
+taking plain arrays, a headless test found a mirrored pitch ladder that had been in the sim all
+along (see below). `flight-craft.js`, `flight-camera.js`, `flight-controls.js` and
+`entity-types/aircraft.js` from `docs/flight-harness-plan.md` still do not exist; they are
+Three/DOM-bound and have no tests to save, so extracting them buys less than the model did.
+`entity-types/aircraft.js` is what integration into `environment-viewer-v2.html` actually needs.
 
 ## Water: the flat plane and the hybrid surface
 
@@ -932,3 +954,21 @@ The loop is: tune in the demo, press "Save to water-config.json", press refresh 
 `serve.py` (it POSTs to `/api/save-water-config`, which overwrites the file in place, the same
 arrangement as `damage-tuning.json`); if some other server is in front of the pages, the demo falls
 back to downloading the file so it can be dropped in by hand.
+
+## flight-hud.js
+
+The green head-up display, lifted out of `demos/flight-sim.html` so the Base Game can draw the same
+one. `drawFlightHud(ctx, w, h, state)` is the picture for something you are flying: pitch ladder,
+flight path marker, speed and height tapes, heading tape, throttle bar, blinking warnings.
+`drawSensorHud(ctx, w, h, state)` is the picture for a sensor or a seeker pointed at the ground:
+crosshair, a dashed ring the size of the warhead's blast at that range, range and time of flight.
+
+It takes plain arrays and one `project(x, y, z)` callback, so it has no THREE in it and no camera of
+its own, and it runs headless against a recording 2D context in `test-flight-hud.mjs`. That test is
+how the pitch ladder's mirrored sign was found: `off = (pitch - deg) * pxPerRad` puts the line for
+`deg` on the wrong side of the boresight, which looks correct in level flight and puts the horizon
+above the nose in a climb. Both this module and the sim were corrected on 2026-09-02.
+
+The Sentinel's missile mesh is `buildAgm` in `flight-meshes.js`, registered as the craft kind `agm`:
+1.6 m at its real size, four tail fins, four canards, a dark seeker window, nose down -Z like every
+other craft here so the same "point it along the velocity" code aims it.

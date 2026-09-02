@@ -11,6 +11,7 @@
 
 import { createWeaponPoseController } from './weapon-pose-controller.js';
 import { createWeaponPartBatches, bakeSkinnedGeometry } from './weapon-part-batches.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { resolveWeaponHold, carryDeltaFor, locomotionFor, isCarryLocomotion, isOneHanded,
   hasCarryVocabulary, stepCarryBlend, snapCarryBlend, LOCOMOTION_AIM } from './weapon-hold-resolver.js';
 import { AIM_BLEND_DEFAULTS, barrelTrimFraction, releaseTrimFraction } from './bot-aim-blend.js';
@@ -60,6 +61,41 @@ export function holsterHoldFor(weaponId, def) {
     _holsterHolds.set(weaponId, hold);
   }
   return hold;
+}
+
+// One part per material instead of one per GLB sub-mesh. Every part becomes one InstancedMesh in
+// weapon-part-batches, all frustumCulled:false, so a rifle of 30 sub-meshes was 30 always-on draws
+// per frame for every copy in the scene (74 buckets for one player's guns in the 2026-08-30
+// captures). Parts sharing a material are baked into template space and merged; a group whose
+// attribute sets differ, or a multi-material part, is kept as it was rather than guessed at.
+export function mergePartsByMaterial(THREE, parts, merge = mergeGeometries) {
+  const groups = new Map();
+  const out = [];
+  for (const part of parts) {
+    if (!part.geometry || Array.isArray(part.material)) { out.push(part); continue; }
+    let g = groups.get(part.material);
+    if (!g) { g = []; groups.set(part.material, g); out.push(g); }
+    g.push(part);
+  }
+  const result = [];
+  for (const entry of out) {
+    if (!Array.isArray(entry)) { result.push(entry); continue; }
+    if (entry.length === 1) { result.push(entry[0]); continue; }
+    const baked = entry.map((part) => {
+      const geo = part.geometry.clone();
+      geo.applyMatrix4(part.localMatrix);
+      return geo;
+    });
+    // mergeGeometries wants one attribute set and one indexing style across the group.
+    const keys = Object.keys(baked[0].attributes).sort().join();
+    const sameAttributes = baked.every((geo) => Object.keys(geo.attributes).sort().join() === keys);
+    const sameIndexing = baked.every((geo) => !!geo.index === !!baked[0].index);
+    const merged = sameAttributes && sameIndexing ? merge(baked, false) : null;
+    if (!merged) { for (const part of entry) result.push(part); continue; }
+    merged.computeBoundingSphere();
+    result.push({ geometry: merged, material: entry[0].material, localMatrix: new THREE.Matrix4(), mergedFrom: entry.length });
+  }
+  return result;
 }
 
 // Largest sub-meshes first until they cover `coverage` of the vertices or `maxParts` is reached: a
@@ -195,7 +231,7 @@ export function createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, load
   let dataPromise = null;
   let batches = null;
   let frameCounter = 0;
-  const stats = { mounts: 0, flushed: 0 };
+  const stats = { mounts: 0, flushed: 0, partsMerged: 0 };
   const aimCfg = () => (typeof aimBlend === 'function' ? aimBlend() : aimBlend);
 
   // GLTFLoader hands back classic materials, which cannot hold a TSL node and so cannot carry a heat
@@ -244,13 +280,15 @@ export function createWeaponMountSystem({ THREE, scene, loadGLB, getWeapon, load
         const normalizedMatrix = normalizeWeaponModel(THREE, template);
         const bakedAnchors = bakeWeaponAnchors(THREE, rawAnchors, normalizedMatrix);
         template.updateMatrixWorld(true);
-        const instanceParts = [];
+        const rawParts = [];
         template.traverse((obj) => {
           if (!obj.isMesh) return;
           // Skinned meshes get their never-animated bone pose frozen into static geometry.
           const geometry = obj.isSkinnedMesh ? bakeSkinnedGeometry(THREE, obj) : obj.geometry;
-          instanceParts.push({ geometry, material: convertPartMaterial(obj.material), localMatrix: obj.matrixWorld.clone() });
+          rawParts.push({ geometry, material: convertPartMaterial(obj.material), localMatrix: obj.matrixWorld.clone() });
         });
+        const instanceParts = mergePartsByMaterial(THREE, rawParts);
+        stats.partsMerged += rawParts.length - instanceParts.length;
         const bounds = new THREE.Box3().setFromObject(template);
         // Stowed copies (phase 4) use the biggest parts only; ordering by vertex count is free here.
         const reducedParts = [...instanceParts]

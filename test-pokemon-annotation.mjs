@@ -344,6 +344,21 @@ check('contacts are stored once and split into limb and body by derivation', () 
   assert(a.parts.contacts.length === 2, 'contacts were duplicated');
 });
 
+check('a foot below the driven limb chain resolves to that limb', () => {
+  const { rig } = rigOf('machoke');
+  let a = emptyAnnotation('067_machoke', rig);
+  a = addAppendage(a, rig, {
+    id: 'legR', type: 'leg', side: 'R', row: 0,
+    chain: ['bone32', 'bone31', 'bone30'],
+  });
+  a = setContacts(a, rig, ['bone29', 'bone28']);
+  assert(JSON.stringify(contactsOf(a, 'legR', rig)) === JSON.stringify(['bone29', 'bone28']),
+    'the two foot branches were not associated with their parent leg');
+  assert(bodyContacts(a, rig).length === 0, 'limb feet were reported as body contacts');
+  assert(resolveAnnotation(a, rig).appendages[0].contacts.length === 2,
+    'runtime resolution dropped the separately marked feet');
+});
+
 check('toggling a contact adds then removes it', () => {
   const { rig } = rigOf('rattata');
   let a = toggleContact(emptyAnnotation('x', rig), rig, rig.root);

@@ -51,6 +51,7 @@ export const ProjectileEntity = {
       state: {
         color: c,
         radius: payloadParams.radius,
+        decay: payloadParams.decay,
         brightness: payloadParams.brightness,
         payload: { type: payloadType, params: payloadParams },
       },
@@ -104,6 +105,7 @@ export const ProjectileEntity = {
       p: [p[0], p[1], p[2]],
       color: [s.color.r, s.color.g, s.color.b],
       radius: s.radius,
+      decay: s.decay,
       intensity: s.brightness,
       ownerId: entity.ownerId,
       renders: true,

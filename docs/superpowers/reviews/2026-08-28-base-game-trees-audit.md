@@ -38,7 +38,8 @@ work, `introduced_by` says so.
 > **Reviewer revision, 2026-08-29.** The original audit is preserved in place. Claims rejected or
 > narrowed by source review are struck through, followed by the replacement conclusion. Metadata
 > reflects the revised disposition so machine readers do not treat a disputed fix as complete.
-> The review ran `test-base-game-forest.mjs` (71/71 passed), `test-trees-geometry.mjs` (27/27),
+> The review ran `test-base-game-forest.mjs` (81/81 passed), `test-base-game-trees.mjs` (45/45),
+> `test-base-game-tree-species.mjs` (7/7), `test-trees-geometry.mjs` (27/27),
 > `test-tree-presets.mjs` (222/222), and `bench-base-game-forest.mjs`, but
 > those harnesses still use renderer stubs and therefore do not close the GPU evidence gap.
 
@@ -450,42 +451,47 @@ introduced_by: this-work
 runs: once
 locations:
   - file: base-game-forest.js
-    line: 185
-    symbol: build
-    role: bakes the whole palette in one call
+    symbol: publishFamilyWave
+    role: compiles and publishes each complete cross-family variant wave
   - file: forest-palette.js
-    symbol: createForestPalette
-    role: runs the generator species x variants times
+    symbol: createForestPaletteAsync
+    role: bakes breadth-first across families and reports each completed wave
 measured:
-  headless: 68-139 ms for 12 variants
+  headless: 33-79 ms total CPU bake for six named-default variants; publication is split into two three-species waves
 verified_by: bench-base-game-forest.mjs — "palette bake"
-mutation_tested: false
+mutation_tested: true
 ```
 
 ### Cause
 
-`buildAsync()` runs `createForestPalette` in one synchronous call on whichever frame the lazy imports
-resolve. Despite the async name, execution remains synchronous until the later `compileAsync()`
-await. That runs the procedural tree generator once per variant — twelve times at defaults.
+~~`buildAsync()` runs `createForestPalette` in one synchronous call on whichever frame the lazy
+imports resolve. Despite the async name, execution remains synchronous until the later
+`compileAsync()` await. That runs the procedural tree generator once per variant — twelve times at
+defaults.~~ Base Game now bakes breadth-first: variant zero for every family, then variant one for
+every family. Each complete wave is compiled, compute-warmed, and published before the next wave.
 
 ### Effect
 
-A single frame of 68–139 ms measured headless, landing exactly when the user ticks the Trees box.
-The browser figure is unmeasured and may differ.
+~~A single frame of 68–139 ms measured headless, landing exactly when the user ticks the Trees box.~~
+~~Total CPU bake remains 66–132 ms headless~~ The named-species default measured 33–79 ms total,
+but it is yielded between family members and no longer
+gates the whole forest. The browser frame cost of one generator slice remains unmeasured.
 
 ### Solution
 
-Bake one variant per frame behind the existing "waiting on the palette" readout, or move the bake to
-a worker. The renderer already tolerates arriving late, since chunks placed before it exists are
-flushed on build.
+~~Bake one variant per frame behind the existing "waiting on the palette" readout, or move the bake
+to a worker.~~ The incremental path now retains one fixed instanced GPU allocation, hides unfinished
+slots, and publishes complete cross-family waves. Moving generation to workers remains the stronger
+option if one individual variant still exceeds the browser frame budget.
 
 ### Result
 
 ~~Not fixed.~~ Implemented in code on 2026-08-29: `createForestPaletteAsync()` preserves the donor's
-synchronous API for other hosts but Base Game now yields between variants and aborts a stale bake.
-The provisional default also falls from four to two variants per species. This remains unverified
-until a browser capture proves that each individual variant bake stays inside the frame budget; the
-headless default still measured a cold total of 125 ms across six variants.
+synchronous API for other hosts, yields between family members, and aborts stale work. Base Game
+publishes all families' first variants together, then all families' second variants, rather than
+waiting for the full palette. Tests verify wave ordering, species-major GPU identity, compilation
+before each wave enters the scene, and cancellation during an in-flight compile. This remains
+unverified until a browser capture proves each individual generator slice stays inside budget.
 
 ## F-09 — Per-frame timing that only a panel reads
 
@@ -936,7 +942,7 @@ as instance and triangle counts.
 ### Effect
 
 The headline cost — ~~84 draws~~ 42 visible main-pass mesh submissions, plus up to 18 shadow-pass
-submissions at current defaults, and ~~about 526k~~ about 308k estimated main-pass forest triangles
+submissions at current defaults, and ~~about 526k~~ ~~about 308k~~ about 165k estimated main-pass forest triangles
 on a 225-draw, 381k-triangle baseline — is
 geometry, not time. Whether that lands as 1 ms or 6 ms is unknown, and the per-rung toggles built
 specifically to answer it (tree plan D5b) have not been swept. The internal `stats.draws` counter is
@@ -1021,8 +1027,8 @@ locations:
     symbol: branchLodGeometries
     role: emits simplified skins during the original skeleton traversal without changing RNG or leaf placement
 measured:
-  per_variant: branches full/lod1/lod2 5618/1986/1696 tris; leaves 7524; leaf-shadow 3276; coarse leaves 3240
-  per_rung: 16418 / 9510 / 4936 / 2
+  per_variant: named-default branches full/lod1/lod2 4590/1607/1012 tris; leaves 3532; leaf-shadow 1548; coarse leaves 1524
+  per_rung: 9670 / 5139 / 2536 / 2
 verified_by: bench-base-game-forest.mjs and test-trees-geometry.mjs
 mutation_tested: true
 ```
@@ -1037,9 +1043,11 @@ circumference sides without advancing RNG, so the full mesh and leaf placement s
 ### Effect
 
 ~~A "coarse" LOD2 tree is 8858 triangles, 5618 of them undecimated trunk — 63%. Moving the LOD
-rings therefore buys far less than the rung names suggest.~~ The current LOD2 tree is 4,936
-triangles, including 1,696 bark triangles. The default/dense/wide headless estimates fell from
-about 526k/2.85M/2.79M to 308k/1.72M/1.57M main-pass triangles respectively.
+rings therefore buys far less than the rung names suggest.~~ ~~The procedural default's LOD2 tree
+was 4,936 triangles, including 1,696 bark triangles, and its default/dense/wide estimates were
+308k/1.72M/1.57M.~~ The explicit Aspen Small/Oak Small/Pine Small default now averages 2,536
+triangles at LOD2, including 1,012 bark triangles; its default/dense/wide estimates are
+165k/902k/812k main-pass triangles respectively.
 
 ### Solution
 
@@ -1072,7 +1080,7 @@ locations:
     role: bakes the variant slot offset into positionNode, so no two variants can share a material
   - file: base-game-forest.js
     symbol: buildAsync
-    role: now precompiles before anything reaches the scene
+    role: now precompiles each cross-family wave before that wave reaches the scene
   - file: forest-gpu.js
     symbol: syncRenderParts
     role: flips mesh.visible as variants populate, deferring compiles across the session
@@ -1103,12 +1111,11 @@ compile against. `F-19` recorded that gap and ranked it `low`. It was the gap th
 
 ### Solution
 
-`renderer.compileAsync(warmGroup, camera, scene)` before any mesh reaches the scene, with every mesh
-forced visible for the pass so hidden rungs compile too, and the real scene passed as `targetScene`
-so lights resolve. ~~The build no longer blocks the frame loop~~ Normal render-node building and
-render pipeline creation are yielded between objects, but the synchronous palette bake still blocks
-the enable frame. The panel says the forest is compiling, and the meshes are added when it completes.
-A teardown during the build invalidates it through a token rather than adding dead meshes to a scene.
+~~`renderer.compileAsync(warmGroup, camera, scene)` before any mesh reaches the scene, with every mesh
+forced visible for the pass so hidden rungs compile too.~~ The same rule now applies per cross-family
+wave: the first wave may draw while the second bakes, but a wave never enters the scene before all of
+its own meshes compile against the real target scene. A teardown invalidates in-flight work through
+a token, including a compile promise that resumes after its GPU shell was disposed.
 
 **Reviewer revision.** Three.js `compileAsync()` walks the normal render list; it does not execute the
 shadow-map pass or the forest's compute nodes. ~~At defaults the first forest recull still creates and
@@ -1189,8 +1196,9 @@ Not fixed architecturally. The immediate lever landed on 2026-08-29: the provisi
 default is now two variants per species, cutting the default from 12 variants / 84 main meshes to
 6 variants / 42 main meshes. The headless benchmark also fell from 24.66 MB across 96 meshes to
 12.32 MB across 42 meshes. ~~Triangle count is unchanged, so `F-21` and the partition refactor
-remain.~~ The subsequent `F-21` implementation lowered current uploaded geometry to 10.77 MB and
-reduced the estimated main-pass triangle counts; the partition refactor still remains.
+remain.~~ The subsequent `F-21` implementation lowered uploaded geometry to 10.77 MB, and the
+explicit named-species default lowers the current figure again to 5.56 MB across 42 meshes. The
+partition refactor still remains.
 For contrast, `bot-trees.js` builds one `InstancedMesh` per populated (variant, part) bucket and never
 submits an empty draw, but it cannot stream.
 
@@ -1486,7 +1494,8 @@ step removes. Do not spend optimization time on `F-05`, `F-06`, or `F-09` before
 
 Implementation progress as of 2026-08-29:
 
-- [x] Yield palette generation between variants and abort stale builds (`F-08`, GPU validation open).
+- [x] Yield family-interleaved palette generation, publish complete cross-family waves progressively, and abort stale builds (`F-08`, GPU validation open).
+- [x] Replace the count-only random species index with an explicit stable-ID Aspen/Oak/Pine/Ash/Bush/Trellis multi-selection shared by placement and palette baking.
 - [x] Remove Base Game's unreachable billboard rung (`F-26`).
 - [x] Surface render compile failures and keep failed meshes out of the scene (`F-22`).
 - [x] Stage compute first-use pipelines before scene insertion (`F-22`, `F-27`).

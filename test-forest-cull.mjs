@@ -118,5 +118,18 @@ const baseParams = {
   ok(shouldRecull(prev, { x: 0, z: 0, ...fwd(1) }, { headingCos: Math.cos(0.5 * Math.PI / 180) }) === true, 'f: custom tighter heading threshold triggers');
 }
 
+// ---- shadow list (2026-08-30): casters within reach, cone or not ----
+{
+  const p = { ...baseParams, shadowReach: 90 };
+  const behind = classifyInstance({ x: 0, z: 50 }, cam, p);
+  ok(behind.coneLive === false && behind.shadowLive === true, 'g: a tree 50 m straight behind is culled from view but is a shadow caster');
+  const far = classifyInstance({ x: 0, z: -200 }, cam, p);
+  ok(far.live === true && far.shadowLive === false, 'g: a tree 200 m ahead draws but is past the shadow reach');
+  const none = classifyInstance({ x: 0, z: 50 }, cam, baseParams);
+  ok(none.shadowLive === false, 'g: without a reach there is no shadow list');
+  const edge = classifyInstance({ x: 0, z: 90 }, cam, p);
+  ok(edge.shadowLive === true, 'g: the reach is inclusive at the edge');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

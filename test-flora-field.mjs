@@ -108,6 +108,13 @@ section('tile derive');
   const raised = cover.derive({ heights, biomeIds, moisture, texels, step });
   check('raising sea level drowns the tile', raised.coverGrass.every(v => v === 0));
   cover.setSeaLevel(0);
+
+  const cleared = createTileCover({ seaLevel: 0, biomeNames: BIOMES,
+    clearance: (x) => x < 32 ? 0 : 1 });
+  const clearedTile = cleared.derive({ heights, biomeIds, moisture, texels, step, originX: 0, originZ: 0 });
+  check('trail clearance multiplies all three cover channels',
+    clearedTile.coverGrass[2] === 0 && clearedTile.coverPlant[2] === 0 && clearedTile.coverTree[2] === 0
+      && clearedTile.coverGrass[6] > 0);
 }
 
 section('defaults are sane');

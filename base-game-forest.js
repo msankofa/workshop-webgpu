@@ -35,6 +35,9 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
   // Half-extent of the host's directional shadow camera (base-game.html sets +/-90). A LOD rung
   // whose near edge is past this rasterises into a shadow map it cannot appear in.
   treeShadowReach: 90,
+  // Bark photos and the four-leaf atlas from tree-textures.js, as environment-viewer and
+  // bot-viewer-v3 default to; 'procedural' is the textureless bark grain over flat colours.
+  treeTexMode: 'authored',
   // Palette authoring. Procedural species in v1; authored families are T5.
   treeLeafCount: 10, treeLeafSize: 1, treeLeafStart: 0.25, treeLeafSpread: 0,
   treeLeafShadowPct: 0.3, treeCoarseLeafRatio: 0.25, treeCoarseLeafSizeMult: 2.5,
@@ -46,7 +49,7 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
 // Palette-shaping settings: changing one rebakes the geometry and rebuilds the instance buffers,
 // so they are commit-on-release in the panel and deferred to the next update() here.
 const PALETTE_KEYS = Object.freeze([
-  'treeSpecies', 'treeDiversity', 'treeGeneralization', 'treeVariantsPerSpecies', 'treeCapPerVariant',
+  'treeTexMode', 'treeSpecies', 'treeSpeciesSelection', 'treeDiversity', 'treeGeneralization', 'treeVariantsPerSpecies', 'treeCapPerVariant',
   'treeLeafCount', 'treeLeafSize', 'treeLeafStart', 'treeLeafSpread', 'treeLeafShadowPct',
   'treeCoarseLeafRatio', 'treeCoarseLeafSizeMult', 'treeSeedOffset',
   'treeTrunkHeight', 'treeTrunkWidth',
@@ -100,7 +103,37 @@ export function proceduralBarkColorNode() {
   return vertexColor.mul(mix(float(0.48), float(1.34), barkValue));
 }
 
-export function createBaseGameForest({ renderer, scene, camera, terrain, worldCoordinates, settings = {}, yieldTask = null } = {}) {
+// The binding bot-trees.js (bot-viewer-v3) uses: procedural is the bark grain node over the baked
+// flat colour, authored is the photo maps and the leaf atlas. Leaves are cut out by alphaTest and
+// never `transparent`: blended cards need a sort order an instanced canopy does not have, and the
+// half-covered edge texels blend against the sky as a pale rim around every leaf.
+export function bindTreeMaterials(branchMat, leafMat, set) {
+  leafMat.transparent = false;
+  if (!set || set.mode === 'procedural') {
+    branchMat.map = null;
+    branchMat.normalMap = null;
+    branchMat.colorNode = proceduralBarkColorNode();
+    leafMat.map = null;
+    leafMat.alphaTest = 0;
+  } else {
+    branchMat.colorNode = null;
+    branchMat.map = set.barkMap;
+    branchMat.normalMap = set.barkNormalMap;
+    leafMat.map = set.leafMap;
+    leafMat.alphaTest = set.leafMap ? (set.leafAlphaTest ?? 0.5) : 0;
+  }
+  branchMat.needsUpdate = true;
+  leafMat.needsUpdate = true;
+}
+
+// createTextureSource is injectable so a Node test can hand in a fake authored set; the page uses
+// tree-textures.js. Authored needs a document (it paints the leaf atlas on a canvas), so headless
+// hosts fall back to procedural rather than throwing inside the build.
+// The layer the forest's shadow-only meshes live on. The host enables it on its shadow camera and
+// nowhere else, so the main pass never draws them; the rain occluder bake uses layer 3.
+export const BASE_GAME_FOREST_SHADOW_LAYER = 4;
+
+export function createBaseGameForest({ renderer, scene, camera, terrain, worldCoordinates, settings = {}, yieldTask = null, createTextureSource = null, shadowLayer = BASE_GAME_FOREST_SHADOW_LAYER } = {}) {
   if (!scene?.add) throw new TypeError('the forest needs a scene');
   if (!terrain?.acquireFields) throw new TypeError('the forest needs the Base Game terrain facade');
   const cfg = { ...BASE_GAME_TREE_DEFAULTS, ...BASE_GAME_FOREST_DEFAULTS, ...settings };
@@ -110,6 +143,9 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
 
   const trees = createBaseGameTrees({ terrain, worldCoordinates, settings: cfg });
   let mods = null, palette = null, forestGPU = null;
+  let texSet = null;
+  let publishedMeshes = [];
+  let gpuCanUpdate = false;
   let meshesCb = null;
   let enabled = false, built = false, building = false, buildFailed = false, pendingRebuild = false;
   let buildToken = 0;                 // a teardown mid-build invalidates the work in flight
@@ -118,7 +154,8 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
   const stats = {
     enabled: false, built: false, loading: false, lastError: null,
     draws: 0, shadowDraws: 0, triangles: 0, instances: 0, capacity: 0, dropped: 0, truncating: false,
-    variants: 0, visibleVariants: 0, paletteMs: 0, compileMs: 0, computeCompileMs: 0, updateMs: 0,
+    textureMode: 'procedural', texturesReady: false,
+    variants: 0, readyVariants: 0, visibleVariants: 0, paletteMs: 0, compileMs: 0, computeCompileMs: 0, updateMs: 0,
     lod0: 0, lod1: 0, lod2: 0, rejectedCone: 0, rejectedFar: 0,
     reculls: 0, skippedReculls: 0, cullEstimates: 0,
     // Placement, mirrored up so one readout answers "what did the density slider actually buy".
@@ -188,7 +225,8 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     const height = Math.max(0.01, cfg.treeTrunkHeight);
     const width = Math.max(0.01, cfg.treeTrunkWidth);
     const fallback = mods?.TREE_DEFAULTS ?? {};
-    return buildSpecies(params, rngFrom(trees.seed)).map(sp => {
+    const sourceSpecies = params.speciesTable ?? buildSpecies(params, rngFrom(trees.seed));
+    return sourceSpecies.map(sp => {
       const length = [...(sp.length ?? fallback.length ?? [])];
       const radius = [...(sp.radius ?? fallback.radius ?? [])];
       if (length.length) length[0] *= height;
@@ -209,23 +247,57 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     return Math.min(Math.max(1, cfg.treeDrawRadius), lodDistances()[2]);
   }
 
+  function wantedTexMode() {
+    const canAuthor = !!createTextureSource || typeof document !== 'undefined';
+    return cfg.treeTexMode === 'authored' && canAuthor ? 'authored' : 'procedural';
+  }
+  // One set per mode. The palette bakes atlas-card leaves the moment the set exists, so a set that
+  // is still decoding only delays the material binding, never the geometry: when it lands the
+  // materials are rebound in place, no rebake. Changing the mode is a rebake (PALETTE_KEYS).
+  function ensureTextureSet() {
+    const mode = wantedTexMode();
+    if (texSet && texSet.mode === mode) return texSet;
+    const previous = texSet;
+    const make = createTextureSource ?? mods?.createTextureSource;
+    const set = make ? make(mode, {
+      onReady: (ready) => {
+        if (ready !== texSet) return;
+        stats.texturesReady = true;
+        forestGPU?.applyTextureSet((b, l) => bindTreeMaterials(b, l, texSet));
+      },
+    }) : { mode: 'procedural', ready: true, leafAtlas: { cols: 2, rows: 2 }, dispose() {} };
+    texSet = set;
+    stats.textureMode = set.mode;
+    stats.texturesReady = !!set.ready;
+    previous?.dispose?.();
+    return set;
+  }
+  function bindMaterials() {
+    const set = texSet?.ready ? texSet : null;
+    forestGPU.applyTextureSet((b, l) => bindTreeMaterials(b, l, set));
+  }
+
   function disposePalette() {
     if (!palette) return;
+    const geometries = new Set();
     for (const v of palette.variants) {
-      const geometries = new Set([
-        v.branches, v.branchesLod1, v.branchesLod2, v.leaves, v.shadow, v.leavesCoarse,
-      ]);
-      for (const geometry of geometries) geometry?.dispose();
+      if (!v) continue;
+      for (const geometry of [v.branches, v.branchesLod1, v.branchesLod2, v.leaves, v.shadow, v.leavesCoarse]) {
+        if (geometry) geometries.add(geometry);
+      }
     }
+    for (const geometry of geometries) geometry.dispose();
     palette = null;
   }
 
   function teardownRenderer() {
     buildToken++;
     if (forestGPU) {
-      scene.remove(...forestGPU.meshes);
+      scene.remove(...publishedMeshes);
       forestGPU.dispose();
       forestGPU = null;
+      publishedMeshes = [];
+      gpuCanUpdate = false;
       meshesCb?.([]);          // the host's mirror-exclusion list must forget the dead meshes
     }
     disposePalette();
@@ -251,57 +323,111 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
   async function buildAsync() {
     const token = buildToken;
     const t0 = now();
-    palette = await mods.createForestPaletteAsync({
+    const variantsPerSpecies = Math.max(1, Math.round(cfg.treeVariantsPerSpecies));
+    const readyPaletteVariants = [];
+    ensureTextureSet();
+    stats.paletteMs = 0;
+    stats.compileMs = 0;
+    stats.computeCompileMs = 0;
+    stats.readyVariants = 0;
+
+    async function publishFamilyWave({ variants: wave, palette: progressPalette, total }) {
+      if (token !== buildToken || !enabled) return false;
+      gpuCanUpdate = false;
+      if (!forestGPU) {
+        // The first wave contains variant zero from every family. Use each family's first geometry
+        // as a hidden placeholder for its later slots so the fixed-size GPU buffers can be created
+        // once; placeholders never draw and are replaced before their slot becomes ready.
+        const slots = new Array(total);
+        for (let s = 0; s < progressPalette.speciesCount; s++) {
+          const fallback = progressPalette.variants[s * variantsPerSpecies];
+          for (let v = 0; v < variantsPerSpecies; v++) {
+            const g = s * variantsPerSpecies + v;
+            slots[g] = progressPalette.variants[g] ?? fallback;
+          }
+        }
+        palette = { ...progressPalette, variants: slots };
+        const [r0, r1, r2] = lodDistances();
+        forestGPU = mods.createForestGPU({
+          renderer, camera, palette,
+          heightAt: globalHeightAt,
+          treeBaseOffset: cfg.treeVerticalOffset,
+          lodR0: r0, lodR1: r1, lodR2: r2,
+          maxDrawRadius: drawRadius(),
+          capPerVariant: Math.max(16, Math.round(cfg.treeCapPerVariant)),
+          leafSway: cfg.treeLeafSway,
+          billboards: false,
+          progressive: true,
+          shadowLayer,
+        });
+        bindMaterials();
+        syncOrigin();
+        syncRenderState();
+        if (trees.records.size) forestGPU.setChunks(trees.records);
+        const sharedStart = now();
+        await forestGPU.warmupComputeShared?.(yieldMain, () => token === buildToken && enabled);
+        stats.computeCompileMs += now() - sharedStart;
+        if (token !== buildToken || !enabled || !forestGPU) return false;
+      }
+
+      const gpu = forestGPU;
+      const indices = [];
+      for (const variant of wave) {
+        const g = variant.speciesIdx * variantsPerSpecies + variant.variant;
+        indices.push(g);
+        readyPaletteVariants[g] = variant;
+        palette.variants[g] = variant;
+        gpu.installVariant(g, variant);
+      }
+
+      // Compile one complete cross-family wave off-scene. Publication happens only after every
+      // family in the wave is ready, so the forest never temporarily becomes a monoculture.
+      const waveMeshes = indices.flatMap(g => gpu.variantMeshes(g));
+      const warm = new THREE.Group();
+      for (const mesh of waveMeshes) { mesh.visible = true; warm.add(mesh); }
+      const compileStart = now();
+      if (renderer?.compileAsync) await renderer.compileAsync(warm, camera, scene);
+      stats.compileMs += now() - compileStart;
+      if (token !== buildToken || !enabled || forestGPU !== gpu) return false;
+      for (const g of indices) {
+        const computeStart = now();
+        await gpu.warmupVariant?.(g, yieldMain, () => token === buildToken && enabled);
+        stats.computeCompileMs += now() - computeStart;
+        if (token !== buildToken || !enabled || forestGPU !== gpu) return false;
+      }
+
+      for (const g of indices) gpu.setVariantReady(g, true);
+      gpu.refreshVisibility();
+      scene.add(...waveMeshes);
+      publishedMeshes.push(...waveMeshes);
+      meshesCb?.(publishedMeshes);
+      rungTris = rungTriangles({ variants: readyPaletteVariants.filter(Boolean) });
+      built = true;
+      stats.built = true;
+      stats.variants = total;
+      stats.readyVariants = readyPaletteVariants.filter(Boolean).length;
+      gpuCanUpdate = true;
+      return true;
+    }
+
+    const completePalette = await mods.createForestPaletteAsync({
       createTree: mods.createTree,
       params: paletteParams(),
       masterSeed: trees.seed,
-      variantsPerSpecies: Math.max(1, Math.round(cfg.treeVariantsPerSpecies)),
+      variantsPerSpecies,
+      texSet,
     }, {
       yieldFn: yieldMain,
       shouldContinue: () => token === buildToken && enabled,
+      onFamilyWave: publishFamilyWave,
     });
-    if (!palette || token !== buildToken) { disposePalette(); return false; }
-    stats.paletteMs = now() - t0;
+    if (!completePalette || token !== buildToken) return false;
+    palette = completePalette;
+    stats.paletteMs = completePalette.bakeMs ?? (now() - t0);
     rungTris = rungTriangles(palette);
-    const [r0, r1, r2] = lodDistances();
-    forestGPU = mods.createForestGPU({
-      renderer, camera, palette,
-      heightAt: globalHeightAt,
-      treeBaseOffset: cfg.treeVerticalOffset,
-      lodR0: r0, lodR1: r1, lodR2: r2,
-      maxDrawRadius: drawRadius(),
-      capPerVariant: Math.max(16, Math.round(cfg.treeCapPerVariant)),
-      leafSway: cfg.treeLeafSway,
-      billboards: false,
-    });
-    forestGPU.applyTextureSet(branchMat => {
-      branchMat.colorNode = proceduralBarkColorNode();
-      branchMat.needsUpdate = true;
-    });
-    syncOrigin();
-    syncRenderState();
-    // Every mesh, including rungs the mask hides: compile the lot once rather than stalling the
-    // first frame a hidden variant or rung turns on.
-    const warm = new THREE.Group();
-    for (const mesh of forestGPU.meshes) { mesh.visible = true; warm.add(mesh); }
-    const t1 = now();
-    if (renderer?.compileAsync) await renderer.compileAsync(warm, camera, scene);
-    stats.compileMs = now() - t1;
-    if (token !== buildToken) { forestGPU?.dispose(); forestGPU = null; disposePalette(); return false; }
-    const t2 = now();
-    if (forestGPU.warmupCompute) {
-      await forestGPU.warmupCompute(yieldMain, () => token === buildToken && enabled);
-    }
-    stats.computeCompileMs = now() - t2;
-    if (token !== buildToken) { forestGPU?.dispose(); forestGPU = null; disposePalette(); return false; }
-    forestGPU.refreshVisibility();
-    // Chunks placed while the palette baked and the pipelines compiled are already in the map.
-    if (trees.records.size) forestGPU.setChunks(trees.records);
-    scene.add(...forestGPU.meshes);
-    meshesCb?.(forestGPU.meshes);
-    built = true;
-    stats.built = true;
     stats.variants = palette.variants.length;
+    stats.readyVariants = palette.variants.length;
+    gpuCanUpdate = true;
     return true;
   }
 
@@ -314,6 +440,8 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     // A rung casts only if it STARTS inside the shadow camera: rung 0 at 0, rung 1 at r0, rung 2 at r1.
     const reach = Math.max(0, cfg.treeShadowReach);
     forestGPU.setShadowRungs([0 < reach, r0 < reach, r1 < reach, false]);
+    // The shadow list: every tree within reach casts, cone or not. Off when neither part casts.
+    forestGPU.setShadowReach?.(cfg.treeBarkShadows || cfg.treeLeafShadows ? reach : 0);
     forestGPU.setRenderParts({
       bark: cfg.treeBark, leaves: cfg.treeLeaves, billboards: false,
       barkShadows: cfg.treeBarkShadows, leafShadows: cfg.treeLeafShadows,
@@ -333,6 +461,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     const f = forestGPU.summary;
     stats.draws = f.draws; stats.shadowDraws = f.shadowDraws;
     stats.instances = f.instances; stats.variants = f.variants;
+    stats.readyVariants = f.readyVariants;
     stats.visibleVariants = f.visibleVariants;
     stats.capacity = f.capacity; stats.dropped = f.droppedInstances; stats.truncating = f.truncating;
     stats.reculls = f.reculls; stats.skippedReculls = f.skippedReculls;
@@ -370,7 +499,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     trees,
     get built() { return built; },
     get building() { return building; },
-    get meshes() { return forestGPU ? forestGPU.meshes : []; },
+    get meshes() { return publishedMeshes; },
     get forestGPU() { return forestGPU; },
     get rungTriangles() { return [...rungTris]; },
     // Fills the per-rung and triangle fields of `stats` and returns it. Not free — do not call it
@@ -382,10 +511,12 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       if (mods) return true;
       stats.loading = true;
       try {
-        const [treesMod, paletteMod, gpuMod] = await Promise.all([
+        const [treesMod, paletteMod, gpuMod, texMod] = await Promise.all([
           import('./trees.js'), import('./forest-palette.js'), import('./forest-gpu.js'),
+          import('./tree-textures.js'),
         ]);
         mods = {
+          createTextureSource: texMod.createTextureSource,
           createTree: treesMod.createTree,
           createForestPalette: paletteMod.createForestPalette,
           createForestPaletteAsync: paletteMod.createForestPaletteAsync,
@@ -402,7 +533,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     },
     setEnabled,
     // The host hears about the meshes once they exist, so it can keep them out of the water mirror.
-    onMeshes(fn) { meshesCb = fn; if (forestGPU) fn(forestGPU.meshes); },
+    onMeshes(fn) { meshesCb = fn; if (forestGPU) fn(publishedMeshes); },
     async update() {
       if (!enabled) return false;
       if (pendingRebuild) { pendingRebuild = false; teardownRenderer(); }
@@ -411,6 +542,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       trees.update(focus[0], focus[2]);
       if (!built) { beginBuild(); syncStats(); return false; }
       syncOrigin();
+      if (!gpuCanUpdate) { syncStats(); return false; }
       await forestGPU.update();
       stats.updateMs = now() - t0;
       syncStats();
@@ -442,6 +574,8 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       dropRebase?.();
       trees.dispose();
       teardownRenderer();
+      texSet?.dispose?.();
+      texSet = null;
     },
   };
 }

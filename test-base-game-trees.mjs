@@ -5,6 +5,7 @@
 //
 // node test-base-game-trees.mjs
 
+import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
 import {
   createBaseGameTrees, expectedTreesPerChunk, treeSeedFor,
@@ -165,13 +166,17 @@ section('records are complete and global');
   check('scales are positive', recs.every(r => r.scale > 0));
   check('species indices are inside the species count', recs.every(r => r.speciesIdx >= 0 && r.speciesIdx < BASE_GAME_TREE_DEFAULTS.treeSpecies));
 
-  // Placement Y is the field's own surface, biased low so a trunk never floats.
-  let matched = 0;
+  // Record Y is the DRAWN surface plus the low bias, carried so the renderer never re-queries it.
+  // The 8 m placement posts gate where a tree may stand; they are not where it is drawn.
+  let matched = 0, postGap = 0;
   for (const r of recs.slice(0, 50)) {
-    const h = terrain.fieldSurfaceAt(r.x, r.z);
-    if (h != null && Math.abs(r.y - (h + BASE_GAME_TREE_DEFAULTS.treeVerticalOffset)) < 1e-6) matched++;
+    const h = terrain.groundHeight(r.x, r.z);
+    if (Math.abs(r.ground - h) < 1e-6 && Math.abs(r.y - (h + BASE_GAME_TREE_DEFAULTS.treeVerticalOffset)) < 1e-6) matched++;
+    const post = terrain.fieldSurfaceAt(r.x, r.z);
+    if (post != null) postGap = Math.max(postGap, Math.abs(post - h));
   }
-  check('record Y is the field surface plus the low bias', matched === Math.min(50, recs.length), `${matched}/${Math.min(50, recs.length)}`);
+  check('record ground and Y are the drawn surface plus the low bias', matched === Math.min(50, recs.length), `${matched}/${Math.min(50, recs.length)}`);
+  console.log(`  (placement posts sit up to ${postGap.toFixed(2)} m off the drawn surface here, which is why the record carries the source height)`);
   check('and the bias is negative, never positive', BASE_GAME_TREE_DEFAULTS.treeVerticalOffset < 0);
 
   // Records are global, so a record's XZ must lie inside its own chunk's global bounds.
@@ -269,6 +274,7 @@ section('identity keys are the ones that change the forest');
     !TREE_IDENTITY_KEYS.includes('treeBudgetChunks') && !TREE_IDENTITY_KEYS.includes('treeBudgetMs'));
   check('but density and seed offset are',
     TREE_IDENTITY_KEYS.includes('treesPerHectare') && TREE_IDENTITY_KEYS.includes('treeSeedOffset'));
+  check('and an explicit species selection changes tree identity', TREE_IDENTITY_KEYS.includes('treeSpeciesSelection'));
   terrain.dispose();
 }
 
@@ -291,6 +297,85 @@ section('the derived numbers are what they claim');
   const reach = trees.stats.radiusChunks * trees.stats.chunkSize;
   check('the derived chunk window covers the draw radius', reach >= 700, `reach ${reach} for radius 700`);
   terrain.dispose();
+}
+
+section('the placement controls the Plants panel surfaces (2026-09-01)');
+{
+  const PANEL_KEYS = ['treePlacement', 'treeClusterSize', 'treeClusterSpread', 'treeShoreMargin',
+    'treeChunkSize', 'treeSeedOffset', 'treeSizeVar', 'treeSkew'];
+  for (const key of PANEL_KEYS) check(`${key} changes tree identity`, TREE_IDENTITY_KEYS.includes(key));
+
+  const grow = (settings = {}) => {
+    const r = rig({ treesEnabled: true, treeRadius: 200, ...settings });
+    r.trees.setEnabled(true);
+    settle(r.terrain, r.trees);
+    return r;
+  };
+  const base = grow();
+  const baseSig = sig(base.trees.allRecords());
+  check('the default forest has trees to compare', base.trees.allRecords().length > 20, `${base.trees.allRecords().length}`);
+  const switched = base.trees.apply({ treePlacement: 'random' }, [0, 0]);
+  check('a pattern change reports as an identity change', switched === true);
+  settle(base.terrain, base.trees);
+  check('and moves the trees', sig(base.trees.allRecords()) !== baseSig);
+  base.terrain.dispose();
+
+  const sigs = {};
+  for (const placement of ['clustered', 'random', 'scattered', 'ring']) {
+    const r = grow({ treePlacement: placement });
+    sigs[placement] = sig(r.trees.allRecords());
+    check(`${placement} places trees`, r.trees.allRecords().length > 0, `${r.trees.allRecords().length}`);
+    r.terrain.dispose();
+  }
+  check('the four patterns are four different forests', new Set(Object.values(sigs)).size === 4);
+  check('and the default is the stands pattern', sigs.clustered === baseSig);
+
+  // Stand shape only acts in the stands pattern, which is why the panel greys it out elsewhere.
+  const a = grow({ treePlacement: 'clustered', treeClusterSize: 12, treeClusterSpread: 0.05 });
+  check('stand size and radius move a clustered forest', sig(a.trees.allRecords()) !== sigs.clustered);
+  a.terrain.dispose();
+  const b = grow({ treePlacement: 'random', treeClusterSize: 12, treeClusterSpread: 0.05 });
+  check('and leave a uniform one alone', sig(b.trees.allRecords()) === sigs.random);
+  b.terrain.dispose();
+
+  const wet = grow({ treeShoreMargin: 0 }), dry = grow({ treeShoreMargin: 25 });
+  check('a taller shore margin keeps fewer trees', dry.trees.allRecords().length < wet.trees.allRecords().length,
+    `${wet.trees.allRecords().length} -> ${dry.trees.allRecords().length}`);
+  check('and none of them roots below it', dry.trees.allRecords().every(r => r.ground >= 25));
+  wet.terrain.dispose(); dry.terrain.dispose();
+
+  const flat = grow({ treeSizeVar: 0 });
+  check('size variation 0 makes every tree max size',
+    flat.trees.allRecords().every(r => Math.abs(r.scale - BASE_GAME_TREE_DEFAULTS.treeMaxSize) < 1e-9));
+  flat.terrain.dispose();
+  const mean = recs => recs.reduce((sum, r) => sum + r.scale, 0) / Math.max(1, recs.length);
+  const small = grow({ treeSkew: 3 }), large = grow({ treeSkew: -3 });
+  check('positive skew grows a smaller forest than negative skew', mean(small.trees.allRecords()) < mean(large.trees.allRecords()),
+    `${mean(small.trees.allRecords()).toFixed(3)} vs ${mean(large.trees.allRecords()).toFixed(3)}`);
+  small.terrain.dispose(); large.terrain.dispose();
+
+  const cell = grow({ treeChunkSize: 48 });
+  check('a smaller placement cell rebuilds the window on it', cell.trees.stats.chunkSize === 48 && cell.trees.allRecords().length > 0,
+    `cell ${cell.trees.stats.chunkSize}, ${cell.trees.allRecords().length} trees`);
+  const resized = cell.trees.apply({ treeChunkSize: 96 }, [0, 0]);
+  settle(cell.terrain, cell.trees);
+  check('and changing it live is an identity change that lands the default forest',
+    resized === true && cell.trees.stats.chunkSize === 96 && sig(cell.trees.allRecords()) === baseSig);
+  cell.terrain.dispose();
+
+  // The page wires every one of them: a default, a control, and the forest apply list.
+  const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
+  const applyList = html.match(/const FOREST_APPLY_KEYS = \[([\s\S]*?)\];/)?.[1] ?? '';
+  const defaults = html.match(/const DEFAULT_SETTINGS = Object\.freeze\(\{([\s\S]*?)\n\}\);/)?.[1] ?? '';
+  for (const key of PANEL_KEYS) {
+    check(`${key} has a page default, a control and a forest apply entry`,
+      new RegExp(`^  ${key}: BASE_GAME_TREE_DEFAULTS\\.${key},`, 'm').test(defaults)
+      && new RegExp(`add(CommitRange|Select)\\((treePlaceSec|treeLookSec), '${key}'`).test(html)
+      && applyList.includes(`'${key}'`));
+  }
+  check('the placement pattern is validated on load', /treePlacement: \['clustered', 'random', 'scattered', 'ring'\]/.test(html));
+  check('the placement controls commit on release, never on drag',
+    !/addRange\((treePlaceSec|treeLookSec), 'tree(ClusterSize|ClusterSpread|Placement|ShoreMargin|ChunkSize|SeedOffset|SizeVar|Skew)'/.test(html));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

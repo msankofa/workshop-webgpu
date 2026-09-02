@@ -1,0 +1,15 @@
+import * as THREE from 'three';
+import { buildCraftMesh } from '../../flight-meshes.js';
+import { BASE_GAME_VEHICLE_DEFS } from '../../base-game-vehicles.js';
+const M = { standard: (c, e = 0) => new THREE.MeshStandardMaterial({ color: c, emissive: e }), basic: (c, o = 1) => new THREE.MeshBasicMaterial({ color: c, opacity: o }) };
+const def = BASE_GAME_VEHICLE_DEFS.buggy;
+const g = buildCraftMesh(def.mesh, 0x888888, M, def);
+const w = g.userData.wheels[0];
+console.log('spin children:', w.spin.children.length, '| pivot children:', w.pivot.children.length);
+const p = new THREE.Vector3();
+w.spin.rotation.x = 1.0; w.pivot.rotation.y = -0.4;
+g.updateMatrixWorld(true);
+w.spin.children[0].getWorldPosition(p);
+console.log('after roll+steer, wheel part world:', p.toArray().map(v => +v.toFixed(3)).join(', '));
+console.log('pivot local pos:', w.pivot.position.toArray().map(v => +v.toFixed(3)).join(', '));
+console.log('double-sided fenders present:', g.children.some(c => c.material?.side === THREE.DoubleSide));

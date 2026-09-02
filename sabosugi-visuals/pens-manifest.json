@@ -1,6 +1,6 @@
 {
  "generated_by": "build-manifest.py",
- "count": 101,
+ "count": 102,
  "categories": [
   "Fluid, Liquid & Smoke",
   "Particle & Motion Effects",
@@ -1454,6 +1454,23 @@
    "url": "/sabosugi/xenolith-diamond/index.html",
    "three": "0.160.0",
    "remoteAssets": [],
+   "wantsFile": false,
+   "hasVideo": false,
+   "hasAudio": false
+  },
+  {
+   "slug": "hybrid-chrysalis-engine",
+   "title": "Chrysalis Engine",
+   "category": "Hybrids",
+   "subcategory": "Combination",
+   "source": null,
+   "file": "hybrids/chrysalis-engine.html",
+   "packaging": "html",
+   "url": "/sabosugi-visuals/hybrids/chrysalis-engine.html",
+   "three": null,
+   "remoteAssets": [
+    "x.com"
+   ],
    "wantsFile": false,
    "hasVideo": false,
    "hasAudio": false

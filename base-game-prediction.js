@@ -119,7 +119,7 @@ export function createBaseGamePrediction({
   }
 
   function installAuthoritative(state) {
-    controller.applyState({ position: state.position, velocity: state.velocity, grounded: state.grounded, tick: state.lastProcessedTick });
+    controller.applyState({ position: state.position, velocity: state.velocity, grounded: state.grounded, tick: state.lastProcessedTick, controlling: state.controlling, vehicle: state.vehicle });
   }
 
   // Applies one authoritative player entry. Returns what happened so presentation can decide
@@ -142,7 +142,13 @@ export function createBaseGamePrediction({
     if (!reference && ackBase && ackBase.tick === ack) reference = ackBase.position;
     const predicted = controller.getPosition();
     const basis = reference ?? predicted;
-    const error = Math.hypot(basis[0] - state.position[0], basis[1] - state.position[1], basis[2] - state.position[2]);
+    const bodyError = Math.hypot(basis[0] - state.position[0], basis[1] - state.position[1], basis[2] - state.position[2]);
+    const predictedVehicle = controller.controlledVehicle;
+    const vehicleError = state.vehicle && predictedVehicle?.id === state.vehicle.id
+      ? Math.hypot(predictedVehicle.body.x - state.vehicle.body[0], predictedVehicle.body.z - state.vehicle.body[1], predictedVehicle.y - state.vehicle.body[7])
+      : 0;
+    const seatChanged = (state.vehicle?.id ?? null) !== (controller.controlledId ?? null);
+    const error = Math.max(bodyError, vehicleError);
     lastError = error;
     lastAckedTick = ack;
     ackBase = { tick: ack, position: [...state.position] };
@@ -151,7 +157,7 @@ export function createBaseGamePrediction({
     let firstUnacked = 0;
     while (firstUnacked < history.length && history[firstUnacked].tick <= ack) firstUnacked++;
     if (firstUnacked > 0) history.splice(0, firstUnacked);
-    if (!hard && error <= cfg.softCorrectionDistance) {
+    if (!hard && !seatChanged && error <= cfg.softCorrectionDistance) {
       return { applied: true, hard: false, replayed: 0, error, reason: 'in-tolerance' };
     }
 

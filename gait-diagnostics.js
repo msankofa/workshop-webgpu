@@ -397,6 +397,9 @@ export function createGaitMonitor(limits = {}) {
   let frames = 0, elapsed = 0;
   let totalTravel = 0, totalCommanded = 0, totalSpeed = 0;
   let strideEnvelope = 0, stepDuration = 0, legSpan = 0, maxSpeed = 0;
+  let droppedTime = 0, substepCapHits = 0, maxInputDt = 0;
+  let belowMinimumClearanceFrames = 0, minimumBodyClearance = 0, degenerateSupportFrames = 0;
+  const supportMargins = [], bodyClearances = [];
 
   function legState() {
     return {
@@ -413,6 +416,15 @@ export function createGaitMonitor(limits = {}) {
       stanceSlid: 0, stanceTravel: 0, stanceSkate: [],
       // scheduler bookkeeping — a leg that wants to move and is refused is the tell for drag-by-starvation
       blockedFrames: 0, wantFrames: 0,
+      // Named causes supplied by the walker. They stay separate from the dragging verdict because each
+      // one requires a different fix.
+      terrainMissFrames: 0, schedulerWaitFrames: 0, schedulerStarvationFrames: 0,
+      forcedResteps: 0, exhaustedResteps: 0,
+      // The analytic solve and the scene-graph retarget are measured separately by the walker. Keep the
+      // raw samples here until real traces establish useful thresholds; these are observations, not a
+      // new global verdict.
+      bendSigns: [], kneeJumps: [], segmentLengthErrors: [], jointContinuityErrors: [],
+      plantedGroundErrors: [], poleSource: null, poleConfidence: null,
     };
   }
 
@@ -429,6 +441,17 @@ export function createGaitMonitor(limits = {}) {
     strideEnvelope = frame.strideEnvelope || strideEnvelope;
     stepDuration = frame.stepDuration || stepDuration;
     legSpan = frame.legSpan || legSpan;
+    const dropped = Number.isFinite(frame.droppedTimeFrame) ? frame.droppedTimeFrame : 0;
+    droppedTime += dropped;
+    if (dropped > 0) substepCapHits++;
+    if (Number.isFinite(frame.maxInputDt)) maxInputDt = Math.max(maxInputDt, frame.maxInputDt);
+    if (Number.isFinite(frame.supportMargin)) supportMargins.push(frame.supportMargin);
+    else if (frame.supportMargin == null && 'supportMargin' in frame) degenerateSupportFrames++;
+    if (Number.isFinite(frame.bodyClearance)) bodyClearances.push(frame.bodyClearance);
+    if (Number.isFinite(frame.minimumBodyClearance)) minimumBodyClearance = frame.minimumBodyClearance;
+    if (Number.isFinite(frame.belowMinimumClearanceFrames)) {
+      belowMinimumClearanceFrames = Math.max(belowMinimumClearanceFrames, frame.belowMinimumClearanceFrames);
+    }
 
     const travelFloor = strideEnvelope * L.travelFloorFraction;
     const bodyMoved = (frame.bodyTravel || 0) > travelFloor;
@@ -469,9 +492,27 @@ export function createGaitMonitor(limits = {}) {
       if (!f.stepping) s.stanceTime += dt;
       if (f.wants) s.wantFrames++;
       if (f.wants && !f.canMove && !f.stepping) s.blockedFrames++;
+      if (f.terrainMissNow) s.terrainMissFrames++;
+      if (f.schedulerWaiting) s.schedulerWaitFrames++;
+      if (f.schedulerStarved || f.failure === 'scheduler-starvation') s.schedulerStarvationFrames++;
+      if (f.forcedRestepNow) s.forcedResteps++;
+      if (f.retryExhaustedNow || f.failure === 'retry-exhausted') s.exhaustedResteps++;
+      if (Number.isFinite(f.bendSign)) s.bendSigns.push(f.bendSign);
+      if (Number.isFinite(f.kneeAngleDelta)) s.kneeJumps.push(f.kneeAngleDelta);
+      if (Number.isFinite(f.upperLengthError) && Number.isFinite(f.lowerLengthError)) {
+        s.segmentLengthErrors.push(Math.max(f.upperLengthError, f.lowerLengthError));
+      }
+      if (Number.isFinite(f.jointContinuityRelative)) {
+        s.jointContinuityErrors.push(f.jointContinuityRelative);
+      }
+      if (f.poleSource != null) s.poleSource = f.poleSource;
+      if (Number.isFinite(f.poleConfidence)) s.poleConfidence = f.poleConfidence;
 
       if (f.planted) {
         s.plantedFrames++;
+        if (Number.isFinite(f.renderedGroundError)) {
+          s.plantedGroundErrors.push(Math.abs(f.renderedGroundError));
+        }
         if (f.clamped) s.clampedFrames++;
         const slid = f.drawnStep || 0;
         const gapFrac = (f.span || legSpan) > 0 ? f.gap / (f.span || legSpan) : 0;
@@ -523,6 +564,25 @@ export function createGaitMonitor(limits = {}) {
         maxGap: s.maxGap,
         strayFraction: s.strayFrames / planted,
         blockedFraction: s.wantFrames ? s.blockedFrames / s.wantFrames : 0,
+        terrainMissFrames: s.terrainMissFrames,
+        terrainMissFraction: s.terrainMissFrames / frames,
+        schedulerWaitFrames: s.schedulerWaitFrames,
+        schedulerWaitFraction: s.schedulerWaitFrames / frames,
+        schedulerStarvationFrames: s.schedulerStarvationFrames,
+        schedulerStarvationFraction: s.schedulerStarvationFrames / frames,
+        forcedResteps: s.forcedResteps,
+        exhaustedResteps: s.exhaustedResteps,
+        minBendSign: s.bendSigns.length ? Math.min(...s.bendSigns) : null,
+        kneeJumpP95: percentile(s.kneeJumps, 0.95),
+        maxKneeJump: s.kneeJumps.length ? Math.max(...s.kneeJumps) : 0,
+        maxSegmentLengthError: s.segmentLengthErrors.length ? Math.max(...s.segmentLengthErrors) : 0,
+        maxJointContinuityError: s.jointContinuityErrors.length ? Math.max(...s.jointContinuityErrors) : 0,
+        plantedGroundErrorP95: percentile(s.plantedGroundErrors, 0.95),
+        maxPlantedGroundError: s.plantedGroundErrors.length ? Math.max(...s.plantedGroundErrors) : 0,
+        poleSource: s.poleSource,
+        poleConfidence: s.poleConfidence,
+        lowConfidencePole: s.poleSource != null
+          && (s.poleSource === 'fallback' || s.poleConfidence == null || s.poleConfidence < 0.5),
         plantedFrames: s.plantedFrames,
       };
     });
@@ -559,6 +619,41 @@ export function createGaitMonitor(limits = {}) {
       worstStrayFraction: worst('strayFraction').strayFraction,
       blockedFraction: mean('blockedFraction'),
     };
+    const failures = {
+      terrainMissFrames: perLeg.reduce((sum, leg) => sum + leg.terrainMissFrames, 0),
+      terrainMissFraction: mean('terrainMissFraction'),
+      reachClampFrames: perLeg.reduce((sum, leg) =>
+        sum + Math.round(leg.clampedFraction * leg.plantedFrames), 0),
+      reachClampFraction: mean('clampedFraction'),
+      schedulerWaitFrames: perLeg.reduce((sum, leg) => sum + leg.schedulerWaitFrames, 0),
+      schedulerWaitFraction: mean('schedulerWaitFraction'),
+      schedulerStarvationFrames: perLeg.reduce((sum, leg) => sum + leg.schedulerStarvationFrames, 0),
+      schedulerStarvationFraction: mean('schedulerStarvationFraction'),
+      forcedResteps: perLeg.reduce((sum, leg) => sum + leg.forcedResteps, 0),
+      exhaustedResteps: perLeg.reduce((sum, leg) => sum + leg.exhaustedResteps, 0),
+    };
+    const retarget = {
+      minBendSign: perLeg.some(leg => leg.minBendSign != null)
+        ? Math.min(...perLeg.filter(leg => leg.minBendSign != null).map(leg => leg.minBendSign)) : null,
+      kneeJumpP95: percentile(perLeg.map(leg => leg.kneeJumpP95), 0.95),
+      maxKneeJump: Math.max(...perLeg.map(leg => leg.maxKneeJump)),
+      maxSegmentLengthError: Math.max(...perLeg.map(leg => leg.maxSegmentLengthError)),
+      maxJointContinuityError: Math.max(...perLeg.map(leg => leg.maxJointContinuityError)),
+      plantedGroundErrorP95: percentile(perLeg.map(leg => leg.plantedGroundErrorP95), 0.95),
+      maxPlantedGroundError: Math.max(...perLeg.map(leg => leg.maxPlantedGroundError)),
+      lowConfidencePoles: perLeg.filter(leg => leg.lowConfidencePole).length,
+    };
+    const timing = { droppedTime, substepCapHits, maxInputDt };
+    const support = {
+      marginP05: percentile(supportMargins, 0.05),
+      minimumMargin: supportMargins.length ? Math.min(...supportMargins) : null,
+      degenerateFrames: degenerateSupportFrames,
+      degenerateFraction: degenerateSupportFrames / frames,
+      minimumBodyClearance,
+      clearanceP05: percentile(bodyClearances, 0.05),
+      minimumObservedClearance: bodyClearances.length ? Math.min(...bodyClearances) : null,
+      belowMinimumClearanceFrames,
+    };
 
     return {
       frames, elapsed, legs: n,
@@ -575,7 +670,7 @@ export function createGaitMonitor(limits = {}) {
       // says whether the body is outrunning the feet in absolute terms; anything much over 1 here is the
       // balance model pushing rather than the gait driving.
       speedVsMax: maxSpeed > 1e-9 ? totalSpeed / (elapsed * maxSpeed) : 0,
-      tapping, dragging, perLeg,
+      tapping, dragging, failures, retarget, timing, support, perLeg,
       verdict: {
         tapping: tapping.worstLegRate > L.tapRateLimit,
         dragging: dragging.worstLegFraction > L.dragFrameLimit

@@ -117,6 +117,8 @@ console.log('\n[5] the page wires the panel to it');
   for (const key of ['waterEnabled', 'waterReflection', 'waterCaustics', 'waterUnderwaterFog', 'waterLook', 'waterRefraction', 'waterFoam', 'waterClarity']) {
     ok(new RegExp(`^\\s*${key}:`, 'm').test(html), `${key} is a saved setting (rides the state file)`);
   }
+  ok(/^\s*waterReflection:\s*'sky',/m.test(html), 'the page does not opt into a second scene render by default');
+  ok(/^\s*terrainDrawRadius:\s*BASE_GAME_TERRAIN_DEFAULTS\.renderRadius,/m.test(html), 'the page uses the audited 49-chunk terrain default');
 }
 
 water.dispose(); terrain.dispose();

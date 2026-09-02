@@ -190,14 +190,23 @@ and retains none of them, so persistent mutable records are safe. Fixed above.
 ### M1 — the UAV lamp illuminates nothing in any autonomous state
 
 `BASE_GAME_DRONE_DEFS.uav` sets `cruiseAlt: 300` and `holdAlt: 300`. The dev light radius slider
-caps at 100 m and the lantern preset is 25 m. A point light 300 m up with a 25 m radius reaches
+capped at 100 m and the lantern preset is 25 m. A point light 300 m up with a 25 m radius reaches
 nothing at all. The quad is fine, cruising at 20 m and holding at 12 m.
 
-So "every drone you own carries its lamp" delivers a working quad lamp and a UAV lamp that is
-invisible unless you fly the wing down by hand. This is a real gap in the agreed behaviour and it
-needs a decision: give lamps their own radius range above the dev-gun cap, lower the UAV's hold
-altitude, or accept the UAV lamp as a manual-flight feature and say so in the panel note. Not
-resolved here.
+**Partly addressed.** The reach slider now runs to 600 m, matched by the clamp in
+`entity-types/light.js`, so a light can at least be placed high enough to be in range of the ground.
+
+**Reach alone does not fix it, and this is the part that matters.** Reach is only the cutoff
+distance. Three's punctual falloff, `getDistanceAttenuation` at line 45382, is `1 / d^decay`
+windowed by `(1 - (d/cutoff)^4)^2`, and the pool constructs its lights with `decay = 2`. At 300 m
+that inverse square is `1 / 90000`. A lantern read from three metres away is `1 / 9`. So the same
+lamp seen from the UAV's cruise altitude is roughly ten thousand times dimmer, and matching it would
+need a brightness near 600,000 against a slider that caps at 500.
+
+The remaining lever is **decay**, which is fixed at 2 in the `createPointLightPool` signature and is
+exposed nowhere. An aerial searchlight wants a decay near 0 or 1 with a large cutoff, which is
+physically wrong and visually right. Making decay per-light means it cannot be a pool constructor
+argument any more. Still unresolved, and it is a decision about the pool's shape, not a slider.
 
 ### M2 — the lamp sits inside the craft
 

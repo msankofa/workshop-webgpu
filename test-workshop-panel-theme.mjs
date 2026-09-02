@@ -73,7 +73,10 @@ console.log('panelCss');
     '#ctrl .panel-head', '#ctrl .panel-body', '#ctrl .ttl', '#ctrl select']) {
     check(`defines ${sel}`, css.includes(sel));
   }
-  check('collapse animates max-height, not display', css.includes('max-height: 0') && !/\.sec\.collapsed \.sec-body\{[^}]*display:\s*none/.test(css));
+  check('collapsed section bodies leave the layout tree', /\.sec\.collapsed \.sec-body\{[^}]*display:\s*none/.test(css));
+  check('open off-screen sections may skip layout and paint', css.includes('content-visibility: auto') && css.includes('contain-intrinsic-size: auto 320px'));
+  check('off-screen controls inside a long open section may also be skipped', css.includes('.control, #ctrl .row, #ctrl .note') && css.includes('contain-intrinsic-size: auto 36px'));
+  check('the fixed panel contains its layout and paint', css.includes('contain: layout paint style'));
   check('tokens fall back when :root is unset', css.includes(`var(--theme-settings-accent, ${SETTINGS_THEME_DEFAULTS.accent})`));
   check('range inputs pick up the accent', css.includes('accent-color: var(--wui-accent)'));
   check('re-scopes to any root', panelCss('#panel').includes('#panel .sec-head') && !panelCss('#panel').includes('#ctrl'));

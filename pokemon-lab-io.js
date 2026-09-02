@@ -14,6 +14,7 @@ export const LAB_FILE = 'pokemon-lab.json';
 export const LAB_READ_URL = `/stadium-saves/${LAB_FILE}`;
 export const LAB_WRITE_URL = `/api/save-stadium?filename=${LAB_FILE}`;
 export const MANIFEST_URL = './models/stadium/manifest.json';
+export const PHENOMENA_URL = './models/stadium/phenomena.json';
 export const MODEL_DIR = './models/stadium/';
 
 /** An explicit snapshot, alongside the live document. Kept in step with `serve.py`'s stadium whitelist. */
@@ -137,6 +138,18 @@ export async function loadManifest(fetchImpl = fetch, url = MANIFEST_URL) {
   return res.json();
 }
 
+/** Generated ROM texture streams and model-bound effects; optional so the Lab still browses bare GLBs. */
+export async function loadPhenomena(fetchImpl = fetch, url = PHENOMENA_URL) {
+  try {
+    const res = await fetchImpl(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (error) {
+    console.warn('[lab] Stadium texture phenomena are unavailable:', error);
+    return { species: {} };
+  }
+}
+
 /**
  * The 151, in dex order, as the browse grid wants them.
  *
@@ -198,11 +211,11 @@ export function suggestedIdle(entry) {
 export const STATUS_ORDER = ['untouched', 'progress', 'ready', 'done', 'done-findings'];
 
 export const STATUS_LABELS = {
-  untouched: 'untouched',
+  untouched: 'not started',
   progress: 'in progress',
-  ready: 'ready',
-  done: 'done',
-  'done-findings': 'done, with findings',
+  ready: 'ready for review',
+  done: 'complete',
+  'done-findings': 'complete — needs attention',
 };
 
 /**

@@ -106,6 +106,9 @@ check('a clean walk trips neither detector', () => {
   assert(r.perLeg[0].medianTravelEnv > 0.6, `strides should fill the envelope, got ${r.perLeg[0].medianTravelEnv.toFixed(2)}`);
   assert(r.speedVsMax > 0.9, `this trace walks at its top speed, got ${r.speedVsMax.toFixed(2)}`);
   assert(r.dragging.skateP95 < 0.01, `planted feet should not slide, got ${r.dragging.skateP95.toFixed(3)}`);
+  assert(Object.values(r.failures).every(Number.isFinite), 'named failure report contains a non-finite value');
+  assert(r.failures.terrainMissFrames === 0 && r.failures.schedulerStarvationFrames === 0,
+    'a clean legacy trace acquired a named failure');
 });
 
 check('the monitor and the one-shot helper agree', () => {
@@ -200,6 +203,83 @@ check('an empty trace reports nothing rather than throwing', () => {
   m.sample(null);
   m.sample({});
   assert(m.report() === null, 'expected null after junk frames');
+});
+
+check('terrain, reach, scheduler and retry causes stay separate', () => {
+  const trace = makeTrace({ seconds: 1 });
+  const leg = (frame) => frame.legs[0];
+  leg(trace[0]).clamped = true;
+  leg(trace[0]).terrainMissNow = true;
+  leg(trace[0]).failure = 'terrain';
+  leg(trace[1]).schedulerWaiting = true;
+  leg(trace[2]).schedulerWaiting = true;
+  leg(trace[2]).schedulerStarved = true;
+  leg(trace[2]).failure = 'scheduler-starvation';
+  leg(trace[3]).forcedRestepNow = true;
+  leg(trace[4]).retryExhaustedNow = true;
+  leg(trace[4]).failure = 'retry-exhausted';
+
+  const r = analyseGait(trace);
+  const f = r.failures, p = r.perLeg[0];
+  assert(f.terrainMissFrames === 1, `expected one terrain-miss frame, got ${f.terrainMissFrames}`);
+  assert(f.reachClampFrames === 1, `expected one reach-clamp frame, got ${f.reachClampFrames}`);
+  assert(f.schedulerWaitFrames === 2, `expected two scheduler-wait frames, got ${f.schedulerWaitFrames}`);
+  assert(f.schedulerStarvationFrames === 1,
+    `expected one scheduler-starvation frame, got ${f.schedulerStarvationFrames}`);
+  assert(f.forcedResteps === 1, `expected one forced re-step, got ${f.forcedResteps}`);
+  assert(f.exhaustedResteps === 1, `expected one exhausted retry, got ${f.exhaustedResteps}`);
+  assert(p.terrainMissFrames === 1 && p.schedulerWaitFrames === 2 && p.exhaustedResteps === 1,
+    'per-leg causes disagree with the aggregate');
+});
+
+check('knee, retarget and ground measurements remain separate', () => {
+  const trace = makeTrace({ seconds: 1, legCount: 2 });
+  for (const frame of trace) {
+    for (let i = 0; i < frame.legs.length; i++) {
+      const leg = frame.legs[i];
+      leg.bendSign = i === 0 ? -0.75 : 0.95;
+      leg.kneeAngleDelta = i === 0 ? 0.12 : 0.01;
+      leg.upperLengthError = i === 0 ? 0.02 : 0.001;
+      leg.lowerLengthError = i === 0 ? 0.03 : 0.002;
+      leg.jointContinuityRelative = i === 0 ? 0.04 : 0.003;
+      leg.renderedGroundError = i === 0 ? -0.05 : 0.01;
+      leg.poleSource = i === 0 ? 'fallback' : 'rest-geometry';
+      leg.poleConfidence = i === 0 ? 0 : 1;
+    }
+  }
+  const r = analyseGait(trace);
+  assert(r.retarget.minBendSign === -0.75, `minimum bend sign was ${r.retarget.minBendSign}`);
+  assert(Math.abs(r.retarget.maxKneeJump - 0.12) < 1e-12, 'knee jump was not preserved');
+  assert(Math.abs(r.retarget.maxSegmentLengthError - 0.03) < 1e-12,
+    'upper and lower segment errors were not combined by their maximum');
+  assert(Math.abs(r.retarget.maxJointContinuityError - 0.04) < 1e-12,
+    'joint continuity was mixed with segment length');
+  assert(Math.abs(r.retarget.maxPlantedGroundError - 0.05) < 1e-12,
+    'signed ground error was not aggregated by magnitude');
+  assert(r.retarget.lowConfidencePoles === 1,
+    `expected one low-confidence pole, got ${r.retarget.lowConfidencePoles}`);
+  assert(!('knee' in r.verdict), 'retarget observations became a verdict before thresholds were measured');
+});
+
+check('clock loss and support margin aggregate without changing gait verdicts', () => {
+  const trace = makeTrace({ seconds: 1 });
+  trace.forEach((frame, i) => {
+    frame.droppedTimeFrame = i === 0 ? 0.05 : 0;
+    frame.maxInputDt = i === 0 ? 0.2 : DT;
+    frame.supportMargin = i === 1 ? null : (i === 2 ? -0.02 : 0.1);
+    frame.bodyClearance = i === 3 ? 0.08 : 0.2;
+    frame.minimumBodyClearance = 0.1;
+    frame.belowMinimumClearanceFrames = i >= 3 ? 1 : 0;
+  });
+  const r = analyseGait(trace);
+  assert(Math.abs(r.timing.droppedTime - 0.05) < 1e-12, 'discarded time was not accumulated');
+  assert(r.timing.substepCapHits === 1, `expected one cap hit, got ${r.timing.substepCapHits}`);
+  assert(Math.abs(r.timing.maxInputDt - 0.2) < 1e-12, 'maximum input dt was lost');
+  assert(Math.abs(r.support.minimumMargin + 0.02) < 1e-12, 'negative support margin was lost');
+  assert(r.support.degenerateFrames === 1, `expected one degenerate support frame, got ${r.support.degenerateFrames}`);
+  assert(Math.abs(r.support.minimumObservedClearance - 0.08) < 1e-12, 'minimum clearance was lost');
+  assert(r.support.belowMinimumClearanceFrames === 1, 'below-minimum event was lost');
+  assert(!r.verdict.tapping && !r.verdict.dragging, 'timing/support observations changed gait verdicts');
 });
 
 check('formatGaitReport produces one readable line', () => {

@@ -3492,7 +3492,7 @@ function drawHud(w, h) {
   // pitch ladder — anchored to the boresight, so it mirrors when the orbit camera gets ahead of the nose
   ctx.globalAlpha = 0.9;
   for (let deg = -90; !bs.behind && deg <= 90; deg += 5) {
-    const off = (pitch - THREE.MathUtils.degToRad(deg)) * pxPerRad;
+    const off = (THREE.MathUtils.degToRad(deg) - pitch) * pxPerRad;   // above the boresight by (deg - pitch); the other order mirrors the ladder
     if (Math.abs(off) > h * 0.62) continue;
     const cx = bs.x + uHat.x * off, cy = bs.y + uHat.y * off;
     if (cx < -w || cx > 2 * w) continue;

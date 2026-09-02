@@ -60,6 +60,7 @@ export function createBaseGameClouds({ scene, worldCoordinates = null, deckCount
     mesh.frustumCulled = false;
     mesh.renderOrder = 5;             // after opaque, before the rain quads
     mesh.material.depthWrite = shared.depthWrite;
+    mesh.name = `base-game-cloud-deck-${decks.indexOf(deck)}`;
     scene.add(mesh);
     deck.mesh = mesh;
     applyDeck(deck);

@@ -21,6 +21,7 @@ import { createFieldWindow, createFieldWindowRegistry } from './terrain-field-wi
 import { BIOMES, BIOME_INDEX, treeDensityForBiome } from './terrain-biome-point.js';
 import { createTileCover, COVER_CHANNELS, decodeCover } from './flora-field.js';
 import { splatWeights } from './terrain-splat-streamed.js';
+import { createPlanWalkDerive } from './base-game-plan.js';
 
 export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   chunkSize: 30,
@@ -55,6 +56,9 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   contactPost: 1.25,
   contactTileIntervals: 16,
   contactTilesPerSide: 8,
+  planPost: 30,
+  planTileIntervals: 16,
+  planTilesPerSide: 16,
   // Volumetric mode: marching-cubes LOD cascade. Each level is a chunk system with a fixed
   // segment count, so spacing grows with the chunk (120/24 = 5 m, 20 m, 80 m); radius 2 → five
   // chunks a side → half-extents 300 m, 1.2 km, 4.8 km. Coarser levels sit a little lower so the
@@ -334,13 +338,18 @@ export function createBaseGameTerrain({
   // visible or collision chunk is queued behind.
   const fieldScheduler = createFieldScheduler({ useWorker });
   const fieldRegistry = createFieldWindowRegistry({ scheduler: fieldScheduler });
+  const planScheduler = createFieldScheduler({ useWorker, workerCount: 1 });
+  const planRegistry = createFieldWindowRegistry({ scheduler: planScheduler });
   const fieldHandles = new Set();   // one registry handle per consumer; the registry owns the window
   const contactHandles = new Set();
+  const planHandles = new Set();
   // surfaceHeights costs a surfaceYAt scan per post (~26 us), so it is requested only where the
   // ground can actually differ from the heightfield: volumetric mode.
   // Cover is derived per texel as each tile lands, from the biome, the moisture and the very
   // splat weights the ground is textured with (flora-field.js). One number per layer per texel.
   const tileCover = createTileCover({ seaLevel: system.source?.descriptor?.seaLevel ?? 0, biomeNames: BIOMES });
+  const planWalk = createPlanWalkDerive({ seaLevel: system.source?.descriptor?.seaLevel ?? 0 });
+  let trailSettledAt = null;
   // Height rides along: grass past the contact window's reach plants on this instead, and 8 m
   // posts over 2 km cost one float per texel against a window that is already streaming.
   function placementFields() {
@@ -367,6 +376,21 @@ export function createBaseGameTerrain({
       priority: FIELD_PRIORITY.contact,
     }));
   }
+  function openPlanWindow() {
+    return planRegistry.acquire(`plan:${cfg.planPost}:${cfg.planTileIntervals}:${cfg.planTilesPerSide}`, ({ scheduler }) => createFieldWindow({
+      source: system.source, descriptor: system.source.descriptor, scheduler, label: 'plan',
+      fields: ['heights', 'biomeIds', 'planWalk'], derived: ['planWalk'], derive: planWalk.derive,
+      post: cfg.planPost, tileIntervals: cfg.planTileIntervals, tilesPerSide: cfg.planTilesPerSide,
+      priority: FIELD_PRIORITY.plan, gpu: false,
+    }));
+  }
+  function acquirePlan() {
+    const handle = openPlanWindow();
+    planHandles.add(handle);
+    let released = false;
+    return () => { if (released) return; released = true; planHandles.delete(handle); handle.release(); };
+  }
+  function planWindow() { for (const handle of planHandles) return handle.window; return null; }
   // Grass and rain hold this; it is the surface they touch, at the spacing the ground is drawn at.
   function acquireContactField() {
     const handle = openContactWindow();
@@ -396,7 +420,7 @@ export function createBaseGameTerrain({
   // Re-acquire every consumer against the current key, then drop the old handles: the window only
   // changes if the key did, so an unchanged mode switch is a no-op rather than a restream.
   function reopenFieldWindow() {
-    for (const [set, open] of [[fieldHandles, openFieldWindow], [contactHandles, openContactWindow]]) {
+    for (const [set, open] of [[fieldHandles, openFieldWindow], [contactHandles, openContactWindow], [planHandles, openPlanWindow]]) {
       if (!set.size) continue;
       const previous = [...set];
       set.clear();
@@ -431,6 +455,7 @@ export function createBaseGameTerrain({
   }
   // 0..1 per layer, or null where the field has not streamed. This is what placement reads.
   function coverAt(x, z) {
+    if (trailSettledAt && !trailSettledAt(x, z)) return null;
     const w = fieldWindow();
     if (!w) return null;
     const grass = w.sampleAt('coverGrass', x, z);
@@ -649,7 +674,9 @@ export function createBaseGameTerrain({
     seaLevel = level;
     uGroundSea.value = seaLevel;
     tileCover.setSeaLevel(level);
+    planWalk.setSeaLevel(level);
     fieldWindow()?.clear();          // cover was derived against the old waterline
+    planWindow()?.clear();
     recolorAll();
     return true;
   }
@@ -676,6 +703,9 @@ export function createBaseGameTerrain({
     acquireFields,
     get fields() { return fieldWindow(); },
     get fieldScheduler() { return fieldScheduler; },
+    acquirePlan,
+    get plan() { return planWindow(); },
+    get planScheduler() { return planScheduler; },
     fieldsReady: (x, z) => fieldWindow()?.ready(x, z) === true,
     acquireContactField,
     get contactField() { return contactWindow(); },
@@ -683,6 +713,11 @@ export function createBaseGameTerrain({
     contactReady: (x, z) => contactWindow()?.ready(x, z) === true,
     biomeAt, biomeIdAt, moistureAt, treeDensityAt, surfaceFieldAt, coverAt,
     get tileCover() { return tileCover; },
+    setTrailPlannerHooks({ clearanceAt = null, settledAt = null } = {}) {
+      tileCover.setClearance(clearanceAt);
+      trailSettledAt = typeof settledAt === 'function' ? settledAt : null;
+      fieldWindow()?.clear();
+    },
     fieldSurfaceAt,
     // Kill plane follows the local surface so deep valleys never respawn a grounded player;
     // in volumetric mode caves reach down to the density floor, so it sits below that.
@@ -800,9 +835,11 @@ export function createBaseGameTerrain({
       seaLevel = system.source?.descriptor?.seaLevel ?? 0;
       uGroundSea.value = seaLevel;
       tileCover.setSeaLevel(seaLevel);   // cover is derived against the waterline, and the swap moved it
+      planWalk.setSeaLevel(seaLevel);
       seaDepth.setSource(system.source);
       fieldWindow()?.setSource(system.source, system.source.descriptor);
       contactWindow()?.setSource(system.source, system.source.descriptor);
+      planWindow()?.setSource(system.source, system.source.descriptor);
       // nothing survives a swap, so there is nothing to dissolve from: coverage restarts at zero
       coverExact.clear(); for (const cl of coverLevels) cl.clear();
       installedTotal = 0;
@@ -866,10 +903,12 @@ export function createBaseGameTerrain({
         lastClipmapMs = performance.now() - t1;
       }
       const tField = performance.now();
-      const fw = fieldWindow(), cw = contactWindow();
+      const fw = fieldWindow(), cw = contactWindow(), pw = planWindow();
       if (fw) fw.update(globalPosition[0], globalPosition[2]);
       if (cw) cw.update(globalPosition[0], globalPosition[2]);
+      if (pw) pw.update(globalPosition[0], globalPosition[2]);
       if (fw || cw) fieldScheduler.pump();
+      if (pw) planScheduler.pump();
       if (changed || cascadeChanged) residencyRevision++;   // which chunks exist moved; anything baked over them is stale
       updateCoverage(globalPosition, dt, changed || cascadeChanged);
       lastFieldMs = performance.now() - tField;
@@ -948,6 +987,9 @@ export function createBaseGameTerrain({
           : { id: provider.id, enabled: provider.enabled !== false, colliderId: `${info.key}@${info.version}` },
         volumetric: volumetricMode,
         textures: splatMaterial ? (splatEnabled ? 'streamed-splat' : 'off') : 'tint',
+        plan: planWindow() ? { coverage: planWindow().coverage, tilesBuilt: planWindow().stats.tilesBuilt,
+          queued: planScheduler.stats.queued, inFlight: planScheduler.stats.inFlight,
+          extent: planWindow().extent } : null,
         batches: batcher.stats,
         farLod: !farLodMode ? null
           : volumetricMode
@@ -963,8 +1005,12 @@ export function createBaseGameTerrain({
       fieldHandles.clear();
       for (const handle of contactHandles) handle.release();
       contactHandles.clear();
+      for (const handle of planHandles) handle.release();
+      planHandles.clear();
       fieldRegistry.dispose();
       fieldScheduler.dispose();
+      planRegistry.dispose();
+      planScheduler.dispose();
       seaDepth.dispose();
       unregisterProvider();
       unregisterVolumeProvider();

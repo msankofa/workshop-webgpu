@@ -38,6 +38,7 @@ export function createPointLightPool({ THREE, scene, count = 8, decay = 2 }) {
       l.position.set(p[0], p[1], p[2]);
       l.color.setRGB(entity.color[0], entity.color[1], entity.color[2]);
       l.distance = entity.radius;
+      l.decay = Number.isFinite(entity.decay) ? entity.decay : decay;
       l.intensity = entity.intensity;
     }
     for (const [id, slot] of Array.from(slotOf.entries())) {

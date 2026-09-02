@@ -25,6 +25,19 @@ export const AIM_DEFAULTS = {
 const clamp01 = (v) => (v > 1 ? 1 : v < 0 ? 0 : (Number(v) || 0));
 const DEG = Math.PI / 180;
 
+// Base Game exposes one 0..1 accuracy rule instead of the brain's individual cone controls.
+// 0.5 is the donor/default behaviour, 0 doubles every dispersion contribution, and 1 is exact.
+export function aimSettingsForAccuracy(accuracy, settings = AIM_DEFAULTS) {
+  const scale = 2 * (1 - clamp01(accuracy));
+  return {
+    baseSpreadDeg: settings.baseSpreadDeg * scale,
+    moveSpreadDeg: settings.moveSpreadDeg * scale,
+    firstShotSpreadDeg: settings.firstShotSpreadDeg * scale,
+    bloomPerShotDeg: settings.bloomPerShotDeg * scale,
+    bloomMaxDeg: settings.bloomMaxDeg * scale,
+  };
+}
+
 // Fresh-contact recognition delay in ms. `jitter01` is a caller-supplied 0..1 roll.
 // `primed` = the bot recently held a completed contact (target switch, post-peek re-sight).
 export function reactionDelayMs(distance, { alerted = false, primed = false, jitter01 = 0.5 } = {}, settings = AIM_DEFAULTS) {

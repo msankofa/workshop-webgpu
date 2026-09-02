@@ -46,11 +46,11 @@ Three new files sit between the terrain and the generators:
 
 | File | Responsibility |
 |---|---|
-| `flora-field.js` | What grows where. `coverAt(biome, moisture, weights, { height, seaLevel, normalY })` -> `{ grass, plant, tree }` in 0..1: the biome states the ambition (`BIOME_GRASS`/`BIOME_PLANTS`, and `BIOME_TREE_DENSITY` for trees), and `terrain-splat-streamed.js`'s `splatWeights` vetoes it, so nothing grows on ground the terrain is painting as rock, sand or snow. Slope and the waterline are hard gates; moisture thins each layer by its own amount. `createTileCover()` runs it once per texel as a field tile commits and publishes three u8 channels, so a blade reads one number instead of re-running the classifier per candidate — and there is no TSL twin of this math to drift. Pure, no three.js. |
+| `flora-field.js` | What grows where. `coverAt(biome, moisture, weights, { height, seaLevel, normalY })` -> `{ grass, plant, tree }` in 0..1: the biome states the ambition (`BIOME_GRASS`/`BIOME_PLANTS`, and `BIOME_TREE_DENSITY` for trees), and `terrain-splat-streamed.js`'s `splatWeights` vetoes it, so nothing grows on ground the terrain is painting as rock, sand or snow. Slope and the waterline are hard gates; moisture thins each layer by its own amount. `createTileCover({clearance})` runs it once per texel as a field tile commits, multiplies all three layers by optional world-trail clearance, and publishes three u8 channels, so a blade reads one number instead of re-running the classifier per candidate — and there is no TSL twin of this math to drift. Pure, no three.js. |
 | `flora-chunks.js` | The windowed chunk lifecycle placement runs on: desired-set diff from a camera cell, clear/build queues, per-frame chunk and millisecond budgets, `rebuildAll`. Lifted from the copy inline in `environment-viewer.html` (`syncPlantsToFocus`/`processPlantBuildQueue`, `:5584`-`5650`), which exists there three times over. Adds `setReadyTest(fn)`: a chunk whose field has not streamed is deferred and retried, never built against a default. Pure, no three.js. |
 | `base-game-flora.js` | The page-facing layer owner. Holds the terrain's field windows, builds the injected TSL samplers, and owns the one `createComputeGrass` instance. |
 | `base-game-trees.js` | Where Base Game's trees stand (tree plan T1). Placement only — no three.js and no renderer: a `flora-chunks` host, `placementRecords` per chunk, and records kept in GLOBAL coordinates so a render-origin rebase can move where a tree draws but never which trees exist. `setListeners({onChunk,onClear})` is how the renderer hears about a chunk arriving or leaving; `placementParams` is what the palette bakes against. See "Trees in Base Game" below. |
-| `base-game-forest.js` | The drawn half (tree plan T2). Owns the `createBaseGameTrees` instance, bakes the palette, and drives `forest-gpu.js`: render-origin subtraction on upload, a reported capacity budget, per-LOD-rung distances and switches, canopy sway, palette disposal on rebake, and the ported procedural bark colour node. Trunk height is `terrain.groundHeight` — the collision surface, not the coarse placement field. |
+| `base-game-forest.js` | The drawn half (tree plan T2). Owns the `createBaseGameTrees` instance, bakes the palette, and drives `forest-gpu.js`: render-origin subtraction on upload, a reported capacity budget, per-LOD-rung distances and switches, canopy sway, palette disposal on rebake, and the tree texture set (`treeTexMode`, authored by default like the other pages: `tree-textures.js` in, `texSet` to the palette bake, `bindTreeMaterials` — the `bot-trees.js` binding, alpha cut-out and never `transparent`, since env-viewer's blended leaves rim every card in pale sky — on the materials, rebound in place when the maps decode; a mode change is a rebake). Headless hosts fall back to procedural. Trunk height is `terrain.groundHeight` — the collision surface, not the coarse placement field. |
 | `bench-base-game-forest.mjs` | Not a test. Reports what a Base Game forest costs headless: trees standing vs asked, draws, triangles per rung, palette bake, and the cost of `forest-gpu`'s full rescan-and-re-upload on a chunk mutation. |
 
 **Grass in Base Game runs `grass-compute.js` in neither of its existing modes.** It is not the
@@ -192,6 +192,35 @@ plan. The comparison behind it is
 `docs/superpowers/specs/2026-08-27-tree-implementation-comparison.md`. T1 (placement) and T2 (the
 renderer, `base-game-forest.js`) are shipped. Shadows and the water mirror are T3.
 
+**Shadows come from a shadow list, not from the main meshes (2026-08-30).** The main-pass cull
+keeps what the eye sees, a padded view cone, and until now the same lists fed the shadow pass, so a
+tree beside or behind the camera cast nothing and its shadow appeared when you turned toward it
+(the user saw shadows under their own feet vanish). `createForestGPU({ shadowLayer })` now adds one
+extra region per variant, the **shadow list**, filled by the cull kernel with every instance within
+`uShadowReach` regardless of the cone, and two shadow-only meshes per variant draw it:
+`forest:v<n>:barkShadow` (the L2 trunk geometry, `branchesLod2 ?? branches` — at 2048 texels over a
+180 m shadow camera a texel is ~9 cm, so the full 5,618-tri branches add nothing the 1,696-tri trunk
+does not; changed 2026-09-01) and `forest:v<n>:leafShadow` (the reduced leaf cards).
+They sit on `BASE_GAME_FOREST_SHADOW_LAYER` (4; rain occluders use 3), which the page enables on
+the sun's shadow camera and nowhere else — three's `ShadowNode` uses the shadow camera's own layer
+mask once it has any bit beyond 0 — so the main camera and the mirror never draw them, and the
+seven main meshes no longer cast at all. Per variant that is 2 shadow submissions instead of 4,
+and 9 meshes instead of 7. `setShadowReach(m)` sets the radius (`base-game-forest.js` passes the
+shadow camera half-extent, or 0 when both bark and canopy shadows are off, which hides the pair);
+`summary.shadowList` / `shadowReach` report it. A host that passes no `shadowLayer` (the
+environment viewer) gets the old per-rung `castShadow` behaviour unchanged, `shadowRungs` included.
+`forest-cull.js` carries the twin: `classifyInstance` returns `shadowLive` for `params.shadowReach`.
+Tests: `test-base-game-forest.mjs` (the shadow section), `test-forest-cull.mjs` (g).
+
+A record carries two heights (2026-08-30): `ground`, the drawn surface from `terrain.groundHeight`
+asked once per chunk at placement, and `y = ground + treeVerticalOffset`. The 8 m placement posts
+(`fieldSurfaceAt`) decide only where a tree may stand; measured in the test scene they sit up to
+3.65 m off the drawn surface on slopes, which is why the renderer reads `ground` rather than
+re-sampling anything. The shore gate runs twice for the same reason: once on the posts inside
+`placementRecords`, then on `ground` before the records are kept, or a slope the posts read as dry
+roots a trunk in the sea (209 of them in the test scene before the second gate; `stats.shoreDropped`
+counts them). Both gates are deterministic, so every peer drops the same trees.
+
 Three things differ from how `environment-viewer.html` drives the same modules, and each is a
 correctness fix rather than a preference:
 
@@ -213,10 +242,37 @@ correctness fix rather than a preference:
   `forest-placement.js`'s NaN traps are silent: an undefined `waterLevel`/`shoreMargin` makes the
   sum NaN, every `height >= NaN` false, and the forest **empty**; an undefined `skew` makes
   `Math.exp(skew * 1.5)` NaN and poisons every scale. `assertPlacementParams` throws instead.
+- **Species are an explicit selection, not a count.** `base-game-tree-species.js` turns a saved
+  CSV of ez-tree preset ids (`treeSpeciesSelection`, canonical catalog order so checkbox order
+  cannot move `speciesIdx`) into the table placement and the palette share; the empty string keeps
+  the procedural `buildSpecies` path for headless callers. Those presets carry white bark and leaf
+  colours meant to multiply the photo maps, which is why Base Game had to adopt the texture set
+  the other pages already use (2026-08-30) — without it the forest drew white.
+- **The palette publishes progressively.** `createForestPaletteAsync` bakes breadth-first and calls
+  `onFamilyWave` with variant N of every species; `base-game-forest.js` compiles and warms each wave
+  off-scene, then `installVariant`/`setVariantReady` in `forest-gpu.js` swap the geometry in and let
+  the culler see it. `stats.readyVariants` counts the published ones.
 
 `TREE_IDENTITY_KEYS` is the split that matters online: density, seed offset, chunk size, placement
-pattern, cluster shape, species/diversity, size pipeline and shore margin change which trees exist
-and are shared; draw radius, chunk budgets and everything visual stay local.
+pattern, cluster shape, species/diversity, size pipeline and shore margin change which trees exist;
+draw radius, chunk budgets and everything visual stay local. The list is the intent, not yet the
+wire: none of the tree keys is in `BASE_GAME_SHARED_KEYS` (`base-game-protocol.mjs`), so today two
+peers agree on a forest only because they share the terrain descriptor and the defaults. Making
+them room-owned is the open step.
+
+**The Plants panel surfaces the placement (2026-09-01).** Until then the page exposed density,
+species and max size and pinned the rest at the module defaults, so every forest was stands of
+five. The Trees group is now a nested section (the way Weather nests Clouds and Rain) in the order
+the forest is decided: *Tree placement* (trees per hectare, placement pattern as a select over
+`forest-placement.js`'s four modes, trees per stand and stand radius, greyed outside the stands
+pattern but never hidden, shore margin, placement cell, forest seed offset), *Tree species and
+look* (species present, max size, size variation and skew from `sizeFor`, textures, variants,
+trunk and leaf shape) and *Tree drawing* (vertical bias, sway, draw radius, LOD rings and switches,
+shadows, capacity, collapsed by default since it is this peer's quality). Every placement control
+commits on release, since each one rebuilds the records. Readouts derive from the cell: trees per
+stand shows the stands per cell it implies, stand radius shows metres and the two-draw reach, the
+cell shows the trees asked per cell. `treePlacement` is validated on load through
+`STRING_VALUES`; the numeric keys are not clamped, like the rest of the tree keys.
 
 Test: `test-base-game-trees.mjs` (44). Two of its claims are mutation-verified rather than merely
 green — restoring the window-relative density fails the cross-radius agreement check, and turning
@@ -233,6 +289,12 @@ donor's behaviour so `environment-viewer.html` is untouched:
 - `setWorldOrigin(x, y, z)` — records are global, the instance buffer is render-local, and the
   cull compares against a render-local camera. Setting it marks a rebuild rather than editing the
   buffer, because the heights have to be re-sampled against the new origin anyway.
+- A record's own `ground` height is trusted (2026-08-30). `rebuild()` used to call `heightAt`
+  for every record on every chunk arrival; in Base Game that callback is the v5 noise stack, and
+  the browser measured the rescan at **52–165 ms** per placed chunk (`passForestMs` max in the
+  2026-08-30 captures), the stutter that tracked walking. `base-game-trees.js` now writes
+  `r.ground` once per chunk from `terrain.groundHeight`, and `rebuild()` reads it when finite;
+  records without it (`forest-placement.js`'s, in the environment viewer) take the old path.
 - `setLodEnabled([...])` — per-rung visibility, folded into `syncRenderParts`'s existing part mask
   through a mesh-to-rung map `[0,0,0,1,1,2,2,3]`. A disabled rung's trees vanish rather than
   falling back, which is the point: it isolates that rung's raster cost. The cull still runs over
@@ -324,14 +386,17 @@ variants = 12 variants, 96 m chunks):
 
 Two conclusions the plan left open:
 
-- **The rescan does not need replacing.** T2 was told to measure `rebuild()`'s full rescan before
-  writing an incremental slot-range upload. At 0.04-0.19 ms per chunk mutation, budgeted to one
-  chunk a frame, the incremental path buys nothing. Not written.
-- **Branch geometry never decimates.** Per variant the mean is 5618 branch triangles, 7546 leaf,
-  3254 leaf-shadow, 3240 coarse-leaf — and `forest-gpu.js` draws the *same* `variant.branches`
-  geometry at LOD0, LOD1 and LOD2. So the "coarse" rung is 5618 + 3240 = 8858 triangles, 63% of it
-  undecimated trunk. Only the leaves get cheaper with distance. That is a donor property, and it is
-  the first thing to look at when T3 prices the LOD rungs.
+- **The rescan does not need replacing — but its height callback did.** T2 was told to measure
+  `rebuild()`'s full rescan before writing an incremental slot-range upload. At 0.04-0.19 ms per
+  chunk mutation, budgeted to one chunk a frame, the incremental path buys nothing. Not written.
+  That number was taken in Node against the analytic source; in the browser against the v5 source
+  the same rescan cost 52–165 ms, all of it in `heightAt`. The rescan itself is still cheap, which
+  is why the fix (2026-08-30) was to stop calling `heightAt` inside it, not to replace it.
+- **Branch geometry does decimate now.** Measured 2026-09-01 against the live Base Game palette:
+  5618 branch triangles at L0, 1986 at L1 (`branchesLod1`), 1696 at L2 (`branchesLod2`), with 7546
+  leaf, ~3300 leaf-shadow-card and 3240 coarse-leaf. An earlier note here said all three rungs drew
+  the same `variant.branches`; that stopped being true when the species bake gained the LOD
+  geometries, and the shadow list's bark caster uses the L2 mesh for the same reason.
 
 Test: `test-base-game-forest.mjs` (37), driving the real modules headless — `forest-gpu.js`
 constructs without a device, so the origin subtraction, the capacity budget, the rung toggles, the

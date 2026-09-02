@@ -36,6 +36,8 @@ BODY_TUNING_DIR = os.path.join(ROOT, 'body-tuning')
 STADIUM_SAVES_DIR = os.path.join(ROOT, 'stadium-saves')
 PARK_SAVES_DIR = os.path.join(ROOT, 'park-saves')
 MUSIC_DIR = os.path.join(ROOT, 'sfx', 'music')
+POKEMON_MUSIC_DIR = os.path.join(ROOT, 'pokemon', 'Stadium Music')
+POKEMON_CRIES_DIR = os.path.join(ROOT, 'pokemon', 'poke_cries')
 TERRAIN_BAKES_DIR = os.path.join(ROOT, 'terrain-bakes')
 _MUSIC_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.m4a', '.flac', '.opus', '.webm'}
 _SAFE_MAP_SEGMENT = re.compile(r'^[A-Za-z0-9 _-]+$')
@@ -489,6 +491,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/list-music':
             self._handle_list_music()
             return
+        if path == '/api/list-pokemon-music':
+            self._handle_list_audio_dir(POKEMON_MUSIC_DIR)
+            return
+        if path == '/api/list-pokemon-cries':
+            self._handle_list_audio_dir(POKEMON_CRIES_DIR)
+            return
         if path == '/api/list-bot-states':
             self._handle_list_bot_states()
             return
@@ -720,12 +728,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({'ok': False, 'error': str(exc)}, status=500)
 
     def _handle_list_music(self):
+        self._handle_list_audio_dir(MUSIC_DIR)
+
+    # GET /api/list-pokemon-music and /api/list-pokemon-cries reuse this: same {ok, files}
+    # shape as /api/list-music, read from a different folder. pokemon-lab.html feeds the
+    # music listing straight into loadMusicHttp and matches cries by their dex-number prefix.
+    def _handle_list_audio_dir(self, directory):
         try:
             files = []
-            if os.path.isdir(MUSIC_DIR):
-                for entry in sorted(os.listdir(MUSIC_DIR)):
+            if os.path.isdir(directory):
+                for entry in sorted(os.listdir(directory)):
                     ext = os.path.splitext(entry)[1].lower()
-                    if ext in _MUSIC_EXTENSIONS and os.path.isfile(os.path.join(MUSIC_DIR, entry)):
+                    if ext in _MUSIC_EXTENSIONS and os.path.isfile(os.path.join(directory, entry)):
                         files.append(entry)
             self._send_json({'ok': True, 'files': files})
         except Exception as exc:

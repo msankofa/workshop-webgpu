@@ -80,7 +80,11 @@ export function createProjectileManager({
       return null;
     },
   };
-  if (typeof raycast === 'function') ctx.raycast = raycast;
+  // The projectile currently being stepped is handed to the raycast as a fifth argument, so a
+  // caller can answer "what may this one hit" rather than only "what is in the way". A guided round
+  // leaves a metre under a drone whose hit sphere is eight, so without it every missile detonates on
+  // the aircraft that fired it.
+  if (typeof raycast === 'function') ctx.raycast = (from, to, r, ownerId) => raycast(from, to, r, ownerId, detonating);
   if (typeof terrainHeight === 'function') ctx.terrainHeight = terrainHeight;
 
   const interval = Number.isFinite(trailIntervalS) && trailIntervalS > 0 ? trailIntervalS : 0;
@@ -90,6 +94,9 @@ export function createProjectileManager({
     proj.id = `bp${nextId++}`;
     proj.weaponId = init.weaponId || null;
     proj.throwerActorId = init.throwerActorId != null ? init.throwerActorId : null;
+    // Steering, for whoever guides this one. The entity never reads it; base-game-drones.js's
+    // stepGuidedProjectiles walks the list and rewrites the velocity of anything carrying it.
+    proj.guide = init.guide || null;
     proj.prevP = proj.transform.p;
     proj.trailAccum = 0;
     list.push(proj);

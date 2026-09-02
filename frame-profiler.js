@@ -49,12 +49,13 @@ function round3(v) {
   return Math.round((Number.isFinite(v) ? v : 0) * 1000) / 1000;
 }
 
-export function createFrameProfiler({ smoothing = 0.2, now = () => performance.now() } = {}) {
+export function createFrameProfiler({ smoothing = 0.2, now = () => performance.now(), enabled = true } = {}) {
   const latest = new Map();
   const smooth = new Map();
   const gpuLatest = new Map();
   const gpuSmooth = new Map();
   let droppedFrames = 0;
+  let profilingEnabled = !!enabled;
 
   function record(mapLatest, mapSmooth, name, ms) {
     const v = Math.max(0, Number(ms) || 0);
@@ -66,6 +67,7 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
 
   // Zeroes every name seen so far plus the defaults, so a timer that doesn't run reads 0, not stale.
   function beginFrame() {
+    if (!profilingEnabled) return;
     for (const name of latest.keys()) latest.set(name, 0);
     for (const name of DEFAULT_NAMES) latest.set(name, 0);
     for (const name of gpuLatest.keys()) gpuLatest.set(name, 0);
@@ -74,6 +76,7 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
   }
 
   function time(name, fn) {
+    if (!profilingEnabled) return fn();
     const t0 = now();
     try {
       return fn();
@@ -83,6 +86,7 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
   }
 
   async function timeAsync(name, fn) {
+    if (!profilingEnabled) return await fn();
     const t0 = now();
     try {
       return await fn();
@@ -94,11 +98,17 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
   // Record a duration measured by the caller. For regions that cannot be wrapped in a closure
   // because they declare bindings the rest of the frame uses.
   function mark(name, ms) {
+    if (!profilingEnabled) return 0;
     return record(latest, smooth, name, ms);
   }
 
   function recordGpu(name, ms) {
+    if (!profilingEnabled) return 0;
     return record(gpuLatest, gpuSmooth, name, ms);
+  }
+
+  function setEnabled(value) {
+    profilingEnabled = !!value;
   }
 
   function markDropped(count = 1) {
@@ -139,9 +149,12 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
     timeAsync,
     mark,
     recordGpu,
+    setEnabled,
     markDropped,
     snapshot,
     reset,
+    get enabled() { return profilingEnabled; },
+    get droppedFrames() { return droppedFrames; },
   };
 }
 

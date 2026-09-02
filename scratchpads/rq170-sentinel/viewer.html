@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RQ-170 Sentinel reconstruction</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #1b1d21; color: #d8d6d0; font: 13px system-ui, sans-serif; display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+  header { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: #24272c; flex-wrap: wrap; }
+  header button, header select { background: #3a3e45; color: inherit; border: 1px solid #555; border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  header button:hover { background: #4a4f57; }
+  main { display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+  #view { position: relative; min-height: 0; }
+  #view canvas { display: block; width: 100%; height: 100%; }
+  #refs { overflow: auto; background: #101114; display: grid; grid-template-rows: auto auto; align-content: start; gap: 6px; padding: 6px; }
+  #refs img { width: 100%; display: block; }
+  #status { margin-left: auto; opacity: 0.75; }
+</style>
+</head>
+<body>
+<header>
+  <strong>RQ-170 Sentinel</strong>
+  <span>camera</span>
+  <select id="preset">
+    <option value="three-quarter">three-quarter</option>
+    <option value="top">top</option>
+    <option value="front">front</option>
+    <option value="side">side</option>
+    <option value="underside">underside</option>
+  </select>
+  <button id="wire">wireframe</button>
+  <button id="gear">hide gear</button>
+  <button id="shot">save screenshot</button>
+  <span id="status">loading factory…</span>
+</header>
+<main>
+  <div id="view"></div>
+  <div id="refs">
+    <img src="ref/three-view.png" alt="three-view drawing">
+    <img src="ref/render-sheet.png" alt="render sheet">
+  </div>
+</main>
+<script type="module" src="viewer.js"></script>
+</body>
+</html>

@@ -10,9 +10,11 @@ have no counterpart in either of our viewers.
 Wired into **`bot-viewer-v3.html`**. Built in a fork first, browser-approved on 2026-08-10, and
 merged straight back — the fork is gone.
 
-Also wired into **`demos/pokemon-park.html`**, which is the first host that does not draw its roads
-by hand: `park-trails.js` routes A* between park landmarks and feeds the polylines straight to
-`network.addRoadPath`. Nothing in this subsystem had to change for it. See
+Also wired into Base Game through the root **`trail-router.js`** and
+**`base-game-trails.js`**. The former is the park's generic A* router moved out of the retired
+experience; the latter derives sites and legs kilometres ahead of the player and feeds routed
+polylines into `network.addRoadPath`. The old park module now re-exports the shared router and keeps
+only its park-specific landmark list. See
 `docs/subsystems/pokemon-park.md`.
 
 ## The one idea that matters: roads are draped, not carved
@@ -162,6 +164,38 @@ geometry, not AI tuning or look. `applyMazeState` restores the graph first and l
 rebuild that follows re-drape it onto the new ground.
 
 ## What consumes roads
+
+### Base Game trail routing (2026-09-01)
+
+`trail-router.js` is pure JS. `buildTrailGrid` and `gridFromWindow` produce bounded typed-array
+grids; `routeTrail` uses typed-array g-scores, parents, closed flags and f-scores instead of one
+`Map`/`Set`/object allocation per expanded post. Optional `costMul` discounts an existing corridor,
+and optional `crossSlope` rejects a move whose terrain gradient across the direction of travel is
+too steep. Chaikin smoothing validates every generated point against walkability.
+
+`base-game-trails.js` owns the deterministic world planner. It creates one placeholder site per
+resident site tile where possible, builds a relative-neighbourhood graph over settled 3x3 tile
+blocks, canonically orders the resulting legs, and routes at most one leg per update. A leg waits
+for lower-keyed intersecting legs and only those lower routes contribute its corridor discount, so
+approach direction cannot change the geometry. Eviction drops legs that touch the departed site
+tile and any owner whose 3x3 context became incomplete; rare out-of-order returns rebuild topology
+from the stored canonical paths without rerouting them. This keeps the graph bounded and makes
+prune-and-return deterministic. `test-trail-router.mjs` and
+`test-base-game-trails.mjs` cover the router, corridor cost, water/slope safety and deterministic
+sampled polylines.
+
+`roads.js` no longer tears down every mesh on `rebuild()`. Revision maps retain unchanged edge and
+node meshes; a queue builds one edge ribbon or node patch per `update()`. `setResidency(x,z,radius)`
+queries the road spatial index only after a movement stride and keeps meshes for nearby edges while
+the complete topology remains available for planning and vegetation. A world-space distance fade
+softens the residency edge. Base Game uses a 70 m radius inside the 1.25 m contact window and a
+`readyAt` hook, so no mesh is built until its exact ground samples are resident. The group follows
+render-origin rebases. `test-road-system-incremental.mjs` covers incremental builds, no-op rebuilds,
+residency and disposal.
+
+`groundFromHeightFn(fn, {cell})` can now build a max-near envelope by scanning the supplied cell
+spacing. Base Game passes `terrain.contactHeightAt`, never volumetric `groundHeight`, avoiding the
+otherwise multiplicative surface-bisection cost per road vertex.
 
 **Vegetation clearance.** `bot-flora.js` gained an optional `clearFn(x, z)` — "true where nothing may
 grow" — checked by both the grass `acceptFn` and the plant-placement filter. Default is `null`, so

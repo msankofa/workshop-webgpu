@@ -1,0 +1,91 @@
+{
+  "sourceImage": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\ref\\render-sheet.png",
+  "zonesDir": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\zones",
+  "detailInventory": {
+    "scanMethod": "component-zones",
+    "targetMinDetails": 10,
+    "details": [
+      {
+        "id": "front-view",
+        "kind": "",
+        "description": "",
+        "region": {
+          "x": 0.0,
+          "y": 0.08,
+          "width": 1.0,
+          "height": 0.2,
+          "units": "normalized"
+        },
+        "scale": "",
+        "affects": "",
+        "mapsTo": {
+          "type": "",
+          "ref": ""
+        },
+        "evidenceRef": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\zones\\front-view.png",
+        "confidence": 0.0
+      },
+      {
+        "id": "top-view",
+        "kind": "",
+        "description": "",
+        "region": {
+          "x": 0.3,
+          "y": 0.2,
+          "width": 0.66,
+          "height": 0.5,
+          "units": "normalized"
+        },
+        "scale": "",
+        "affects": "",
+        "mapsTo": {
+          "type": "",
+          "ref": ""
+        },
+        "evidenceRef": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\zones\\top-view.png",
+        "confidence": 0.0
+      },
+      {
+        "id": "side-gear",
+        "kind": "",
+        "description": "",
+        "region": {
+          "x": 0.0,
+          "y": 0.68,
+          "width": 0.85,
+          "height": 0.32,
+          "units": "normalized"
+        },
+        "scale": "",
+        "affects": "",
+        "mapsTo": {
+          "type": "",
+          "ref": ""
+        },
+        "evidenceRef": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\zones\\side-gear.png",
+        "confidence": 0.0
+      },
+      {
+        "id": "nose-closeup",
+        "kind": "",
+        "description": "",
+        "region": {
+          "x": 0.25,
+          "y": 0.7,
+          "width": 0.45,
+          "height": 0.2,
+          "units": "normalized"
+        },
+        "scale": "",
+        "affects": "",
+        "mapsTo": {
+          "type": "",
+          "ref": ""
+        },
+        "evidenceRef": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\zones\\nose-closeup.png",
+        "confidence": 0.0
+      }
+    ]
+  },
+  "authoringInstruction": "Open each zone crop under zonesDir and replace every detail stub's kind, description, scale, affects, mapsTo, and confidence with what is actually observed. Add more detail entries per zone if a single zone contains multiple distinct marks; do not leave stubs unfilled or unlinked (mapsTo must reference a real component.localFeatures or material.localOverrides entry)."
+}

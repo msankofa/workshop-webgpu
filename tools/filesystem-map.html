@@ -199,6 +199,11 @@
 </div>
 
 <div id="right-rail">
+<div id="panel-groups" class="panel" style="display:none;">
+  <h2>Groups</h2>
+  <div class="scroll" id="group-list"></div>
+</div>
+
 <div id="panel-filters" class="panel">
   <h2>Filters</h2>
   <div class="field-label">name contains</div>
@@ -445,8 +450,34 @@ try {
   throw err;
 }
 
+// ---------- optional scope ----------
+// `?scope=pokemon` narrows the whole map to one subsystem before anything is built from the scan, so
+// every panel, filter and count below is about that subsystem and nothing here needed changing.
+// pokemon-lab.html's Map tab is this page in an iframe with that parameter set.
+const SCOPE = new URLSearchParams(location.search).get('scope');
+let scopeGroups = null;
+if (SCOPE === 'pokemon') {
+  const scope = await import('../pokemon-map-scope.js');
+  // Every group is built into the graph; the toggles below filter it live, the way the extension
+  // checkboxes already do, rather than rebuilding the layout on each click.
+  const all = Object.fromEntries(scope.GROUPS.map(g => [g.id, true]));
+  scanData = { ...scanData, root: 'pokemon lab', entries: scope.selectEntries(scanData.entries, all) };
+  scopeGroups = scope;
+  document.getElementById('title-bar').textContent = 'Pokemon Lab // Filesystem';
+  document.title = 'Pokemon Lab — filesystem map';
+}
+
 const root = buildTree(scanData.root, scanData.entries);
 computeWeight(root);
+// Carry the group down onto the node, so the filter can read it the way it reads an extension.
+if (scopeGroups) {
+  const groupByPath = new Map(scanData.entries.map(e => [e.path, e.group]));
+  (function tag(n) {
+    n.group = groupByPath.get(n.path) ?? n.group ?? null;
+    n.note = null;
+    for (const c of n.children) tag(c);
+  })(root);
+}
 
 const fileNodes = [];
 const dirNodes = [];             // excludes root, pre-order (parent always precedes its children)
@@ -632,6 +663,34 @@ let rangeStart = minMtime, rangeEnd = maxMtime;
 let timelineEnabled = false;
 let timelineT = maxBirth;
 
+// Scope groups, filtered live exactly like extensions. Null when the map is not scoped, which is what
+// makes the clause in matchesFilter free for the unscoped page.
+const activeGroups = scopeGroups ? new Set(scopeGroups.GROUPS.map(g => g.id)) : null;
+if (scopeGroups) {
+  const host = document.getElementById('group-list');
+  document.getElementById('panel-groups').style.display = '';
+  const counts = scopeGroups.groupCounts(scanData.entries);
+  for (const g of scopeGroups.GROUPS) {
+    const hex = g.color.toString(16).padStart(6, '0');
+    const row = document.createElement('label');
+    row.className = 'filter-row';
+    row.title = g.hint;
+    row.innerHTML =
+      '<input type="checkbox" ' + (g.on ? 'checked' : '') + ' data-group="' + g.id + '">' +
+      '<span class="swatch" style="background:#' + hex + '; color:#' + hex + '"></span>' +
+      '<span class="ext-name">' + g.label + '</span>' +
+      '<span class="ext-count">' + (counts[g.id] || 0) + '</span>';
+    host.appendChild(row);
+    if (!g.on) activeGroups.delete(g.id);
+  }
+  host.addEventListener('change', (e) => {
+    const cb = e.target;
+    if (cb.dataset.group === undefined) return;
+    if (cb.checked) activeGroups.add(cb.dataset.group); else activeGroups.delete(cb.dataset.group);
+    scheduleFilterUpdate();
+  });
+}
+
 const extListEl = document.getElementById('ext-list');
 const sortedExts = [...extCounts.entries()].sort((a, b) => b[1] - a[1]);
 for (const [ext, count] of sortedExts) {
@@ -705,7 +764,8 @@ function scheduleFilterUpdate() {
 }
 
 function matchesFilter(node) {
-  return activeExts.has(node.ext) &&
+  return (!activeGroups || activeGroups.has(node.group)) &&
+    activeExts.has(node.ext) &&
     node.mtime >= rangeStart && node.mtime <= rangeEnd &&
     (searchQuery === '' || node.name.toLowerCase().includes(searchQuery)) &&
     (!timelineEnabled || node.effectiveBirth <= timelineT);
@@ -719,13 +779,19 @@ const scene = new THREE.Scene();
 // layout-radius to near-black long before the camera's own maxDistance (6x) was reached.
 scene.fog = new THREE.Fog(0x02070c, maxExtent * 0.6, maxExtent * 5.5);
 
-const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.05, 4000);
+// Never zero: this page can be embedded (pokemon-lab.html's Map tab loads it in an iframe), and a frame
+// that is not laid out yet reports 0. WebGPU does not refuse a zero-width surface politely — it creates an
+// invalid texture and every render pass built on it fails, once per frame, for the life of the device.
+const viewW = () => Math.max(1, window.innerWidth);
+const viewH = () => Math.max(1, window.innerHeight);
+
+const camera = new THREE.PerspectiveCamera(52, viewW() / viewH(), 0.05, 4000);
 const startPos = new THREE.Vector3(maxExtent * 1.1, maxExtent * 0.8, maxExtent * 1.1);
 camera.position.copy(startPos);
 
 const renderer = new WebGPURenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setSize(viewW(), viewH());
 // ACES (not NoToneMapping): with no rolloff curve, additive-heavy overlapping instances in a
 // dense file cluster just clip every channel to 1,1,1 — flat white blobs with no color left.
 // ACES compresses smoothly instead, so bright clusters stay readable and keep their hue.
@@ -1167,9 +1233,9 @@ document.getElementById('btn-reset').onclick = () => {
 // ---------- render loop ----------
 
 function onResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.aspect = viewW() / viewH();
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(viewW(), viewH());
 }
 window.addEventListener('resize', onResize);
 

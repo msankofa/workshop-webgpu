@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { readFileSync } from 'node:fs';
 import { createProceduralPlayerBody } from './player-procedural-body.js';
-import { createWeaponMountSystem, defaultReloadSequence, buildStowParts, stowPlacementFor, stowedWeaponIds, holsterHoldFor, STOW_PLACEMENTS, STOW_LOD_MAX_PARTS } from './weapon-mount.js';
+import { createWeaponMountSystem, defaultReloadSequence, buildStowParts, stowPlacementFor, stowedWeaponIds, holsterHoldFor, mergePartsByMaterial, STOW_PLACEMENTS, STOW_LOD_MAX_PARTS } from './weapon-mount.js';
 import { getWeapon } from './weapons.js';
 
 let pass = 0, fail = 0;
@@ -13,11 +13,21 @@ const anchors = JSON.parse(readFileSync('./weapon-anchors.json', 'utf8'));
 const poses = JSON.parse(readFileSync('./weapon-poses.json', 'utf8'));
 
 // Fake GLB sized like the real CZ (its raw anchors span z -15..6), so the baked anchors land on it.
+// Four sub-meshes over two materials, the way a real GLB arrives: the receiver and stock share the
+// body material, the two rail pieces share the metal one.
+const fakeBodyMat = new THREE.MeshBasicMaterial();
+const fakeMetalMat = new THREE.MeshBasicMaterial();
 function fakeGLB() {
   const scene = new THREE.Group();
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.5, 5, 22), new THREE.MeshBasicMaterial());
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.5, 5, 22), fakeBodyMat);
   mesh.position.set(0, 0, -4.5);
-  scene.add(mesh);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(1.2, 3, 4), fakeBodyMat);
+  stock.position.set(0, 0, 8);
+  const railA = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 6), fakeMetalMat);
+  railA.position.set(0, 2.8, -6);
+  const railB = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 2), fakeMetalMat);
+  railB.position.set(0, -2.8, -6);
+  scene.add(mesh, stock, railA, railB);
   return Promise.resolve({ scene });
 }
 
@@ -36,8 +46,38 @@ const system = createWeaponMountSystem({ THREE, scene, loadGLB: fakeGLB, getWeap
 const none = await system.createMount(body, 'knife');
 ok(none === null || none?.def?.thirdPersonHold, 'a weapon without a third-person hold yields no mount or a valid one');
 
+const mergedBefore = system.stats.partsMerged;   // the knife above may have loaded the same fake GLB
 const mount = await system.createMount(body, 'cz_805_bren');
 ok(mount && mount.weaponId === 'cz_805_bren', 'cz mount builds from the fake GLB');
+
+// ---- one instancing bucket per material, not per sub-mesh ----
+{
+  ok(mount.instanceParts.length === 2, `four sub-meshes over two materials become two parts (${mount.instanceParts.length})`);
+  ok(system.stats.partsMerged - mergedBefore === 2, `the system counts the two parts it folded away (${system.stats.partsMerged - mergedBefore})`);
+  const body = mount.instanceParts.find(p => p.material === fakeBodyMat);
+  ok(body && body.geometry.attributes.position.count === 48, `a merged part holds every vertex of its sub-meshes (${body?.geometry.attributes.position.count})`);
+  ok(body && body.localMatrix.equals(new THREE.Matrix4()), 'the sub-mesh transforms are baked in, so the merged part sits at identity');
+  // The template is normalised to unit scale, so compare spans by ratio: receiver + stock cover
+  // z -15.5..10 (25.5) in the fake GLB, the two rails -9..-3 (6).
+  const metal = mount.instanceParts.find(p => p.material === fakeMetalMat);
+  body.geometry.computeBoundingBox(); metal.geometry.computeBoundingBox();
+  const span = (g) => g.boundingBox.max.z - g.boundingBox.min.z;
+  ok(Math.abs(span(body.geometry) / span(metal.geometry) - 25.5 / 6) < 1e-3,
+    `the merged body spans receiver and stock in template space (ratio ${(span(body.geometry) / span(metal.geometry)).toFixed(3)} vs ${(25.5 / 6).toFixed(3)})`);
+  // The pure function, with the cases the loader path cannot guess at.
+  const m = new THREE.MeshBasicMaterial();
+  const part = (geo, material = m, z = 0) => ({ geometry: geo, material, localMatrix: new THREE.Matrix4().makeTranslation(0, 0, z) });
+  const plain = () => new THREE.BoxGeometry(1, 1, 1);
+  const withUv2 = () => { const g = plain(); g.setAttribute('uv2', g.attributes.uv.clone()); return g; };
+  ok(mergePartsByMaterial(THREE, [part(plain()), part(plain(), m, 3)]).length === 1, 'two parts, one material, same attributes: merged');
+  ok(mergePartsByMaterial(THREE, [part(plain()), part(withUv2())]).length === 2, 'a differing attribute set keeps its parts separate rather than dropping data');
+  ok(mergePartsByMaterial(THREE, [part(plain()), part(plain().toNonIndexed())]).length === 2, 'mixed indexed and non-indexed parts are kept separate');
+  ok(mergePartsByMaterial(THREE, [part(plain(), [m, m]), part(plain(), [m, m])]).length === 2, 'multi-material parts are left alone');
+  ok(mergePartsByMaterial(THREE, [part(plain())]).length === 1, 'a lone part is passed through untouched');
+  const merged = mergePartsByMaterial(THREE, [part(plain()), part(plain(), m, 3)])[0];
+  merged.geometry.computeBoundingBox();
+  ok(Math.abs(merged.geometry.boundingBox.max.z - 3.5) < 1e-6, 'the localMatrix of a part is applied before the merge');
+}
 ok(mount.muzzleMarker && mount.barrelReferenceMarker, 'muzzle and rear markers exist');
 ok(mount.reloadSequence?.keys?.length > 0, 'reload sequence resolved');
 

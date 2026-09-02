@@ -117,6 +117,9 @@ export function createEnvironmentAudio(options = {}) {
   // it never starts a track on its own. Viewers with an always-populated playlist want this off.
   const autoplayOnGesture = options.autoplayOnGesture !== false;
   const startShuffled = options.shuffle === true;
+  // Every distance in the speaker path -- the orb's offsets, its size, the panner's reference and
+  // maximum distances -- was written for 1 unit = 1 metre. A scene on another scale multiplies them.
+  let worldScale = Number(options.worldScale) > 0 ? Number(options.worldScale) : 1;
 
   const perfNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const clamp01 = v => Math.max(0, Math.min(1, Number(v) || 0));
@@ -184,7 +187,9 @@ export function createEnvironmentAudio(options = {}) {
   let musicReverbImpulse = null;
   let musicPitchWorkletPromise = null;
   let musicPitchWorkletAvailable = true;
+  let pitchWorkletReady = false;     // module loaded, so a one-shot can build a node synchronously
   let musicSpeakerOrb = null;
+  let musicSpeakerFixedPos = null;   // world position for the 'fixed' behavior; set by drag or seeded on switch
   const musicUrlCache = new Map();
   const liveSfxSeen = new Set();
   let liveSfxChannel = null;
@@ -446,9 +451,36 @@ export function createEnvironmentAudio(options = {}) {
     const gain = audioCtx.createGain();
     src.buffer = buf;
     gain.gain.value = vol * (opts.volumeScale ?? positionalSfxVolumeScale);
-    src.connect(gain);
+    // Tempo is the source's playbackRate, which drags pitch along; opts.pitchRatio is the pitch the
+    // caller actually wants, and the music pitch worklet (0.5-2x) makes up the difference. The
+    // worklet only exists once its module has loaded -- preparePitchWorklet() ahead of time.
+    const rate = Number(opts.playbackRate);
+    if (rate > 0) src.playbackRate.value = rate;
+    let tail = src;
+    const wanted = Number(opts.pitchRatio);
+    const correction = wanted > 0 ? wanted / (rate > 0 ? rate : 1) : 1;
+    if (Math.abs(correction - 1) > 0.001 && pitchWorkletReady) {
+      const shifter = new AudioWorkletNode(audioCtx, 'music-pitch-processor', {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+      });
+      setAudioParamValue(shifter.parameters.get('pitchRatio'), Math.max(0.5, Math.min(2, correction)));
+      src.connect(shifter);
+      tail = shifter;
+      src.addEventListener('ended', () => setTimeout(() => { try { shifter.disconnect(); } catch { /* gone */ } }, 300));
+    }
+    // Slice and timing: opts.offset/duration are seconds into the buffer, opts.delay seconds from now.
+    const when = audioCtx.currentTime + Math.max(0, Number(opts.delay) || 0);
+    const offset = Math.max(0, Math.min(buf.duration, Number(opts.offset) || 0));
+    const sliceSeconds = Number(opts.duration) > 0 ? Math.min(Number(opts.duration), buf.duration - offset) : buf.duration - offset;
+    // opts.insert(ctx, input, info) lets the caller put its own nodes between the source and the
+    // panner -- an envelope, a filter, an LFO -- and return the chain's output (or nothing to skip).
+    if (typeof opts.insert === 'function') {
+      const out = opts.insert(audioCtx, tail, { source: src, startTime: when, duration: sliceSeconds / (rate > 0 ? rate : 1) });
+      if (out) tail = out;
+    }
+    tail.connect(gain);
     connectSpatialOutput(gain, sourcePosition, opts);
-    src.start(audioCtx.currentTime);
+    src.start(when, offset, sliceSeconds);
     return src;
   }
 
@@ -797,7 +829,7 @@ export function createEnvironmentAudio(options = {}) {
     if (camera) right.applyQuaternion(camera.quaternion);
     right.y = 0;
     if (right.lengthSq() <= 0.0001) right.set(1, 0, 0);
-    return base.clone().add(right.normalize().multiplyScalar(2.2));
+    return base.clone().add(right.normalize().multiplyScalar(2.2 * worldScale));
   }
 
   // [ADAPTATION] Only global/speaker output remains; airship output removed.
@@ -844,7 +876,7 @@ export function createEnvironmentAudio(options = {}) {
     if (!musicPitchWorkletPromise) {
       musicPitchWorkletPromise = audioCtx.audioWorklet
         .addModule(workletUrl)
-        .then(() => true)
+        .then(() => { pitchWorkletReady = true; return true; })
         .catch(err => {
           musicPitchWorkletAvailable = false;
           appendDebugLog(`music pitch worklet unavailable: ${err?.message || err}`);
@@ -863,8 +895,8 @@ export function createEnvironmentAudio(options = {}) {
     if (track.spatialPanner) {
       configurePanner(track.spatialPanner, {
         distanceModel: 'inverse',
-        refDistance: 2.4,
-        maxDistance: 52,
+        refDistance: 2.4 * worldScale,
+        maxDistance: 52 * worldScale,
         rolloffFactor: 1.05 * attenuation,
       });
       setPannerPosition(track.spatialPanner, musicOutputPosition());
@@ -932,8 +964,8 @@ export function createEnvironmentAudio(options = {}) {
       spatialLimiter.release.value = 0.16;
       configurePanner(spatialPanner, {
         distanceModel: 'inverse',
-        refDistance: 2.4,
-        maxDistance: 52,
+        refDistance: 2.4 * worldScale,
+        maxDistance: 52 * worldScale,
         rolloffFactor: 1.05,
       });
       if (pitchWorklet) {
@@ -1004,22 +1036,31 @@ export function createEnvironmentAudio(options = {}) {
     right.normalize();
     forward.normalize();
 
-    const bob = Math.sin(timestamp * 0.0024) * 0.18;
+    const s = worldScale;
+    const bob = Math.sin(timestamp * 0.0024) * 0.18 * s;
+    if (musicSpeakerBehavior === 'fixed') {
+      if (!musicSpeakerFixedPos) {
+        musicSpeakerFixedPos = musicSpeakerOrb?.visible
+          ? musicSpeakerOrb.position.clone()
+          : playerPos.clone().add(forward.clone().multiplyScalar(2.8 * s)).add(new THREE.Vector3(0, 0.55 * s, 0));
+      }
+      return musicSpeakerFixedPos.clone().add(new THREE.Vector3(0, bob * 0.5, 0));
+    }
     if (musicSpeakerBehavior === 'behind') {
-      return playerPos.clone().add(forward.multiplyScalar(-2.7)).add(new THREE.Vector3(0, 0.55 + bob, 0));
+      return playerPos.clone().add(forward.multiplyScalar(-2.7 * s)).add(new THREE.Vector3(0, 0.55 * s + bob, 0));
     }
     if (musicSpeakerBehavior === 'orbit') {
       const angle = timestamp * 0.00055;
       return playerPos.clone().add(new THREE.Vector3(
-        Math.cos(angle) * 3.1,
-        0.35 + Math.sin(timestamp * 0.0021) * 0.32,
-        Math.sin(angle) * 3.1,
+        Math.cos(angle) * 3.1 * s,
+        0.35 * s + Math.sin(timestamp * 0.0021) * 0.32 * s,
+        Math.sin(angle) * 3.1 * s,
       ));
     }
     if (musicSpeakerBehavior === 'above') {
-      return playerPos.clone().add(new THREE.Vector3(0, 3.5, 0));
+      return playerPos.clone().add(new THREE.Vector3(0, 3.5 * s, 0));
     }
-    return playerPos.clone().add(forward.multiplyScalar(2.8)).add(new THREE.Vector3(0, 0.55 + bob, 0));
+    return playerPos.clone().add(forward.multiplyScalar(2.8 * s)).add(new THREE.Vector3(0, 0.55 * s + bob, 0));
   }
 
   function updateMusicSpeakerOrb(timestamp = perfNow()) {
@@ -1034,6 +1075,7 @@ export function createEnvironmentAudio(options = {}) {
       const followRate = musicSpeakerBehavior === 'orbit' ? 0.08 : 0.12;
       if (wasVisible && musicSpeakerBehavior !== 'above') orb.position.lerp(target, followRate);
       else orb.position.copy(target);
+      orb.scale.setScalar(worldScale);
       orb.rotation.y += 0.012;
       orb.userData.musicSpeakerRingA.rotation.z += 0.018;
       orb.userData.musicSpeakerRingB.rotation.x -= 0.014;
@@ -1669,10 +1711,37 @@ export function createEnvironmentAudio(options = {}) {
   }
 
   function setMusicSpeakerBehavior(behavior) {
-    if (!['front', 'behind', 'orbit', 'above'].includes(behavior)) return;
+    if (!['front', 'behind', 'orbit', 'above', 'fixed'].includes(behavior)) return;
     musicSpeakerBehavior = behavior;
     updateMusicSpeakerOrb();
     notify();
+  }
+
+  // Put the speaker orb at a world position and hold it there ('fixed' behavior). Hosts call this
+  // from a drag; the direct copy keeps the orb under the pointer instead of lerping after it.
+  function setMusicSpeakerPosition(position) {
+    if (!isAudioPosition(position)) return;
+    musicSpeakerFixedPos = position.clone?.() || new THREE.Vector3(position.x, position.y, position.z);
+    if (musicSpeakerBehavior !== 'fixed') musicSpeakerBehavior = 'fixed';
+    ensureMusicSpeakerOrb().position.copy(musicSpeakerFixedPos);
+    updateMusicSpeakerOrb();
+    notify();
+  }
+
+  // Rescale the speaker path for a scene on another unit scale (1 = metres, as the viewers use).
+  // A held 'fixed' position is dropped, since it was placed on the old scale.
+  function setWorldScale(scale) {
+    const next = Number(scale);
+    if (!(next > 0) || next === worldScale) return;
+    worldScale = next;
+    musicSpeakerFixedPos = null;
+    updateMusicTrackOutput();
+    updateMusicSpeakerOrb();
+  }
+
+  // The orb group itself, for hosts that raycast it to make it draggable.
+  function getMusicSpeakerObject() {
+    return ensureMusicSpeakerOrb();
   }
 
   function setMusicSource(mode) {
@@ -2233,6 +2302,11 @@ export function createEnvironmentAudio(options = {}) {
     },
     setMusicOutput,
     setMusicSpeakerBehavior,
+    setMusicSpeakerPosition,
+    getMusicSpeakerObject,
+    setWorldScale,
+    preparePitchWorklet: () => { initAudio(); return ensureMusicPitchWorklet(); },
+    playBufferAt,
     setMusicEffect,
     getState,
     subscribe,

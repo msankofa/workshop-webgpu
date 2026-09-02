@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sablynx UGV — model beside reference</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #111417; color: #d7dde3; font: 13px/1.5 system-ui, sans-serif; }
+  #wrap { display: grid; grid-template-columns: 1fr 1fr; height: 100vh; }
+  #refpane { display: flex; align-items: center; justify-content: center; background: #000; position: relative; }
+  #refpane img { max-width: 100%; max-height: 100vh; object-fit: contain; }
+  #stage { position: relative; }
+  canvas { display: block; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 12px; background: #0009; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  button { background: #222a31; color: #d7dde3; border: 1px solid #39424b; border-radius: 4px; padding: 4px 9px; font: inherit; cursor: pointer; }
+  button:hover { background: #2c363f; }
+  #info { position: absolute; top: 8px; left: 12px; background: #0009; padding: 6px 10px; border-radius: 4px; white-space: pre; }
+  #reflabel { position: absolute; top: 8px; left: 12px; background: #0009; padding: 6px 10px; border-radius: 4px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="wrap">
+  <div id="refpane"><img id="ref" src="ref/side-studio.jpeg" alt="reference"><div id="reflabel">reference</div></div>
+  <div id="stage"><div id="info"></div><div id="bar">
+    <button data-view="side">side</button>
+    <button data-view="front">front</button>
+    <button data-view="rear34">rear 3/4</button>
+    <button data-view="front34">front 3/4</button>
+    <button data-view="top">top</button>
+    <button id="wire">wireframe</button>
+    <button id="grid">ground grid</button>
+    <button id="swapref">swap reference</button>
+  </div></div>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { buildCraftMesh } from '../../flight-meshes.js';
+import { BASE_GAME_VEHICLE_DEFS } from '../../base-game-vehicles.js';
+
+const KIND = new URLSearchParams(location.search).get('kind') || 'ugv';
+const def = BASE_GAME_VEHICLE_DEFS[KIND];
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14181c);
+const camera = new THREE.PerspectiveCamera(38, 1, 0.05, 100);
+const controls = new OrbitControls(camera, renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xbcd2e8, 0x2a2723, 1.5));
+const key = new THREE.DirectionalLight(0xfff2e0, 2.4); key.position.set(3, 5, 2); scene.add(key);
+const fill = new THREE.DirectionalLight(0x9fc0e0, 0.7); fill.position.set(-4, 2, -3); scene.add(fill);
+
+const MATS = {
+  standard: (color, emissive = 0x000000) => new THREE.MeshStandardMaterial({ color, emissive, roughness: 0.62, metalness: 0.18 }),
+  basic: (color, opacity = 1) => new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity }),
+};
+// The olive of the reference, so the shape is judged and not the team tint.
+const model = buildCraftMesh(def.mesh, 0x5c6b3c, MATS, def);
+scene.add(model);
+
+// Ground plane at -clearance: the model must stand on it, not float or sink.
+const grid = new THREE.GridHelper(6, 24, 0x4a5560, 0x2a3138);
+grid.position.y = -def.clearance; scene.add(grid);
+
+const box = new THREE.Box3().setFromObject(model), size = new THREE.Vector3(), mid = new THREE.Vector3();
+box.getSize(size); box.getCenter(mid);
+let tris = 0, meshes = 0;
+model.traverse(o => { if (o.geometry) { meshes++; const i = o.geometry.index; tris += (i ? i.count : o.geometry.attributes.position.count) / 3; } });
+const D = def.wheelbase * 0.55;
+document.getElementById('info').textContent =
+  `${KIND}  ${meshes} meshes  ${Math.round(tris)} tris\n` +
+  `L ${size.z.toFixed(2)}  W ${size.x.toFixed(2)}  H ${size.y.toFixed(2)} m\n` +
+  `wheelbase ${def.wheelbase}  track ${def.track}  clearance ${def.clearance}\n` +
+  `tyre dia ${D.toFixed(3)} m   top ${((box.max.y + def.clearance) / D).toFixed(2)}D`;
+
+const R = Math.max(size.x, size.y, size.z) * 1.5;
+const VIEWS = {
+  side:    [0, mid.y, R],          // camera on +Z looks at the port side, nose to the left
+  front:   [0, mid.y, -R],
+  rear34:  [R * 0.75, mid.y + R * 0.25, R * 0.75],
+  front34: [-R * 0.7, mid.y + R * 0.2, -R * 0.75],
+  top:     [0.01, mid.y + R, 0],
+};
+function setView(name) {
+  const v = VIEWS[name] || VIEWS.side;
+  if (name === 'side') camera.position.set(-R, mid.y + 0.05, 0.001);
+  else camera.position.set(v[0], v[1], v[2]);
+  controls.target.copy(mid); controls.update();
+}
+for (const b of document.querySelectorAll('[data-view]')) b.onclick = () => setView(b.dataset.view);
+let wire = false;
+document.getElementById('wire').onclick = () => {
+  wire = !wire;
+  model.traverse(o => { if (o.material) o.material.wireframe = wire; });
+};
+document.getElementById('grid').onclick = () => { grid.visible = !grid.visible; };
+const REFS = ['ref/side-studio.jpeg', 'ref/front-field.jpeg', 'zones/z1-turret-mast.png', 'zones/z2-cage-deck.png', 'zones/z3-hull-wheels.png'];
+let refI = 0;
+document.getElementById('swapref').onclick = () => {
+  refI = (refI + 1) % REFS.length;
+  document.getElementById('ref').src = REFS[refI];
+  document.getElementById('reflabel').textContent = REFS[refI];
+};
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize(); setView('side');
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>

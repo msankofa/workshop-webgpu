@@ -179,7 +179,9 @@ settable = set()
 for g, names, text in order:
     for n in names:
         if n in WORLD_STATE or n in SETTINGS or any(n in nn for nn, _ in nulled): settable.add(n)
-for n in sorted(settable): out.append(f'    {n}: (v) => {{ {n} = v; }},')
+for n in sorted(settable):
+    if n == 'botAimSettings': out.append('    botAimSettings: (v) => { botAimSettings = { ...botAimSettings, ...v }; },')
+    else: out.append(f'    {n}: (v) => {{ {n} = v; }},')
 out.append('  };')
 out.append('  configure(settings);')
 out.append('')
@@ -324,6 +326,7 @@ out.append('''  // ---- host surface (hand-written; not from the harness) ------
     actors: () => botActors, actorById: (id) => botActorById.get(id),
     // What a hook sees while it runs: the bound actor, its bot record and current target.
     bound: () => ({ actor: activeBotActor, bot, target: botTarget, state: botState, aimPoint: botHasAimPoint ? botAimPoint : null, reloadUntil: botReloadUntil }),
+    aimSettings: () => ({ ...botAimSettings }),
     ammoFor: (entity, weaponId) => withBotActor(entity.botActor, () => ensureBotAmmo(weaponId ?? entity.weapon)),
     state: () => ({ navGrid, visField, cornerMap, goalClaims, botHash, botActorById, botActors, squads, recentAllyHits }),
   };

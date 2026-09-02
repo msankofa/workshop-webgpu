@@ -183,6 +183,15 @@ export function nearestOnPoly(px, pz, poly, out) {
   return out;
 }
 
+/** Signed horizontal distance to a real support polygon: positive inside, negative outside. */
+export function signedSupportMargin(px, pz, poly) {
+  if (!poly || poly.length < 3) return null;
+  nearestOnPoly(px, pz, poly, _near);
+  const distance = Math.hypot(px - _near.x, pz - _near.z);
+  if (distance < 1e-12) return 0;
+  return pointInPoly(px, pz, poly) ? distance : -distance;
+}
+
 // ===================== step scheduling =====================
 
 export function isGrounded(leg) {
@@ -264,15 +273,30 @@ export function canWalkLegMove(leg, gait, legs) {
 }
 
 export function canGallopLegMove(leg, gait, legs) {
-  if (!leg.wants || leg.stepping) return false;
-  if (!leg.targetGrounded) return true;
-  if (!legs.some(l => isGrounded(l))) return false;
-
   const rowMate = leg.rowMateCached;
   leg.primary = leg.phase === 0 || !rowMate || !rowMate.targetGrounded;
+  if (leg.stepping) return false;
+
+  // Gallop demand belongs to the row, not to whichever side was chosen as its lead. Stadium legs are
+  // not perfectly symmetric, so one foot routinely reaches its trigger first. Requiring the fixed lead
+  // foot to want the step strands its mate forever. Once the lead is moving, its mate follows after the
+  // small intra-row delay whether or not its own threshold happened on the same frame.
   if (!leg.primary) {
     return rowMate?.stepping && rowMate.timeSinceBeginMove >= gait.samePairCooldown;
   }
+
+  if (!leg.wants && !rowMate?.wants) return false;
+  // The lead lands before its delayed mate. It must not begin the next stride during that overlap, or
+  // this row is continuously airborne and the cross-row cooldown can never release the other row.
+  if (rowMate?.stepping) return false;
+  if (!leg.targetGrounded) return true;
+  if (!legs.some(l => isGrounded(l))) return false;
+
+  // The walk scheduler already has this landing hysteresis. Gallop needs it at row level: without it,
+  // millimetres of target noise let the row that just landed start again and monopolise every turn.
+  const eps = gait.restepEpsilon ?? 0.1;
+  const row = rowMate ? [leg, rowMate] : [leg];
+  if (row.every(l => l.targetGrounded && l.end.distanceToSquared(l.target) < eps * eps)) return false;
 
   const crossRows = leg.crossRowsCached;
   if (crossRows.some(l => l.targetGrounded && l.timeSinceBeginMove < gait.crossPairCooldown)) return false;
@@ -368,7 +392,7 @@ const _support = {
   comX: 0, comY: 0, comZ: 0,
   polyY: 0, poly: _hullOut, nearX: 0, nearZ: 0,
   nx: 0, ny: 1, nz: 0, haveNormal: false,
-  comInside: false, haveSupport: false,
+  comInside: false, haveSupport: false, supportMargin: null,
 };
 
 /**
@@ -432,6 +456,7 @@ export function bodySupport(legs, pos) {
   s.haveNormal = groundedCount > 0;
   s.comInside = false;
   s.haveSupport = false;
+  s.supportMargin = null;
   let poly = _hullOut; poly.length = 0;
 
   if (groundedCount === 1) {
@@ -444,6 +469,7 @@ export function bodySupport(legs, pos) {
     polyY /= groundedCount;
     s.haveSupport = poly.length >= 3;
     s.comInside = s.haveSupport && pointInPoly(s.comX, s.comZ, poly);
+    s.supportMargin = signedSupportMargin(s.comX, s.comZ, poly);
     if (s.comInside) {
       nx = 0;
       ny = 1;

@@ -10,22 +10,22 @@ measurements: bench-base-game-npcs.mjs and node --cpu-prof (server, headless); n
 steps_complete: [1, 3, 5]
 steps_partial: [2, 6]
 steps_not_run: [4]
-findings: 16
+findings: 21
 severity_counts:
-  high: 6
-  medium: 6
+  high: 9
+  medium: 8
   low: 1
   info: 3
 status_counts:
-  fixed: 6
-  deferred: 2
-  open: 5
-  unverified: 3
+  fixed: 13
+  deferred: 1
+  open: 3
+  unverified: 4
 kind_counts:
-  defect: 8
-  gap: 4
-  regression: 1
-  test-gap: 1
+  defect: 10
+  gap: 5
+  regression: 2
+  test-gap: 2
   observation: 2
 ---
 
@@ -39,7 +39,13 @@ by the same standard.
 The audit is **incomplete**. Step 4 (the visual rubric) has not run: the NPC bodies, the team
 tints, the human heads and the spawner laser have never been seen by me in a browser. Step 2 has
 server numbers only; the client side rests on the user's report that the frame rate was fine while
-the ping was not. `F-13` through `F-15` record those gaps as findings.
+the ping was not. ~~`F-13` through `F-15` record those gaps as findings.~~ `F-13`, `F-14`, and the
+corrected `F-16` record the remaining visual, client-performance, and online-UAV verification gaps.
+
+**Correction, 2026-08-29.** The original frontmatter rollups said ~~6 fixed / 2 deferred / 5 open /
+3 unverified and 8 defects / 4 gaps~~. A direct parse found 8 fixed / 1 deferred / 4 open /
+3 unverified and 7 defects / 5 gaps before the corrections below. Findings `F-17` through `F-21`
+record the review defects and their implementation fixes; the frontmatter now reflects all 21 findings.
 
 ## About this document
 
@@ -94,8 +100,8 @@ locations:
     role: the controller step that asks about five times
 measured:
   before: 65% of server CPU in fbm3/hashedCell3/densityAt under holeAt (node --cpu-prof, 16 bots, v5); 16 bots 2.24 ms per tick, 32 bots 4.36 ms
-  after: 16 bots 0.54-0.58 ms per tick, 32 bots 1.02-1.04 ms; worst 100 ms slice 9-16 ms
-verified_by: bench-base-game-npcs.mjs --v5 --fight; test-terrain-volume.mjs, test-world-query-heightfield.mjs, test-base-game-rooms-terrain.mjs, test-base-game-player.mjs
+  after: "~~16 bots 0.54-0.58 ms per tick, 32 bots 1.02-1.04 ms with the invalid spatial cache~~; exact-cache rerun: 16 bots 0.692 ms, 32 bots 1.271 ms; worst 100 ms slices 13.5 / 20.9 ms"
+verified_by: bench-base-game-npcs.mjs --v5 --fight; test-terrain-volume.mjs including both cave-boundary query orders; test-world-query-heightfield.mjs, test-base-game-rooms-terrain.mjs, test-base-game-player.mjs
 mutation_tested: false
 ```
 
@@ -116,15 +122,19 @@ profile.
 
 ### Solution
 
-The scan now stops at `h - warpReach`, the depth the hole test actually needs, and the answer is
-cached per 0.5 m cell in a 65k-entry map that clears when full. Holes are cave mouths metres wide,
-so a half-metre cell never straddles one meaningfully.
+The scan now stops at `h - warpReach`, the depth the hole test actually needs. ~~The answer is
+cached per 0.5 m cell in a 65k-entry map that clears when full; holes are cave mouths metres wide,
+so a half-metre cell never straddles one meaningfully.~~ That cache was incorrect at cave boundaries.
+It is now a fixed 65k-slot direct-mapped cache that only hits when both exact coordinates match;
+hash collisions recompute rather than sharing an answer.
 
 ### Result
 
-Four times cheaper per tick at every bot count; the profile's top entries are now the brain and the
-controller. The cache is per source instance and never invalidated, which is correct because a v5
-source is immutable per project hash.
+Four times cheaper per tick at every bot count in the original measurement; the profile's top
+entries were then the brain and controller. ~~The half-metre cache was correct because the source is
+immutable.~~ Source immutability did not make spatial approximation correct. The exact-coordinate
+replacement passes the two-order cave-boundary regression. The refreshed v5 benchmark measured
+0.692 ms/tick at 16 bots and 1.271 ms/tick at 32, still below the 8.33 ms tick budget.
 
 ## F-02 — The zone bake ran whole in one tick and again on every spawn
 
@@ -213,8 +223,9 @@ One `sampleScratch` per record, filled field by field.
 
 ### Result
 
-Allocation-free steady state. The consumers (`playerBodies.updateRemote`, `audioDirector.updateRemote`)
-read the object within the same frame and never keep it, so aliasing is safe.
+~~Allocation-free steady state.~~ The `base-game-remote-players.js` sampling loop is allocation-free
+after warm-up, and its consumers read the scratch object synchronously. The HTML feed still allocated
+fresh argument and gadget-phase records; that omitted churn is recorded and fixed in `F-21`.
 
 ## F-04 — The Solo drone path churned lists and sets with nothing in the air
 
@@ -383,7 +394,9 @@ calls per tick.
 
 ### Result
 
-Shipped. The line to paste when a session feels laggy is `[base-game prof] ...`.
+Shipped. ~~The original line reported every listed brain counter.~~ It printed `heightAt undefined`
+because it read `stats.heightAt` instead of `stats.heights`; `F-20` records the correction. The line
+to paste when a session feels laggy remains `[base-game prof] ...`.
 
 ## F-08 — getSnapshot allocates a normalized record per call, several times per bot per tick
 
@@ -530,7 +543,7 @@ Left as is, noted for whoever adds sides for players.
 id: F-11
 title: npcAccuracy is a slider the server never reads
 severity: medium
-status: open
+status: fixed
 kind: gap
 introduced_by: this-work
 runs: n/a
@@ -545,8 +558,8 @@ locations:
     role: maps npcNoticeMs only
 measured:
   before: n/a
-  after: n/a
-verified_by: grep npcAccuracy server/ returns only the sanitizer
+  after: npcAccuracy 0 doubles donor dispersion, 0.5 preserves it, and 1 removes spread/bloom; npcNoticeMs retains reactionEnabled and changes reactionMs
+verified_by: test-bot-aim.mjs; server/test-base-game-npcs-room.mjs
 mutation_tested: false
 ```
 
@@ -560,12 +573,14 @@ A control that does nothing, which the user will assume is broken rather than un
 
 ### Solution
 
-Map it in `syncNpcSettings` to the brain's aim-spread settings (`botAimSettings`), the way
-`npcNoticeMs` maps to `reactionMs`.
+~~Map it in `syncNpcSettings` to `botAimSettings` the way `npcNoticeMs` maps to `reactionMs`.~~ The
+notice mapping replaced the entire aim object and disabled its own reaction gate. First make partial
+brain aim configuration merge, then map accuracy around the donor's `0.5` baseline.
 
 ### Result
 
-Open; small.
+Fixed together with `F-19`. Accuracy now controls all spread and bloom amplitudes, while room
+notice-time changes preserve `reactionEnabled` and the other donor defaults.
 
 ## F-12 — Solo has no bots
 
@@ -733,7 +748,7 @@ Recorded, not fixed.
 id: F-16
 title: The UAV jerk was the server stall, and I misattributed Solo
 severity: high
-status: fixed
+status: unverified
 kind: regression
 introduced_by: this-work
 runs: per-tick
@@ -748,7 +763,7 @@ locations:
     role: the Solo path, which never touches the server
 measured:
   before: user report — manually flown UAV jerked back and forth online at 300 ms ping
-  after: F-01 and F-02 fixed; not yet retested by the user
+  after: "~~F-01 and F-02 fixed~~; likely addressed by the stall fixes, but not yet retested online by the user"
 verified_by: headless 40 s follow-mode run of both drones (smooth; three altitude-cap bumps for the UAV)
 mutation_tested: false
 ```
@@ -771,4 +786,237 @@ mode branch in the code, not from the architecture summary).
 
 ### Result
 
-Awaiting the user's retest online.
+~~Fixed.~~ The server stalls are fixed in headless measurements, but the reported online manual-flight
+path remains unverified until the user's retest.
+
+## F-17 — The machine-readable rollups described a different finding set
+
+```yaml
+id: F-17
+title: The machine-readable rollups described a different finding set
+severity: medium
+status: fixed
+kind: test-gap
+introduced_by: this-work
+runs: once
+locations:
+  - file: docs/superpowers/reviews/2026-08-28-base-game-npc-bots-audit.md
+    line: 13
+    symbol: frontmatter rollups
+    role: the incorrect status and kind totals
+  - file: test-audit-doc.mjs
+    line: 15
+    symbol: DOC_PATH
+    role: covered only the tree audit
+measured:
+  before: status said 6/2/5/3 instead of 8/1/4/3 fixed/deferred/open/unverified; kinds said 8 defects and 4 gaps instead of 7 and 5
+  after: every audit that declares the machine-readable contract has its finding count and three rollups checked
+verified_by: test-audit-doc.mjs
+mutation_tested: false
+```
+
+### Cause
+
+The counts were copied from an earlier draft, while the parser test called the tree audit the “real
+document” and never opened this file.
+
+### Effect
+
+Any viewer or agent trusting frontmatter saw the wrong completion state even though all 16 original
+finding blocks parsed correctly.
+
+### Solution
+
+Recompute the counts from the parsed findings and make the test discover every `*-audit.md` that
+declares a `findings` field. Legacy prose audits remain outside this newer contract.
+
+### Result
+
+Fixed. The original totals are preserved in the correction note above, and the current rollups cover
+all 21 findings.
+
+## F-18 — The half-metre hole cache shared answers across a cave boundary
+
+```yaml
+id: F-18
+title: The half-metre hole cache shared answers across a cave boundary
+severity: high
+status: fixed
+kind: regression
+introduced_by: this-work
+runs: per-tick
+locations:
+  - file: terrain-source-v5.js
+    line: 210
+    symbol: holeAt
+    role: the corrected exact-coordinate cache
+  - file: test-terrain-volume.mjs
+    line: 102
+    symbol: cave-boundary cache checks
+    role: queries both orders
+measured:
+  before: (-96.24,-100) was false and (-95.76,-100) true uncached, but both used key -201326792 and the first answer won
+  after: both points retain their own answer in either query order
+verified_by: test-terrain-volume.mjs
+mutation_tested: false
+```
+
+### Cause
+
+`holeAt` quantized coordinates to a half-metre key but evaluated the first exact point placed in that
+bucket. A cave boundary can cross any bucket; source immutability does not prevent that.
+
+### Effect
+
+Heightfield collision beside a cave mouth depended on which point a body queried first, potentially
+creating a false floor or false hole.
+
+### Solution
+
+Use a fixed direct-mapped cache whose slot is hashed spatially but whose hit requires exact X and Z.
+A slot collision recomputes, so caching cannot change the terrain answer.
+
+### Result
+
+Fixed and boundary-tested. The exact cache is slower than the invalid spatial approximation but the
+refreshed 16/32-bot measurements remain 0.692/1.271 ms per tick against an 8.33 ms budget.
+
+## F-19 — A notice-time patch replaced the whole aim configuration
+
+```yaml
+id: F-19
+title: A notice-time patch replaced the whole aim configuration
+severity: high
+status: fixed
+kind: defect
+introduced_by: this-work
+runs: per-think
+locations:
+  - file: server/base-game-rooms.js
+    line: 776
+    symbol: syncNpcSettings
+    role: sends the partial room settings
+  - file: bot-brain.js
+    line: 733
+    symbol: botAimSettings setter
+    role: now merges partial settings
+  - file: tools/bot-brain-gen/3-generate.py
+    line: 182
+    symbol: botAimSettings generator setter
+    role: keeps regeneration consistent
+measured:
+  before: reactionEnabled became undefined, so botAimReady returned true and npcNoticeMs did nothing
+  after: reactionEnabled remains true, reactionMs follows the room value, and accuracy endpoints reach spread/bloom
+verified_by: test-bot-aim.mjs; server/test-base-game-npcs-room.mjs; test-bot-brain.mjs
+mutation_tested: false
+```
+
+### Cause
+
+The room correctly sent a partial `{ reactionMs }` patch, but the generated setter assigned that
+object wholesale instead of merging it with the donor defaults.
+
+### Effect
+
+The direct `reactionEnabled` gate read `undefined` and treated every visible target as ready to fire.
+The notice slider was as ineffective as the unwired accuracy slider.
+
+### Solution
+
+Merge partial `botAimSettings` in both the generator and generated module. Map `npcAccuracy` from
+twice the donor dispersion at 0, through donor behavior at 0.5, to zero spread and bloom at 1.
+
+### Result
+
+Fixed. The room test changes both controls and reads the brain's effective aim settings; the pure aim
+test pins the three accuracy points.
+
+## F-20 — The profiler printed an undefined height counter
+
+```yaml
+id: F-20
+title: The profiler printed an undefined height counter
+severity: medium
+status: fixed
+kind: defect
+introduced_by: this-work
+runs: per-tick
+locations:
+  - file: server/base-game-npcs.js
+    line: 94
+    symbol: stats.heights
+    role: the real counter
+  - file: server/base-game-rooms.js
+    line: 54
+    symbol: formatBaseGameNpcProfStats
+    role: the corrected formatter
+measured:
+  before: profiler lines ended with heightAt undefined
+  after: the formatter prints the numeric stats.heights value
+verified_by: server/test-base-game-npcs-room.mjs
+mutation_tested: false
+```
+
+### Cause
+
+The NPC stats field is named `heights`; the new log line read `heightAt`.
+
+### Effect
+
+The diagnostic added specifically to distinguish terrain cost from brain cost omitted its terrain
+sample count.
+
+### Solution
+
+Extract the NPC suffix formatter, read `s.heights`, and assert that a known count appears with no
+`undefined` text.
+
+### Result
+
+Fixed. Live and test profiler lines now expose the height sample count.
+
+## F-21 — The HTML remote feed still allocated records and computed gadget phases three times
+
+```yaml
+id: F-21
+title: The HTML remote feed still allocated records and computed gadget phases three times
+severity: high
+status: fixed
+kind: defect
+introduced_by: this-work
+runs: per-frame
+locations:
+  - file: base-game.html
+    line: 4287
+    symbol: remoteAudioFeed and remoteBodyFeed
+    role: persistent feed scratch records
+  - file: base-game.html
+    line: 4767
+    symbol: remote bodies loop
+    role: fills scratch and computes gadget phases once
+measured:
+  before: at least 4 fresh objects per non-gadget remote per frame from two feed literals and repeated phase results
+  after: 0 feed or phase objects per remote per frame after scratch initialization
+verified_by: inspection; the audio and body consumers read fields synchronously and retain only copied scalar/vector state
+mutation_tested: false
+```
+
+### Cause
+
+`F-03` stopped allocations inside interpolation but did not follow the sample into the page. The page
+made fresh audio/body argument objects and invoked `remoteGadgetPhases` three times for the same sample.
+
+### Effect
+
+Sixteen NPCs still produced steady per-frame garbage in the exact feed loop the audit scoped, so the
+original “allocation-free steady state” result was too broad.
+
+### Solution
+
+Reuse one audio record, one body record, and one gadget result/phase record across the synchronous
+loop. Compute gadget phases once and pass that result to both body and held-gadget presentation.
+
+### Result
+
+Fixed by inspection. Client frame and garbage-collector measurements remain part of the open `F-14`
+browser capture.

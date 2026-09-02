@@ -27,6 +27,7 @@ export const WINDOW_FIELD_KINDS = Object.freeze({
   surfaceHeights: { Array: Float32Array, sampling: 'bilinear' },
   moisture: { Array: Float32Array, sampling: 'bilinear' },
   biomeIds: { Array: Uint8Array, sampling: 'nearest' },
+  planWalk: { Array: Uint8Array, sampling: 'nearest' },
   // Derived per texel when a tile commits (flora-field.js), not built by the source. u8 channels
   // read back 0..255 on both sides; decodeCover turns that into 0..1.
   coverGrass: { Array: Uint8Array, sampling: 'bilinear' },
@@ -156,6 +157,8 @@ export function createClipmapWindow({ level, post, tileIntervals = CLIPMAP_WINDO
     get coverage() { return present.size / (tilesPerSide * tilesPerSide); },
     hasTile: (ix, iz) => present.has(tileKey(ix, iz)),
     desiredOrigin, recentre, missingTiles, tileRequest, commitTile, sample, tileInside,
+    // Call after an in-place derived-field write so CPU/GPU consumers see a new revision.
+    touch() { version++; },
     // Global post extent the window holds, for callers that need to know what is addressable.
     covers(x, z) { const gx = x / post, gz = z / post; return gx >= originPX && gx <= originPX + res - 1 && gz >= originPZ && gz <= originPZ + res - 1; },
     clear() { present.clear(); for (const arr of data.values()) arr.fill(0); version++; },

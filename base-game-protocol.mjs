@@ -8,7 +8,7 @@ import {
   sanitizeBaseGameBodyModel,
 } from './base-game-body-models.js';
 
-export const BASE_GAME_PROTOCOL_VERSION = 15;   // 15: a seventh slot, `launcher`, holding the rpg
+export const BASE_GAME_PROTOCOL_VERSION = 21;   // 21: the UGV's weapon station, trained and firing
 // Firing (phase 3): the tick's `fire` is consumed by the server, ammo and health are authoritative,
 // and snapshots carry one-shot `hits` / `deaths` events for feedback.
 export const BASE_GAME_LAG_COMP_MS = 100;             // rewind victims by the client interpolation delay
@@ -19,13 +19,13 @@ export const BASE_GAME_MAX_HEALTH = 100;
 // the resolved weapon id. Only ids in BASE_GAME_WEAPON_IDS are accepted; 'none' empties a slot.
 // Gadgets ride the weapon-id vocabulary so `weapon` on the wire can say what is in the hands; they
 // are not weapons.js entries (getWeapon returns undefined for them) and only the gadget slot holds one.
-export const BASE_GAME_GADGET_IDS = Object.freeze(['none', 'quad', 'uav']);
-export const BASE_GAME_WEAPON_IDS = Object.freeze(['none', 'm1911', 'five_seven', 'm24', 'cz_805_bren', 'knife', 'grenade', 'rpg', 'quad', 'uav']);
-export const isBaseGameGadget = (id) => id === 'quad' || id === 'uav';
+export const BASE_GAME_GADGET_IDS = Object.freeze(['none', 'quad', 'uav', 'ugv']);
+export const BASE_GAME_WEAPON_IDS = Object.freeze(['none', 'm1911', 'five_seven', 'm24', 'cz_805_bren', 'knife', 'grenade', 'rpg', 'quad', 'uav', 'ugv']);
+export const isBaseGameGadget = (id) => id === 'quad' || id === 'uav' || id === 'ugv';
 // A player carries this many of each drone per life; a throw spends one, and the next has to be
 // brought out ("reloaded") before it can be thrown. The throw itself is a wind-up: the drone leaves
 // the hands THROW_TICKS after the press, and the arm action runs THROW_ACTION_TICKS.
-export const BASE_GAME_GADGET_STOCK = Object.freeze({ quad: 2, uav: 2 });
+export const BASE_GAME_GADGET_STOCK = Object.freeze({ quad: 2, uav: 2, ugv: 1 });
 export const BASE_GAME_GADGET_THROW_TICKS = 42;          // 0.35 s at 120 Hz: release
 export const BASE_GAME_GADGET_THROW_ACTION_TICKS = 84;   // 0.7 s: the whole arm motion
 export const BASE_GAME_GADGET_RELOAD_TICKS = 240;        // 2 s to bring the next one out
@@ -118,6 +118,12 @@ export const BASE_GAME_SHARED_KEYS = Object.freeze([
   'waveDispersion',
   'waveSpeed',
   'waveSeed',
+  // Deterministic world trails: every peer derives the same sites and routes from these inputs.
+  'trailsEnabled',
+  'trailSeed',
+  'trailSpacing',
+  'trailWidth',
+  'trailMaxGrade',
   // weather: what the weather IS, as opposed to how a client chooses to draw it. The lid and the
   // master change how far and how well everyone can see, and the decks are the sky's identity, so
   // they are the owner's to set. The response curves (fog per unit, sun dimming), the drop budget
@@ -174,6 +180,10 @@ const NUMBER_LIMITS = Object.freeze({
   waveSpreadDeg: [0, 180],
   waveSpeed: [0, 100],
   waveSeed: [0, 1e9],
+  trailSeed: [0, 1e9],
+  trailSpacing: [120, 1920],
+  trailWidth: [1, 12],
+  trailMaxGrade: [0.05, 1],
   todHour: [0, 24],
   todLatitude: [-90, 90],
   todDayOfYear: [1, 365],
@@ -209,7 +219,7 @@ const NUMBER_LIMITS = Object.freeze({
 });
 
 const STRING_VALUES = Object.freeze({ primaryBody: ['sun', 'moon'] });
-const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying', 'waveDispersion', 'waterEnabled', 'lightningEnabled', 'unlimitedAmmo', 'skyMilkyWay', 'npcRespawn', 'npcFriendlyFire']);
+const BOOLEAN_KEYS = new Set(['todEnabled', 'todPlaying', 'waveDispersion', 'waterEnabled', 'lightningEnabled', 'unlimitedAmmo', 'skyMilkyWay', 'npcRespawn', 'npcFriendlyFire', 'trailsEnabled']);
 const MAX_ABS_YAW = 1e6;
 const MAX_ABS_COORDINATE = 1e9;
 const MAX_ABS_VELOCITY = 1e4;
@@ -241,6 +251,7 @@ export function sanitizeBaseGameWorldPatch(input) {
   if (clean.todHour === 24) clean.todHour = 0;
   if (clean.waveCount != null) clean.waveCount = Math.round(clean.waveCount);
   if (clean.waveSeed != null) clean.waveSeed = Math.round(clean.waveSeed);
+  if (clean.trailSeed != null) clean.trailSeed = Math.round(clean.trailSeed);
   for (const key of ['skySeed', 'skyPlanetCount', 'skyMoonCount']) if (clean[key] != null) clean[key] = Math.round(clean[key]);
   return clean;
 }
@@ -409,7 +420,7 @@ export function sanitizeBaseGameTickInput(input) {
 }
 
 // ─── drones ──────────────────────────────────────────────────────────────────
-export const BASE_GAME_DRONE_KINDS = Object.freeze(['quad', 'uav']);
+export const BASE_GAME_DRONE_KINDS = Object.freeze(['quad', 'uav', 'sentinel']);
 export const BASE_GAME_DRONE_MODES = Object.freeze(['auto', 'manual']);
 export const BASE_GAME_DRONE_STATES = Object.freeze(['launch', 'follow', 'goto', 'hold', 'return', 'manual', 'deadstick']);
 const clamp1 = (x) => Math.max(-1, Math.min(1, Number(x) || 0));
@@ -427,6 +438,10 @@ export function sanitizeBaseGameDroneInput(input) {
     flap: input.flap === true,
     send: finiteVec3Lim(input.send, MAX_ABS_COORDINATE) ? [...input.send] : null,
     recall: input.recall === true,
+    // Where the sensor is looking, and whether the trigger went down this tick. The aim keeps
+    // arriving after launch, because a missile already in flight follows it.
+    aim: finiteVec3Lim(input.aim, MAX_ABS_COORDINATE) ? [...input.aim] : null,
+    fire: input.fire === true,
   };
 }
 
@@ -445,10 +460,81 @@ export function sanitizeBaseGameDroneState(s) {
     p: [...s.p], v: [...v],
     yaw: ang(s.yaw), pitch: ang(s.pitch), bank: ang(s.bank),
     hp: Number.isFinite(s.hp) ? Math.max(0, s.hp) : 0,
+    agm: Number.isFinite(s.agm) ? Math.max(0, Math.round(s.agm)) : null,   // rounds left on the rack
     mode: BASE_GAME_DRONE_MODES.includes(s.mode) ? s.mode : 'auto',
     state: BASE_GAME_DRONE_STATES.includes(s.state) ? s.state : 'follow',
     target: finiteVec3Lim(s.target, MAX_ABS_COORDINATE) ? [...s.target] : null,
     q: Array.isArray(s.q) && s.q.length === 4 && s.q.every(Number.isFinite) && Math.abs(Math.hypot(...s.q) - 1) < 1e-3 ? [...s.q] : null,
+  };
+}
+
+// ─── ground vehicles ────────────────────────────────────────────────────────
+export const BASE_GAME_VEHICLE_KINDS = Object.freeze(['ugv', 'buggy']);
+export const BASE_GAME_VEHICLE_MODES = Object.freeze(['auto', 'manual', 'parked']);
+export const BASE_GAME_VEHICLE_STATES = Object.freeze(['deploy', 'follow', 'goto', 'hold', 'return', 'manual', 'parked', 'stuck', 'drowned', 'wreck']);
+
+export function sanitizeBaseGameVehicleState(s) {
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+  if (typeof s.id !== 'string' || !s.id || s.id.length > 32) return null;
+  if (!BASE_GAME_VEHICLE_KINDS.includes(s.kind) || !finiteVec3Lim(s.p, MAX_ABS_COORDINATE)) return null;
+  const v = s.v ?? [0, 0, 0];
+  if (!finiteVec3Lim(v, MAX_ABS_VELOCITY)) return null;
+  const ang = x => Number.isFinite(x) ? wrapPi(x) : 0;
+  return {
+    id: s.id, kind: s.kind,
+    owner: typeof s.owner === 'string' ? s.owner : null,
+    team: Number.isInteger(s.team) ? s.team : 0,
+    driver: typeof s.driver === 'string' && s.driver.length <= 32 ? s.driver : null,
+    p: [...s.p], v: [...v],
+    yaw: ang(s.yaw), pitch: ang(s.pitch), roll: ang(s.roll),
+    steer: Number.isFinite(s.steer) ? clamp1(s.steer) : 0,
+    hp: Number.isFinite(s.hp) ? Math.max(0, s.hp) : 0,
+    mode: BASE_GAME_VEHICLE_MODES.includes(s.mode) ? s.mode : 'parked',
+    state: BASE_GAME_VEHICLE_STATES.includes(s.state) ? s.state : 'parked',
+    target: finiteVec3Lim(s.target, MAX_ABS_COORDINATE) ? [...s.target] : null,
+    // Where the weapon station is trained. Null on a vehicle that has none, so a remote can tell
+    // "no turret" from "turret at zero" and does not draw an unarmed hull pointing straight ahead.
+    turretYaw: Number.isFinite(s.turretYaw) ? wrapPi(s.turretYaw) : null,
+    turretPitch: Number.isFinite(s.turretPitch) ? wrapPi(s.turretPitch) : null,
+    turretAmmo: Number.isFinite(s.turretAmmo) ? Math.max(0, Math.round(s.turretAmmo)) : null,
+  };
+}
+
+export function sanitizeBaseGameVehicleSeatState(s) {
+  const state = sanitizeBaseGameVehicleState(s);
+  if (!state || !Array.isArray(s.body) || s.body.length !== 9 || !s.body.every(Number.isFinite)) return null;
+  const [x, z, yaw, vx, vz, yawRate, steering, y, airV] = s.body;
+  if (Math.abs(x) > MAX_ABS_COORDINATE || Math.abs(z) > MAX_ABS_COORDINATE || Math.abs(y) > MAX_ABS_COORDINATE) return null;
+  if ([vx, vz, airV].some(value => Math.abs(value) > MAX_ABS_VELOCITY)) return null;
+  return { ...state, body: [x, z, wrapPi(yaw), vx, vz, yawRate, steering, y, airV] };
+}
+
+export const BASE_GAME_VEHICLE_ACTIONS = Object.freeze(['spawn', 'clear']);
+export function sanitizeBaseGameVehicleRequest(msg) {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg) || !BASE_GAME_VEHICLE_ACTIONS.includes(msg.action)) return null;
+  const kind = BASE_GAME_VEHICLE_KINDS.includes(msg.kind) ? msg.kind : null;
+  if (msg.action === 'spawn' && !kind) return null;
+  const at = finiteVec3(msg.at, MAX_ABS_COORDINATE) ? [...msg.at] : null;
+  return { action: msg.action, kind, at, aimed: msg.aimed === true };
+}
+
+// `base:drone` from the room owner: a world drone (never thrown from a stock) spawned into orbit
+// over the sender at a preset height and ring, or cleared. `alt` and `radius` override the preset.
+export const BASE_GAME_WORLD_DRONE_KINDS = Object.freeze(['sentinel']);
+export const BASE_GAME_DRONE_REQUEST_ACTIONS = Object.freeze(['spawn', 'clear']);
+export const BASE_GAME_SENTINEL_PRESETS = Object.freeze({ low: { alt: 150, radius: 400 }, high: { alt: 1500, radius: 900 } });
+export const BASE_GAME_SENTINEL_LIMITS = Object.freeze({ alt: [30, 5000], radius: [100, 5000] });
+export const BASE_GAME_WORLD_DRONE_CAP = 4;   // per room
+export function sanitizeBaseGameDroneRequest(msg) {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg) || !BASE_GAME_DRONE_REQUEST_ACTIONS.includes(msg.action)) return null;
+  const kind = BASE_GAME_WORLD_DRONE_KINDS.includes(msg.kind) ? msg.kind : null;
+  if (msg.action === 'spawn' && !kind) return null;
+  const preset = Object.hasOwn(BASE_GAME_SENTINEL_PRESETS, msg.preset) ? msg.preset : 'low';
+  const clampTo = (v, [lo, hi], fallback) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback);
+  return {
+    action: msg.action, kind, preset,
+    alt: clampTo(msg.alt, BASE_GAME_SENTINEL_LIMITS.alt, BASE_GAME_SENTINEL_PRESETS[preset].alt),
+    radius: clampTo(msg.radius, BASE_GAME_SENTINEL_LIMITS.radius, BASE_GAME_SENTINEL_PRESETS[preset].radius),
   };
 }
 
@@ -609,6 +695,7 @@ export function sanitizeBaseGamePlayerState(state) {
     hitProfile: hitProfileForBodyModel(bodyModel),
     poseEpoch: nonNegativeInteger(state.poseEpoch) ? state.poseEpoch : 0,
     controlling: typeof state.controlling === 'string' && state.controlling.length <= 32 ? state.controlling : null,   // the drone this body is flying
+    vehicle: state.vehicle == null ? null : sanitizeBaseGameVehicleSeatState(state.vehicle),
     gadgets: sanitizeGadgetStock(state.gadgets),
     gadgetReady: state.gadgetReady !== false,   // one is in the hands (or will be, once the reload action ends)
     team: Number.isInteger(state.team) && state.team >= 0 ? state.team : BASE_GAME_TEAMS.friendly,

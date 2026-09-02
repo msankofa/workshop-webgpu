@@ -51,10 +51,11 @@ ok(coverageKeepRef(3, 4, { ...GRASS_LOOK_DEFAULTS, coverage: false }) === 1, 'co
 {
   const look = createGrassLook();
   ok(look.u.windDir.value === 0 && look.u.curl.value === 0 && look.u.coverage.value === 0, 'every look toggle starts off');
-  look.set({ windDir: true, windAngle: 90, coverageSeedX: 4, curlAmount: 1.3, bogus: 9 });
+  ok(look.u.faceNormalMix.value > 0 && look.u.faceNormalMix.value < 1, 'straight blades mix world-up and face normals');
+  look.set({ windDir: true, windAngle: 90, coverageSeedX: 4, curlAmount: 1.3, faceNormalMix: 0.8, bogus: 9 });
   ok(look.u.windDir.value === 1, 'set(windDir:true) flips the uniform');
   ok(near(look.u.windVec.value.x, 0, 1e-9) && near(look.u.windVec.value.y, 1), 'windAngle 90 points the wind along +z');
-  ok(look.u.coverageSeed.value.x === 4 && look.u.curlAmount.value === 1.3, 'seed and amounts land in their uniforms');
+  ok(look.u.coverageSeed.value.x === 4 && look.u.curlAmount.value === 1.3 && look.u.faceNormalMix.value === 0.8, 'seed and amounts land in their uniforms');
   ok(!('bogus' in look.get()), 'unknown keys are ignored');
   const soil = createSoilShade();
   ok(soil.u.cracks.value === 0 && soil.u.moisture.value === 0, 'soil toggles start off');

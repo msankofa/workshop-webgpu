@@ -57,10 +57,11 @@ function createPaletteState({ createTree, params, masterSeed, variantsPerSpecies
   // its entries are full trees.js opts objects too, so nothing else below needs to change.
   const species = params.speciesTable || buildSpecies(params, rngFrom(masterSeed));
   const variants = [];
-  return { gen, species, variants, params, masterSeed, variantsPerSpecies, texSet };
+  return { gen, species, variants, params, masterSeed, variantsPerSpecies, texSet, bakeMs: 0 };
 }
 
 function bakeVariant(state, s, v) {
+  const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const { gen, species, variants, params, masterSeed, texSet } = state;
   const sp = species[s];
   const leafOpts = leafOptsFor(sp, params, texSet, s);
@@ -87,7 +88,7 @@ function bakeVariant(state, s, v) {
   gen.regenerateLeaves(coarseLeafOpts);
   const leavesCoarseGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
 
-  variants.push({
+  const variant = {
     speciesIdx: s,
     variant: v,
     branches: branchesGeo,
@@ -96,7 +97,11 @@ function bakeVariant(state, s, v) {
     leaves: leavesGeo,
     shadow: shadowGeo,
     leavesCoarse: leavesCoarseGeo,
-  });
+  };
+  // Keep species-major slot order even when the async baker visits one variant from every family.
+  variants[s * state.variantsPerSpecies + v] = variant;
+  state.bakeMs += (typeof performance !== 'undefined' ? performance.now() : Date.now()) - started;
+  return variant;
 }
 
 function finishPalette(state) {
@@ -104,6 +109,7 @@ function finishPalette(state) {
     variants: state.variants,
     variantsPerSpecies: state.variantsPerSpecies,
     speciesCount: state.species.length,
+    bakeMs: state.bakeMs,
   };
 }
 
@@ -121,17 +127,33 @@ export function createForestPalette(opts) {
 export async function createForestPaletteAsync(opts, {
   yieldFn = async () => {},
   shouldContinue = () => true,
+  onFamilyWave = null,
 } = {}) {
   const state = createPaletteState(opts);
   const total = state.species.length * state.variantsPerSpecies;
   let built = 0;
-  for (let s = 0; s < state.species.length; s++) {
-    for (let v = 0; v < state.variantsPerSpecies; v++) {
+  // Breadth-first across species: each wave contains the same variant number from every family.
+  // A host can publish that complete wave, avoiding a temporary forest made from only one family.
+  for (let v = 0; v < state.variantsPerSpecies; v++) {
+    const wave = [];
+    for (let s = 0; s < state.species.length; s++) {
       if (!shouldContinue()) return null;
-      bakeVariant(state, s, v);
+      wave.push(bakeVariant(state, s, v));
       built++;
-      if (built < total) await yieldFn();
+      if (s + 1 < state.species.length) await yieldFn();
     }
+    if (!shouldContinue()) return null;
+    if (onFamilyWave) {
+      const keepGoing = await onFamilyWave({
+        variant: v,
+        variants: wave,
+        palette: { ...finishPalette(state), variants: [...state.variants] },
+        built,
+        total,
+      });
+      if (keepGoing === false || !shouldContinue()) return null;
+    }
+    if (built < total) await yieldFn();
   }
   return shouldContinue() ? finishPalette(state) : null;
 }

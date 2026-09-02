@@ -183,5 +183,24 @@ section('the frontmatter rollups agree with the findings');
   }
 }
 
+section('every machine-readable review has honest rollups');
+{
+  const reviewDir = 'docs/superpowers/reviews';
+  for (const name of fs.readdirSync(reviewDir).filter(name => name.endsWith('-audit.md')).sort()) {
+    const parsed = parseAuditDoc(fs.readFileSync(`${reviewDir}/${name}`, 'utf8'));
+    if (parsed.meta.findings === undefined) continue; // legacy prose audits predate this contract
+    const tally = key => parsed.findings.reduce((a, f) => (a[f[key]] = (a[f[key]] || 0) + 1, a), {});
+    check(`${name}: findings count`, parsed.meta.findings === parsed.findings.length,
+      `says ${parsed.meta.findings}, is ${parsed.findings.length}`);
+    for (const [field, key] of [['severity_counts', 'severity'], ['status_counts', 'status'], ['kind_counts', 'kind']]) {
+      const declared = parsed.meta[field] || {}, actual = tally(key);
+      const keys = new Set([...Object.keys(declared), ...Object.keys(actual)]);
+      const wrong = [...keys].filter(k => (declared[k] || 0) !== (actual[k] || 0));
+      check(`${name}: ${field}`, wrong.length === 0,
+        wrong.map(k => `${k}: says ${declared[k] || 0}, is ${actual[k] || 0}`).join('; '));
+    }
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

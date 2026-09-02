@@ -76,6 +76,7 @@ ${R}{
   color: var(--wui-text);
   font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
   user-select: none; z-index: 20; overflow: hidden;
+  contain: layout paint style;
   box-shadow: -10px 0 28px rgba(0,0,0,.10);
 }
 ${R} .panel-head{
@@ -100,6 +101,11 @@ ${R} .panel-body{
   padding: 10px; box-sizing: border-box;
   scrollbar-color: #c4c4c4 transparent;
 }
+/* A single open Base Game section can contain dozens of controls. Let the browser skip individual
+   rows below the scrollport instead of treating that entire long section as one visible unit. */
+${R} .control, ${R} .row, ${R} .note, ${R} .state-status, ${R} .capture-status{
+  content-visibility: auto; contain-intrinsic-size: auto 36px;
+}
 ${R} .sec{
   margin-bottom: 7px; overflow: hidden;
   border: 1px solid var(--wui-line); border-radius: 7px;
@@ -118,16 +124,15 @@ ${R} .sec-head{
 ${R} .sec-head:hover{ color: var(--wui-hover-text); background: var(--wui-hover); }
 ${R} .sec-head .caret{ color: var(--wui-accent); font-size: 10px; transition: transform .2s cubic-bezier(.2,.8,.2,1); }
 ${R} .sec.collapsed .caret{ transform: rotate(-90deg); }
-/* Collapse animates a max-height rather than toggling display, so the section can ease shut. */
+/* Hidden controls must leave the layout tree. Base Game has hundreds of them; max-height:0 merely
+   clipped their paint while the browser continued laying out every slider behind the live canvas. */
 ${R} .sec-body{
-  max-height: 5000px; overflow: hidden; opacity: 1; padding: 8px 10px 10px;
-  transition: max-height .3s cubic-bezier(.2,.8,.2,1), opacity .18s ease, padding .24s ease;
+  overflow: hidden; padding: 8px 10px 10px;
+  content-visibility: auto; contain-intrinsic-size: auto 320px;
 }
 ${R} .sec.collapsed .sec-head{ border-bottom: 0; }
-${R} .sec.collapsed .sec-body{ max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; }
-/* Nested sections: a section whose body holds sections is a group, so it needs the room for them
-   (5000px is about 120 controls) and its children read as subheads rather than as more cards. */
-${R} .sec-body:has(.sec){ max-height: 40000px; }
+${R} .sec.collapsed .sec-body{ display: none; }
+/* Nested sections read as subheads rather than as more cards. */
 ${R} .sec .sec{ margin: 5px 0; border-radius: 5px; box-shadow: none; }
 ${R} .sec .sec-head{ min-height: 30px; padding: 6px 9px; font-size: 12px; font-weight: 600; background: transparent; }
 ${R} .sec .sec:not(.collapsed):hover{ transform: none; box-shadow: none; }

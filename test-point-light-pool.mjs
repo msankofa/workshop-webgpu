@@ -57,6 +57,17 @@ pool.sync([], identity);
 pool.sync([ent('e', 10)], (p, out) => { out[0] = p[0] - 100; out[1] = p[1]; out[2] = p[2]; return out; });
 assert.ok(scene.children.some(l => l.position.x === -90), 'toLocal ran');
 
+// Decay: per entity when it names one, the pool's own value when it does not.
+const decayPool = createPointLightPool({ THREE, scene, count: 2, decay: 2 });
+decayPool.sync([{ ...ent('f', 1), decay: 0.4 }, ent('g', 2)], identity);
+const steep = scene.children.find(l => l.position.x === 1);
+const flat = scene.children.find(l => l.position.x === 2);
+assert.equal(steep.decay, 0.4, 'entity decay wins');
+assert.equal(flat.decay, 2, 'no decay falls back to the pool default');
+decayPool.sync([{ ...ent('f', 1), decay: 0 }], identity);
+assert.equal(steep.decay, 0, 'decay 0 is a value, not a missing field');
+decayPool.dispose();
+
 // dispose removes and disposes the residents.
 pool.dispose();
 assert.equal(scene.children.length, 0);

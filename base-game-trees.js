@@ -9,6 +9,7 @@
 
 import { createFloraChunks } from './flora-chunks.js';
 import { placementRecords } from './forest-placement.js';
+import { speciesTableForSelection } from './base-game-tree-species.js';
 
 export const BASE_GAME_TREE_DEFAULTS = Object.freeze({
   treesEnabled: false,
@@ -23,6 +24,9 @@ export const BASE_GAME_TREE_DEFAULTS = Object.freeze({
   treeClusterSize: 5,
   treeClusterSpread: 0.14,
   treeSpecies: 3,
+  // Empty keeps the legacy procedural count path for reusable/headless callers. Base Game's page
+  // supplies an explicit stable-id selection from base-game-tree-species.js.
+  treeSpeciesSelection: '',
   treeDiversity: 0.5,
   treeGeneralization: 0.5,
   treeMaxSize: 0.55,
@@ -39,7 +43,7 @@ export const BASE_GAME_TREE_DEFAULTS = Object.freeze({
 // each peer's own business.
 export const TREE_IDENTITY_KEYS = Object.freeze([
   'treesPerHectare', 'treeSeedOffset', 'treeChunkSize', 'treePlacement', 'treeClusterSize',
-  'treeClusterSpread', 'treeSpecies', 'treeDiversity', 'treeGeneralization', 'treeMaxSize',
+  'treeClusterSpread', 'treeSpecies', 'treeSpeciesSelection', 'treeDiversity', 'treeGeneralization', 'treeMaxSize',
   'treeSizeVar', 'treeSkew', 'treeShoreMargin',
 ]);
 
@@ -77,10 +81,11 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
   let releaseFields = null;
   let enabled = false;
   let masterSeed = treeSeedFor(terrain.source?.descriptor, cfg.treeSeedOffset);
+  let selectedSpeciesTable = speciesTableForSelection(cfg.treeSpeciesSelection, { maxSize: cfg.treeMaxSize });
 
   const stats = {
     enabled: false, resident: 0, queued: 0, deferred: 0, trees: 0,
-    lastChunkTrees: 0, lastChunkMs: 0, placeMs: 0, chunkSize: cfg.treeChunkSize,
+    lastChunkTrees: 0, lastChunkMs: 0, placeMs: 0, shoreDropped: 0, chunkSize: cfg.treeChunkSize,
     radiusChunks: 0, expectedPerChunk: 0, seed: masterSeed,
     // What the density slider ASKED for across the resident window, against what the cover gate
     // actually let stand. On the analytic test terrain the gate thins by roughly 86%, so a slider
@@ -143,7 +148,8 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
       placement: cfg.treePlacement,
       clusterSize: cfg.treeClusterSize,
       clusterSpread: cfg.treeClusterSpread,
-      species: cfg.treeSpecies,
+      species: selectedSpeciesTable?.length ?? cfg.treeSpecies,
+      speciesTable: selectedSpeciesTable ?? undefined,
       diversity: cfg.treeDiversity,
       generalization: cfg.treeGeneralization,
       maxSize: cfg.treeMaxSize,
@@ -182,14 +188,20 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
     const params = placementParams();
     assertPlacementParams(params);
     const recs = placementRecords([chunk], params, placementHeightAt);
-    // Placement Y, carried on the record so a consumer never has to guess which height it got.
-    // The renderer may refine it from the fine window; it may never redraw the RNG.
-    for (const r of recs) r.y = placementHeightAt(r.x, r.z) + cfg.treeVerticalOffset;
-    records.set(chunk.key, recs);
-    onChunkCb?.(chunk.key, recs);
-    stats.lastChunkTrees = recs.length;
+    // `ground` is the drawn surface (the source, not the 8 m placement posts, which sit up to 4 m
+    // off it on a slope), asked once here so the renderer never asks per tree per rebuild.
+    const groundAt = typeof terrain.groundHeight === 'function' ? terrain.groundHeight : placementHeightAt;
+    for (const r of recs) { r.ground = groundAt(r.x, r.z); r.y = r.ground + cfg.treeVerticalOffset; }
+    // The shore gate ran on the posts; run it again on the real surface, or a slope the posts read
+    // as dry roots a trunk in the sea. Deterministic, so every peer drops the same trees.
+    const shore = (terrain.seaLevel ?? -Infinity) + cfg.treeShoreMargin;
+    const kept = recs.filter(r => r.ground >= shore);
+    stats.shoreDropped += recs.length - kept.length;
+    records.set(chunk.key, kept);
+    onChunkCb?.(chunk.key, kept);
+    stats.lastChunkTrees = kept.length;
     stats.lastChunkMs = now() - t0;
-    stats.trees += recs.length;
+    stats.trees += kept.length;
   }
 
   function clearChunk(key) {
@@ -274,6 +286,9 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
         cfg[key] = value;
         if (TREE_IDENTITY_KEYS.includes(key)) identityChanged = true;
         if (key === 'treeSeedOffset') masterSeed = treeSeedFor(terrain.source?.descriptor, value);
+        if (key === 'treeSpeciesSelection' || key === 'treeMaxSize') {
+          selectedSpeciesTable = speciesTableForSelection(cfg.treeSpeciesSelection, { maxSize: cfg.treeMaxSize });
+        }
       }
       if (cfg.treeChunkSize !== chunks.chunkSize) {
         chunks.clear(); chunks.drain({ drain: true });

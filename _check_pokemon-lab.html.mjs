@@ -6,7 +6,6 @@
 // back in as the place the work is kept.
 
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
 
 const PAGE = 'pokemon-lab.html';
 const html = fs.readFileSync(PAGE, 'utf8');
@@ -31,9 +30,10 @@ check('there is exactly one module script, and it is not a stub', () => {
 });
 
 check('the module parses as JavaScript', () => {
-  fs.writeFileSync('.check-pokemon-lab.tmp.mjs', body);
-  try { execFileSync(process.execPath, ['--check', '.check-pokemon-lab.tmp.mjs'], { stdio: 'pipe' }); }
-  finally { fs.unlinkSync('.check-pokemon-lab.tmp.mjs'); }
+  // Strip only the static imports, then parse the remaining module body inside an async function so its
+  // top-level awaits stay legal. This checks syntax without writing a temp file or spawning another Node.
+  const withoutImports = body.replace(/^import[\s\S]*?;\s*$/gm, '');
+  new Function(`return async function () {\n${withoutImports}\n}`);
 });
 
 check('every element the code reaches for exists in the markup', () => {
@@ -86,9 +86,14 @@ check('every name it imports is actually exported', () => {
   }
 });
 
-check('it reads the rig through pokemon-rig.js and not the old mapper', () => {
+check('authoring reads pokemon-rig.js; the old mapper is isolated to movement comparison', () => {
   assert(/from '\.\/pokemon-rig\.js'/.test(code), 'expected pokemon-rig.js');
-  assert(!/stadium-rig-map/.test(code), 'this page must not use the old mapper — guesses live elsewhere now');
+  const comparison = code.match(/function movementMapFor\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(comparison.includes("source === 'lab'") && /mapStadiumRigFromGLB\(/.test(comparison),
+    'the legacy mapper may exist only as the explicit Guessed map comparison route');
+  const outside = code.replace(comparison, '');
+  assert((outside.match(/mapStadiumRigFromGLB\(/g) || []).length === 0,
+    'the old semantic guess escaped the controlled movement comparison');
 });
 
 console.log('\n--- where the work goes ---');
@@ -434,7 +439,7 @@ check('a box can be abandoned, and does not need the pointer to stay on the canv
 check('the classes offered are the module\'s own, not a second list to drift from it', () => {
   // A hand-written <option> list is a vocabulary the file does not share. Both selects are built from the
   // exported arrays, so adding a locomotion class in one place adds it everywhere.
-  const build = code.match(/for \(const \[id, values, blank\][\s\S]*?\n\}/)?.[0] ?? '';
+  const build = code.match(/for \(const \[id, values, blank, labels\][\s\S]*?\n\}/)?.[0] ?? '';
   assert(build.includes('LOCOMOTION') && build.includes('POSTURES'), 'the selects must be built from the module');
   for (const name of ['APPENDAGE_TYPES', 'SIDES']) {
     assert(new RegExp(`dropdown\\(${name},`).test(code), `the limb ${name} dropdown must come from the module`);
@@ -450,11 +455,22 @@ check('every edit to a part goes through one function, and a no-op is not an edi
     'pressing a part button that changes nothing must not fill the undo stack');
   assert(/commit\(putAnnotation/.test(fn), 'a part edit must reach the file through the history');
   // Any other route to the parts would be a second place to forget the history.
+  const merge = code.match(/function applySuggestedRowTo\([\s\S]*?\n\}\n\nfunction applySuggestedRow\(/)?.[0] ?? '';
+  const mergeAt = code.indexOf(merge);
+  assert(merge.length > 500, 'the suggestion merge helper was not found');
+  const applyOne = code.match(/function applySuggestedRow\([\s\S]*?\n\}/)?.[0] ?? '';
+  const applyAll = code.match(/function applyAllSuggestions\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/editParts\(/.test(applyOne) && /applySuggestedRowTo\(/.test(applyOne),
+    'an individual suggestion must use the same undoable edit path');
+  assert(/editParts\(/.test(applyAll) && /applySuggestedRowTo\(/.test(applyAll),
+    'bulk suggestions must be one undoable edit');
   const setters = [...code.matchAll(/(setRoot|setSpine|setHead|setContacts|toggleContact|setLocomotion)\(/g)];
   assert(setters.length >= 6, `only ${setters.length} part setters found, so this regex missed`);
   for (const m of setters) {
     const line = code.slice(code.lastIndexOf('\n', m.index) + 1, code.indexOf('\n', m.index));
-    assert(line.includes('editParts('), `${m[1]} is called outside editParts: ${line.trim()}`);
+    const inSuggestionMerge = m.index >= mergeAt && m.index < mergeAt + merge.length;
+    assert(line.includes('editParts(') || inSuggestionMerge,
+      `${m[1]} is called outside editParts or its Apply-only merge: ${line.trim()}`);
   }
 });
 
@@ -535,9 +551,11 @@ check('a bone is coloured by the part it is in', () => {
   }
   // The lookup is built on an edit and read per frame, not resolved per bone per frame.
   const paint = code.match(/function paintSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/skel\.partColor\[i\] \|\| JOINT_COLOR/.test(paint), 'the frame must read a prepared colour');
+  assert(/skel\.partColor\[i\] \|\| skel\.suggestedColor\[i\] \|\| JOINT_COLOR/.test(paint),
+    'the frame must prefer prepared authored colour, then the review-only suggestion colour');
   const clear = code.match(/function clearSkeleton\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/skel\.partColor = \[\]/.test(clear) && /skel\.contact = \[\]/.test(clear),
+  assert(/skel\.partColor = \[\]/.test(clear) && /skel\.suggestedColor = \[\]/.test(clear)
+    && /skel\.contact = \[\]/.test(clear),
     'bone keys repeat across species, so these go with the skeleton');
 });
 
@@ -923,11 +941,14 @@ check('the UI text is in full sentences, not fragments', () => {
   }
 });
 
-check('the panel is controls, not an essay', () => {
-  // Explanation belongs on hover. Paragraphs in the panel are read once, in the way forever after, and
-  // push the controls that matter off the bottom of the scroll.
-  const paras = [...markup.matchAll(/<p class="hint">([\s\S]*?)<\/p>/g)];
-  assert(paras.length === 0, `${paras.length} hint paragraphs are still in the panel`);
+check('essential workflow guidance is visible and concise', () => {
+  // Required-vs-optional information cannot live only in hover text. Keep the visible guidance short
+  // enough to scan, and pin the distinction that prevents unassigned decoration reading as unfinished work.
+  const guides = [...markup.matchAll(/<div class="guide">([\s\S]*?)<\/div>/g)]
+    .map(m => m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
+  assert(guides.length >= 4, `only ${guides.length} visible workflow guides`);
+  assert(guides.some(x => /not a checklist/i.test(x)), 'unassigned bones must say visibly that they are optional');
+  for (const text of guides) assert(text.split(' ').length <= 24, `visible guidance is too long: "${text}"`);
   for (const { kind, text } of tips) {
     const words = text.split(' ').length;
     const cap = kind === 'tip' ? 22 : 45;
@@ -943,7 +964,7 @@ check('hover text is one mechanism, not two', () => {
   const inScript = [...code.matchAll(/\.title\s*=/g)];
   assert(inScript.length === 0, `${inScript.length} titles are still set from script`);
   assert(/data-more/.test(markup), 'nothing offers the longer text');
-  assert(/Ctrl for more/.test(html), 'the longer text must be discoverable, or it does not exist');
+  assert(/Hold Ctrl for details/.test(html), 'the longer text must be discoverable, or it does not exist');
 });
 
 check('the hover text a control gets from script is there before it is clicked', () => {
@@ -984,43 +1005,145 @@ check('resize() only reads things declared above it', () => {
   }
 });
 
-check('the canvas box can shrink, so the resize observer settles', () => {
-  // A grid item defaults to min-width/min-height: auto and refuses to shrink below its content. The
-  // canvas is 100% of #stage, so without both minimums the canvas size feeds the track size which feeds
-  // the canvas size, and the browser reports "ResizeObserver loop completed with undelivered
-  // notifications". min-width was always here; min-height became necessary when the tab strip gave #app
-  // a second row.
+check('the panel is the shared workshop look, not a private one', () => {
+  // The environment viewer, the bot viewer, base-game and the aircraft studio all dress their panel with
+  // workshop-panel-theme.js, which also reads the palette that viewer's Theme tab saves. A page that
+  // styles its own panel looks like a different product and ignores a theme the user already picked.
+  assert(/from '\.\/workshop-panel-theme\.js'/.test(code), 'the panel theme module must be imported');
+  assert(/installPanelTheme\('#ctrl'\)/.test(code), 'the theme must be installed on the panel root');
+  assert(/createSection\(/.test(code), 'sections must come from the shared idiom, not hand-built divs');
+  assert(/setAllSectionsCollapsed\(/.test(code), 'expand-all and collapse-all must use the shared helper');
+  // The rules the theme owns must not be re-declared here, or the two fight and the theme loses.
   const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
-  const rule = css.split('}').find(r => /#stage\s*\{/.test(r + '}')) ?? '';
-  assert(/min-width:\s*0/.test(rule), '#stage must be allowed to shrink horizontally');
-  assert(/min-height:\s*0/.test(rule), '#stage must be allowed to shrink vertically');
-  // And the handler must not re-write a size that has not changed, which is the other half of the loop.
-  const fn = code.match(/function resize\(\)[\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/lastW|lastH/.test(fn), 'resize() must skip when the size is unchanged');
+  for (const owned of ['.sec-head', '.sec-body', '.panel-head', '.panel-body']) {
+    assert(!css.includes(`#ctrl ${owned} {`), `${owned} belongs to workshop-panel-theme.js`);
+  }
 });
 
-check('the side columns collapse, and the map folds them on its way in', () => {
-  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
-  // Zero tracks, not narrow ones: the buttons that bring a column back live in the tab strip.
-  assert(/#app\.no-left\s*\{[^}]*grid-template-columns:\s*0\s/.test(css), 'no-left must zero the first track');
-  assert(/#app\.no-right\s*\{[^}]*grid-template-columns:[^}]*\s0\s*;/.test(css), 'no-right must zero the last track');
-  assert(/#app\.no-left\s+#dexCol/.test(css) && /#app\.no-right\s+#side/.test(css),
-    'a collapsed column must be taken out of the layout, not just squeezed to nothing');
-
-  const fn = code.match(/function setTab\([\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/panesBeforeMap = \{ \.\.\.panes \}/.test(fn), 'entering the map must remember the column state');
-  assert(/panes\.left = panes\.right = false/.test(fn), 'entering the map must fold both columns');
-  assert(/Object\.assign\(panes, panesBeforeMap\)/.test(fn), 'leaving the map must put them back');
-  // A remembered state that is never cleared would restore stale columns on the second visit.
-  assert(/panesBeforeMap = null/.test(fn), 'the remembered state must be cleared once it is used');
-
-  // Both toggles have to be reachable, and both have to say what they do.
-  for (const id of ['paneLeft', 'paneRight']) {
-    assert(markup.includes(`id="${id}"`), `${id} is missing from the markup`);
-    assert(code.includes(`$('${id}').addEventListener`), `${id} has no click handler`);
+check('every section in the plan exists in the markup', () => {
+  // The plan keys on heading text, so a renamed heading would quietly land its controls on the wrong tab.
+  // The trailing boolean is what separates a plan row from a tab definition, which has only two fields.
+  const planned = [...code.matchAll(/\['[a-z]+', '([^']+)', (?:true|false)\]/g)].map(m => m[1]);
+  assert(planned.length >= 15, `the plan looks truncated: ${planned.length} sections`);
+  const headings = [...markup.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/g)]
+    .map(m => m[1].replace(/\s+/g, ' ').trim());
+  for (const title of planned) {
+    assert(headings.includes(title), `the plan names "${title}", which no heading in the markup matches`);
   }
-  const apply = code.match(/function applyPanes\(\)[\s\S]*?\n\}/)?.[0] ?? '';
-  assert(/resize\(\)/.test(apply), 'collapsing must tell the canvas its box changed');
+  for (const h of headings) {
+    assert(planned.includes(h), `the markup has a heading "${h}" that the plan does not place on a tab`);
+  }
+});
+
+check('the map tab folds the panel, and is loaded only once it is visible', () => {
+  // The map carries its own panels and wants the width, so it folds ours using the theme's own collapse
+  // rather than a second mechanism. And the frame must be shown before its src is set: the map sizes its
+  // renderer from its own window.innerWidth, and a frame still display:none reports zero, which does not
+  // fail loudly -- it asks WebGPU for a zero-width texture and every pass after that is invalid.
+  const fn = code.match(/function setMapMode\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn, 'setMapMode must exist');
+  const shown = fn.indexOf('frame.style.display');
+  const loaded = fn.indexOf('frame.src = MAP_URL');
+  assert(shown > 0 && loaded > 0, 'the map mode must both show and load the frame');
+  assert(shown < loaded, 'the frame must be shown before its src is set, or it lays out at zero');
+  assert(/requestAnimationFrame/.test(fn), 'the src must wait a frame, so the frame has been laid out');
+  assert(/setPanelCollapsed\(true\)/.test(fn), 'entering the map must fold the panel');
+  assert(/panelBeforeMap/.test(fn), 'and must put it back the way it was on the way out');
+});
+
+console.log('\n--- movement inside the Lab ---');
+
+check('Movement is a Lab tab after Pose and uses the class-aware facade', () => {
+  assert(/\['pose', 'Pose'\], \['movement', 'Movement'\]/.test(code), 'Movement must sit directly after Pose');
+  assert(/from '\.\/pokemon-movement\.js'/.test(code), 'the Lab must enter movement through pokemon-movement.js');
+  assert(!/\bcreateStadiumWalker\b/.test(code), 'the Lab must not bypass the movement facade');
+});
+
+check('movement reuses the cached model bytes and a skeleton clone', () => {
+  const load = code.match(/async function assetsFor\([\s\S]*?\n\}/)?.[0] ?? '';
+  const movement = code.match(/function startMovementSession\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/bytes:\s*buf/.test(load), 'the cache does not retain the bytes already fetched for the model');
+  assert(/skeletonClone\(current\.gltf\.scene\)/.test(movement), 'movement must drive a skeleton-aware clone');
+  assert(!/\bfetch\(/.test(movement), 'opening Movement must not fetch or parse a second model');
+  assert(movement.indexOf('skeletonClone(current.gltf.scene)') < movement.indexOf('movementVisibility(false)'),
+    'hiding before cloning makes the driven model inherit visible=false');
+});
+
+check('leaving Movement removes its clones and restores the authoring view', () => {
+  const tabs = code.match(/function setActiveTab\([\s\S]*?\n\}/)?.[0] ?? '';
+  const stop = code.match(/function stopMovementSession\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/wasMovement/.test(tabs) && /setMovementMode\(id === 'movement'\)/.test(tabs),
+    'tab exit does not reach movement teardown');
+  assert(/scene\.remove\(entry\.walker\.object\)/.test(stop), 'the driven clone is not removed');
+  assert(/movementVisibility\(true\)/.test(stop), 'the authoring model is not restored');
+  assert(/camera\.position\.copy/.test(stop) && /controls\.target\.copy/.test(stop),
+    'the authoring camera is not restored');
+});
+
+check('species and annotation changes cannot leave a stale movement session', () => {
+  const select = code.match(/async function selectSpecies\([\s\S]*?\n\}/)?.[0] ?? '';
+  const edit = code.match(/function afterEdit\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/stopMovementSession\(\)/.test(select), 'changing species does not stop the old clone');
+  assert(/if \(movementMode\) startMovementSession\(\)/.test(select),
+    'the new species does not start a session while Movement stays open');
+  assert(/movementMode/.test(edit) && /rebuildMovementSession\(\)/.test(edit),
+    'an annotation edit can leave movement mapped from stale semantics');
+});
+
+check('unsupported movement classes are stated and never sent to ground movement', () => {
+  const start = code.match(/function startMovementSession\([\s\S]*?\n\}/)?.[0] ?? '';
+  const guard = start.indexOf("resolved.locomotion !== 'walker'");
+  const mapping = start.indexOf('movementSources().map');
+  assert(guard > 0 && mapping > guard, 'the class guard must run before either ground map is built');
+  assert(/preview is not implemented yet/.test(code), 'unsupported classes need a literal on-screen state');
+});
+
+check('Lab, guessed, and compare mappings reach one controller with shared commands', () => {
+  const sources = code.match(/function movementSources\([\s\S]*?\n\}/)?.[0] ?? '';
+  const start = code.match(/function startMovementSession\([\s\S]*?\n\}/)?.[0] ?? '';
+  const command = code.match(/function applyMovementCommand\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(/\['lab', 'guessed'\]/.test(sources), 'Compare must run both named map routes');
+  assert((start.match(/createPokemonMovement\(/g) || []).length === 2,
+    'the unsupported guard and the mapped controller should be the only facade calls');
+  assert(/movementDirection/.test(command) && /movementSpeed/.test(command),
+    'comparison instances do not read the one shared command source');
+  assert(/GAITS\[\$\('movementGait'\)\.value\]/.test(start), 'comparison instances do not share one gait source');
+});
+
+check('movement diagnostics sample once per rendered frame and never write annotation data', () => {
+  const movement = code.slice(code.indexOf('let movementMode = false'), code.indexOf('// --- the map tab'));
+  const step = code.match(/function applyMovementCommand\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert((step.match(/diagnosticFrame\(\)/g) || []).length === 1,
+    'diagnosticFrame must be read exactly once for each walker update');
+  assert(/entry\.monitor\.sample\(frame\)/.test(step), 'the one sampled frame does not reach diagnostics');
+  assert(!/\b(commit|putAnnotation|saveLibrary)\s*\(/.test(movement),
+    'movement comparison must never save or mark the annotation');
+});
+
+check('movement exposes literal controls, measurements, and overlays', () => {
+  for (const label of ['Foot slip', 'Target gap', 'Knee flip', 'Ground error', 'Support margin', 'Dropped time']) {
+    assert(code.includes(label), `movement diagnostics omit ${label}`);
+  }
+  for (const id of [
+    'movementStartBtn', 'movementPauseBtn', 'movementStepBtn', 'movementResetBtn',
+    'movementSpeed', 'movementDirection', 'movementShowChains', 'movementShowJoints',
+    'movementShowPoles', 'movementShowTargets', 'movementShowContacts', 'movementShowSupport',
+  ]) assert(ids.has(id), `movement UI is missing ${id}`);
+});
+
+check('assembling the panel removes only the asides it emptied', () => {
+  // buildSections moves nodes out of the markup and then clears what is left. `$('app').remove()` shipped
+  // and took #stage with it -- the canvas, the stage message and the map frame all live inside #app, so
+  // the first selectSpecies died on a null #stageMsg. Whatever it removes must be named narrowly.
+  const fn = code.match(/function buildSections\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert(fn, 'buildSections must exist');
+  for (const m of fn.matchAll(/(\S+)\.remove\(\)/g)) {
+    assert(/aside/i.test(m[1]), `buildSections removes ${m[0]}, which can take the viewport with it`);
+  }
+  // The elements the header held have to be moved somewhere before their aside goes.
+  for (const id of ['progress', 'speciesName', 'speciesSub']) {
+    assert(fn.includes(`$('${id}')`), `${id} lives in an aside header and must be rescued before it is removed`);
+  }
 });
 
 check('the page says how to run it', () => {

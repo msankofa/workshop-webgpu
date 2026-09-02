@@ -42,62 +42,77 @@
   html, body { margin: 0; height: 100%; background: #0d1014; color: #cfd6dd;
                font: 13px/1.45 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
   canvas { display: block; }
-  #app { display: grid; grid-template-columns: 300px 1fr 320px; grid-template-rows: auto 1fr;
-         height: 100%; transition: grid-template-columns .18s ease; }
-  /* Collapsed to a zero track rather than a thin rail: the buttons that bring a column back live in the
-     tab strip, which is always there, so the column itself does not have to keep a handle on screen. */
-  #app.no-left { grid-template-columns: 0 1fr 320px; }
-  #app.no-right { grid-template-columns: 300px 1fr 0; }
-  #app.no-left.no-right { grid-template-columns: 0 1fr 0; }
-  #app.no-left #dexCol, #app.no-right #side { display: none; }
+  /* The canvas is the page. Everything else is the docked panel, which workshop-panel-theme.js styles
+     exactly as the environment viewer and bot viewer style theirs -- same tokens, same sections, same
+     collapse -- so a theme picked in one carries into this one. */
+  #stage { position: fixed; inset: 0; }
 
-  /* --- the tab strip ---------------------------------------------------------------------------
-     Spans all three columns so the mode is the first thing read, above the dex rather than inside it. */
-  #tabs { grid-column: 1 / -1; display: flex; align-items: center; gap: 2px; padding: 0 10px;
-          background: #0f1319; border-bottom: 1px solid #2a323c; }
-  #tabs .tab { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0;
-               padding: 8px 13px; color: #7d8794; font-size: 12px; }
-  #tabs .tab:hover { color: #cfd6dd; }
-  #tabs .tab.on { color: #9fe0b8; border-bottom-color: #5fd08a; }
-  #tabs .spacer { flex: 1; }
-  #tabs .note { color: #6b7480; font-size: 10.5px; margin-left: 10px; }
-  #tabs .pane { background: none; border: 1px solid #2f3742; border-radius: 4px; padding: 3px 9px;
-                color: #7d8794; font-size: 11px; }
-  #tabs .pane:hover { color: #cfd6dd; border-color: #4a5766; }
-  #tabs .pane.off { color: #5a636e; border-color: #262d36; }
-
-  /* --- the map ---------------------------------------------------------------------------------
-     tools/filesystem-map.html itself, scoped to this subsystem. It is its own document, so it brings its
-     own renderer and its own controls and cannot fight with the model viewer over either. Hidden with
-     display:none rather than unmounted, so switching back does not re-scan and re-settle the layout. */
+  /* The map is tools/filesystem-map.html itself, scoped to this subsystem, in its own document. */
   #mapFrame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none;
               background: #02070c; }
 
-  .col { background: #11151b; border-right: 1px solid #222932; display: flex; flex-direction: column;
-         min-height: 0; }
-  #side { border-right: none; border-left: 1px solid #222932; }
-  .col header { padding: 11px 13px 9px; border-bottom: 1px solid #2a323c; flex: none; }
-  .col h1 { margin: 0 0 2px; font-size: 13px; letter-spacing: .02em; }
-  .col h2 { margin: 0 0 2px; font-size: 13px; letter-spacing: .02em; }
-  .col p.sub { margin: 0; color: #7d8794; font-size: 11px; }
-  .scroll { overflow-y: auto; padding: 9px 11px 16px; min-height: 0; flex: 1; }
-
-  h3 { margin: 14px 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
-       color: #7d8794; font-weight: 600; }
-  h3:first-child { margin-top: 2px; }
-
-  input[type=text], select, button { background: #171d25; color: #cfd6dd; border: 1px solid #2f3742;
-                                     border-radius: 4px; padding: 4px 6px; font: inherit; font-size: 12px; }
-  input[type=text], select { width: 100%; box-sizing: border-box; }
-  button { cursor: pointer; }
-  button:hover:not(:disabled) { border-color: #4a5766; }
-  button:disabled { opacity: .45; cursor: default; }
-  button.on { border-color: #5fd08a; background: #1b2b23; color: #9fe0b8; }
+  /* Panel chrome, tabs and sections all come from workshop-panel-theme.js. Only the things it has no
+     opinion about are styled here: the dex grid, the clip and segment lists, and the readouts. */
+  #ctrl .panel-tabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 5px 7px; flex: 0 0 auto;
+                      border-bottom: 1px solid var(--wui-line); }
+  #ctrl .panel-tabs .tab-btn { width: auto; flex: 1 1 auto; min-height: 24px; margin: 0; padding: 2px 7px;
+                               font-size: 12px; }
+  #ctrl.collapsed .panel-tabs { display: none; }
+  #ctrl .panel-chrome { padding: 5px 8px 0; flex: 0 0 auto; }
+  #ctrl.collapsed .panel-chrome { display: none; }
+  #ctrl #speciesName { margin: 0; font-size: 13px; font-weight: 650; }
+  #ctrl #speciesSub { margin: 2px 0 0; color: var(--wui-muted); font-size: 11px; }
+  #ctrl .tab-host { display: none; }
+  #ctrl .tab-host.active { display: block; }
+  #ctrl h3 { display: none; }
   input[type=range] { width: 100%; margin: 0; accent-color: #5fd08a; }
-  .row { display: flex; align-items: center; gap: 7px; margin: 6px 0; }
+  .row { display: flex; align-items: center; gap: 5px; margin: 4px 0; }
   .row input[type=checkbox] { margin: 0; accent-color: #5fd08a; }
-  .buttons { display: flex; gap: 6px; margin: 8px 0 2px; }
+  .buttons { display: flex; gap: 5px; margin: 5px 0 1px; }
   .buttons button { flex: 1; }
+
+  /* This Lab fits many short editing operations into one dock. The shared viewer theme is deliberately
+     roomier, so the compact modifier wins only here. It also prevents the theme's width:100% button rule
+     from turning inline controls and tiny remove buttons into full-width boxes. */
+  #ctrl.compact .panel-head { min-height: 43px; padding: 0 10px; }
+  #ctrl.compact .panel-body { padding: 6px; }
+  #ctrl.compact .sec { margin-bottom: 5px; border-radius: 6px; }
+  #ctrl.compact .sec-head { min-height: 32px; padding: 6px 8px; }
+  #ctrl.compact .sec-body { padding: 6px 8px 8px; }
+  #ctrl.compact .sec.collapsed .sec-body { padding-top: 0; padding-bottom: 0; }
+  #ctrl.compact button { width: auto; min-height: 25px; margin: 2px 0; padding: 3px 6px; }
+  #ctrl.compact .row { justify-content: flex-start; gap: 5px; margin: 4px 0; }
+  #ctrl.compact .row > button { flex: 1 1 0; min-width: 0; margin: 0; }
+  #ctrl.compact .guide { margin: 0 0 6px; font-size: 10.5px; line-height: 1.35; }
+  #ctrl.compact .part { gap: 5px; padding: 2px 3px; }
+  #ctrl.compact .part .pn { min-width: 48px; }
+  #ctrl.compact .part .del,
+  #ctrl.compact .limb .del,
+  #ctrl.compact .seg .del { width: 20px; min-width: 20px; min-height: 20px; margin: 0; padding: 0 2px;
+                            border: 0; background: none; box-shadow: none; flex: none; }
+  #ctrl.compact .part-actions { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+  #ctrl.compact .part-actions button { width: 100%; min-width: 0; margin: 0; padding-inline: 3px; }
+  #ctrl.compact .select-actions button { margin: 0; }
+  #ctrl.compact .view-sliders { display: grid; gap: 3px; }
+  #ctrl.compact .slider-row { display: grid; grid-template-columns: 68px minmax(0, 1fr) auto;
+                              align-items: center; gap: 6px; color: var(--wui-muted); font-size: 10.5px; }
+  #ctrl.compact .slider-row input { min-width: 0; }
+  #ctrl.compact .pose-reach { display: grid; grid-template-columns: auto 52px minmax(0, 1fr) auto; }
+  #ctrl.compact .pose-reach > span { min-width: 0 !important; }
+  #ctrl.compact .movement-readout { display: grid; grid-template-columns: auto 1fr; gap: 3px 8px;
+                                    align-items: baseline; }
+  #ctrl.compact .movement-readout .value { color: var(--wui-text); text-align: right; }
+  #ctrl.compact .movement-overlays { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px; }
+  #ctrl.compact .movement-overlays label { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  #ctrl.compact .movement-source { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 5px;
+                                   align-items: center; }
+  #ctrl.compact .suggest-toolbar { display: grid; grid-template-columns: 1fr auto auto; gap: 5px; }
+  #ctrl.compact .suggest-toolbar button { margin: 0; min-width: 0; }
+  #movementLabels { position: absolute; inset: 12px calc(var(--lab-panel-offset, 0px) + 12px) auto 12px;
+                    z-index: 15; display: flex; justify-content: space-around; pointer-events: none; }
+  #movementLabels[hidden] { display: none; }
+  #movementLabels span { padding: 3px 7px; border: 1px solid #ffffff2b; border-radius: 4px;
+                         background: #0d1014c9; color: #d7dee6; font: 11px ui-monospace, monospace; }
 
   /* --- the dex grid --------------------------------------------------------------------------------
      Three columns of small tiles rather than a list: 151 of anything is a wall, and the number and the
@@ -177,13 +192,34 @@
   .limb .lctl { display: flex; gap: 4px; margin-top: 4px; }
   .limb .lctl select { flex: 1; min-width: 0; }
   .limb .lctl button { flex: none; }
+  .limb .pair-field { display: flex; align-items: center; gap: 4px; color: #7d8794; font-size: 10px; }
   .limb .lctl input[type=number] { width: 42px; flex: none; box-sizing: border-box;
                                    background: #171d25; color: #cfd6dd; border: 1px solid #2f3742;
                                    border-radius: 4px; padding: 3px 4px;
                                    font: 11px ui-monospace, monospace; }
 
+  .suggest-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center;
+                 gap: 4px; padding: 3px 0; border-top: 1px solid #202731; }
+  .suggest-row:first-child { border-top: 0; }
+  .suggest-main { display: flex; align-items: baseline; gap: 5px; min-width: 0; cursor: pointer; }
+  .suggest-main:hover .suggest-name { color: #e6edf3; }
+  .suggest-name { color: #cfd6dd; font: 11px ui-monospace, monospace; flex: none; }
+  .suggest-value { color: #7d8794; font: 10px ui-monospace, monospace; overflow: hidden;
+                   text-overflow: ellipsis; white-space: nowrap; }
+  .suggest-confidence { color: #5f9f78; font: 9px ui-monospace, monospace; text-transform: uppercase; }
+  .suggest-confidence.weak { color: #d8a657; }
+  .suggest-row button { min-height: 21px !important; padding: 1px 5px !important; margin: 0 !important; }
+  .suggest-row button.hide { color: #7d8794; }
+  #suggestWhy { margin-top: 5px; color: #7d8794; font-size: 10.5px; }
+  #suggestWhy summary { cursor: pointer; }
+  #suggestTrace { max-height: 180px; overflow: auto; margin-top: 4px; font-size: 9.5px; line-height: 1.4; }
+
   .mono { font: 11px/1.6 ui-monospace, monospace; color: #8b95a2; white-space: pre-wrap; }
   .hint { color: #6b7480; font-size: 10.5px; margin: 4px 0 0; }
+  .guide { margin: 2px 0 8px; color: #9aa4b0; font-size: 11px; line-height: 1.45; }
+  .field { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px;
+           color: #7d8794; font-size: 10px; }
+  .field select { width: 100%; }
   #tip { position: fixed; z-index: 40; max-width: 300px; display: none; pointer-events: none;
          background: #10151c; border: 1px solid #2f3742; border-radius: 5px; padding: 6px 9px;
          color: #b8c0c9; font-size: 11px; line-height: 1.5; box-shadow: 0 6px 18px #0009; }
@@ -210,6 +246,15 @@
      necessary when the tab strip gave the grid a second row. */
   #stage { position: relative; min-width: 0; min-height: 0; background: #0d1014; }
   #stage canvas { width: 100%; height: 100%; }
+  #viewTools { position: absolute; right: calc(var(--lab-panel-offset, 0px) + 142px); bottom: 18px;
+               z-index: 17; display: flex; flex-direction: column; gap: 4px; pointer-events: auto; }
+  #viewTools[hidden] { display: none; }
+  #viewTools button { min-width: 72px; min-height: 25px; margin: 0; padding: 3px 7px;
+                      border: 1px solid var(--theme-settings-border, #d8d8d8); border-radius: 5px;
+                      background: var(--theme-settings-surface-rgba, #fff); color: var(--theme-settings-text, #151515);
+                      font: 11px/1.2 system-ui, sans-serif; cursor: pointer; box-shadow: 0 2px 7px #0002; }
+  #viewTools button:hover { border-color: var(--theme-settings-accent, #e66b1a); }
+  #viewTools button.on { color: #a94305; background: #fff2e9; border-color: #ef9b65; }
   #marquee { position: absolute; display: none; z-index: 16; pointer-events: none;
              border: 1px solid #5fd08a; background: #5fd08a1f; }
   #stageMsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -222,19 +267,7 @@
 <body>
 
 <div id="app">
-  <div id="tabs">
-    <button class="tab on" id="tabBrowse">Browse</button>
-    <button class="tab" id="tabMap">Map</button>
-    <span class="spacer"></span>
-    <button class="pane" id="paneLeft"
-      data-tip="Show or hide the dex list."
-      data-more="The map tab hides both side panels on its way in, and puts them back the way you left them when you return to browse.">Dex</button>
-    <button class="pane" id="paneRight"
-      data-tip="Show or hide the panel on the right.">Details</button>
-    <span class="note" id="tabNote"></span>
-  </div>
-
-  <aside class="col" id="dexCol">
+  <aside>
     <header>
       <h1>Pokemon Lab</h1>
       <p class="sub" id="progress">Loading the dex…</p>
@@ -242,103 +275,133 @@
     <div style="padding: 8px 11px 0; flex: none;">
       <input type="text" id="filter" placeholder="Filter by name or dex number" autocomplete="off">
       <select id="statusFilter" style="margin-top: 6px;">
-        <option value="">Every species</option>
-        <option value="untouched">Untouched</option>
+        <option value="">All annotation statuses</option>
+        <option value="untouched">Not started</option>
         <option value="progress">In progress</option>
-        <option value="ready">Ready</option>
-        <option value="done">Done</option>
-        <option value="done-findings">Done, with findings</option>
+        <option value="ready">Ready for review</option>
+        <option value="done">Complete</option>
+        <option value="done-findings">Complete — needs attention</option>
       </select>
     </div>
-    <div class="scroll"><div id="grid"></div></div>
+    <div id="grid"></div>
     <div id="disk">Nothing saved yet.</div>
   </aside>
 
   <div id="stage">
     <div id="marquee"></div>
     <div id="stageMsg">Choose a species from the dex to load it.</div>
+    <div id="viewTools" aria-label="Viewport display">
+      <button id="skelBtn" data-tip="Show the skeleton over the model.">Skeleton</button>
+      <button id="modelBtn" class="on" data-tip="Hide the model and leave the skeleton.">Body</button>
+      <button id="wireBtn" data-tip="Draw the model as edges instead of surfaces."
+              data-more="Every bone stays where it was. This changes how the model is drawn and nothing else.">Wireframe</button>
+    </div>
+    <div id="movementLabels" hidden aria-label="Movement comparison labels"></div>
 
     <iframe id="mapFrame" aria-label="The Pokemon Lab filesystem, as a node map"></iframe>
   </div>
 
-  <aside class="col" id="side">
+  <aside>
     <header>
       <h2 id="speciesName">No species loaded</h2>
       <p class="sub" id="speciesSub">The 151 Stadium models, and the animations the ROM shipped with them.</p>
     </header>
-    <div class="scroll">
-      <h3>What the skeleton measures</h3>
+    <div id="sideScroll">
+      <h3>Model details</h3>
       <div class="mono" id="facts">—</div>
       <div class="warn" id="factWarn"></div>
 
-      <h3 data-tip="Click a bone to select it. Shift-click for its whole chain. Alt-drag a box over several."
-          data-more="The box needs the skeleton visible, since it takes the joints inside it on screen, and shift works there too. All three follow one rule: a group you have partly selected is completed rather than each bone being flipped.">Bones</h3>
+      <h3 data-tip="Review body parts measured from this model. Nothing is saved until you press Apply."
+          data-more="Suggestions are a starting point, not annotation. Existing work is never replaced. Weak suggestions must be applied one at a time.">Suggested parts</h3>
+      <div id="suggestSummary" class="guide">Open a species to inspect suggestions.</div>
+      <div class="suggest-toolbar">
+        <button id="applySuggestionsBtn" disabled data-tip="Fill missing strong and review suggestions in one undoable edit.">Apply all missing parts</button>
+        <button id="suggestOverlayBtn" disabled data-tip="Show or hide suggested parts on the skeleton.">Show colors</button>
+        <button id="showHiddenSuggestionsBtn" disabled data-tip="Restore suggestions hidden during this session.">Show hidden</button>
+      </div>
+      <div id="suggestList"></div>
+      <details id="suggestWhy">
+        <summary>Why these parts?</summary>
+        <div id="suggestTrace" class="mono"></div>
+      </details>
+      <div id="suggestWarn" class="warn"></div>
+
+      <h3 data-tip="Choose how this species normally moves."
+          data-more="Movement describes the creature, not the current animation. It will determine which body parts validation requires.">Movement</h3>
+      <div class="guide">Start here. Choose the closest movement type; walking creatures also need a stance.</div>
       <div class="row">
-        <button id="skelBtn" data-tip="Show the skeleton over the model.">Skeleton</button>
-        <button id="modelBtn" class="on" data-tip="Hide the model and leave the skeleton.">Body</button>
-        <span style="color:#9aa4b0; font-size:11px;">Size</span>
-        <input type="range" id="jointSize" min="0.3" max="3" step="0.1" value="1"
-               data-tip="How big the joint dots are drawn.">
-        <button id="wireBtn" data-tip="Draw the model as edges instead of surfaces."
-                data-more="Every bone stays where it was. This changes how the model is drawn and nothing else.">Wireframe</button>
-        <span style="color:#9aa4b0; font-size:11px;">Opacity</span>
-        <input type="range" id="modelOpacity" min="0" max="1" step="0.02" value="1"
-               data-tip="How solid the model is drawn."
-               data-more="Below full it stops writing depth, so the skeleton inside shows through instead of being hidden by the near surface.">
-        <span class="mono" id="modelOpacityRead" style="flex:none;">100%</span>
-        <button id="belowBtn" disabled data-tip="Add every bone below the selected ones."
-                data-more="A limb is a bone and everything under it, which is not the same as a chain -- a chain stops where the skeleton branches.">Below</button>
-        <button id="clearSelBtn" disabled data-tip="Deselect every bone.">Clear</button>
+        <label class="field"><span>Moves by</span>
+          <select id="locomotion" disabled data-tip="Choose how this species normally moves."></select>
+        </label>
+        <label class="field"><span>Stance</span>
+          <select id="posture" disabled data-tip="Choose how a walking species stands."></select>
+        </label>
+      </div>
+
+      <h3 data-tip="Click a bone to select it. Shift-click for its whole chain. Alt-drag a box over several."
+          data-more="Box selection needs the skeleton visible. Shift also works with a box. A partly selected group is completed instead of flipped bone by bone.">Select bones</h3>
+      <div class="view-sliders">
+        <label class="slider-row"><span>Joint size</span>
+          <input type="range" id="jointSize" min="0.3" max="3" step="0.1" value="1"
+                 data-tip="How big the joint dots are drawn.">
+        </label>
+        <label class="slider-row"><span>Body opacity</span>
+          <input type="range" id="modelOpacity" min="0" max="1" step="0.02" value="1"
+                 data-tip="How solid the model is drawn."
+                 data-more="Below full it stops writing depth, so the skeleton inside shows through instead of being hidden by the near surface.">
+          <span class="mono" id="modelOpacityRead">100%</span>
+        </label>
+      </div>
+      <div class="buttons select-actions">
+        <button id="belowBtn" disabled data-tip="Add every descendant of the selected bones."
+                data-more="This follows every branch below the selection. A chain stops when the skeleton branches.">Select below</button>
+        <button id="clearSelBtn" disabled data-tip="Deselect every bone.">Clear selection</button>
       </div>
       <div class="mono" id="hoverRead"></div>
       <div class="mono" id="selRead">—</div>
       <div class="mono" id="selBones"></div>
 
-      <h3 data-tip="What kind of creature this is, which decides which checks it has to pass."
-          data-more="A species with no legs is usually not a broken walker. Voltorb rolls, Gastly floats, Onix is a serpent, and saying so is most of the fix.">What it is</h3>
-      <div class="row">
-        <select id="locomotion" disabled data-tip="How this species gets about."></select>
-        <select id="posture" disabled data-tip="What it stands on. Only a walker has a posture."></select>
-      </div>
-
-      <h3 data-tip="Select bones, then press what they are."
-          data-more="A part holds a list of bones rather than a reference to a chain, so a limb roughed in with one shift-click can be corrected bone by bone afterwards. Click a part below to put its bones back in the selection.">Parts</h3>
-      <div class="row">
-        <button id="setRootBtn" disabled data-tip="Make the selected bone the root.">Root</button>
-        <button id="setSpineBtn" disabled data-tip="Make the selected bones the spine.">Spine</button>
-        <button id="setHeadBtn" disabled data-tip="Make the selected bones the head.">Head</button>
+      <h3 data-tip="Select bones in the model, then assign their role here."
+          data-more="Click an assigned part to select its bones again. Assigning a limb replaces that limb's current bones.">Assign body parts</h3>
+      <div class="guide">Focus on the parts movement needs: root, spine, limbs, and feet. Head and decorative bones can remain unassigned.</div>
+      <div class="part-actions">
+        <button id="setRootBtn" disabled data-tip="Assign the selected bone as the body root.">Set root</button>
+        <button id="setSpineBtn" disabled data-tip="Assign the selected bones as the spine.">Set spine</button>
+        <button id="setHeadBtn" disabled data-tip="Assign the selected bones as the head.">Set head</button>
         <button id="setContactBtn" disabled data-tip="Say the selected bones are what it stands on. Press it again to take them off."
-                data-more="Feet on most species, but a Caterpie stands on belly segments and a Voltorb on one point of a sphere, so the file calls them contacts. They are drawn bigger, and keep their limb's colour.">Foot</button>
-        <button id="addLimbBtn" disabled data-tip="Make the selected bones a new limb."
-                data-more="Its side is read from where the bones sit: these models face +z, so the creature's own left is +x. Change it if the reading is wrong.">New limb</button>
+                data-more="Usually these are feet. Caterpie can stand on belly segments and Voltorb on its underside, so the saved data uses the broader term contacts.">Mark feet</button>
+        <button id="addLimbBtn" disabled data-tip="Create a limb from the selected bones."
+                data-more="The Lab estimates its side from the model. Review the limb's type and side after adding it.">Add limb</button>
       </div>
       <div id="partsRead" class="mono">—</div>
       <div id="limbList"></div>
       <div id="partsWarn" class="warn"></div>
 
-      <h3 data-tip="Bones in no part at all, the biggest first."
-          data-more="Not a to-do list. A bone nothing has been said about is decoration, which is a complete answer; this is here so you can see what you are defaulting rather than find out later.">Unaddressed</h3>
+      <h3 data-tip="Review bones that have not been assigned to a body part."
+          data-more="Most can stay unassigned. They follow their parent normally unless a movement system needs to control them directly.">Unassigned bones — usually okay</h3>
+      <div class="guide">This is not a checklist. Assign a bone only when its role matters to movement or posing.</div>
       <div id="unaddressed" class="mono">—</div>
 
-      <h3 data-tip="What moves each bone: the animation, nothing, or the ragdoll. Right-click a bone for the same three."
-          data-more="Posed is not limp. A bone with no driver keeps its last local transform and swings around rigidly with its parent; to hang and settle it needs the solver, which is what Limp hands it to.">What moves each bone</h3>
+      <h3 data-tip="Choose what controls the selected bones. Right-click a bone for the same options."
+          data-more="Hold pose keeps a bone fixed relative to its parent. Ragdoll lets it hang and settle.">Bone control</h3>
+      <div class="guide">Choose what controls the selected bones while previewing or editing a pose.</div>
       <div class="row">
         <button id="driveClipBtn" disabled data-tip="Let the animation drive the selected bones.">Animation</button>
-        <button id="drivePosedBtn" disabled data-tip="Hold the selected bones where they are, through the animation.">Posed</button>
-        <button id="driveLimpBtn" disabled data-tip="Hand the selected bones to the ragdoll, hanging off whatever still drives their parent.">Limp</button>
+        <button id="drivePosedBtn" disabled data-tip="Hold the selected bones where they are during animation.">Hold pose</button>
+        <button id="driveLimpBtn" disabled data-tip="Let the selected bones hang and settle with the ragdoll.">Ragdoll</button>
       </div>
       <div class="mono" id="driveRead">—</div>
 
-      <h3>Pose</h3>
+      <h3>Edit pose</h3>
       <div class="row">
         <button id="bodyUndoBtn" disabled data-tip="Undo the last change to the pose, to what drives a bone, or to the ragdoll."
-                data-more="A separate history from the Undo under Saved segments, which is for the file. Control-Z takes back whichever of the two you did last.">Undo</button>
+                data-more="A separate history from the Undo under Saved animation ranges, which is for file edits. Control-Z takes back whichever change you made last.">Undo</button>
         <button id="bodyResetBtn" disabled data-tip="Put the creature back: the animation drives every bone again."
                 data-more="Nothing saved is touched. Segments and the neutral pose survive it, and the reset itself can be undone.">Reset</button>
       </div>
-      <div class="row">
-        <button id="poseBtn" data-tip="Drag a bone and let the rest of the body answer."
-                data-more="Turning this on stops the clip. Turning it off lets the clip take the bones back, so save the pose first if you want to keep it.">Pose</button>
+      <div class="row pose-reach">
+        <button id="poseBtn" data-tip="Drag bones to edit the current pose."
+                data-more="Editing pauses playback. Save the result as the neutral pose before returning to animation if you want to keep it.">Edit pose</button>
         <span style="color:#9aa4b0; font-size:11px;">How far up</span>
         <input type="range" id="reach" min="0" max="12" step="1" value="4"
                data-tip="How many bones above the one you grab also bend. Zero means all of them."
@@ -388,7 +451,58 @@
       </div>
       <div class="mono" id="ragdollRead">—</div>
 
-      <h3>Animations</h3>
+      <h3 data-tip="Preview this species moving with the current Lab annotation."
+          data-more="The preview uses a clone of the model already loaded here. It never changes or saves the annotation.">Movement preview</h3>
+      <div class="movement-readout">
+        <span>Movement class</span><span class="value mono" id="movementClass">Unclassified</span>
+        <span>Ground</span><span class="value mono">Flat</span>
+      </div>
+      <div class="row">
+        <button id="movementStartBtn" disabled>Start</button>
+        <button id="movementPauseBtn" disabled>Pause</button>
+        <button id="movementStepBtn" disabled data-tip="Advance one fixed 1/60-second movement step.">Step</button>
+        <button id="movementResetBtn" disabled>Reset</button>
+      </div>
+      <div class="movement-source">
+        <label for="movementMap">Mapping</label>
+        <select id="movementMap">
+          <option value="lab">Lab map</option>
+          <option value="guessed">Guessed map</option>
+          <option value="compare">Compare</option>
+        </select>
+        <label for="movementGait">Gait</label>
+        <select id="movementGait">
+          <option value="walk">Walk</option>
+          <option value="gallop">Gallop</option>
+        </select>
+      </div>
+      <label class="slider-row"><span>Speed</span>
+        <input type="range" id="movementSpeed" min="0" max="1" step="0.05" value="0.65"
+               data-tip="Desired speed as a fraction of this gait's measured safe speed.">
+        <span class="mono" id="movementSpeedRead">65%</span>
+      </label>
+      <label class="slider-row"><span>Direction</span>
+        <input type="range" id="movementDirection" min="-180" max="180" step="5" value="0"
+               data-tip="Desired travel direction. Zero is the model's forward direction.">
+        <span class="mono" id="movementDirectionRead">0 degrees</span>
+      </label>
+      <div class="mono" id="movementState">Choose a species.</div>
+      <div class="warn" id="movementWarnings"></div>
+
+      <h3>Diagnostics</h3>
+      <div id="movementDiagnostics" class="mono">Start the preview to collect measurements.</div>
+
+      <h3>Movement overlays</h3>
+      <div class="movement-overlays">
+        <label><input type="checkbox" id="movementShowChains" checked> Limb chain</label>
+        <label><input type="checkbox" id="movementShowJoints" checked> Hip / knee / foot</label>
+        <label><input type="checkbox" id="movementShowPoles"> Knee pole</label>
+        <label><input type="checkbox" id="movementShowTargets" checked> Foot targets</label>
+        <label><input type="checkbox" id="movementShowContacts"> Contact patch</label>
+        <label><input type="checkbox" id="movementShowSupport" checked> Support</label>
+      </div>
+
+      <h3>Animation clips</h3>
       <div id="clips" class="mono">—</div>
 
       <h3>Playback</h3>
@@ -410,7 +524,7 @@
         <span class="mono" id="speedRead" style="flex:none;">1.00x</span>
       </div>
 
-      <h3>New segment from this animation</h3>
+      <h3>Save part of this animation</h3>
       <div class="row">
         <button id="setInBtn" disabled data-tip="Start the range at the frame you are on."
                 data-more="A start above the end plays backwards.">Set start</button>
@@ -433,8 +547,8 @@
       </div>
       <datalist id="segNames"></datalist>
 
-      <h3 data-tip="A range that loops, or a single frame, is a state. Anything else is a transition."
-          data-more="A state is somewhere the creature can stay. A transition runs out and leaves it somewhere else, so which one a segment is follows from its range rather than being chosen.">Saved segments</h3>
+      <h3 data-tip="A looping range or a single frame is a state. Any other saved range is a transition."
+          data-more="A state is somewhere the creature can remain. A transition ends in a different state.">Saved animation ranges</h3>
       <div class="mono" id="segList">—</div>
       <div class="mono" id="idleState"></div>
       <div class="buttons">
@@ -453,6 +567,64 @@
         <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Volume</span>
         <input type="range" id="cryVol" min="0" max="1" step="0.01" value="1">
         <span class="mono" id="cryVolRead" style="flex:none;">100%</span>
+      </div>
+      <div class="row" data-tip="How high or low the cry is, in semitones. Zero is the recording."
+           data-more="Pitch and speed are separate: the speed is the sample played faster or slower, and a pitch shifter then puts the pitch where this says. It can only move two octaves, so extreme combinations of the two stop short.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Pitch</span>
+        <input type="range" id="cryPitch" min="-12" max="12" step="1" value="0">
+        <span class="mono" id="cryPitchRead" style="flex:none;">0 st</span>
+      </div>
+      <div class="row" data-tip="How fast the cry plays. 100 is the recording.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Speed</span>
+        <input type="range" id="cryTempo" min="25" max="400" step="1" value="100">
+        <span class="mono" id="cryTempoRead" style="flex:none;">100%</span>
+      </div>
+      <div class="row" data-tip="How much each press wanders from the pitch and speed set above."
+           data-more="At zero every press is identical. At full, a press can land anywhere from an octave down to an octave up and from half to double speed. What a press actually used is written below the button.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Variation</span>
+        <input type="range" id="cryVary" min="0" max="100" step="1" value="0">
+        <span class="mono" id="cryVaryRead" style="flex:none;">0%</span>
+      </div>
+      <div class="row" data-tip="How much low end the cry has. Zero is the recording, below it is thinner."
+           data-more="A shelf under 180 Hz. Meant to end up derived from the body one day, a bigger or older creature sitting lower, with this slider still winning.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Bass</span>
+        <input type="range" id="cryBass" min="-24" max="24" step="1" value="0">
+        <span class="mono" id="cryBassRead" style="flex:none;">0 dB</span>
+      </div>
+      <div class="row" data-tip="How fast the pitch wobbles, and how far.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Vibrato</span>
+        <input type="range" id="cryVibRate" min="0" max="30" step="0.1" value="0">
+        <input type="range" id="cryVibDepth" min="0" max="12" step="0.1" value="0">
+        <span class="mono" id="cryVibRead" style="flex:none;">off</span>
+      </div>
+      <div class="row" data-tip="How fast the volume flutters, and how deep.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Tremolo</span>
+        <input type="range" id="cryTremRate" min="0" max="40" step="0.1" value="0">
+        <input type="range" id="cryTremDepth" min="0" max="100" step="1" value="0">
+        <span class="mono" id="cryTremRead" style="flex:none;">off</span>
+      </div>
+      <div class="row" data-tip="How long the cry takes to reach full volume, and how long it takes to fade out at the end.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Fade</span>
+        <input type="range" id="cryAttack" min="0" max="1000" step="5" value="0">
+        <input type="range" id="cryRelease" min="0" max="2000" step="5" value="0">
+        <span class="mono" id="cryFadeRead" style="flex:none;">0 / 0 ms</span>
+      </div>
+      <div class="row" data-tip="How many times the opening of the cry repeats before the whole cry plays, and how long that opening is."
+           data-more="Zero repeats is the plain cry. Each repeat is the first slice of the trimmed cry, played back to back, so the stutter follows the pitch, speed and direction set above.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Stutter</span>
+        <input type="range" id="cryStutter" min="0" max="12" step="1" value="0">
+        <input type="range" id="cryStutterLen" min="10" max="1000" step="5" value="120">
+        <span class="mono" id="cryStutterRead" style="flex:none;">off</span>
+      </div>
+      <div class="row" data-tip="Which part of the recording plays, as a start and an end.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Trim</span>
+        <input type="range" id="cryStart" min="0" max="100" step="1" value="0">
+        <input type="range" id="cryEnd" min="0" max="100" step="1" value="100">
+        <span class="mono" id="cryTrimRead" style="flex:none;">whole</span>
+      </div>
+      <div class="row">
+        <button id="cryReverseBtn" data-tip="Play the cry backwards.">Reversed</button>
+        <button id="cryResetBtn" data-tip="Put every cry control back to the recording.">Reset</button>
       </div>
 
       <h3 data-tip="The Pokemon Stadium soundtrack, as background music.">Music</h3>
@@ -487,9 +659,15 @@
           <option value="fixed">Where you put it</option>
         </select>
       </div>
+      <div class="row" data-tip="How fast the speaker gets quieter with distance."
+           data-more="At zero it is as loud everywhere as the flat mix and only the direction changes. The scale was tuned for maps hundreds of meters across, which is why high values are near-silent in a scene this small.">
+        <span style="color:#9aa4b0; font-size:11px; min-width:52px;">Falloff</span>
+        <input type="range" id="musicFalloff" min="0" max="200" step="1" value="40">
+        <span class="mono" id="musicFalloffRead" style="flex:none;">40</span>
+      </div>
 
-      <h3 data-tip="Everything you decide is saved to one file on disk, as you go."
-          data-more="Web storage is only a fallback for opening this page without the server, never the source of truth.">The file</h3>
+      <h3 data-tip="Your annotations and saved animation ranges are written to disk automatically."
+          data-more="Browser storage is only a fallback when the page is opened without the server.">Saving</h3>
       <div class="buttons">
         <button id="snapshotBtn" data-tip="Keep a dated copy of the file as it stands.">Save a snapshot</button>
       </div>
@@ -536,7 +714,7 @@ function showError(err) {
     if (more) {
       const p = document.createElement('span');
       p.className = tipCtrl ? 'more' : 'ask';
-      p.textContent = tipCtrl ? more : 'Ctrl for more';
+      p.textContent = tipCtrl ? more : 'Hold Ctrl for details';
       tip.appendChild(p);
     }
     tip.style.display = 'block';
@@ -597,21 +775,186 @@ import {
   LOCOMOTION, POSTURES, APPENDAGE_TYPES, SIDES, setLocomotion, setRoot, setSpine, setHead,
   setContacts, toggleContact, addAppendage, updateAppendage, removeAppendage, declareMirror,
   suggestMirror, suggestSide, flipSide, claimedBones, validateAnnotation, unaddressed, annotationStamp,
+  isBlank,
 } from './pokemon-annotation.js';
+import { SUGGESTION_VERSION, suggestPokemonParts } from './pokemon-suggest.js';
 import { toggleKeys, chainKeysOf, selectionInfo, nearestPoint, pointsInRect } from './pokemon-select.js';
 import { chainUp, selectedReach, fabrik, segmentRotations, limitRelative, qmul, qconj } from './pokemon-ik.js';
 import {
   buildHang, pinBone, releaseAll, stepHang, hangPositions, setStiffness, setBend, boneRotations, boneOrder,
 } from './pokemon-hang.js';
 import { describeStatus } from './disk-store.js';
+import { installPanelTheme, createSection, setAllSectionsCollapsed } from './workshop-panel-theme.js';
 import { createEnvironmentAudio } from './environment-audio.js';
+import { rigFor, applyNeutral } from './pokemon-lab-runtime.js';
+import { mapLabRigForGroundMovement } from './pokemon-lab-ground-map.js';
+import { createPokemonMovement, movementLabel } from './pokemon-movement.js';
+import { createPokemonPhenomena } from './pokemon-phenomena.js';
+import { mapStadiumRigFromGLB } from './stadium-rig-map.js';
+import { GAITS } from './creature-locomotion.js';
+import { createGaitMonitor } from './gait-diagnostics.js';
 import {
-  LAB_FILE, createLabStore, readLibrary, loadManifest, dexEntries, modelURL, clipLabels,
+  LAB_FILE, createLabStore, readLibrary, loadManifest, loadPhenomena, dexEntries, modelURL, clipLabels,
   suggestedIdle, speciesStatus, labSummary, STATUS_LABELS, rigMismatch,
   snapshotFilename, snapshotWriteURL,
 } from './pokemon-lab-io.js';
 
 const $ = (id) => document.getElementById(id);
+
+// ===================== the control panel =====================
+// Same look as the environment viewer's inspector and the bot viewer's: workshop-panel-theme.js
+// re-scopes those rules to this panel and picks up the palette saved by that viewer's Theme tab, so a
+// theme chosen in one carries here rather than this page inventing its own.
+//
+// The markup above is written as two plain asides because it is easier to read and to diff that way.
+// This moves those nodes into panel sections at boot. Nothing is recreated, so every $('id') below
+// still finds the element it always found.
+installPanelTheme('#ctrl');
+
+const ctrlRoot = document.createElement('div');
+ctrlRoot.id = 'ctrl';
+ctrlRoot.className = 'compact';
+document.body.appendChild(ctrlRoot);
+
+const panelHead = document.createElement('div'); panelHead.className = 'panel-head';
+const headLeft = document.createElement('div'); headLeft.className = 'head-left';
+headLeft.append(Object.assign(document.createElement('span'), { textContent: 'Pokemon Lab' }));
+const headBtn = (text, tip, className) => {
+  const b = Object.assign(document.createElement('button'), { textContent: text, className: className || '' });
+  b.dataset.tip = tip;                 // not `title`: this page has one hover mechanism, not two
+  return b;
+};
+const expandAllBtn = headBtn('⌄', 'Open every section on this tab.', 'sec-toggle');
+const collapseAllBtn = headBtn('⌃', 'Close every section on this tab.', 'sec-toggle');
+const panelToggleBtn = headBtn('–', 'Hide the panel. The header bar stays.');
+const headBtns = document.createElement('div'); headBtns.className = 'head-btns';
+headBtns.append(expandAllBtn, collapseAllBtn, panelToggleBtn);
+panelHead.append(headLeft, headBtns);
+
+const panelChrome = document.createElement('div'); panelChrome.className = 'panel-chrome';
+const panelTabs = document.createElement('div'); panelTabs.className = 'panel-tabs';
+const panelBody = document.createElement('div'); panelBody.className = 'panel-body';
+ctrlRoot.append(panelHead, panelChrome, panelTabs, panelBody);
+
+// A tab is a plain host div in the scroller; only the active one is shown. createSection already takes
+// an arbitrary host, so a tab body is just a different host and the theme needs no changes.
+const TAB_DEFS = [
+  ['dex', 'Dex'], ['species', 'Model'], ['annotate', 'Annotate'],
+  ['pose', 'Pose'], ['movement', 'Movement'], ['anim', 'Animation'], ['audio', 'Audio'], ['map', 'Map'],
+];
+const tabHosts = new Map();
+const tabButtons = new Map();
+let activeTabId = 'dex';
+for (const [id, label] of TAB_DEFS) {
+  const host = document.createElement('div');
+  host.className = 'tab-host';
+  host.dataset.tab = id;
+  panelBody.appendChild(host);
+  tabHosts.set(id, host);
+  const btn = document.createElement('button');
+  btn.className = 'tab-btn';
+  btn.textContent = label;
+  btn.addEventListener('click', () => setActiveTab(id));
+  panelTabs.appendChild(btn);
+  tabButtons.set(id, btn);
+}
+
+// Which section goes on which tab, keyed by heading text so a renamed heading is reported rather than
+// silently dropped on the floor.
+const SECTION_PLAN = [
+  ['species', 'Model details', false],
+  ['species', 'Saving', true],
+  ['annotate', 'Suggested parts', false],
+  ['annotate', 'Movement', false],
+  ['annotate', 'Select bones', false],
+  ['annotate', 'Assign body parts', false],
+  ['annotate', 'Unassigned bones — usually okay', true],
+  ['pose', 'Bone control', false],
+  ['pose', 'Edit pose', false],
+  ['pose', 'Ragdoll', true],
+  ['movement', 'Movement preview', false],
+  ['movement', 'Diagnostics', true],
+  ['movement', 'Movement overlays', true],
+  ['anim', 'Animation clips', false],
+  ['anim', 'Playback', false],
+  ['anim', 'Save part of this animation', false],
+  ['anim', 'Saved animation ranges', false],
+  ['audio', 'Cry', false],
+  ['audio', 'Music', true],
+];
+
+// Take each h3 and everything up to the next h3, and move it into a section under its tab.
+function buildSections() {
+  const source = $('sideScroll');
+  const plan = new Map(SECTION_PLAN.map(([tab, title, collapsed]) => [title, { tab, collapsed }]));
+  const seen = new Set();
+  for (const h3 of [...source.querySelectorAll('h3')]) {
+    const title = h3.textContent.replace(/\s+/g, ' ').trim();
+    const spec = plan.get(title);
+    const host = tabHosts.get(spec ? spec.tab : 'species');
+    const body = createSection(host, title, { collapsed: spec ? spec.collapsed : true });
+    const head = body.parentElement.querySelector('.sec-head');
+    // The heading's own hover text belongs to the section head, now the heading itself is hidden.
+    if (h3.dataset.tip) head.dataset.tip = h3.dataset.tip;
+    if (h3.dataset.more) head.dataset.more = h3.dataset.more;
+    let node = h3.nextSibling;
+    while (node && !(node.nodeType === 1 && node.tagName === 'H3')) {
+      const next = node.nextSibling;
+      body.appendChild(node);
+      node = next;
+    }
+    body.insertBefore(h3, body.firstChild);   // kept and hidden, so its text stays the section's name
+    seen.add(title);
+  }
+  for (const [title] of plan) {
+    if (!seen.has(title)) console.warn('[lab] the panel plan names a section the markup does not have: ' + title);
+  }
+  // The dex is a tab like any other: the species list, its filters, and the disk line.
+  const dexBody = createSection(tabHosts.get('dex'), 'Species', { collapsed: false });
+  for (const id of ['filter', 'statusFilter', 'grid', 'disk']) dexBody.appendChild($(id));
+
+  // Rescue everything that lived in the asides' headers before the asides go: the dex progress line
+  // becomes the panel's hint, and which species is loaded becomes pinned chrome.
+  $('progress').className = 'hint';
+  headLeft.appendChild($('progress'));
+  panelChrome.append($('speciesName'), $('speciesSub'));
+
+  // Only the asides. #stage is inside #app too, and it carries the canvas, the message and the map frame.
+  for (const aside of [...$('app').querySelectorAll('aside')]) aside.remove();
+}
+
+function setActiveTab(id, { scroll = true } = {}) {
+  if (!tabHosts.has(id)) return;
+  const wasMap = activeTabId === 'map';
+  const wasMovement = activeTabId === 'movement';
+  activeTabId = id;
+  for (const [key, host] of tabHosts) host.classList.toggle('active', key === id);
+  for (const [key, btn] of tabButtons) btn.classList.toggle('primary', key === id);
+  if (scroll) panelBody.scrollTop = 0;
+  if (id === 'map' || wasMap) setMapMode(id === 'map');
+  if (id === 'movement' || wasMovement) setMovementMode(id === 'movement');
+  // Suggested colours belong to Annotate. Entering creates the draft lazily; leaving removes its visual
+  // layer without changing the session-only Show/Hide choice.
+  if (id === 'annotate') renderSuggestedParts();
+  refreshSuggestionColors();
+  paintSkeleton();
+}
+
+let panelCollapsed = false;
+let syncViewportTools = () => {};  // replaced after the renderer exists; safe while the file is loading
+function setPanelCollapsed(collapsed) {
+  panelCollapsed = !!collapsed;
+  ctrlRoot.classList.toggle('collapsed', panelCollapsed);
+  panelToggleBtn.textContent = panelCollapsed ? '+' : '–';
+  panelToggleBtn.dataset.tip = panelCollapsed ? 'Show the panel.' : 'Hide the panel. The header bar stays.';
+  requestAnimationFrame(syncViewportTools);
+}
+panelToggleBtn.addEventListener('click', () => setPanelCollapsed(!panelCollapsed));
+
+// Scoped to the active tab: opening everything would blow open six tabs nobody is looking at.
+expandAllBtn.addEventListener('click', () => setAllSectionsCollapsed(tabHosts.get(activeTabId), false));
+collapseAllBtn.addEventListener('click', () => setAllSectionsCollapsed(tabHosts.get(activeTabId), true));
+
 
 // --- the document ---------------------------------------------------------------------------------
 const store = createLabStore({ storage: localStorage });
@@ -667,6 +1010,7 @@ $('redoBtn').addEventListener('click', redo);
 const manifest = await loadManifest();
 const dex = dexEntries(manifest);
 const tiles = new Map();
+const phenomenaLibrary = await loadPhenomena();
 
 // --- the scene ------------------------------------------------------------------------------------
 const stage = $('stage');
@@ -704,14 +1048,30 @@ try {
 } catch (err) {
   console.warn('[lab] the axis gizmo did not start, so it is off:', err);
 }
-// The gizmo lives in the bottom-right 128 square of the canvas, over the top of OrbitControls. Controls
+// Keep the gizmo immediately left of the open panel, with the display toggles beside it. The canvas still
+// fills the page, so this explicit offset is what prevents the panel from covering the helper.
+syncViewportTools = function () {
+  const panelOffset = panelCollapsed ? 0 : Math.ceil(ctrlRoot.getBoundingClientRect().width);
+  stage.style.setProperty('--lab-panel-offset', `${panelOffset}px`);
+  if (viewHelper) {
+    viewHelper.location.right = panelOffset + 8;
+    viewHelper.location.bottom = 8;
+  }
+};
+syncViewportTools();
+new ResizeObserver(syncViewportTools).observe(ctrlRoot);
+
+// The gizmo lives in a 128 square of the canvas, over the top of OrbitControls. Controls
 // are switched off for the duration of a click there rather than the event being stopped: swallowing the
 // pointerup left OrbitControls stuck mid-drag, so the camera kept orbiting with the button already up.
 const GIZMO_SIZE = 128;
 function overGizmo(ev) {
   if (!viewHelper) return false;
   const r = renderer.domElement.getBoundingClientRect();
-  return ev.clientX >= r.right - GIZMO_SIZE && ev.clientY >= r.bottom - GIZMO_SIZE;
+  const right = r.right - viewHelper.location.right;
+  const bottom = r.bottom - viewHelper.location.bottom;
+  return ev.clientX >= right - GIZMO_SIZE && ev.clientX <= right
+    && ev.clientY >= bottom - GIZMO_SIZE && ev.clientY <= bottom;
 }
 renderer.domElement.addEventListener('pointerdown', (ev) => {
   if (overGizmo(ev)) controls.enabled = false;
@@ -723,12 +1083,13 @@ renderer.domElement.addEventListener('pointerup', (ev) => {
 
 // Declared above resize(), which runs immediately below: a `let` read before its declaration throws
 // rather than reading undefined, and optional chaining does not save you from a temporal dead zone.
-let tab = 'browse';
+let mapMode = false;
 
 let lastW = 0, lastH = 0;
 function resize() {
   const w = stage.clientWidth, h = stage.clientHeight;
   if (!w || !h) return;
+  syncViewportTools();
   // A resize that changes nothing must not call setSize: the observer fires for its own effects, and a
   // redundant write is how the loop keeps feeding itself.
   if (w === lastW && h === lastH) return;
@@ -750,6 +1111,7 @@ const cache = new Map();
 let current = null;              // { entry, rig, gltf, root, mixer, rest, clips }
 let currentClip = -1;
 let action = null;
+let currentPhenomena = null;
 
 async function assetsFor(entry) {
   const hit = cache.get(entry.species);
@@ -777,7 +1139,9 @@ async function assetsFor(entry) {
     rest.push([o, o.position.clone(), o.quaternion.clone(), o.scale.clone()]);
   });
 
-  const assets = { entry, rig, gltf, rest, labels: clipLabels(entry), objects: boneObjects(rig, gltf) };
+  // Keep the bytes beside the parsed asset. Movement needs the raw glTF geometry for either mapping route,
+  // and retaining this buffer is what lets the tab reuse the current load rather than fetching the model again.
+  const assets = { entry, rig, gltf, bytes: buf, rest, labels: clipLabels(entry), objects: boneObjects(rig, gltf) };
   cache.set(entry.species, assets);
   while (cache.size > CACHE_LIMIT) {
     const [oldest, dropped] = cache.entries().next().value;
@@ -813,6 +1177,9 @@ let loadToken = 0;
 async function selectSpecies(species) {
   const entry = dex.find(e => e.species === species);
   if (!entry) return;
+  // A movement clone names the current species' bones. Tear it down before current changes so none of its
+  // scene, camera, or diagnostics state can leak into the next asset.
+  stopMovementSession();
   const token = ++loadToken;
   $('stageMsg').textContent = `Loading ${entry.name}…`;
   $('stageMsg').style.display = '';
@@ -828,6 +1195,25 @@ async function selectSpecies(species) {
   }
   if (token !== loadToken) return;   // a faster click while this one was fetching
 
+  // Unused embedded GLB textures are loaded only for the selected species. Build the controller before
+  // switching scenes so the old creature stays complete until the replacement is ready.
+  const reusingCurrentAsset = assets === current;
+  if (reusingCurrentAsset) { currentPhenomena?.dispose(); currentPhenomena = null; }
+  let phenomena;
+  try {
+    phenomena = await createPokemonPhenomena({
+      THREE,
+      gltf: assets.gltf,
+      spec: phenomenaLibrary.species?.[String(species).padStart(3, '0')],
+    });
+  } catch (error) {
+    console.warn(`[lab] ${entry.name} texture phenomena did not start:`, error);
+    phenomena = await createPokemonPhenomena({ THREE, gltf: assets.gltf, spec: null });
+  }
+  if (token !== loadToken) { phenomena.dispose(); return; }
+
+  if (!reusingCurrentAsset) currentPhenomena?.dispose();
+  currentPhenomena = phenomena;
   if (current) modelRoot.remove(current.gltf.scene);
   if (action) { action.stop(); action = null; }
   current = assets;
@@ -868,12 +1254,14 @@ async function selectSpecies(species) {
   refreshParts();
   refreshTransport();
   refreshCry();
+  syncAudioScale();
 
   // Open on the species' own idle segment if it has one, and otherwise on the manifest's suggestion —
   // which is a starting point to watch, not a decision. Naming it is a separate click.
   const idle = getAnnotation(library, species)?.segments?.idle;
   if (idle) auditionSegment('idle', idle);
   else playClip(suggestedIdle(entry)?.index ?? 0, { autoplay: true, ends: 'loop' });
+  if (movementMode) startMovementSession();
 }
 
 function restorePose() {
@@ -896,6 +1284,7 @@ const skel = {
   selected: new Set(), hover: -1,
   screen: [],                       // one {x, y, depth, hidden} a bone, in rig.bones order, in CSS pixels
   partColor: [],                    // the colour each bone gets from the part it is in, or null
+  suggestedColor: [],               // lower-authority colour shown only while reviewing a draft
   contact: [],                      // whether each bone touches the ground, which is drawn as size
 };
 const JOINT_COLOR = new THREE.Color(0x6d7c8c);
@@ -937,6 +1326,7 @@ function clearSkeleton() {
   // this one's joints if they outlived it.
   skel.screen = [];
   skel.partColor = [];
+  skel.suggestedColor = [];
   skel.contact = [];
 }
 
@@ -1074,7 +1464,7 @@ function paintSkeleton() {
       : skel.selected.has(bones[i].key) ? _tint.copy(JOINT_SELECTED).lerp(JOINT_FLASH, pulse)
         : mode === LIMP ? JOINT_LIMP
           : mode === POSED ? JOINT_POSED
-            : skel.partColor[i] || JOINT_COLOR;
+            : skel.partColor[i] || skel.suggestedColor[i] || JOINT_COLOR;
     joints.setColorAt(i, colour);
   }
   if (joints.instanceColor) joints.instanceColor.needsUpdate = true;
@@ -1632,9 +2022,22 @@ function selectBones(keys) {
 // The schema and every edit to it are pokemon-annotation.js; this is the wiring. Selection first, then a
 // button says what the selection IS, so there is no mode in which clicking a bone quietly edits a part.
 // Clicking a part puts its bones back in the selection, which closes the loop without a second gesture.
-for (const [id, values, blank] of [['locomotion', LOCOMOTION, 'Unclassified'], ['posture', POSTURES, 'No posture']]) {
+const LOCOMOTION_LABELS = {
+  walker: 'Walking', flyer: 'Flying', swimmer: 'Swimming', hopper: 'Hopping', serpent: 'Slithering',
+  worm: 'Crawling', roller: 'Rolling', floater: 'Floating', burrower: 'Burrowing', static: 'Stationary',
+};
+const POSTURE_LABELS = {
+  biped: 'Two-legged', quadruped: 'Four-legged', hexapod: 'Six-legged', octopod: 'Eight-legged', other: 'Other stance',
+};
+const APPENDAGE_LABELS = Object.fromEntries(APPENDAGE_TYPES.map(v => [v, v[0].toUpperCase() + v.slice(1)]));
+const SIDE_LABELS = { L: 'Left', R: 'Right', C: 'Center' };
+
+for (const [id, values, blank, labels] of [
+  ['locomotion', LOCOMOTION, 'Choose movement…', LOCOMOTION_LABELS],
+  ['posture', POSTURES, 'Choose stance…', POSTURE_LABELS],
+]) {
   $(id).append(new Option(blank, ''));
-  for (const v of values) $(id).append(new Option(v[0].toUpperCase() + v.slice(1), v));
+  for (const v of values) $(id).append(new Option(labels[v] || v, v));
 }
 
 /** Every edit to a species' annotation goes through here, so none of them can skip the history. */
@@ -1647,6 +2050,210 @@ function editParts(fn) {
   if (annotationStamp(after) === annotationStamp(before)) return;
   commit(putAnnotation(library, after));
 }
+
+// --- measured suggestions -------------------------------------------------------------------------
+//
+// A draft is session state, not an annotation. It is created only when Annotate is opened, and none of
+// the paths below reaches editParts except the two buttons whose labels say Apply.
+const suggestionCache = new Map();
+
+function currentSuggestion({ create = false } = {}) {
+  if (!current) return null;
+  const a = annotationFor(current.entry.species);
+  const key = [current.entry.species, current.rig.hash, a.locomotion || '', SUGGESTION_VERSION].join('|');
+  let state = suggestionCache.get(key);
+  if (!state && create) {
+    const draft = suggestPokemonParts(current.rig, { locomotion: a.locomotion });
+    const temporary = {
+      ...emptyAnnotation(current.entry.species, current.rig),
+      locomotion: a.locomotion,
+      posture: a.posture,
+      parts: draft.parts,
+    };
+    state = {
+      draft,
+      hidden: new Set(),
+      overlay: isBlank(a),
+      validation: validateAnnotation(temporary, current.rig),
+    };
+    suggestionCache.set(key, state);
+    if (state.overlay && !skel.on) setSkeletonVisible(true);
+  }
+  return state || null;
+}
+
+function suggestedRows(state) {
+  const p = state?.draft?.parts || {};
+  const c = state?.draft?.confidence || {};
+  const rows = [];
+  if (p.root) rows.push({ key: 'root', kind: 'root', label: 'Root', bones: [p.root],
+    confidence: c.root, tint: PART_COLORS.root });
+  if (p.spine?.length) rows.push({ key: 'spine', kind: 'spine', label: 'Spine', bones: p.spine,
+    confidence: c.spine, tint: PART_COLORS.spine });
+  if (p.head?.length) rows.push({ key: 'head', kind: 'head', label: 'Head', bones: p.head,
+    confidence: c.head, tint: PART_COLORS.head });
+  if (p.contacts?.length) rows.push({ key: 'contacts', kind: 'contacts', label: 'Feet', bones: p.contacts,
+    confidence: c.contacts, tint: PART_COLORS.foot });
+  for (const ap of p.appendages || []) {
+    const side = SIDE_LABELS[ap.side] || ap.side;
+    const type = APPENDAGE_LABELS[ap.type] || ap.type;
+    rows.push({ key: `limb:${ap.id}`, kind: 'limb', label: `${side} ${type}, pair ${ap.row + 1}`,
+      bones: ap.chain || [], confidence: c.appendages?.[ap.id] || 'weak',
+      tint: PART_COLORS[ap.type] || PART_COLORS.other, appendage: ap });
+  }
+  return rows;
+}
+
+function canApplySuggestedRow(row, a) {
+  const p = a.parts || {};
+  if (row.kind === 'root') return !p.root;
+  if (row.kind === 'spine') return !p.spine?.length;
+  if (row.kind === 'head') return !p.head?.length;
+  if (row.kind === 'contacts') return !p.contacts?.length;
+  if (row.kind !== 'limb') return false;
+  const limbs = p.appendages || [];
+  const ap = row.appendage;
+  if (limbs.some(x => x.type === ap.type && x.side === ap.side && x.row === ap.row)) return false;
+  const occupied = new Set(limbs.flatMap(x => x.chain || []));
+  return !row.bones.some(key => occupied.has(key));
+}
+
+function applySuggestedRowTo(a, rig, row) {
+  if (!canApplySuggestedRow(row, a)) return a;
+  if (row.kind === 'root') return setRoot(a, row.bones[0]);
+  if (row.kind === 'spine') return setSpine(a, rig, row.bones);
+  if (row.kind === 'head') return setHead(a, rig, row.bones);
+  if (row.kind === 'contacts') return setContacts(a, rig, row.bones);
+  const ap = row.appendage;
+  return addAppendage(a, rig, {
+    type: ap.type, side: ap.side, row: ap.row, chain: ap.chain, author: 'accepted',
+  });
+}
+
+function applySuggestedRow(row) {
+  if (currentSuggestion()?.validation.errors) return;
+  editParts((a, rig) => applySuggestedRowTo(a, rig, row));
+}
+
+const safeForBulk = row => row.confidence === 'strong' || row.confidence === 'review';
+
+function applyAllSuggestions() {
+  const state = currentSuggestion();
+  if (!state || state.validation.errors) return;
+  const rows = suggestedRows(state).filter(row => !state.hidden.has(row.key) && safeForBulk(row));
+  editParts((a, rig) => {
+    let next = a;
+    const accepted = new Map();
+    for (const row of rows) {
+      if (!canApplySuggestedRow(row, next)) continue;
+      const beforeIds = new Set((next.parts.appendages || []).map(ap => ap.id));
+      next = applySuggestedRowTo(next, rig, row);
+      if (row.kind === 'limb') {
+        const made = next.parts.appendages.find(ap => !beforeIds.has(ap.id));
+        if (made) accepted.set(row.appendage.id, made.id);
+      }
+    }
+    // Pair only limbs accepted by this same bulk gesture. An individual Apply changes only its own row.
+    for (const row of rows.filter(x => x.kind === 'limb')) {
+      const aId = accepted.get(row.appendage.id);
+      const bId = accepted.get(row.appendage.mirror);
+      if (aId && bId && aId < bId) next = declareMirror(next, aId, bId);
+    }
+    return next;
+  });
+}
+
+function suggestionSummary(state) {
+  const p = state.draft.parts;
+  const found = [];
+  if (p.root) found.push('a body root');
+  if (p.spine.length) found.push(`${p.spine.length} spine bone${p.spine.length === 1 ? '' : 's'}`);
+  if (p.head.length) found.push(`${p.head.length} head bone${p.head.length === 1 ? '' : 's'}`);
+  if (p.appendages.length) found.push(`${p.appendages.length} leg${p.appendages.length === 1 ? '' : 's'}`);
+  if (p.contacts.length) found.push(`${p.contacts.length} foot bone${p.contacts.length === 1 ? '' : 's'}`);
+  if (!found.length) return 'No body-part suggestion was supported by this model.';
+  if (found.length === 1) return `Found ${found[0]}.`;
+  return `Found ${found.slice(0, -1).join(', ')}, and ${found.at(-1)}.`;
+}
+
+function renderSuggestedParts() {
+  const host = $('suggestList');
+  if (!host) return;
+  host.textContent = '';
+  if (!current) {
+    $('suggestSummary').textContent = 'Open a species to inspect suggestions.';
+    $('applySuggestionsBtn').disabled = true;
+    $('suggestOverlayBtn').disabled = true;
+    $('showHiddenSuggestionsBtn').disabled = true;
+    return;
+  }
+  if (activeTabId !== 'annotate') return;
+  const state = currentSuggestion({ create: true });
+  const a = annotationFor(current.entry.species);
+  const rows = suggestedRows(state).filter(row => !state.hidden.has(row.key));
+  $('suggestSummary').textContent = suggestionSummary(state);
+  $('suggestOverlayBtn').disabled = !rows.length;
+  $('suggestOverlayBtn').textContent = state.overlay ? 'Hide colors' : 'Show colors';
+  $('showHiddenSuggestionsBtn').disabled = !state.hidden.size;
+  $('showHiddenSuggestionsBtn').textContent = state.hidden.size
+    ? `Show hidden (${state.hidden.size})` : 'Show hidden';
+  $('applySuggestionsBtn').disabled = !!state.validation.errors
+    || !rows.some(row => safeForBulk(row) && canApplySuggestedRow(row, a));
+
+  for (const row of rows) {
+    const el = document.createElement('div');
+    el.className = 'suggest-row';
+    const main = document.createElement('div');
+    main.className = 'suggest-main';
+    main.dataset.tip = 'Put these suggested bones in the selection. This does not apply them.';
+    main.append(swatch(row.tint));
+    const name = Object.assign(document.createElement('span'), { className: 'suggest-name', textContent: row.label });
+    const value = Object.assign(document.createElement('span'), { className: 'suggest-value', textContent: describeBones(row.bones) });
+    const confidence = Object.assign(document.createElement('span'), {
+      className: `suggest-confidence ${row.confidence}`, textContent: row.confidence,
+    });
+    main.append(name, value, confidence);
+    main.addEventListener('click', () => selectBones(row.bones));
+    const apply = Object.assign(document.createElement('button'), { textContent: 'Apply' });
+    apply.disabled = !!state.validation.errors || !canApplySuggestedRow(row, a);
+    apply.dataset.tip = apply.disabled ? 'This part is already assigned or conflicts with an authored limb.'
+      : 'Apply only this suggested part.';
+    apply.addEventListener('click', () => applySuggestedRow(row));
+    const hide = Object.assign(document.createElement('button'), { textContent: 'Hide', className: 'hide' });
+    hide.dataset.tip = 'Hide this suggestion for this session. Nothing is saved.';
+    hide.addEventListener('click', () => {
+      state.hidden.add(row.key);
+      renderSuggestedParts();
+      refreshSuggestionColors();
+      paintSkeleton();
+    });
+    el.append(main, apply, hide);
+    host.append(el);
+  }
+
+  $('suggestTrace').textContent = state.draft.trace.map(item => `${item.outcome}: ${item.text}`).join('\n');
+  const errors = state.validation.findings.filter(f => f.level === 'error').map(f => f.text);
+  const notes = state.draft.findings.map(f => f.message);
+  $('suggestWarn').textContent = [...errors, ...notes].join('\n');
+}
+
+$('applySuggestionsBtn').addEventListener('click', applyAllSuggestions);
+$('suggestOverlayBtn').addEventListener('click', () => {
+  const state = currentSuggestion();
+  if (!state) return;
+  state.overlay = !state.overlay;
+  renderSuggestedParts();
+  refreshSuggestionColors();
+  paintSkeleton();
+});
+$('showHiddenSuggestionsBtn').addEventListener('click', () => {
+  const state = currentSuggestion();
+  if (!state) return;
+  state.hidden.clear();
+  renderSuggestedParts();
+  refreshSuggestionColors();
+  paintSkeleton();
+});
 
 const classify = () => editParts(a => setLocomotion(a, $('locomotion').value || null, $('posture').value || null));
 $('locomotion').addEventListener('change', classify);
@@ -1697,6 +2304,7 @@ function refreshParts() {
   // A posture only means something for a walker, and `setLocomotion` drops it for anything else.
   $('posture').disabled = !current || a?.locomotion !== 'walker';
   $('posture').value = a?.posture || '';
+  renderSuggestedParts();
   renderPartRows(a);
   renderLimbs(a);
   renderUnaddressed(a);
@@ -1739,6 +2347,33 @@ function refreshPartColors() {
     skel.contact[i] = true;
     if (!skel.partColor[i] || skel.partColor[i] === ROOT_HINT) skel.partColor[i] = PART_TINT.foot;
   }
+  refreshSuggestionColors();
+}
+
+/** Add a muted review layer beneath authored colours; it exists only on the Annotate tab. */
+function refreshSuggestionColors() {
+  const n = current?.rig?.bones.length ?? 0;
+  skel.suggestedColor = new Array(n).fill(null);
+  if (!current || activeTabId !== 'annotate') return;
+  const state = currentSuggestion();
+  if (!state?.overlay) return;
+  const hidden = state.hidden;
+  const at = key => skel.indexOf?.get(key);
+  const paint = (keys, tint) => {
+    const muted = new THREE.Color(tint).lerp(JOINT_COLOR, 0.58);
+    for (const key of keys || []) {
+      const i = at(key);
+      if (i !== undefined && !skel.partColor[i]) skel.suggestedColor[i] = muted;
+    }
+  };
+  const p = state.draft.parts;
+  if (!hidden.has('spine')) paint(p.spine, PART_COLORS.spine);
+  if (!hidden.has('head')) paint(p.head, PART_COLORS.head);
+  for (const ap of p.appendages || []) {
+    if (!hidden.has(`limb:${ap.id}`)) paint(ap.chain, PART_COLORS[ap.type] || PART_COLORS.other);
+  }
+  if (!hidden.has('contacts')) paint(p.contacts, PART_COLORS.foot);
+  if (!hidden.has('root') && p.root) paint([p.root], PART_COLORS.root);
 }
 
 // The row element and the bones of each limb, so a selection change can re-mark the list without
@@ -1772,7 +2407,7 @@ function limbRow(ap, limbs) {
   head.append(swatch(PART_COLORS[ap.type] ?? PART_COLORS.other));
   const id = document.createElement('span');
   id.className = 'lid';
-  id.textContent = ap.id;
+  id.textContent = limbLabel(ap);
   const val = document.createElement('span');
   val.className = 'lval';
   val.textContent = ap.chain?.length ? describeBones(ap.chain) : 'no bones yet';
@@ -1787,30 +2422,34 @@ function limbRow(ap, limbs) {
   const ctl = document.createElement('div');
   ctl.className = 'lctl';
   ctl.append(
-    dropdown(APPENDAGE_TYPES, ap.type, 'What kind of limb this is. A hint to a solver, not a rule.',
-      v => editParts((x, rig) => updateAppendage(x, rig, ap.id, { type: v }))),
+    dropdown(APPENDAGE_TYPES, ap.type, 'Choose what kind of limb this is.',
+      v => editParts((x, rig) => updateAppendage(x, rig, ap.id, { type: v })), APPENDAGE_LABELS),
     dropdown(SIDES, ap.side, 'Which side of the body it is on.',
-      v => editParts((x, rig) => updateAppendage(x, rig, ap.id, { side: v }))),
+      v => editParts((x, rig) => updateAppendage(x, rig, ap.id, { side: v })), SIDE_LABELS),
   );
   const row = document.createElement('input');
   row.type = 'number';
-  row.min = '0';
-  row.max = '9';
-  row.value = String(ap.row ?? 0);
-  row.dataset.tip = 'Which pair of legs this is: 0 at the front.';
-  row.dataset.more = 'It is what tells a quadruped\'s front legs from its back ones, and it means nothing on a creature with one pair.';
+  row.min = '1';
+  row.max = '10';
+  row.value = String((ap.row ?? 0) + 1);
+  row.dataset.tip = 'Which limb pair this belongs to. Pair 1 is the front.';
+  row.dataset.more = 'Pair numbers distinguish front, middle, and rear limbs. A creature with one pair can leave this at 1.';
   row.addEventListener('change', () => {
-    const n = Math.max(0, Math.min(9, Math.round(Number(row.value) || 0)));
-    editParts((x, rig) => updateAppendage(x, rig, ap.id, { row: n }));
+    const n = Math.max(1, Math.min(10, Math.round(Number(row.value) || 1)));
+    row.value = String(n);
+    editParts((x, rig) => updateAppendage(x, rig, ap.id, { row: n - 1 }));
   });
+  const pairField = document.createElement('label');
+  pairField.className = 'pair-field';
+  pairField.append('Pair', row);
   const assign = document.createElement('button');
   assign.className = 'lassign';
-  assign.textContent = 'Assign';
+  assign.textContent = 'Assign selected bones';
   assign.disabled = !skel.selected.size;
   assign.dataset.tip = 'Assign the selected bones to this limb.';
   assign.dataset.more = 'It replaces the limb\'s bones rather than adding to them, so click the limb first if you meant to correct what is already there.';
   assign.addEventListener('click', () => editParts((x, rig) => updateAppendage(x, rig, ap.id, { chain: [...skel.selected] })));
-  ctl.append(row, assign);
+  ctl.append(pairField, assign);
 
   const pair = document.createElement('div');
   pair.className = 'lctl';
@@ -1819,7 +2458,7 @@ function limbRow(ap, limbs) {
   mirror.dataset.tip = 'Which limb is this one\'s opposite number, if it has one.';
   mirror.dataset.more = 'A declared pair, never a computed one. Symmetry is a guess; saying which limb answers which is a fact, and it is what halves the work.';
   mirror.append(new Option('Not paired', ''));
-  for (const o of others) mirror.append(new Option(`Paired with ${o.id}`, o.id));
+  for (const o of others) mirror.append(new Option(`Paired with ${limbLabel(o)}`, o.id));
   mirror.value = ap.mirror || '';
   mirror.addEventListener('change', () => editParts(x => declareMirror(x, ap.id, mirror.value || null)));
   const other = document.createElement('button');
@@ -1835,13 +2474,19 @@ function limbRow(ap, limbs) {
 }
 
 /** A dropdown over one of the module's vocabularies. */
-function dropdown(values, value, tip, onChange) {
+function dropdown(values, value, tip, onChange, labels = null) {
   const el = document.createElement('select');
   el.dataset.tip = tip;
-  for (const v of values) el.append(new Option(v[0].toUpperCase() + v.slice(1), v));
+  for (const v of values) el.append(new Option(labels?.[v] || v[0].toUpperCase() + v.slice(1), v));
   el.value = value;
   el.addEventListener('change', () => onChange(el.value));
   return el;
+}
+
+function limbLabel(ap) {
+  const side = SIDE_LABELS[ap.side] || 'Center';
+  const type = ap.type === 'other' ? 'limb' : (APPENDAGE_LABELS[ap.type] || ap.type).toLowerCase();
+  return `${side} ${type} · pair ${(ap.row ?? 0) + 1}`;
 }
 
 // What the last mirror actually managed, kept until the next one. A suggestion that silently missed three
@@ -1855,12 +2500,12 @@ function mirrorLimb(ap) {
   const exclude = [...claimedBones(a)].filter(b => !ap.chain.includes(b));
   const s = suggestMirror(current.rig, ap.chain, { exclude });
   if (!s.chain.length) {
-    mirrorNote = `Nothing on the other side matched ${ap.id}. Select those bones and make a limb of them.`;
+    mirrorNote = `No matching bones were found for ${limbLabel(ap)}. Select the opposite limb and add it manually.`;
     renderPartWarnings(getAnnotation(library, current.entry.species));
     return;
   }
   // Set before the edit, because committing re-renders the panel and would show the previous note.
-  mirrorNote = `${s.chain.length} of ${ap.chain.length} bones matched ${ap.id}, worst `
+  mirrorNote = `${s.chain.length} of ${ap.chain.length} bones matched for ${limbLabel(ap)}, worst `
     + `${(s.worst * 100).toFixed(1)}% of body height`
     + (s.misses.length ? `. No match for ${s.misses.join(', ')}.` : '.');
   editParts((before, rig) => {
@@ -1955,11 +2600,11 @@ function renderUnaddressed(a) {
   host.textContent = '';
   if (!current) { host.textContent = '—'; return; }
   const all = unaddressed(a || emptyAnnotation(current.entry.species, current.rig), current.rig);
-  if (!all.length) { host.textContent = 'Every bone is in a part.'; return; }
+  if (!all.length) { host.textContent = 'Every bone is assigned.'; return; }
   const mass = all.reduce((m, b) => m + b.mass, 0);
   const big = all.filter(b => b.mass >= UNADDRESSED_MASS);
   const head = document.createElement('div');
-  head.textContent = `${all.length} bone${all.length === 1 ? '' : 's'} in no part, `
+  head.textContent = `${all.length} unassigned bone${all.length === 1 ? '' : 's'}, `
     + `${(mass * 100).toFixed(1)}% of the mesh.`;
   host.append(head);
   for (const b of big.slice(0, UNADDRESSED_ROWS)) {
@@ -2434,7 +3079,7 @@ function describeSpecies() {
   const { entry, rig } = current;
   $('speciesName').textContent = `#${String(entry.dex).padStart(3, '0')} ${entry.name}`;
   const a = getAnnotation(library, entry.species);
-  $('speciesSub').textContent = `${entry.species} is ${STATUS_LABELS[speciesStatus(a).state]}.`;
+  $('speciesSub').textContent = `Annotation: ${STATUS_LABELS[speciesStatus(a).state]}.`;
 
   const u = rig.units;
   const offset = u.height ? (u.floorY / u.height) * 100 : 0;
@@ -2819,6 +3464,9 @@ function afterEdit() {
   refreshBoard();
   $('undoBtn').disabled = !history.past.length;
   $('redoBtn').disabled = !history.future.length;
+  // The adapter reads semantic parts and the neutral pose. Rebuild from the edited annotation rather than
+  // letting a preview continue with stale decisions; this path never writes validation back to the file.
+  if (movementMode) rebuildMovementSession();
 }
 
 // --- the grid -------------------------------------------------------------------------------------
@@ -2851,8 +3499,8 @@ function buildGrid() {
 function refreshBoard() {
   const counts = labSummary(library, dex);
   const touched = dex.length - counts.untouched;
-  $('progress').textContent = `${touched} of ${dex.length} species touched`
-    + (counts.done ? `, ${counts.done} marked done.` : '.');
+  $('progress').textContent = `${touched} / ${dex.length} started`
+    + (counts.done ? ` · ${counts.done} complete` : '');
   buildGrid();
 }
 
@@ -2916,6 +3564,490 @@ addEventListener('keydown', (ev) => {
   }
 });
 
+// --- movement preview -------------------------------------------------------------------------------
+// One renderer, one cached asset, and one movement implementation. The authoring model stays untouched;
+// a skeleton-aware clone is handed to pokemon-movement.js and discarded when this tab is left.
+let movementMode = false;
+const MOVEMENT_FIXED = 1 / 60;
+const movementPreview = {
+  session: null,
+  paused: true,
+  started: false,
+  stepOnce: false,
+  lastUiAt: 0,
+};
+
+function seededMovementRandom(seed = 0x504f4b45) {
+  let x = seed >>> 0;
+  return () => {
+    x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+    return x / 0x100000000;
+  };
+}
+
+/** Match glTF node ids to a skeleton clone without relying on non-unique bone names. */
+function movementObjectsByNode(clone) {
+  const original = [], copied = [];
+  current.gltf.scene.traverse(o => original.push(o));
+  clone.traverse(o => copied.push(o));
+  const copyOf = new Map(original.map((o, i) => [o, copied[i]]));
+  const byNode = new Map();
+  for (const [object, ref] of current.gltf.parser.associations) {
+    if (ref && typeof ref.nodes === 'number' && copyOf.get(object)) byNode.set(ref.nodes, copyOf.get(object));
+  }
+  return byNode;
+}
+
+function applyMovementNeutral(resolved, byNode) {
+  applyNeutral(resolved, (node, trs) => {
+    const object = byNode.get(node);
+    if (!object) return;
+    if (trs.p) object.position.fromArray(trs.p);
+    if (trs.q) object.quaternion.fromArray(trs.q);
+    if (trs.s) object.scale.fromArray(trs.s);
+  });
+}
+
+function movementMapFor(source, resolved) {
+  try {
+    if (source === 'lab') {
+      const result = mapLabRigForGroundMovement({
+        annotationRig: resolved,
+        measuredRig: current.rig,
+        gltf: current.bytes,
+      });
+      return { source, label: 'Lab map', ...result };
+    }
+    const { map } = mapStadiumRigFromGLB(current.bytes, { source: current.entry.species });
+    const findings = (map.warnings || []).map(message => ({ severity: 'warn', code: 'guessed-map-warning', message }));
+    return { source, label: 'Guessed map', map, findings, trace: { semantics: 'legacy guess' } };
+  } catch (error) {
+    return {
+      source,
+      label: source === 'lab' ? 'Lab map' : 'Guessed map',
+      map: null,
+      findings: [{ severity: 'error', code: 'movement-map-failed', message: error.message }],
+      trace: {},
+    };
+  }
+}
+
+function movementSources() {
+  const choice = $('movementMap').value;
+  return choice === 'compare' ? ['lab', 'guessed'] : [choice];
+}
+
+function movementVisibility(visible) {
+  if (!current) return;
+  current.gltf.scene.visible = visible;
+  ghostRoot.visible = visible;
+  for (const key of ['joints', 'lines', 'halo']) if (skel[key]) skel[key].visible = visible && skel.on;
+  if (grid) grid.visible = visible;
+  if (floorRing) floorRing.visible = visible;
+}
+
+function disposeMovementObject(object) {
+  if (!object) return;
+  scene.remove(object);
+  // The cloned model shares geometry and materials with the cached authoring model. Only debug objects
+  // marked as owned by this session are disposed here.
+  object.traverse(o => {
+    if (!o.userData?.movementOwned) return;
+    o.geometry?.dispose?.();
+    for (const material of Array.isArray(o.material) ? o.material : [o.material]) material?.dispose?.();
+  });
+}
+
+function stopMovementSession({ restoreView = true } = {}) {
+  const session = movementPreview.session;
+  if (!session) return;
+  for (const entry of session.entries) {
+    disposeMovementObject(entry.overlay?.group);
+    if (entry.walker?.object) scene.remove(entry.walker.object);
+  }
+  disposeMovementObject(session.ground);
+  movementPreview.session = null;
+  movementPreview.stepOnce = false;
+  $('movementLabels').hidden = true;
+  $('movementLabels').textContent = '';
+  if (restoreView && current) {
+    movementVisibility(true);
+    const saved = session.camera;
+    if (saved) {
+      camera.position.copy(saved.position);
+      controls.target.copy(saved.target);
+      camera.near = saved.near;
+      camera.far = saved.far;
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
+    play.paused = session.playPaused;
+  }
+}
+
+function movementGround() {
+  const ground = new THREE.GridHelper(6, 30, 0x42505e, 0x232b34);
+  ground.userData.movementOwned = true;
+  scene.add(ground);
+  return ground;
+}
+
+function movementFindingText(findings) {
+  return (findings || []).filter(f => f.severity !== 'info').map(f => f.message);
+}
+
+function startMovementSession() {
+  stopMovementSession();
+  if (!movementMode || !current) {
+    refreshMovementPanel();
+    return;
+  }
+
+  const resolved = rigFor(library, current.entry.species, current.rig);
+  $('movementClass').textContent = movementLabel(resolved.locomotion);
+  if (resolved.locomotion !== 'walker') {
+    const unsupported = createPokemonMovement({ locomotion: resolved.locomotion });
+    $('movementState').textContent = unsupported.findings[0].message;
+    $('movementWarnings').textContent = '';
+    refreshMovementPanel();
+    return;
+  }
+
+  const mapped = movementSources().map(source => movementMapFor(source, resolved));
+  const blocking = mapped.flatMap(result => result.findings || []).filter(f => f.severity === 'error');
+  if (blocking.length || mapped.some(result => !result.map)) {
+    $('movementState').textContent = blocking[0]?.message || 'The selected mapping could not be built.';
+    $('movementWarnings').textContent = movementFindingText(mapped.flatMap(result => result.findings || [])).join('\n');
+    refreshMovementPanel();
+    return;
+  }
+
+  const session = {
+    species: current.entry.species,
+    entries: [],
+    findings: mapped.flatMap(result => result.findings || []),
+    ground: movementGround(),
+    playPaused: play.paused,
+    camera: {
+      position: camera.position.clone(), target: controls.target.clone(), near: camera.near, far: camera.far,
+    },
+  };
+  movementPreview.session = session;
+  play.paused = true;
+
+  const labels = $('movementLabels');
+  labels.textContent = '';
+  labels.hidden = mapped.length < 2;
+  mapped.forEach((result, index) => {
+    const clone = skeletonClone(current.gltf.scene);
+    const byNode = movementObjectsByNode(clone);
+    applyMovementNeutral(resolved, byNode);
+    clone.updateMatrixWorld(true);
+    const created = createPokemonMovement({
+      locomotion: resolved.locomotion,
+      THREE,
+      scene: clone,
+      map: result.map,
+      terrainHeight: () => 0,
+      gait: GAITS[$('movementGait').value] || GAITS.walk,
+      worldHeight: 1,
+      rng: seededMovementRandom(),
+    });
+    if (!created.supported) {
+      session.findings.push(...created.findings);
+      return;
+    }
+    const walker = created.controller;
+    const x = mapped.length === 2 ? (index ? 0.75 : -0.75) : 0;
+    walker.placeAt(x, 0, 0);
+    walker.applyPose();
+    scene.add(walker.object);
+    const entry = {
+      source: result.source,
+      label: result.label,
+      map: result.map,
+      walker,
+      clone,
+      byNode,
+      monitor: createGaitMonitor(),
+      lastFrame: null,
+      lastReport: null,
+      overlay: null,
+    };
+    entry.overlay = buildMovementOverlay(entry);
+    session.entries.push(entry);
+    labels.append(Object.assign(document.createElement('span'), { textContent: result.label }));
+  });
+  // Hide only after cloning. Object3D.clone preserves `visible`, so hiding first creates a perfectly
+  // driven but invisible movement model while its independently-created overlays still draw.
+  movementVisibility(false);
+
+  camera.near = 0.01;
+  camera.far = 100;
+  controls.target.set(0, 0.5, 0);
+  camera.position.set(mapped.length === 2 ? 3.5 : 2.5, mapped.length === 2 ? 2.0 : 1.6,
+    mapped.length === 2 ? 4.5 : 3.4);
+  camera.updateProjectionMatrix();
+  controls.update();
+  movementPreview.paused = true;
+  movementPreview.started = false;
+  $('movementWarnings').textContent = movementFindingText(session.findings).join('\n');
+  refreshMovementPanel();
+  updateMovementOverlays();
+}
+
+function setMovementMode(on) {
+  movementMode = !!on;
+  $('viewTools').hidden = movementMode || mapMode;
+  if (movementMode) startMovementSession();
+  else stopMovementSession();
+}
+
+function rebuildMovementSession() {
+  if (movementMode) startMovementSession();
+}
+
+function movementLine(count, color) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(Math.max(2, count) * 3), 3));
+  geometry.setDrawRange(0, 0);
+  const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+  line.frustumCulled = false;
+  line.userData.movementOwned = true;
+  return line;
+}
+
+function movementPoint(color, radius) {
+  const point = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 8, 6),
+    new THREE.MeshBasicMaterial({ color, depthTest: false }),
+  );
+  point.frustumCulled = false;
+  point.renderOrder = 8;
+  point.userData.movementOwned = true;
+  return point;
+}
+
+function writeMovementLine(line, points, close = false) {
+  const position = line.geometry.attributes.position;
+  const limit = position.count;
+  const count = Math.min(limit, points.length + (close && points.length ? 1 : 0));
+  for (let i = 0; i < count; i++) {
+    const point = points[i < points.length ? i : 0];
+    position.setXYZ(i, point.x, point.y, point.z);
+  }
+  position.needsUpdate = true;
+  line.geometry.setDrawRange(0, count);
+  line.visible = count >= 2;
+}
+
+function buildMovementOverlay(entry) {
+  const group = new THREE.Group();
+  const radius = 0.014;
+  const legs = entry.walker.legs.map((leg, index) => {
+    const mapped = entry.map.legs[index];
+    const chain = movementLine(Math.max(2, (mapped?.bones?.length || 0) + 1), 0x69d394);
+    const joints = [0, 1, 2].map(() => movementPoint(0x69d394, radius));
+    const pole = movementLine(2, 0xd99b59);
+    const intended = movementPoint(0xe65fa8, radius * 0.8);
+    const rendered = movementPoint(0x64a9e8, radius * 0.65);
+    const patch = movementLine(Math.max(4, (leg.contacts?.length || 3) + 1), 0x9fe870);
+    group.add(chain, pole, intended, rendered, patch, ...joints);
+    return { chain, joints, pole, intended, rendered, patch, mapped };
+  });
+  const support = movementLine(161, 0xffca58);
+  const body = movementPoint(0xffca58, radius * 0.8);
+  group.add(support, body);
+  scene.add(group);
+  return { group, legs, support, body };
+}
+
+const movementWorldPoint = new THREE.Vector3();
+function updateMovementOverlay(entry) {
+  const overlay = entry.overlay;
+  if (!overlay) return;
+  const showChains = $('movementShowChains').checked;
+  const showJoints = $('movementShowJoints').checked;
+  const showPoles = $('movementShowPoles').checked;
+  const showTargets = $('movementShowTargets').checked;
+  const showContacts = $('movementShowContacts').checked;
+  const showSupport = $('movementShowSupport').checked;
+
+  entry.walker.legs.forEach((leg, index) => {
+    const part = overlay.legs[index];
+    const chainPoints = [];
+    for (const node of part.mapped?.bones || []) {
+      const object = entry.byNode.get(node);
+      if (object) chainPoints.push(object.getWorldPosition(movementWorldPoint).clone());
+    }
+    part.chain.visible = showChains;
+    if (showChains) writeMovementLine(part.chain, chainPoints);
+
+    const jointPoints = [leg.hipWorld, leg.kneeWorld, leg.drawnFoot];
+    part.joints.forEach((point, i) => {
+      point.visible = showJoints;
+      if (showJoints) point.position.copy(jointPoints[i]);
+    });
+
+    part.pole.visible = showPoles;
+    if (showPoles) {
+      const tip = movementWorldPoint.copy(leg.poleWorld).multiplyScalar(0.18).add(leg.kneeWorld).clone();
+      writeMovementLine(part.pole, [leg.kneeWorld, tip]);
+    }
+    part.intended.visible = showTargets;
+    part.rendered.visible = showTargets;
+    if (showTargets) {
+      part.intended.position.copy(leg.end);
+      part.rendered.position.copy(leg.drawnFoot);
+    }
+    part.patch.visible = showContacts && !!leg.contacts?.length;
+    if (part.patch.visible) writeMovementLine(part.patch, leg.contacts, true);
+  });
+
+  const polygon = entry.walker.state.support?.poly || [];
+  overlay.support.visible = showSupport && polygon.length >= 3;
+  if (overlay.support.visible) writeMovementLine(overlay.support, polygon, true);
+  overlay.body.visible = showSupport;
+  if (showSupport) {
+    const body = entry.walker.body.pos;
+    overlay.body.position.set(body.x, 0.012, body.z);
+  }
+}
+
+function updateMovementOverlays() {
+  for (const entry of movementPreview.session?.entries || []) updateMovementOverlay(entry);
+}
+
+function movementLegName(entry, index) {
+  return entry.map.legs[index]?.annotationId || `leg ${index + 1}`;
+}
+
+function movementFrameWarnings(entry) {
+  const warnings = [];
+  for (let i = 0; i < (entry.lastFrame?.legs?.length || 0); i++) {
+    const leg = entry.lastFrame.legs[i];
+    const name = movementLegName(entry, i);
+    if (leg.failure) warnings.push(`${entry.label} - ${name}: ${leg.failure.replaceAll('-', ' ')}.`);
+    if (Number.isFinite(leg.bendSign) && leg.bendSign <= 0) warnings.push(`${entry.label} - Knee flip: ${name}.`);
+  }
+  return warnings;
+}
+
+function movementDiagnosticText(entry) {
+  const report = entry.lastReport;
+  const frame = entry.lastFrame;
+  if (!report || !frame) return `${entry.label}\n  No movement frames yet.`;
+  const percent = value => `${(100 * (Number.isFinite(value) ? value : 0)).toFixed(1)}%`;
+  const number = value => Number.isFinite(value) ? value.toFixed(4) : 'n/a';
+  const flips = frame.legs.filter(leg => Number.isFinite(leg.bendSign) && leg.bendSign <= 0).length;
+  return [
+    entry.label,
+    `  Foot slip       ${percent(report.dragging.worstStanceSkate)}`,
+    `  Target gap      ${percent(report.dragging.gapP95)}`,
+    `  Knee flip       ${flips}`,
+    `  Ground error    ${number(report.retarget.plantedGroundErrorP95)}`,
+    `  Support margin  ${number(frame.supportMargin)}`,
+    `  Dropped time    ${number(frame.droppedTimeTotal)} s`,
+  ].join('\n');
+}
+
+function refreshMovementPanel() {
+  const resolved = current ? rigFor(library, current.entry.species, current.rig) : null;
+  const supportedClass = resolved?.locomotion === 'walker';
+  const session = movementPreview.session;
+  const ready = !!session?.entries?.length;
+  $('movementClass').textContent = movementLabel(resolved?.locomotion);
+  $('movementGait').disabled = !supportedClass;
+  $('movementStartBtn').disabled = !ready || (!movementPreview.paused && movementPreview.started);
+  $('movementPauseBtn').disabled = !ready || movementPreview.paused;
+  $('movementStepBtn').disabled = !ready;
+  $('movementResetBtn').disabled = !current || !movementMode;
+  $('movementSpeedRead').textContent = `${Math.round(Number($('movementSpeed').value) * 100)}%`;
+  $('movementDirectionRead').textContent = `${Number($('movementDirection').value)} degrees`;
+
+  if (!current) $('movementState').textContent = 'Choose a species.';
+  else if (!supportedClass) $('movementState').textContent = `${movementLabel(resolved.locomotion)} preview is not implemented yet.`;
+  else if (!ready && !$('movementState').textContent) $('movementState').textContent = 'The selected mapping is not ready.';
+  else if (ready) {
+    $('movementState').textContent = movementPreview.paused
+      ? (movementPreview.started ? 'Paused.' : 'Ready. Press Start or Step.')
+      : 'Moving.';
+  }
+
+  $('movementDiagnostics').textContent = ready
+    ? session.entries.map(movementDiagnosticText).join('\n\n')
+    : 'Start the preview to collect measurements.';
+  if (ready) {
+    const warnings = [
+      ...movementFindingText(session.findings),
+      ...session.entries.flatMap(movementFrameWarnings),
+    ];
+    $('movementWarnings').textContent = [...new Set(warnings)].join('\n');
+  }
+}
+
+function applyMovementCommand(entry, dt) {
+  const direction = Number($('movementDirection').value) * Math.PI / 180;
+  const distance = 10;
+  entry.walker.setTarget(
+    entry.walker.body.pos.x + Math.sin(direction) * distance,
+    entry.walker.body.pos.z + Math.cos(direction) * distance,
+  );
+  entry.walker.update(dt, {
+    walk: movementPreview.started,
+    speed: Number($('movementSpeed').value),
+  });
+  // diagnosticFrame is a delta sampler. This is its one and only call for this walker in this rendered frame.
+  const frame = entry.walker.diagnosticFrame();
+  entry.lastFrame = frame;
+  entry.monitor.sample(frame);
+  entry.lastReport = entry.monitor.report();
+}
+
+function stepMovementFrame(dt) {
+  const session = movementPreview.session;
+  if (!movementMode || !session) return;
+  const stepping = !movementPreview.paused || movementPreview.stepOnce;
+  const step = movementPreview.stepOnce ? MOVEMENT_FIXED : Math.min(dt, 0.05);
+  movementPreview.stepOnce = false;
+  for (const entry of session.entries) {
+    if (stepping) applyMovementCommand(entry, step);
+    else entry.walker.applyPose();
+  }
+  updateMovementOverlays();
+  const now = performance.now();
+  if (now - movementPreview.lastUiAt > 100) {
+    movementPreview.lastUiAt = now;
+    refreshMovementPanel();
+  }
+}
+
+$('movementStartBtn').addEventListener('click', () => {
+  if (!movementPreview.session) startMovementSession();
+  movementPreview.started = true;
+  movementPreview.paused = false;
+  refreshMovementPanel();
+});
+$('movementPauseBtn').addEventListener('click', () => {
+  movementPreview.paused = true;
+  refreshMovementPanel();
+});
+$('movementStepBtn').addEventListener('click', () => {
+  movementPreview.started = true;
+  movementPreview.paused = true;
+  movementPreview.stepOnce = true;
+  refreshMovementPanel();
+});
+$('movementResetBtn').addEventListener('click', startMovementSession);
+$('movementMap').addEventListener('change', rebuildMovementSession);
+$('movementGait').addEventListener('change', rebuildMovementSession);
+$('movementSpeed').addEventListener('input', refreshMovementPanel);
+$('movementDirection').addEventListener('input', refreshMovementPanel);
+for (const id of [
+  'movementShowChains', 'movementShowJoints', 'movementShowPoles',
+  'movementShowTargets', 'movementShowContacts', 'movementShowSupport',
+]) $(id).addEventListener('change', updateMovementOverlays);
+
 // --- the map tab ------------------------------------------------------------------------------------
 //
 // The map is `tools/filesystem-map.html` with `?scope=pokemon`, in an iframe. That page already draws the
@@ -2929,62 +4061,29 @@ addEventListener('keydown', (ev) => {
 // than removed, so coming back does not re-scan the repo and re-settle the layout.
 const MAP_URL = 'tools/filesystem-map.html?scope=pokemon';
 
-// --- the side columns -------------------------------------------------------------------------------
-//
-// Collapsing is a view control and nothing is authored by it, so it is not saved anywhere: a reload opens
-// with both columns showing.
-const panes = { left: true, right: true };
-let panesBeforeMap = null;
+// Selecting the Map tab shows tools/filesystem-map.html over the viewport and folds the panel to its
+// header bar, since that page carries its own panels and wants the width. The panel comes back the way
+// it was on the way out.
+let panelBeforeMap = false;
 
-function applyPanes() {
-  $('app').classList.toggle('no-left', !panes.left);
-  $('app').classList.toggle('no-right', !panes.right);
-  $('paneLeft').classList.toggle('off', !panes.left);
-  $('paneRight').classList.toggle('off', !panes.right);
-  // The track transition is asynchronous, so the stage is still its old width on this line and the
-  // ResizeObserver is what actually drives the canvas as the columns move. This call is for the case
-  // where there is no transition to observe -- reduced motion, or a track that snaps.
-  resize();
-}
-
-function setPane(side, open) {
-  if (panes[side] === open) return;
-  panes[side] = open;
-  applyPanes();
-}
-
-$('paneLeft').addEventListener('click', () => setPane('left', !panes.left));
-$('paneRight').addEventListener('click', () => setPane('right', !panes.right));
-
-function setTab(next) {
-  if (next === tab) return;
-  tab = next;
-  const onMap = tab === 'map';
-  $('tabBrowse').classList.toggle('on', !onMap);
-  $('tabMap').classList.toggle('on', onMap);
-
-  // The map wants the width, and it carries its own panels, so both columns fold on the way in and are
-  // put back exactly as they were on the way out. Browse always looks the way you left it.
-  if (onMap) {
-    panesBeforeMap = { ...panes };
-    panes.left = panes.right = false;
-  } else if (panesBeforeMap) {
-    Object.assign(panes, panesBeforeMap);
-    panesBeforeMap = null;
-  }
-  applyPanes();
-
+function setMapMode(on) {
+  mapMode = !!on;
   const frame = $('mapFrame');
-  if (onMap && !frame.src) frame.src = MAP_URL;
-  frame.style.display = onMap ? 'block' : 'none';
-  // The model viewer keeps its canvas but stops being driven; see the render loop.
-  renderer.domElement.style.visibility = onMap ? 'hidden' : '';
-  $('stageMsg').style.display = onMap || current ? 'none' : 'flex';
-  $('tabNote').textContent = onMap ? 'tools/filesystem-map.html, scoped to this subsystem.' : '';
+  frame.style.display = mapMode ? 'block' : 'none';
+  $('viewTools').hidden = mapMode;
+  // Show the frame BEFORE loading into it, and wait a frame so it has been laid out. The map sizes its
+  // renderer from its own window.innerWidth at boot, and a frame still display:none reports zero -- which
+  // does not fail loudly, it asks WebGPU for a zero-width texture and every pass after that is invalid.
+  if (mapMode && !frame.src) requestAnimationFrame(() => { if (!frame.src) frame.src = MAP_URL; });
+  renderer.domElement.style.visibility = mapMode ? 'hidden' : '';
+  $('stageMsg').style.display = mapMode || current ? 'none' : 'flex';
+  if (mapMode) {
+    panelBeforeMap = panelCollapsed;
+    setPanelCollapsed(true);
+  } else {
+    setPanelCollapsed(panelBeforeMap);
+  }
 }
-
-$('tabBrowse').addEventListener('click', () => setTab('browse'));
-$('tabMap').addEventListener('click', () => setTab('map'));
 
 // --- the loop -------------------------------------------------------------------------------------
 const clock = new THREE.Clock();
@@ -2998,7 +4097,21 @@ const envAudio = createEnvironmentAudio({
   shuffle: true,
 });
 envAudio.init();
-envAudio.getMusicSpeakerObject().scale.setScalar(0.6);
+// The models are 9 to 147 units tall (median 52) and the camera frames at about 2.4 spans, while
+// every audio distance was written for metres. One scale per species, from the measured rig,
+// sizes the speaker orb, its offsets and every falloff to the creature on screen.
+function audioSpan() {
+  const u = current?.rig?.units;
+  return u ? Math.max(u.height || 0, (u.halfWidth || 0) * 2, 1) : 1;
+}
+function syncAudioScale() {
+  envAudio.setWorldScale(audioSpan() / 1.8);   // 1.8: the height the metre-scale numbers were tuned around
+}
+// The speaker falloff was tuned for a game map; the lab starts it lower so the orb carries across
+// a whole orbit. The Falloff slider is the same setting, live.
+envAudio.setMusicEffect('attenuation', 40);
+// The cry's pitch shifter is the music worklet; loading it now means the first press can use it.
+envAudio.preparePitchWorklet();
 addEventListener('pointerdown', () => envAudio.noteGesture());
 envAudio.loadMusicHttp({ listUrl: '/api/list-pokemon-music', baseUrl: './pokemon/Stadium Music/', select: true });
 
@@ -3072,16 +4185,160 @@ $('cryBtn').addEventListener('click', async () => {
   } else {
     $('cryRead').textContent = '';
   }
-  envAudio.playBufferAt(buf, cryPosition(), 1, { refDistance: 2, maxDistance: 80 });
+  // Gentle falloff sized to an orbit camera: audible from any distance you would actually view
+  // from, still louder and directional up close. The defaults were tuned for combat maps.
+  const span = audioSpan();
+  const take = cryTake();
+  const sample = take.reversed ? reversedBuffer(buf, current.entry.dex) : buf;
+  const rate = take.tempo / 100;
+  const base = {
+    refDistance: 2 * span, maxDistance: 100 * span, rolloffFactor: 0.6,
+    playbackRate: rate,
+    pitchRatio: Math.pow(2, take.pitch / 12),
+    insert: cryChain,
+  };
+  const at = cryPosition();
+  // Trim, then stutter: the opening slice of the trimmed cry N times back to back, then the whole
+  // trimmed cry after them. Delays are in played seconds, so they follow the speed.
+  const start = Math.min(cry.start, cry.end) / 100 * sample.duration;
+  const length = Math.max(0.01, Math.abs(cry.end - cry.start) / 100 * sample.duration);
+  const slice = Math.min(length, cry.stutterLen / 1000);
+  let delay = 0;
+  for (let i = 0; i < cry.stutter; i++) {
+    envAudio.playBufferAt(sample, at, 1, { ...base, offset: start, duration: slice, delay });
+    delay += slice / rate;
+  }
+  envAudio.playBufferAt(sample, at, 1, { ...base, offset: start, duration: length, delay });
+  if (!$('cryRead').textContent) $('cryRead').textContent = describeTake(take);
 });
+
+// The cry's own effects, built between the source and the panner for every slice played: bass
+// shelf, vibrato on the source's detune, tremolo on a gain, and an attack/release envelope timed
+// to the slice. The oscillators stop with the source, or every press would leave two running.
+function cryChain(ctx, input, { source, startTime, duration }) {
+  let tail = input;
+  const stops = [];
+  if (cry.bass) {
+    const shelf = ctx.createBiquadFilter();
+    shelf.type = 'lowshelf';
+    shelf.frequency.value = 180;
+    shelf.gain.value = cry.bass;
+    tail.connect(shelf); tail = shelf;
+  }
+  if (cry.vibRate > 0 && cry.vibDepth > 0 && source.detune) {
+    const lfo = ctx.createOscillator(), depth = ctx.createGain();
+    lfo.frequency.value = cry.vibRate;
+    depth.gain.value = cry.vibDepth * 100;          // detune is in cents
+    lfo.connect(depth); depth.connect(source.detune);
+    lfo.start(startTime); stops.push(lfo);
+  }
+  if (cry.tremRate > 0 && cry.tremDepth > 0) {
+    const trem = ctx.createGain(), lfo = ctx.createOscillator(), depth = ctx.createGain();
+    const d = cry.tremDepth / 100;
+    trem.gain.value = 1 - d / 2;
+    lfo.frequency.value = cry.tremRate;
+    depth.gain.value = d / 2;
+    lfo.connect(depth); depth.connect(trem.gain);
+    tail.connect(trem); tail = trem;
+    lfo.start(startTime); stops.push(lfo);
+  }
+  if (cry.attack > 0 || cry.release > 0) {
+    const env = ctx.createGain();
+    const attack = Math.min(cry.attack / 1000, duration);
+    const release = Math.min(cry.release / 1000, Math.max(0, duration - attack));
+    env.gain.setValueAtTime(attack > 0 ? 0 : 1, startTime);
+    if (attack > 0) env.gain.linearRampToValueAtTime(1, startTime + attack);
+    if (release > 0) {
+      env.gain.setValueAtTime(1, startTime + duration - release);
+      env.gain.linearRampToValueAtTime(0, startTime + duration);
+    }
+    tail.connect(env); tail = env;
+  }
+  if (stops.length) source.addEventListener('ended', () => { for (const o of stops) { try { o.stop(); } catch { /* already */ } } });
+  return tail;
+}
+
+// --- cry variation: pitch, speed, direction, and how far a press wanders from them ---------------
+const CRY_DEFAULTS = {
+  pitch: 0, tempo: 100, vary: 0, reversed: false,
+  bass: 0, vibRate: 0, vibDepth: 0, tremRate: 0, tremDepth: 0,
+  attack: 0, release: 0, stutter: 0, stutterLen: 120, start: 0, end: 100,
+};
+const cry = { ...CRY_DEFAULTS };
+const cryReversed = new Map();   // dex -> reversed AudioBuffer, built once
+
+function cryTake() {
+  // Variation wanders in the same units the sliders use: up to ±12 semitones, and speed by up to
+  // half or double, both scaled by the slider and drawn fresh each press.
+  const v = cry.vary / 100;
+  const pitch = Math.round(cry.pitch + (Math.random() * 2 - 1) * 12 * v);
+  const tempo = Math.round(cry.tempo * Math.pow(2, (Math.random() * 2 - 1) * v));
+  return {
+    pitch: Math.max(-24, Math.min(24, pitch)),
+    tempo: Math.max(25, Math.min(400, tempo)),
+    reversed: cry.reversed,
+  };
+}
+
+function describeTake(t) {
+  const parts = [];
+  if (t.pitch) parts.push(`${t.pitch > 0 ? '+' : ''}${t.pitch} st`);
+  if (t.tempo !== 100) parts.push(`${t.tempo}% speed`);
+  if (t.reversed) parts.push('reversed');
+  return parts.length ? `Played ${parts.join(', ')}.` : '';
+}
+
+function reversedBuffer(buf, dex) {
+  let out = cryReversed.get(dex);
+  if (out) return out;
+  out = new AudioBuffer({ numberOfChannels: buf.numberOfChannels, length: buf.length, sampleRate: buf.sampleRate });
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const src = buf.getChannelData(c), dst = out.getChannelData(c);
+    for (let i = 0, n = src.length; i < n; i++) dst[i] = src[n - 1 - i];
+  }
+  cryReversed.set(dex, out);
+  return out;
+}
+
+// Slider to state key. Each slider writes its key on input; the readouts are rewritten from state.
+const CRY_SLIDERS = [
+  [$('cryPitch'), 'pitch'], [$('cryTempo'), 'tempo'], [$('cryVary'), 'vary'], [$('cryBass'), 'bass'],
+  [$('cryVibRate'), 'vibRate'], [$('cryVibDepth'), 'vibDepth'], [$('cryTremRate'), 'tremRate'],
+  [$('cryTremDepth'), 'tremDepth'], [$('cryAttack'), 'attack'], [$('cryRelease'), 'release'],
+  [$('cryStutter'), 'stutter'], [$('cryStutterLen'), 'stutterLen'], [$('cryStart'), 'start'], [$('cryEnd'), 'end'],
+];
+function refreshCryControls() {
+  for (const [input, key] of CRY_SLIDERS) input.value = String(cry[key]);
+  $('cryPitchRead').textContent = `${cry.pitch > 0 ? '+' : ''}${cry.pitch} st`;
+  $('cryTempoRead').textContent = `${cry.tempo}%`;
+  $('cryVaryRead').textContent = `${cry.vary}%`;
+  $('cryBassRead').textContent = `${cry.bass > 0 ? '+' : ''}${cry.bass} dB`;
+  $('cryVibRead').textContent = cry.vibRate > 0 && cry.vibDepth > 0 ? `${cry.vibRate} Hz, ${cry.vibDepth} st` : 'off';
+  $('cryTremRead').textContent = cry.tremRate > 0 && cry.tremDepth > 0 ? `${cry.tremRate} Hz, ${cry.tremDepth}%` : 'off';
+  $('cryFadeRead').textContent = `${cry.attack} / ${cry.release} ms`;
+  $('cryStutterRead').textContent = cry.stutter > 0 ? `${cry.stutter} × ${cry.stutterLen} ms` : 'off';
+  const lo = Math.min(cry.start, cry.end), hi = Math.max(cry.start, cry.end);
+  $('cryTrimRead').textContent = lo === 0 && hi === 100 ? 'whole' : `${lo}–${hi}%`;
+  $('cryReverseBtn').classList.toggle('on', cry.reversed);
+}
+for (const [input, key] of CRY_SLIDERS) {
+  input.addEventListener('input', () => { cry[key] = Number(input.value); refreshCryControls(); });
+}
+$('cryReverseBtn').addEventListener('click', () => { cry.reversed = !cry.reversed; refreshCryControls(); });
+$('cryResetBtn').addEventListener('click', () => { Object.assign(cry, CRY_DEFAULTS); refreshCryControls(); });
+refreshCryControls();
 
 // The sound-effects volume the viewers share, saved per origin. Moving it also unmutes, since a mute
 // set in another tool would otherwise silence cries with nothing on this page saying so.
 $('cryVol').addEventListener('input', () => {
+  // Read the slider before touching the controller: every setter below notifies, and the
+  // subscriber writes the STORED volume back into this slider synchronously, so reading it
+  // afterwards hands the old value straight back — the slider was stuck at whatever was saved.
+  const v = Number($('cryVol').value);
   envAudio.setMuted('sfx', false);
   envAudio.setMuted('master', false);
   if (envAudio.getState().masterVolume === 0) envAudio.setVolume('master', 1);
-  envAudio.setVolume('sfx', Number($('cryVol').value));
+  envAudio.setVolume('sfx', v);
 });
 
 // --- the music player ---------------------------------------------------------------------------
@@ -3106,6 +4363,7 @@ musicTrackSel.addEventListener('change', () => {
 $('musicVol').addEventListener('input', () => envAudio.setVolume('music', Number($('musicVol').value)));
 $('musicOutSel').addEventListener('change', () => { envAudio.noteGesture(); envAudio.setMusicOutput($('musicOutSel').value); });
 $('musicSpeakerSel').addEventListener('change', () => envAudio.setMusicSpeakerBehavior($('musicSpeakerSel').value));
+$('musicFalloff').addEventListener('input', () => envAudio.setMusicEffect('attenuation', Number($('musicFalloff').value)));
 let musicSeekHeld = false;
 $('musicSeek').addEventListener('input', () => { musicSeekHeld = true; });
 $('musicSeek').addEventListener('change', () => { envAudio.seekMusic(Number($('musicSeek').value)); musicSeekHeld = false; });
@@ -3120,6 +4378,8 @@ envAudio.subscribe((state) => {
   $('musicVolRead').textContent = Math.round(state.musicVolume * 100) + '%';
   $('musicOutSel').value = state.musicOutput;
   $('musicSpeakerSel').value = state.speakerBehavior;
+  $('musicFalloff').value = String(state.effects.attenuation);
+  $('musicFalloffRead').textContent = String(Math.round(state.effects.attenuation));
   const list = state.playlist || [];
   if (musicTrackSel.options.length !== list.length) {
     musicTrackSel.textContent = '';
@@ -3187,20 +4447,25 @@ renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   // Nothing is stepped or drawn while the map is up: the iframe is doing its own rendering, and two
   // WebGPU contexts both running full tilt for one visible picture is waste.
-  if (tab === 'map') return;
-  advance(dt);
+  if (mapMode) return;
+  if (movementMode) stepMovementFrame(dt);
+  else advance(dt);
   controls.update();
   envAudio.update();
   syncMusicProgress(performance.now());
   // Order: the clip writes every bone, posed bones are put back over it, then the limp ones are simulated
   // against the result. Each step only overrides what the one before it had no business owning.
-  if (ragdoll.sim) {
+  if (movementMode) {
+    // The movement clone was already posed above. Authoring playback, held bones, and ragdoll are paused
+    // until the tab restores the original instance.
+  } else if (ragdoll.sim) {
     stepRagdollFrame(dt);
   } else {
     applyHeld();
     stepLimpFrame(dt);
     updateSkeleton();
   }
+  currentPhenomena?.update(clock.elapsedTime);
   if (viewHelper) renderer.clear();
   renderer.render(scene, camera);
   if (viewHelper) {
@@ -3218,8 +4483,11 @@ renderer.setAnimationLoop(() => {
 
 // Controls whose look is written by script need one pass before the first click, or the button and the
 // state it stands for start out disagreeing.
-setSnap(play.snap);
-refreshGhostButtons();
+buildSections();
+setActiveTab('dex', { scroll: false });
+  setSnap(play.snap);
+  refreshGhostButtons();
+  refreshMovementPanel();
 refreshBoard();
 selectSpecies(dex[0].species).catch(showError);
 </script>

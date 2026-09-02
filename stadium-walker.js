@@ -220,15 +220,9 @@ export function createStadiumWalker({
     // at 0.68-1.00 — gallop is off the top of the biological range, and that is the same fact as the
     // three-frame step.
     strideNumberMax: 0.5,
-    // How many feet must stay down. Three is not a taste: two grounded feet are a LINE, the support
-    // polygon has no interior, and `bodySupport` tilts the normal instead of holding the body up — the
-    // same collapse already documented for bipeds, which is why they get `uprightSupport` instead.
-    // `GAITS.gallop` asks for half the legs airborne, which on a quadruped is two, and the measured
-    // result was nine of fourteen species walking below 85% of their own ride height, half of every
-    // planted frame past full reach, and bodies travelling at 147% of the speed they were commanded.
-    // Capping it at one airborne foot for a quadruped fixed all three at once. Six legs are unaffected:
-    // three down out of six is still a triangle, so Paras keeps its alternating tripod. Set to 0 to
-    // switch the cap off, which is how the sweep reaches the broken regimes on purpose.
+    // How many feet should stay down. Walking a quadruped keeps three; a paired gait cannot be reduced to
+    // one airborne foot without splitting the pair and permanently stranding its follower. In that case
+    // the structural pair wins and `uprightSupport` handles the two-foot support line.
     supportPolygonFloor: 3,
     // ...and the perceptual one, which does not scale, because the eye does not. Below roughly a tenth of
     // a second a limb reads as having jumped however small the animal is, and no amount of correct
@@ -256,7 +250,10 @@ export function createStadiumWalker({
     // — Seel and Sandslash, both splay-limbed — otherwise walk at 64% and 79% of their own ride height;
     // half rather than one because letting an overreaching creature topple is a real feature of the sim's
     // support model, and 0 restores it exactly.
-    uprightSupport: uprightSupport ?? (map.legs.length <= 2 ? 1 : 0.5),
+    // A biped and a paired gait both spend their working phase on a line between two feet. A static
+    // support polygon has no interior there; full upright support supplies the ankle/body control the
+    // kinematic gait does not simulate and prevents its support normal from shoving travel sideways.
+    uprightSupport: uprightSupport ?? (map.legs.length <= 2 || gait.rowPairSteps ? 1 : 0.5),
   };
 
   const state = {
@@ -272,6 +269,8 @@ export function createStadiumWalker({
     // biped standing on point-feet is never — that degeneracy is what the contact patch is for.
     contactCount: 0, haveSupport: false, comInside: false,
     supportFrames: 0, supportedFrames: 0, comInsideFrames: 0,
+    bodyClearance: 0, belowMinimumClearanceFrames: 0,
+    droppedTimeFrame: 0, droppedTimeTotal: 0, substepCapHits: 0, maxInputDt: 0,
   };
 
   /**
@@ -316,7 +315,9 @@ export function createStadiumWalker({
     // Applied AFTER `concurrentScale`, so it is the last word — and only where enough legs exist for it
     // to mean anything. A biped can never keep three feet down and is held up by `uprightSupport` instead.
     if (t.supportPolygonFloor > 0 && map.legs.length > t.supportPolygonFloor) {
-      const allowed = (map.legs.length - t.supportPolygonFloor) / map.legs.length;
+      let allowedLegs = map.legs.length - t.supportPolygonFloor;
+      if (sized.rowPairSteps) allowedLegs = Math.max(2, allowedLegs);
+      const allowed = allowedLegs / map.legs.length;
       sized.maxConcurrentFraction = Math.min(sized.maxConcurrentFraction, allowed);
     }
     const concurrentLegs = Math.max(1, Math.floor(map.legs.length * sized.maxConcurrentFraction));
@@ -414,8 +415,18 @@ export function createStadiumWalker({
     const hip = V(L.hip.x, L.hip.y, L.hip.z).multiplyScalar(s);
     const knee = V(L.knee.x, L.knee.y, L.knee.z).multiplyScalar(s);
     const foot = V(L.foot.x, L.foot.y, L.foot.z).multiplyScalar(s);
-    const upper = L.bones.slice(0, L.kneeIndex);
-    const lower = L.bones.slice(L.kneeIndex);
+    const jointBones = L.jointBones || L.bones;
+    const upper = jointBones.slice(0, L.kneeIndex);
+    const lower = [...jointBones.slice(L.kneeIndex), ...L.bones.filter(b => !jointBones.includes(b))];
+    const restChord = V().subVectors(foot, hip).normalize();
+    const restPole = V().subVectors(knee, hip);
+    restPole.addScaledVector(restChord, -restPole.dot(restChord));
+    if (restPole.lengthSq() < 1e-12) restPole.set(L.pole.x, L.pole.y, L.pole.z);
+    restPole.normalize().applyQuaternion(scene.quaternion);
+    const diagnosticUpper = upper[0];
+    const diagnosticLower = lower[lower.length - 1];
+    const pointInBone = (nodeId, point) => V(point.x, point.y, point.z)
+      .applyMatrix4(new THREE.Matrix4().fromArray(map.restWorld[nodeId]).invert());
     return {
       index: i, row: L.row, side: L.side,
       phase: (L.row + (L.side > 0 ? 1 : 0)) % 2,
@@ -427,6 +438,9 @@ export function createStadiumWalker({
       restLocal: V(foot.x - bodyCentroid.x, 0, foot.z - bodyCentroid.z).applyQuaternion(scene.quaternion),
       restDirLocal: V(L.restDir.x, 0, L.restDir.z).applyQuaternion(scene.quaternion),
       poleLocal: V(L.pole.x, L.pole.y, L.pole.z).applyQuaternion(scene.quaternion),
+      restPoleLocal: restPole,
+      poleSource: L.poleSource ?? 'unknown',
+      poleConfidence: Number.isFinite(L.poleConfidence) ? L.poleConfidence : 0,
       l1: L.l1 * s, l2: L.l2 * s, span: L.span * s,
       // TWO COPIES OF THE SAME THREE POINTS, in two different spaces, and mixing them up is the easy
       // mistake here. The locomotion sim works in world units, so `attachmentLocal`/`restLocal` above are
@@ -443,7 +457,14 @@ export function createStadiumWalker({
       // And each driven bone's rest pose in the same frame.
       restRelAttach: new Map(L.bones.map(b => [b,
         new THREE.Matrix4().multiplyMatrices(attachInv, new THREE.Matrix4().fromArray(map.restWorld[b]))])),
-      upper, lower, attach: L.attach,
+      upper, lower, jointBones, attach: L.attach,
+      // Rest points in the two drawn bone frames. After retargeting these reveal whether the matrices a
+      // viewer sees still meet at the knee and preserve the two solved lengths.
+      diagnosticUpper, diagnosticLower,
+      hipInUpper: pointInBone(diagnosticUpper, L.hip),
+      kneeInUpper: pointInBone(diagnosticUpper, L.knee),
+      kneeInLower: pointInBone(diagnosticLower, L.knee),
+      footInLower: pointInBone(diagnosticLower, L.foot),
       // Carried for the overlay and for an ankle that does not exist yet: `lower` still runs knee to sole
       // as one rigid group, so the foot cannot articulate and the sole pitches with the shank.
       footBones: L.footBones || [], ankleIndex: L.ankleIndex ?? null,
@@ -456,12 +477,24 @@ export function createStadiumWalker({
       contacts: null,
       // Live state the locomotion module reads and writes.
       hipWorld: V(), kneeWorld: V(), drawnFoot: V(), drawnPrev: V(), drawnValid: false,
+      renderedHip: V(), renderedKneeUpper: V(), renderedKneeLower: V(), renderedFoot: V(),
+      poleWorld: V(), bendSign: 0, kneeAngle: 0, kneeAngleDelta: 0, kneeAngleValid: false,
+      upperLengthError: 0, lowerLengthError: 0,
+      jointContinuityError: 0, jointContinuityRelative: 0, renderedGroundError: null,
       end: foot.clone(), target: foot.clone(), groundPosition: foot.clone(),
       stepStart: foot.clone(), stepEnd: foot.clone(),
       lookAhead: V(), scanStart: V(), scanEnd: V(),
       targetGrounded: true, stepping: false, t: 0,
       // Stray gate. Set in the fixed step, consumed in `applyPose` where the drawn foot exists.
       justLanded: false, forceStep: false, strayTries: 0, strayNow: 0, strayFlag: false,
+      // Named diagnostic causes. These do not participate in movement; they record the decisions the
+      // walker already makes so a caller can tell terrain, reach, scheduling and retry failures apart.
+      terrainMisses: 0, terrainMissNow: false,
+      reachClamps: 0, reachClampedNow: false,
+      schedulerWaitFrames: 0, schedulerWaitCurrent: 0, schedulerWaitMax: 0,
+      schedulerStarvations: 0, schedulerWaiting: false, schedulerStarved: false,
+      forcedResteps: 0, forcedRestepNow: false,
+      exhaustedResteps: 0, retryExhaustedNow: false,
       timeSinceBeginMove: 999, timeSinceStopMove: 999,
       canMove: false, wants: false, uncomfortable: false,
       restX: foot.x, restY: foot.y, restZ: foot.z,
@@ -599,7 +632,7 @@ export function createStadiumWalker({
   /** A foot touched down. Counted in `applyStrayGate`. */
   function markLanded(leg) { leg.justLanded = true; }
 
-  function fixedStep(h, walk) {
+  function fixedStep(h, walk, desiredSpeed = 1) {
     const g = state.gait, P = state.physics;
     const speed = Math.hypot(body.vel.x, body.vel.z);
     const speedFraction = clamp(speed / Math.max(0.001, g.maxSpeed), 0, 1);
@@ -623,6 +656,8 @@ export function createStadiumWalker({
       leg.timeSinceBeginMove += h;
       leg.timeSinceStopMove += h;
       const rest = solver.solveLegTarget(leg, g, triggerH, true, body);
+      leg.terrainMissNow = !leg.targetGrounded;
+      if (leg.terrainMissNow) leg.terrainMisses++;
       clampTargetToLimits(leg, leg.target, leg.targetGrounded);
       advanceLeg(leg, g, h, triggerH, triggerV, rest, markLanded);
       if (leg.strayFlag) leg.uncomfortable = true;
@@ -648,6 +683,27 @@ export function createStadiumWalker({
       if (leg.forceStep || reachOf(leg) > (leg.l1 + leg.l2) * tuning.maxExtension) {
         startStep(leg);
         leg.forceStep = false;
+      }
+    }
+
+    // Waiting for a partner or a support slot is ordinary gait scheduling, not a failure: the default
+    // reference creatures spend most wanted frames doing exactly that. Starvation starts only when a leg
+    // was ELIGIBLE (`canMove`) but was passed over for longer than a complete nominal opportunity cycle.
+    const concurrent = Math.max(1, Math.floor(legs.length * g.maxConcurrentFraction));
+    const opportunityCycle = g.stepDuration * legs.length / concurrent;
+    for (const leg of legs) {
+      leg.schedulerWaiting = !!(walk && leg.wants && leg.canMove && !leg.stepping);
+      if (!leg.schedulerWaiting) {
+        leg.schedulerWaitCurrent = 0;
+        leg.schedulerStarved = false;
+        continue;
+      }
+      leg.schedulerWaitFrames++;
+      leg.schedulerWaitCurrent += h;
+      leg.schedulerWaitMax = Math.max(leg.schedulerWaitMax, leg.schedulerWaitCurrent);
+      if (!leg.schedulerStarved && leg.schedulerWaitCurrent > opportunityCycle + 1e-9) {
+        leg.schedulerStarved = true;
+        leg.schedulerStarvations++;
       }
     }
 
@@ -721,8 +777,10 @@ export function createStadiumWalker({
     body.vel.y -= P.GRAV * h;
 
     const anyUncomfortable = legs.some(l => l.uncomfortable && !l.stepping);
+    const commandFraction = clamp(Number.isFinite(desiredSpeed) ? desiredSpeed : 1, 0, 1);
     const wanted = walk
-      ? g.maxSpeed * (0.35 + 0.65 * Math.max(0, Math.cos(diff))) * (anyUncomfortable ? g.uncomfortableSpeedMultiplier : 1)
+      ? g.maxSpeed * commandFraction * (0.35 + 0.65 * Math.max(0, Math.cos(diff)))
+        * (anyUncomfortable ? g.uncomfortableSpeedMultiplier : 1)
       : 0;
     body.commandedSpeed = wanted;
     const drive = P.DRIVE * sup.fG;
@@ -734,9 +792,11 @@ export function createStadiumWalker({
 
     const floor = state.terrainHeight(body.pos.x, body.pos.z) + P.BODY_MIN_CLEAR;
     if (body.pos.y < floor) {
+      state.belowMinimumClearanceFrames++;
       body.pos.y = floor;
       if (body.vel.y < 0) body.vel.y *= -P.BOUNCE;
     }
+    state.bodyClearance = body.pos.y - state.terrainHeight(body.pos.x, body.pos.z);
 
     orientFromFeet(legs, g, body);
     refreshRotation();
@@ -751,6 +811,9 @@ export function createStadiumWalker({
   const _hipW = new THREE.Vector3(), _kneeW = new THREE.Vector3(), _footW = new THREE.Vector3();
   const _kneeSolved = new THREE.Vector3(), _poleW = new THREE.Vector3();
   const _restA = new THREE.Vector3(), _restB = new THREE.Vector3();
+  const _diagAxis = new THREE.Vector3(), _diagBend = new THREE.Vector3();
+  const _diagRestBend = new THREE.Vector3();
+  const _diagUpper = new THREE.Vector3(), _diagLower = new THREE.Vector3();
   const _dirRest = new THREE.Vector3(), _dirNow = new THREE.Vector3();
   const _rotQ = new THREE.Quaternion();
   const _seg = new THREE.Matrix4(), _tmp = new THREE.Matrix4(), _parentInv = new THREE.Matrix4();
@@ -820,6 +883,8 @@ export function createStadiumWalker({
   function applyStrayGate() {
     const t = tuning;
     for (const leg of legs) {
+      leg.forcedRestepNow = false;
+      leg.retryExhaustedNow = false;
       if (leg.justLanded) { leg.justLanded = false; state.landings++; }
       // A leg in the air has no claim to be anywhere, and lifting resets its patience.
       if (leg.stepping || !leg.targetGrounded) { leg.strayTries = 0; leg.strayFlag = false; continue; }
@@ -832,8 +897,14 @@ export function createStadiumWalker({
       if (t.strayMode === 'restep' && leg.strayTries < t.strayRetries) {
         leg.strayTries++;
         leg.forceStep = true;
+        leg.forcedResteps++;
+        leg.forcedRestepNow = true;
         state.strayForced++;
         continue;
+      }
+      if (t.strayMode === 'restep') {
+        leg.exhaustedResteps++;
+        leg.retryExhaustedNow = true;
       }
       // The sim balances on the feet a viewer can see. Does not stop the slide, only makes it visible.
       leg.end.copy(leg.drawnFoot);
@@ -860,15 +931,39 @@ export function createStadiumWalker({
       _hipW.copy(leg.hipLocal).applyMatrix4(attachWorld);
       _footW.copy(leg.end);
       _poleW.copy(leg.poleLocal).applyMatrix3(_rot);
+      leg.poleWorld.copy(_poleW).normalize();
 
-      solveTwoBone(_hipW, _footW, _poleW, leg.l1, leg.l2, _kneeSolved, null, { maxExtension: tuning.maxExtension });
+      const solved = solveTwoBone(
+        _hipW, _footW, _poleW, leg.l1, leg.l2, _kneeSolved, null,
+        { maxExtension: tuning.maxExtension },
+      );
       // `solveTwoBone` leaves the foot short of an unreachable target rather than straightening the leg,
       // so take the foot from the solved geometry rather than from the target.
       _kneeW.copy(_kneeSolved);
       const dirToFoot = _footW.clone().sub(_hipW);
       const reach = dirToFoot.length();
       const used = Math.min(reach, (leg.l1 + leg.l2) * tuning.maxExtension);
+      leg.reachClampedNow = solved.clamped && reach > (leg.l1 + leg.l2) * tuning.maxExtension + 1e-9;
+      if (leg.reachClampedNow) leg.reachClamps++;
       const footSolved = _hipW.clone().addScaledVector(dirToFoot.normalize(), used);
+
+      // Which side of the rest bend the solved knee landed on. Comparing with rest geometry rather than
+      // with the supplied pole is intentional: a reversed pole must read as negative, not validate itself.
+      _diagAxis.subVectors(footSolved, _hipW).normalize();
+      _diagBend.subVectors(_kneeW, _hipW)
+        .addScaledVector(_diagAxis, -_diagBend.dot(_diagAxis));
+      _diagRestBend.copy(leg.restPoleLocal).applyMatrix3(_rot)
+        .addScaledVector(_diagAxis, -_diagRestBend.dot(_diagAxis));
+      leg.bendSign = _diagBend.lengthSq() > 1e-12 && _diagRestBend.lengthSq() > 1e-12
+        ? _diagBend.normalize().dot(_diagRestBend.normalize())
+        : 0;
+
+      _diagUpper.subVectors(_hipW, _kneeW).normalize();
+      _diagLower.subVectors(footSolved, _kneeW).normalize();
+      const kneeAngle = Math.acos(Math.max(-1, Math.min(1, _diagUpper.dot(_diagLower))));
+      leg.kneeAngleDelta = leg.kneeAngleValid ? Math.abs(kneeAngle - leg.kneeAngle) : 0;
+      leg.kneeAngle = kneeAngle;
+      leg.kneeAngleValid = true;
 
       _restA.copy(leg.hipLocal).applyMatrix4(attachWorld);
       _restB.copy(leg.kneeLocal).applyMatrix4(attachWorld);
@@ -910,6 +1005,25 @@ export function createStadiumWalker({
       obj.matrix.decompose(obj.position, obj.quaternion, obj.scale);
       obj.updateMatrixWorld(true);
     }
+
+    // Measure what the scene graph now renders, separately from the analytic solution above. These four
+    // points expose a matrix-retarget defect even when the solver itself returned valid geometry.
+    for (const leg of legs) {
+      leg.renderedHip.copy(leg.hipInUpper).applyMatrix4(objectOf(leg.diagnosticUpper).matrixWorld);
+      leg.renderedKneeUpper.copy(leg.kneeInUpper).applyMatrix4(objectOf(leg.diagnosticUpper).matrixWorld);
+      leg.renderedKneeLower.copy(leg.kneeInLower).applyMatrix4(objectOf(leg.diagnosticLower).matrixWorld);
+      leg.renderedFoot.copy(leg.footInLower).applyMatrix4(objectOf(leg.diagnosticLower).matrixWorld);
+      leg.upperLengthError = leg.l1 > 0
+        ? Math.abs(leg.renderedHip.distanceTo(leg.renderedKneeUpper) - leg.l1) / leg.l1 : 0;
+      leg.lowerLengthError = leg.l2 > 0
+        ? Math.abs(leg.renderedKneeLower.distanceTo(leg.renderedFoot) - leg.l2) / leg.l2 : 0;
+      leg.jointContinuityError = leg.renderedKneeUpper.distanceTo(leg.renderedKneeLower);
+      leg.jointContinuityRelative = (leg.l1 + leg.l2) > 0
+        ? leg.jointContinuityError / (leg.l1 + leg.l2) : 0;
+      const ground = state.terrainHeight(leg.renderedFoot.x, leg.renderedFoot.z);
+      leg.renderedGroundError = Number.isFinite(ground)
+        ? leg.renderedFoot.y - (ground + tuning.footGround) : null;
+    }
   }
 
   const depthCache = new Map();
@@ -923,12 +1037,21 @@ export function createStadiumWalker({
 
   // --- public surface ------------------------------------------------------------------------------
   let acc = 0;
-  function update(dt, { walk = true } = {}) {
+  function update(dt, { walk = true, speed = 1 } = {}) {
     const P = state.physics;
-    acc = Math.min(acc + dt, P.FIXED * P.MAX_SUBSTEPS);
+    const inputDt = Number.isFinite(dt) && dt > 0 ? dt : 0;
+    state.maxInputDt = Math.max(state.maxInputDt, inputDt);
+    const cap = P.FIXED * P.MAX_SUBSTEPS;
+    const available = acc + inputDt;
+    state.droppedTimeFrame = Math.max(0, available - cap);
+    if (state.droppedTimeFrame > 0) {
+      state.droppedTimeTotal += state.droppedTimeFrame;
+      state.substepCapHits++;
+    }
+    acc = Math.min(available, cap);
     let steps = 0;
     while (acc >= P.FIXED && steps < P.MAX_SUBSTEPS) {
-      fixedStep(P.FIXED, walk);
+      fixedStep(P.FIXED, walk, speed);
       acc -= P.FIXED;
       steps++;
     }
@@ -979,12 +1102,29 @@ export function createStadiumWalker({
       supportFrames: state.supportFrames,
       supportedFrames: state.supportedFrames,
       comInsideFrames: state.comInsideFrames,
+      supportMargin: state.support?.supportMargin ?? null,
+      supportPointCount: state.contactCount,
+      bodyClearance: state.bodyClearance,
+      minimumBodyClearance: state.physics.BODY_MIN_CLEAR,
+      belowMinimumClearanceFrames: state.belowMinimumClearanceFrames,
+      droppedTimeFrame: state.droppedTimeFrame,
+      droppedTimeTotal: state.droppedTimeTotal,
+      substepCapHits: state.substepCapHits,
+      maxInputDt: state.maxInputDt,
       strayMode: tuning.strayMode,
       landings: state.landings,
       strayFrames: state.strayFrames,
       strayForced: state.strayForced,
       strayAccepted: state.strayAccepted,
       strayThrottled: state.strayThrottled,
+      failures: {
+        terrainMisses: legs.reduce((sum, leg) => sum + leg.terrainMisses, 0),
+        reachClamps: legs.reduce((sum, leg) => sum + leg.reachClamps, 0),
+        schedulerWaitFrames: legs.reduce((sum, leg) => sum + leg.schedulerWaitFrames, 0),
+        schedulerStarvations: legs.reduce((sum, leg) => sum + leg.schedulerStarvations, 0),
+        forcedResteps: legs.reduce((sum, leg) => sum + leg.forcedResteps, 0),
+        exhaustedResteps: legs.reduce((sum, leg) => sum + leg.exhaustedResteps, 0),
+      },
       bodyY: body.pos.y,
       groundY: state.terrainHeight(body.pos.x, body.pos.z),
       legs: legs.map(leg => {
@@ -997,9 +1137,50 @@ export function createStadiumWalker({
           canMove: !!leg.canMove,
           targetGrounded: !!leg.targetGrounded,
           uncomfortable: !!leg.uncomfortable,
+          failure: leg.retryExhaustedNow ? 'retry-exhausted'
+            : leg.terrainMissNow ? 'terrain'
+              : leg.reachClampedNow ? 'reach'
+                : leg.schedulerStarved ? 'scheduler-starvation' : null,
+          terrainMissNow: leg.terrainMissNow,
+          terrainMisses: leg.terrainMisses,
+          reachClampedNow: leg.reachClampedNow,
+          reachClamps: leg.reachClamps,
+          schedulerWaiting: leg.schedulerWaiting,
+          schedulerWaitFrames: leg.schedulerWaitFrames,
+          schedulerWaitCurrent: leg.schedulerWaitCurrent,
+          schedulerWaitMax: leg.schedulerWaitMax,
+          schedulerStarved: leg.schedulerStarved,
+          schedulerStarvations: leg.schedulerStarvations,
+          forcedRestepNow: leg.forcedRestepNow,
+          forcedResteps: leg.forcedResteps,
+          retryExhaustedNow: leg.retryExhaustedNow,
+          exhaustedResteps: leg.exhaustedResteps,
           planted: !leg.stepping && !!leg.targetGrounded,
           endX: leg.end.x, endY: leg.end.y, endZ: leg.end.z,
           drawnX: leg.drawnFoot.x, drawnY: leg.drawnFoot.y, drawnZ: leg.drawnFoot.z,
+          solvedHipX: leg.hipWorld.x, solvedHipY: leg.hipWorld.y, solvedHipZ: leg.hipWorld.z,
+          solvedKneeX: leg.kneeWorld.x, solvedKneeY: leg.kneeWorld.y, solvedKneeZ: leg.kneeWorld.z,
+          renderedHipX: leg.renderedHip.x, renderedHipY: leg.renderedHip.y, renderedHipZ: leg.renderedHip.z,
+          renderedKneeUpperX: leg.renderedKneeUpper.x,
+          renderedKneeUpperY: leg.renderedKneeUpper.y,
+          renderedKneeUpperZ: leg.renderedKneeUpper.z,
+          renderedKneeLowerX: leg.renderedKneeLower.x,
+          renderedKneeLowerY: leg.renderedKneeLower.y,
+          renderedKneeLowerZ: leg.renderedKneeLower.z,
+          renderedFootX: leg.renderedFoot.x,
+          renderedFootY: leg.renderedFoot.y,
+          renderedFootZ: leg.renderedFoot.z,
+          poleX: leg.poleWorld.x, poleY: leg.poleWorld.y, poleZ: leg.poleWorld.z,
+          poleSource: leg.poleSource,
+          poleConfidence: leg.poleConfidence,
+          bendSign: leg.bendSign,
+          kneeAngle: leg.kneeAngle,
+          kneeAngleDelta: leg.kneeAngleDelta,
+          upperLengthError: leg.upperLengthError,
+          lowerLengthError: leg.lowerLengthError,
+          jointContinuityError: leg.jointContinuityError,
+          jointContinuityRelative: leg.jointContinuityRelative,
+          renderedGroundError: leg.renderedGroundError,
           // How far the RENDERED foot slid since the last pose. On a planted foot this should be zero.
           drawnStep: Math.hypot(leg.drawnFoot.x - leg.drawnPrev.x, leg.drawnFoot.z - leg.drawnPrev.z),
           // How far the rendered foot is from where the gait believes it is. Non-zero means the solver

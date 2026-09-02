@@ -32,7 +32,7 @@ const P = BASE_GAME_PROTOCOL_VERSION;
 const SWAP_SETTLE_TICKS = 160;   // longer than the slowest holster + draw (rifle 600 + 550 ms at 120 Hz)
 
 // ---- protocol sanitizers ----
-ok(P === 15, 'protocol is version 15');
+ok(P === 21, 'protocol is version 21');
 // The seventh slot. The wire `slot` is an integer bounded by the slot list's length, so a stale
 // relay would clamp slot 6 to 0 and silently hand you the rifle instead of the launcher; the version
 // bump is what makes the handshake reject it rather than let that happen quietly.

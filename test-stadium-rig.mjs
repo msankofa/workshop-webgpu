@@ -7,10 +7,12 @@
 import fs from 'node:fs';
 import * as THREE from 'three';
 import { parseGLB, nodeWorldMatrices, readSkinnedVertices, readAccessor } from './stadium-glb.js';
-import { mapStadiumRig, mapStadiumRigFromGLB, boneGeometry, pivotTree } from './stadium-rig-map.js';
+import {
+  mapStadiumRig, mapStadiumRigFromGLB, boneGeometry, pivotTree, measureKneePole,
+} from './stadium-rig-map.js';
 import { createStadiumWalker, scaleGaitFroude, WALKER_DEFAULTS } from './stadium-walker.js';
 import { createGaitMonitor, analyseGait, GAIT_LIMITS } from './gait-diagnostics.js';
-import { GAITS } from './creature-locomotion.js';
+import { GAITS, signedSupportMargin } from './creature-locomotion.js';
 import { STADIUM_REFERENCE_SPECIES, STADIUM_NO_LEG_SPECIES } from './stadium-reference-species.js';
 import { loadStanceLibrary, nodeReader, mapSpeciesFromLibrary } from './stadium-species.js';
 import { stancedSpecies } from './stadium-stance.js';
@@ -184,6 +186,8 @@ check('the pole vector points the way the leg was actually drawn', () => {
       const dot = (leg.pole.x * chord.x + leg.pole.y * chord.y + leg.pole.z * chord.z) / cl;
       near(dot, 0, 1e-6, `${name} ${leg.name} pole is not perpendicular to the chord`);
       near(Math.hypot(leg.pole.x, leg.pole.y, leg.pole.z), 1, 1e-6, `${name} ${leg.name} pole is not a unit vector`);
+      assert(leg.poleSource === 'rest-geometry', `${name} ${leg.name} lost its pole provenance`);
+      assert(leg.poleConfidence > 0.5, `${name} ${leg.name} has ambiguous rest geometry`);
     }
   }
 });
@@ -227,6 +231,49 @@ function buildScene(map, json) {
   return root;
 }
 
+// A diagnostic is allowed to allocate a plain report and nothing else. Keep this snapshot local to the
+// test rather than teaching production code how to serialise itself: it records the mutable simulation
+// state and the scene transforms which can change how the next fixed step behaves or what gets drawn.
+function walkerMotionSnapshot(walker) {
+  const primitives = (o) => Object.fromEntries(Object.entries(o).filter(([, value]) =>
+    value == null || ['number', 'string', 'boolean'].includes(typeof value)));
+  const vec = (v) => v ? [v.x, v.y, v.z] : null;
+  const vectorFields = (o, names) => Object.fromEntries(names.map(name => [name, vec(o[name])]));
+  const transforms = [];
+  walker.object.traverse((o) => transforms.push({
+    name: o.name,
+    position: o.position.toArray(),
+    quaternion: o.quaternion.toArray(),
+    scale: o.scale.toArray(),
+    matrix: o.matrix.toArray(),
+    matrixWorld: o.matrixWorld.toArray(),
+  }));
+  return JSON.stringify({
+    body: {
+      ...primitives(walker.body),
+      ...vectorFields(walker.body, ['pos', 'vel', 'desiredDir']),
+    },
+    state: {
+      ...primitives(walker.state),
+      physics: primitives(walker.state.physics),
+      gait: primitives(walker.state.gait),
+      support: primitives(walker.state.support || {}),
+    },
+    legs: walker.legs.map(leg => ({
+      ...primitives(leg),
+      ...vectorFields(leg, [
+        'attachmentLocal', 'restLocal', 'restDirLocal', 'poleLocal',
+        'hipLocal', 'kneeLocal', 'footLocal',
+        'hipWorld', 'kneeWorld', 'drawnFoot', 'drawnPrev',
+        'end', 'target', 'groundPosition', 'stepStart', 'stepEnd',
+        'lookAhead', 'scanStart', 'scanEnd',
+      ]),
+      contacts: leg.contacts?.map(vec) ?? null,
+    })),
+    transforms,
+  });
+}
+
 check('the walker builds, and the rig it drives is the one the map named', () => {
   const { json, bin } = parseGLB(load('019_rattata'));
   const map = mapStadiumRig(json, bin);
@@ -237,6 +284,106 @@ check('the walker builds, and the rig it drives is the one the map named', () =>
   const phase = (row, side) => walker.legs.find(l => l.row === row && l.side === side).phase;
   assert(phase(0, -1) === phase(1, 1), 'front-left and hind-right are not on the same phase');
   assert(phase(0, -1) !== phase(0, 1), 'both front legs are on the same phase');
+});
+
+check('a collinear rest leg reports its fallback pole', () => {
+  const measured = measureKneePole(
+    { x: 0, y: 0, z: 0 },
+    { x: 0, y: -1, z: 0 },
+    { x: 0, y: -2, z: 0 },
+  );
+  assert(measured.source === 'fallback', `collinear leg reported ${measured.source}`);
+  assert(measured.confidence === 0, `fallback confidence was ${measured.confidence}`);
+  near(Math.hypot(measured.pole.x, measured.pole.y, measured.pole.z), 1, 1e-12,
+    'fallback pole is not a unit vector');
+});
+
+check('reading a diagnostic frame does not mutate the walker', () => {
+  const { json, bin } = parseGLB(load('019_rattata'));
+  const map = mapStadiumRig(json, bin);
+  const walker = createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(1701),
+  });
+  walker.setTarget(1.5, 3);
+  for (let i = 0; i < 90; i++) walker.update(1 / 60);
+  const before = walkerMotionSnapshot(walker);
+  const frame = walker.diagnosticFrame();
+  const after = walkerMotionSnapshot(walker);
+  assert(frame?.legs?.length === walker.legs.length, 'diagnostic frame did not describe every leg');
+  assert(after === before, 'diagnosticFrame changed simulation or scene state');
+});
+
+check('sampling diagnostics cannot change a deterministic walk', () => {
+  const { json, bin } = parseGLB(load('019_rattata'));
+  const map = mapStadiumRig(json, bin);
+  const build = () => createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(90210),
+  });
+  const sampled = build(), ignored = build();
+  sampled.setTarget(2.5, 4);
+  ignored.setTarget(2.5, 4);
+  for (let i = 0; i < 360; i++) {
+    sampled.update(1 / 60);
+    sampled.diagnosticFrame();
+    ignored.update(1 / 60);
+    const a = walkerMotionSnapshot(sampled), b = walkerMotionSnapshot(ignored);
+    assert(a === b, `diagnostic sampling changed the walk at fixed step ${i + 1}`);
+  }
+  assert(sampled.diagnosticFrame().failures.schedulerStarvations === 0,
+    'ordinary default scheduling was mislabeled as starvation');
+});
+
+check('terrain and reach failures are named at the walker boundary', () => {
+  const { json, bin } = parseGLB(load('019_rattata'));
+  const map = mapStadiumRig(json, bin);
+
+  const terrain = createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(12),
+  });
+  terrain.retune({ terrainHeight: () => NaN });
+  terrain.update(1 / 60);
+  const terrainFrame = terrain.diagnosticFrame();
+  assert(terrainFrame.legs.some(leg => leg.failure === 'terrain'), 'unreachable terrain was not named');
+  assert(terrainFrame.failures.terrainMisses > 0, 'terrain misses were not counted');
+  assert(terrainFrame.failures.reachClamps === 0, 'a terrain miss was mislabeled as a reach clamp');
+
+  const reach = createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(12),
+  });
+  reach.update(1 / 60);
+  const stretched = reach.legs[0];
+  stretched.end.x += stretched.span * 4;
+  stretched.target.copy(stretched.end);
+  stretched.targetGrounded = true;
+  reach.applyPose();
+  const reachFrame = reach.diagnosticFrame();
+  assert(reachFrame.legs[0].failure === 'reach', `far foot reported ${reachFrame.legs[0].failure}`);
+  assert(reachFrame.failures.reachClamps > 0, 'reach clamp was not counted');
+  assert(reachFrame.failures.terrainMisses === 0, 'a reach clamp was mislabeled as terrain');
+});
+
+check('an exhausted corrective re-step is named once', () => {
+  const { json, bin } = parseGLB(load('019_rattata'));
+  const map = mapStadiumRig(json, bin);
+  const retry = createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(13),
+  });
+  retry.retune({ strayMode: 'restep', strayLimit: -1, strayRetries: 1 });
+  retry.update(1 / 60);
+  const retryFrame = retry.diagnosticFrame();
+  assert(retryFrame.legs.some(leg => leg.forcedRestepNow), 'available corrective retries were not counted');
+  assert(retryFrame.failures.exhaustedResteps === 0, 'an available retry was mislabeled as exhausted');
+
+  const walker = createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(13),
+  });
+  walker.retune({ strayMode: 'restep', strayLimit: -1, strayRetries: 0 });
+  walker.update(1 / 60);
+  const frame = walker.diagnosticFrame();
+  const exhausted = frame.legs.filter(leg => leg.failure === 'retry-exhausted');
+  assert(exhausted.length > 0, 'exhausted retries were not named');
+  assert(frame.failures.exhaustedResteps === exhausted.length,
+    `${frame.failures.exhaustedResteps} exhausted events for ${exhausted.length} affected legs`);
 });
 
 check('the gait is Froude-scaled, not just multiplied', () => {
@@ -381,6 +528,120 @@ check('driven bones keep their rest segment lengths', () => {
     near(hipNow.distanceTo(kneeNow), leg.l1, leg.l1 * 0.02, `${mapped.name} upper segment length`);
     near(kneeLower.distanceTo(footNow), leg.l2, leg.l2 * 0.02, `${mapped.name} lower segment length`);
   }
+});
+
+check('retarget telemetry agrees with a stable rendered stance', () => {
+  const { json, bin } = parseGLB(load('019_rattata'));
+  const map = mapStadiumRig(json, bin);
+  const walker = createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(321),
+  });
+  for (let i = 0; i < 120; i++) walker.update(1 / 60, { walk: false });
+  const monitor = createGaitMonitor();
+  for (let i = 0; i < 240; i++) {
+    walker.update(1 / 60, { walk: false });
+    monitor.sample(walker.diagnosticFrame());
+  }
+  const report = monitor.report();
+  assert(report.retarget.minBendSign > 0.99,
+    `a knee crossed to the wrong side of its rest bend: ${report.retarget.minBendSign}`);
+  assert(report.retarget.maxSegmentLengthError < 1e-6,
+    `rendered segment length drifted by ${report.retarget.maxSegmentLengthError}`);
+  assert(report.retarget.maxJointContinuityError < 1e-6,
+    `upper and lower leg separated by ${report.retarget.maxJointContinuityError}`);
+  assert(report.retarget.maxKneeJump < 1e-6,
+    `a stable stance jumped its knee by ${report.retarget.maxKneeJump} radians in one frame`);
+  assert(report.retarget.maxPlantedGroundError < 1e-6,
+    `a rendered planted foot missed the ground by ${report.retarget.maxPlantedGroundError}`);
+  assert(report.retarget.lowConfidencePoles === 0, 'Rattata acquired a fallback pole');
+});
+
+check('a reversed pole is visible as a backward knee', () => {
+  const { json, bin } = parseGLB(load('019_rattata'));
+  const map = mapStadiumRig(json, bin);
+  const leg = map.legs[0];
+  leg.pole = { x: -leg.pole.x, y: -leg.pole.y, z: -leg.pole.z };
+  leg.poleSource = 'override';
+  leg.poleConfidence = 1;
+  const walker = createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(19),
+  });
+  walker.update(1 / 60, { walk: false });
+  const frame = walker.diagnosticFrame();
+  assert(frame.legs[0].bendSign < -0.99,
+    `the reversed pole read as bend sign ${frame.legs[0].bendSign}`);
+  assert(frame.legs[0].poleSource === 'override', 'pole provenance was lost at the walker boundary');
+});
+
+check('rendered-foot ground error keeps its sign', () => {
+  const { json, bin } = parseGLB(load('019_rattata'));
+  const map = mapStadiumRig(json, bin);
+  const walker = createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(29),
+  });
+  walker.update(1 / 60, { walk: false });
+  walker.state.terrainHeight = () => 0.1;
+  walker.applyPose();
+  for (const leg of walker.diagnosticFrame().legs) {
+    assert(leg.renderedGroundError < -0.09,
+      `a foot below raised terrain did not report a negative error: ${leg.renderedGroundError}`);
+  }
+  walker.state.terrainHeight = () => -0.1;
+  walker.applyPose();
+  for (const leg of walker.diagnosticFrame().legs) {
+    assert(leg.renderedGroundError > 0.09,
+      `a foot above lowered terrain did not report a positive error: ${leg.renderedGroundError}`);
+  }
+});
+
+check('support margin is signed and rejects point or line support', () => {
+  const square = [
+    { x: -1, z: -1 }, { x: 1, z: -1 }, { x: 1, z: 1 }, { x: -1, z: 1 },
+  ];
+  near(signedSupportMargin(0, 0, square), 1, 1e-12, 'inside support margin');
+  near(signedSupportMargin(1, 0, square), 0, 1e-12, 'edge support margin');
+  near(signedSupportMargin(2, 0, square), -1, 1e-12, 'outside support margin');
+  assert(signedSupportMargin(0, 0, square.slice(0, 2)) === null,
+    'line support acquired an area margin');
+  assert(signedSupportMargin(0, 0, square.slice(0, 1)) === null,
+    'point support acquired an area margin');
+});
+
+check('the fixed-step cap reports exactly the time it discards', () => {
+  const make = (seed) => {
+    const { json, bin } = parseGLB(load('019_rattata'));
+    const map = mapStadiumRig(json, bin);
+    return createStadiumWalker({
+      THREE, scene: buildScene(map, json), map, worldHeight: 0.5, rng: seeded(seed),
+    });
+  };
+  const within = make(41);
+  const fixed = within.state.physics.FIXED;
+  within.update(fixed * 3, { walk: false });
+  assert(within.diagnosticFrame().droppedTimeFrame === 0, 'time inside the substep budget was discarded');
+
+  const over = make(42);
+  over.update(fixed * 7, { walk: false });
+  const frame = over.diagnosticFrame();
+  near(frame.droppedTimeFrame, fixed * 2, 1e-12, 'discarded frame time');
+  near(frame.droppedTimeTotal, fixed * 2, 1e-12, 'discarded total time');
+  assert(frame.substepCapHits === 1, `expected one cap hit, got ${frame.substepCapHits}`);
+  near(frame.maxInputDt, fixed * 7, 1e-12, 'maximum input dt');
+});
+
+check('body clearance uses the same terrain and minimum as integration', () => {
+  const { json, bin } = parseGLB(load('019_rattata'));
+  const map = mapStadiumRig(json, bin);
+  const walker = createStadiumWalker({
+    THREE, scene: buildScene(map, json), map, terrainHeight: () => 0.2,
+    worldHeight: 0.5, rng: seeded(43),
+  });
+  walker.body.pos.y = -1;
+  walker.fixedStep(1 / 60, false);
+  const frame = walker.diagnosticFrame();
+  near(frame.bodyClearance, frame.minimumBodyClearance, 1e-12, 'clamped body clearance');
+  assert(frame.belowMinimumClearanceFrames === 1,
+    `expected one below-minimum event, got ${frame.belowMinimumClearanceFrames}`);
 });
 
 check('retune re-derives the gait without rebuilding the rig', () => {

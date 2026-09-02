@@ -44,6 +44,7 @@ export function createPlayerHitRigDebug({ THREE, scene, worldCoordinates } = {})
   hitMarker.scale.setScalar(0.12);
   hitMarker.visible = false;
   hitMarker.renderOrder = 1002;
+  hitMarker.name = 'player-hit-marker';
   scene.add(hitMarker);
 
   const a = [0, 0, 0], b = [0, 0, 0], la = [0, 0, 0], lb = [0, 0, 0];

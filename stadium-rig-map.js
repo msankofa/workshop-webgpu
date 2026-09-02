@@ -37,6 +37,23 @@ const sub = (a, b) => V(a.x - b.x, a.y - b.y, a.z - b.z);
 const len = (a) => Math.hypot(a.x, a.y, a.z);
 const dist = (a, b) => len(sub(a, b));
 
+/** Measure the authored knee side independently of any runtime pole override. */
+export function measureKneePole(hip, knee, foot) {
+  const chord = sub(foot, hip);
+  const kv = sub(knee, hip);
+  const cl = Math.max(1e-12, chord.x ** 2 + chord.y ** 2 + chord.z ** 2);
+  const d = (kv.x * chord.x + kv.y * chord.y + kv.z * chord.z) / cl;
+  let pole = V(kv.x - chord.x * d, kv.y - chord.y * d, kv.z - chord.z * d);
+  const distance = len(pole);
+  const source = distance < 1e-6 ? 'fallback' : 'rest-geometry';
+  const confidence = source === 'fallback'
+    ? 0
+    : Math.min(1, distance / Math.max(1e-6, Math.min(dist(hip, knee), dist(knee, foot)) * 0.1));
+  if (source === 'fallback') pole = V(0, 1, 0);
+  else pole = V(pole.x / distance, pole.y / distance, pole.z / distance);
+  return { pole, source, confidence, distance };
+}
+
 // ===================== per-bone geometry =====================
 
 /**
@@ -337,7 +354,7 @@ export function mapStadiumRig(json, bin, opts = {}) {
       if (!bones.length) { warnings.push(`role leg ${spec.row}/${spec.side} has no bones with geometry`); continue; }
       const attach = spec.attach ?? tree.parent.get(bones[0]) ?? tree.root;
       try {
-        legs.push(buildLeg({ ...spec, bones, attach, tip: bones[bones.length - 1] },
+        legs.push(measureStadiumLeg({ ...spec, bones, attach, tip: bones[bones.length - 1] },
           { row: spec.row, side: spec.side, geo, tree, ctx, json, forwardAxis, forward, floorY }));
       } catch (e) {
         warnings.push(`role leg ${spec.row}/${spec.side}: ${e.message}`);
@@ -349,7 +366,7 @@ export function mapStadiumRig(json, bin, opts = {}) {
       pair.forEach((c, i) => {
         const side = i === 0 ? -1 : 1;
         const full = extendLeg(c, pair[1 - i]);
-        legs.push(buildLeg(full, { row, side, geo, tree, ctx, json, forwardAxis, forward, floorY }));
+        legs.push(measureStadiumLeg(full, { row, side, geo, tree, ctx, json, forwardAxis, forward, floorY }));
       });
     });
   }
@@ -419,9 +436,13 @@ export function mapStadiumRig(json, bin, opts = {}) {
  * the bend a viewer reads as "the knee" is usually the second or third joint down, and splitting at the
  * anatomical hip gives a stubby upper bone that swings the whole leg from the body.
  */
-function buildLeg(chain, { row, side, geo, tree, ctx, json, forwardAxis, forward, floorY }) {
+export function measureStadiumLeg(chain, { row, side, geo, tree, ctx, json, forwardAxis, forward, floorY }) {
+  // `bones` is the linear joint path. `drivenBones` may additionally contain sibling toe branches; they
+  // move with the lower segment but must not be mistaken for another joint in the path.
   const withGeo = chain.bones.filter(b => geo.has(b));
   if (!withGeo.length) throw new Error(`leg chain at ${json.nodes[chain.bones[0]]?.name} carries no geometry`);
+  const drivenBones = [...new Set([...(chain.drivenBones || chain.bones), ...(chain.footBones || [])])]
+    .filter(b => geo.has(b));
   const attachGeo = geo.get(chain.attach);
 
   const joints = [];
@@ -435,7 +456,7 @@ function buildLeg(chain, { row, side, geo, tree, ctx, json, forwardAxis, forward
   //
   // Which bones count as the foot is declared when a role document says so, and otherwise the last bone,
   // which is what this always did.
-  const declaredFoot = (chain.footBones || []).filter(b => withGeo.includes(b));
+  const declaredFoot = (chain.footBones || []).filter(b => geo.has(b));
   const footBones = declaredFoot.length ? declaredFoot : [withGeo[withGeo.length - 1]];
   const solePoint = sole(footBones.map(b => geo.get(b)), floorY);
   joints.push(solePoint);
@@ -470,14 +491,10 @@ function buildLeg(chain, { row, side, geo, tree, ctx, json, forwardAxis, forward
 
   // The pole is MEASURED: the knee's own offset from the hip-to-foot chord, so an analytic solve
   // reproduces the authored bend direction instead of inventing one. Same reasoning as `bug-rig.js`.
-  const chord = sub(foot, hip);
-  const kv = sub(knee, hip);
-  const cl = Math.max(1e-12, chord.x ** 2 + chord.y ** 2 + chord.z ** 2);
-  const d = (kv.x * chord.x + kv.y * chord.y + kv.z * chord.z) / cl;
-  let pole = V(kv.x - chord.x * d, kv.y - chord.y * d, kv.z - chord.z * d);
-  const pl = len(pole);
-  if (pl < 1e-6) pole = V(0, 1, 0);
-  else pole = V(pole.x / pl, pole.y / pl, pole.z / pl);
+  const measuredPole = measureKneePole(hip, knee, foot);
+  const { pole } = measuredPole;
+  const poleSource = measuredPole.source;
+  const poleConfidence = measuredPole.confidence;
 
   // Fore/aft direction the leg was drawn along, in the horizontal plane — what a swing limit measures from.
   const restDir = (() => {
@@ -489,7 +506,8 @@ function buildLeg(chain, { row, side, geo, tree, ctx, json, forwardAxis, forward
   return {
     row, side,
     attach: chain.attach,
-    bones: withGeo,
+    bones: drivenBones,
+    jointBones: withGeo,
     tipMarker: chain.tip !== withGeo[withGeo.length - 1] ? chain.tip : null,
     joints, segLengths, kneeIndex,
     footBones, ankleIndex,
@@ -501,7 +519,7 @@ function buildLeg(chain, { row, side, geo, tree, ctx, json, forwardAxis, forward
     }),
     footFrame: footBones[0],
     l1, l2, span: total,
-    hip, knee, foot, pole, restDir,
+    hip, knee, foot, pole, poleSource, poleConfidence, restDir,
     name: json.nodes[withGeo[0]]?.name ?? String(withGeo[0]),
   };
 }

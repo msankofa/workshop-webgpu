@@ -15,7 +15,7 @@
 
 import * as THREE from 'three';
 import { Fn, float, vec2, ivec2, floor, fract, mix, uniform, textureLoad, select, int } from 'three/tsl';
-import { createClipmapWindow, WINDOW_FIELD_KINDS } from './terrain-clipmap-window.js';
+import { createClipmapWindow, WINDOW_FIELD_KINDS, wrapIndex } from './terrain-clipmap-window.js';
 import { FIELD_PRIORITY } from './terrain-field-scheduler.js';
 import { tileKey } from './terrain-source.js';
 
@@ -32,7 +32,7 @@ export const FIELD_WINDOW_DEFAULTS = Object.freeze({
 // read back normalized, decoded by x255.
 const U8_SCALE = 255;
 
-export function createFieldWindow({ source, descriptor = null, scheduler, fields = ['heights'], derived = [], derive = null, lod = null, label = 'field', ...opts } = {}) {
+export function createFieldWindow({ source, descriptor = null, scheduler, fields = ['heights'], derived = [], derive = null, lod = null, label = 'field', gpu = true, ...opts } = {}) {
   if (!source || typeof source.buildTile !== 'function') throw new TypeError('a field window needs a terrain source');
   if (!scheduler || typeof scheduler.request !== 'function') throw new TypeError('a field window needs a field scheduler');
   const cfg = { ...FIELD_WINDOW_DEFAULTS, ...opts };
@@ -56,14 +56,14 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
 
   // One texture per field. Float fields are R32F, id fields r8unorm.
   const textures = new Map();
-  for (const name of win.fields) {
+  for (const name of win.fields) stats.bytes += win.array(name).byteLength;
+  for (const name of gpu ? win.fields : []) {
     const isU8 = WINDOW_FIELD_KINDS[name].Array === Uint8Array;
     const tex = new THREE.DataTexture(win.array(name), res, res, THREE.RedFormat, isU8 ? THREE.UnsignedByteType : THREE.FloatType);
     tex.magFilter = THREE.NearestFilter;
     tex.minFilter = THREE.NearestFilter;
     tex.needsUpdate = true;
     textures.set(name, tex);
-    stats.bytes += win.array(name).byteLength;
   }
 
   // The scan walks tilesPerSide^2 keys and builds a string per tile, so it is skipped whenever the
@@ -107,7 +107,7 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     if (disposed || refs <= 0) return false;
     recentre(x, z);
     requestTiles();
-    if (win.version !== uploadedVersion) {
+    if (gpu && win.version !== uploadedVersion) {
       uploadedVersion = win.version;
       for (const tex of textures.values()) tex.needsUpdate = true;
       stats.uploads++;
@@ -151,6 +151,42 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     return Fn(([x, z, fallback = float(-1000)]) => sampler(vec2(x, z).add(renderOriginXZ), fallback));
   }
 
+  // Mutate resident posts close to a polyline. Segments are sampled more finely than the post
+  // spacing, so work scales with path length and radius rather than with the leg's bounding box.
+  function stampAlong(names, polyline, radius, fn) {
+    const channels = Array.isArray(names) ? names : [names];
+    if (!polyline?.length || !(radius >= 0) || typeof fn !== 'function') return 0;
+    for (const name of channels) if (!win.array(name)) throw new TypeError(`field window has no field ${name}`);
+    let writes = 0;
+    const visit = (x, z) => {
+      const gx0 = Math.floor((x - radius) / win.post), gx1 = Math.ceil((x + radius) / win.post);
+      const gz0 = Math.floor((z - radius) / win.post), gz1 = Math.ceil((z + radius) / win.post);
+      for (let gz = gz0; gz <= gz1; gz++) for (let gx = gx0; gx <= gx1; gx++) {
+        const wx = gx * win.post, wz = gz * win.post;
+        if (Math.hypot(wx - x, wz - z) > radius || !win.resolved(wx, wz)) continue;
+        const index = wrapIndex(gz, win.res) * win.res + wrapIndex(gx, win.res);
+        for (const name of channels) {
+          const arr = win.array(name), before = arr[index];
+          const after = fn(wx, wz, before, name);
+          if (after == null || after === before) continue;
+          arr[index] = after;
+          writes++;
+        }
+      }
+    };
+    if (polyline.length === 1) visit(polyline[0].x, polyline[0].z);
+    for (let i = 1; i < polyline.length; i++) {
+      const a = polyline[i - 1], b = polyline[i];
+      const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / Math.max(0.25, win.post * 0.5)));
+      for (let j = i === 1 ? 0 : 1; j <= steps; j++) {
+        const t = j / steps;
+        visit(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t);
+      }
+    }
+    if (writes) win.touch();
+    return writes;
+  }
+
   return {
     win, uniforms, stats, owner,
     get post() { return win.post; },
@@ -170,7 +206,8 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     ready: (x, z) => win.resolved(x, z) !== null,
     covers: (x, z) => win.covers(x, z),
     gpuSampler, gpuSamplerRenderLocal,
-    recentre, update, requestTiles,
+    recentre, update, requestTiles, stampAlong,
+    touch() { win.touch(); },
     acquire() { refs++; stats.refs = refs; return () => { refs = Math.max(0, refs - 1); stats.refs = refs; }; },
     setSource(next, nextDescriptor = null) {
       currentSource = next;

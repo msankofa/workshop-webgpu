@@ -99,6 +99,14 @@ console.log('\n[2] volume tiles: geometry, seams and gradient normals');
   ok(checked >= 4 && maxTopDelta < 3, `column tops match the density surface (${checked} columns, max delta ${maxTopDelta.toFixed(2)} m, spacingY ${a.volume.spacingY})`);
   const flat = createV5Source(migrateProjectToUnbounded(normalizeProject({ app: PROJECT_APP, version: 1, cfg: { ...DEFAULT_CONFIG }, density: { ...DENSITY_DEFAULT_CONFIG, cave_strength: 0, warp_strength_surface: 0, warp_strength_global: 0 }, stack: defaultStack(), paint: null, imports: {} }).project));
   ok(flat.holeAt(5, 5) === false, 'no carve -> holeAt is false');
+  // These fixture points fall on opposite sides of a cave mouth but occupied the same old 0.5 m
+  // cache bucket. Both query orders must retain the point result, not the first bucket result.
+  const dry = [-96.24, -100], hole = [-95.76, -100];
+  const dryFirst = createV5Source(cavyProject()), holeFirst = createV5Source(cavyProject());
+  ok(dryFirst.holeAt(...dry) === false && dryFirst.holeAt(...hole) === true,
+    'hole cache preserves a cave boundary when the dry point is queried first');
+  ok(holeFirst.holeAt(...hole) === true && holeFirst.holeAt(...dry) === false,
+    'hole cache preserves a cave boundary when the hole point is queried first');
 }
 
 console.log('\n[3] chunk-mesh provider: raycast and capsule over streamed chunks');

@@ -165,6 +165,7 @@ export function createEffectRenderer({
     vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const lines = new THREE.LineSegments(lineGeo, lineMat);
+  lines.name = 'fx-lines';
   lines.frustumCulled = false;
   scene.add(lines);
 
@@ -179,6 +180,7 @@ export function createEffectRenderer({
     depthWrite: false, sizeAttenuation: true,
   });
   const points = new THREE.Points(ptGeo, ptMat);
+  points.name = 'fx-points';
   points.frustumCulled = false;
   scene.add(points);
 
@@ -219,6 +221,7 @@ export function createEffectRenderer({
     mat.colorNode = attribute('instColor', 'vec3').mul(materialColor); // materialColor carries the soft map
     mat.opacityNode = attribute('instAlpha', 'float');
     const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'fx-sprite-pool';
     mesh.frustumCulled = false;
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
@@ -304,6 +307,7 @@ export function createEffectRenderer({
     // the sprite pools' radial one; see makeStainTexture.
     mat.opacityNode = attribute('instAlpha', 'float').mul(texture(stainTex).a);
     const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'fx-decal-pool';
     mesh.frustumCulled = false;
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();

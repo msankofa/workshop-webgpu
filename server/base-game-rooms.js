@@ -4,7 +4,7 @@ import {
   BASE_GAME_GADGET_THROW_TICKS, BASE_GAME_GADGET_THROW_ACTION_TICKS, BASE_GAME_GADGET_RELOAD_TICKS, defaultGadgetStock,
   BASE_GAME_LAG_COMP_MS, BASE_GAME_RESPAWN_TICKS, BASE_GAME_FIRE_ACTION_TICKS, wireAmmo,
   BASE_GAME_POSITION_HISTORY,
-  BASE_GAME_TEAMS, sanitizeBaseGameNpcRequest,
+  BASE_GAME_TEAMS, sanitizeBaseGameNpcRequest, sanitizeBaseGameVehicleRequest, sanitizeBaseGameDroneRequest, BASE_GAME_WORLD_DRONE_CAP,
   DEFAULT_BASE_GAME_BODY_MODEL, bodyModelById, hitProfileForBodyModel, sanitizeBaseGameBodyModel,
   BASE_GAME_ROOM_GRACE_MS,
   BASE_GAME_ROOM_PLAYER_CAP,
@@ -39,11 +39,17 @@ import {
 import { createPlayerCombatFacade } from '../player-combat.js';
 import { createAmmoStore } from '../player-ammo.js';
 import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor, createSwapState, beginSwap, swapPhase, lookDirection } from '../base-game-fire.js';
-import { createBaseGameDrone, stepBaseGameDrone, sendDroneTo, recallDrone, takeOverDrone, releaseDrone, droneWireState } from '../base-game-drones.js';
+import { createBaseGameDrone, spawnWorldDrone, stepBaseGameDrone, sendDroneTo, recallDrone, takeOverDrone, releaseDrone, droneWireState, fireAgm, stepGuidedProjectiles, droneHitVolumes, blastDamageOnDrone, damageBaseGameDrone } from '../base-game-drones.js';
+import {
+  VEHICLE_UGV, VEHICLE_BUGGY, createBaseGameVehicle, stepBaseGameVehicle, stepVehicleSeat,
+  sendVehicleTo, recallVehicle, takeOverVehicle, releaseVehicle, vehicleWireState, vehicleSeatState,
+  fireVehicleTurret,
+} from '../base-game-vehicles.js';
 import { createProjectileManager } from '../bot-projectiles.js';
 import { blastDamageAt } from '../entity-types/explosion.js';
 import { isSurfaceDetonation } from '../entity-types/combat-projectile.js';
 import { botSeedFromId } from '../bot-activity.js';
+import { aimSettingsForAccuracy } from '../bot-aim.js';
 import { BASE_GAME_PLAYER_DEFAULT_CONFIG } from '../base-game-player-controller.js';
 import { getWeapon } from '../weapons.js';
 import { createRoomNpcs, findNpcSpawn, appearanceFor, NPC_WALK_SPEED, NPC_RUN_MULTIPLIER } from './base-game-npcs.js';
@@ -51,6 +57,11 @@ import { randomUUID } from 'node:crypto';
 
 function defaultToken() {
   return `${randomUUID()}-${randomUUID()}`;
+}
+
+export function formatBaseGameNpcProfStats(s, f = value => Number(value).toFixed(1)) {
+  if (!s) return '';
+  return ` sync ${f(s.syncMs)} brain ${f(s.thinkMs)} input ${f(s.inputMs)} rays ${s.raycasts} heightAt ${s.heights} bakes ${s.bakes}`;
 }
 
 // Builds the authoritative world for a sanitized terrain config. Traversal Lab is the exact
@@ -189,7 +200,7 @@ export function createBaseGameRoomService({
     const terrainHeight = typeof sim.heightAt === 'function' ? sim.heightAt : null;
     room.projectiles = createProjectileManager({
       terrainHeight,
-      raycast(from, to, radius, ownerId) {
+      raycast(from, to, radius, ownerId, proj) {
         const dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
         const range = Math.hypot(dx, dy, dz);
         if (!(range > 0)) return null;
@@ -200,7 +211,9 @@ export function createBaseGameRoomService({
           updateClientHitPose(other);
           players.push({ id: other.id, rig: other.hitPose, alive: other.hitPose.alive });
         }
-        const hit = resolveHitscan({ shooterId: ownerId, origin: from, dir, range, players, playerInflate: radius, occluder: worldOccluder(room) });
+        // Never the aircraft that fired it: a missile leaves from inside its launcher's hit sphere.
+        const mobs = droneHitVolumes(room.drones, proj?.guide?.droneId ?? null);
+        const hit = resolveHitscan({ shooterId: ownerId, origin: from, dir, range, players, mobs, playerInflate: radius, occluder: worldOccluder(room) });
         if (!hit || hit.kind === 'none') return null;
         if (hit.kind === 'world' && terrainHeight && hit.normal && hit.normal[1] > 0.5) return null;   // ground: the entity bounces or detonates itself
         return { point: hit.point, kind: hit.kind, id: hit.id };
@@ -213,6 +226,21 @@ export function createBaseGameRoomService({
     const worldQuery = room.sim?.worldQuery ?? null;
     if (!worldQuery) return undefined;
     return (o, d, range) => { try { const h = worldQuery.raycast({ origin: o, direction: d, maxDistance: range }); return h ? { distance: h.distance, point: h.point, normal: h.normal } : null; } catch { return null; } };
+  }
+
+  // Damage onto one drone, from a bullet or a blast. A drone that dies falls and goes off where it
+  // lands (base-game-drones.js owns that), so nothing here has to decide where the explosion is.
+  function hitDrone(room, id, damage, point, weaponId, shooterId) {
+    const rec = room.drones.get(id);
+    if (!rec || rec.done) return;
+    const before = rec.d.hp;
+    const res = damageBaseGameDrone(rec, damage, { roll: Math.random() });
+    // A hit event so every client flashes the drone the same way it flashes a player.
+    room.events.hits.push({ victim: id, shooter: shooterId ?? null, point: [...point], weapon: weaponId ?? null, damage: Math.min(before, damage), tick: room.tick });
+    if (res.dead && rec.done && rec.crash && rec.def.crashBlast) {
+      detonateBlast(room, rec.crash, { ...rec.def.crashBlast, ownerId: rec.ownerId, weaponId: `${rec.kind}_crash`, contact: true });
+      room.drones.delete(id);
+    }
   }
 
   // environment-viewer's applyExplosionBlast on the room roster: blastDamageAt falloff, friendly
@@ -234,6 +262,14 @@ export function createBaseGameRoomService({
       if (dmg <= 0) continue;
       applyDamage(room, victim, dmg, { shooter: owner, point, weaponId: weapon?.id ?? weaponId, source: 'explosion' });
     }
+    // Drones take the blast too, so a missile that lands beside one brings it down, and so does a
+    // drone going off next to another one. A drone already ending its own life is skipped, or two
+    // crashing together would detonate each other forever.
+    for (const rec of [...room.drones.values()]) {
+      if (rec.done || `${rec.kind}_crash` === weaponId) continue;
+      const dmg = blastDamageOnDrone(rec, point, radius, damage);
+      if (dmg > 0) hitDrone(room, rec.id, dmg, point, weaponId, ownerId);
+    }
   }
 
   function applyDamage(room, victim, amount, { shooter = null, point = null, normal = null, weaponId = null, source = 'gun', zone = null, side = 'center' } = {}) {
@@ -249,6 +285,7 @@ export function createBaseGameRoomService({
     if (shooter && shooter !== victim) shooter.kills++;
     victim.respawnAtTick = room.tick + BASE_GAME_RESPAWN_TICKS;
     victim.action = BASE_GAME_WEAPON_ACTION.idle;
+    dropStick(victim);
     room.events.deaths.push({ victim: victim.id, killer: shooter?.id ?? null, tick: room.tick });
   }
 
@@ -314,6 +351,7 @@ export function createBaseGameRoomService({
 
   function playerEntry(client, room) {
     const controller = client.controller;
+    const controlledVehicle = client.controlling ? room.vehicles.get(client.controlling) : null;
     return {
       id: client.id,
       connected: !!client.npc || client.ws?.readyState === 1,
@@ -345,6 +383,7 @@ export function createBaseGameRoomService({
       hitProfile: client.hitProfile,
       poseEpoch: client.poseEpoch,
       controlling: client.controlling,
+      vehicle: controlledVehicle?.driver === client.id ? vehicleSeatState(controlledVehicle) : null,
       gadgets: { ...client.gadgets },
       gadgetReady: client.gadgetReady,
       team: client.team ?? BASE_GAME_TEAMS.friendly,
@@ -379,6 +418,7 @@ export function createBaseGameRoomService({
       explosions,
       projectiles: room.projectiles ? room.projectiles.list.map(projectileEntry) : [],
       drones: [...room.drones.values()].map(droneWireState),
+      vehicles: [...room.vehicles.values()].map(vehicleWireState),
     };
   }
   function emptyEvents() { return { hits: [], deaths: [], shots: [], explosions: [] }; }
@@ -506,6 +546,7 @@ export function createBaseGameRoomService({
       poseHistory: new Map(),
       projectiles: null,   // bot-projectiles.js manager, built with the world in attachProjectiles
       drones: new Map(),   // id -> base-game-drones.js record; stepped after the players each tick
+      vehicles: new Map(), // id -> base-game-vehicles.js record; driven seats step with their player
       npcs: null,          // server/base-game-npcs.js: the room's bot brain, built with the world
       npcSeq: 0,
     };
@@ -745,6 +786,8 @@ export function createBaseGameRoomService({
     if (msg.type === 'base:terrain_get') return getTerrain(ws, msg);
     if (msg.type === 'base:input') return receiveInput(ws, msg);
     if (msg.type === 'base:npc') return npcCommand(ws, msg);
+    if (msg.type === 'base:vehicle') return vehicleCommand(ws, msg);
+    if (msg.type === 'base:drone') return droneCommand(ws, msg);
     return false;
   }
 
@@ -767,7 +810,10 @@ export function createBaseGameRoomService({
     if (!room.npcs) return;
     const w = room.world;
     const patch = {};
-    if (Number.isFinite(w.npcNoticeMs)) patch.botAimSettings = { reactionMs: w.npcNoticeMs };
+    const aim = {};
+    if (Number.isFinite(w.npcNoticeMs)) aim.reactionMs = w.npcNoticeMs;
+    if (Number.isFinite(w.npcAccuracy)) Object.assign(aim, aimSettingsForAccuracy(w.npcAccuracy));
+    if (Object.keys(aim).length) patch.botAimSettings = aim;
     room.npcs.configure(patch);
   }
   function makeNpcClient(room, { team, role, spawn }) {
@@ -878,6 +924,73 @@ export function createBaseGameRoomService({
     broadcast(room);
     return true;
   }
+
+  function vehicleCommand(ws, msg) {
+    if (!validateHandshake(ws, msg)) return true;
+    const client = socketClients.get(ws);
+    if (!client) { fail(ws, 'not_joined', 'Join a base-game room first'); return true; }
+    const room = client.room;
+    if (room.ownerId !== client.id) { fail(ws, 'not_owner', 'Only the room owner can add or remove vehicles'); return true; }
+    if (!client.rate.allow(now())) { client.rejectedInputs++; return true; }
+    if (!room.sim) { fail(ws, 'world_not_ready', 'The world is still loading'); return true; }
+    const req = sanitizeBaseGameVehicleRequest(msg);
+    if (!req) { fail(ws, 'invalid_vehicle', 'Bad vehicle request'); return true; }
+    advance(room);
+    if (req.action === 'clear') {
+      for (const [id, rec] of room.vehicles) {
+        if (req.kind && rec.kind !== req.kind) continue;
+        const driver = rec.driver ? room.clients.get(rec.driver) : null;
+        if (driver?.controlling === id) { const exit = vehicleSeatPointSafe(rec); driver.controller?.pin(exit.position, exit.velocity); driver.controlling = null; }
+        room.vehicles.delete(id);
+      }
+    } else {
+      const point = req.aimed ? aimedGroundPoint(room, client) : req.at;
+      if (!point) { fail(ws, 'no_ground', 'Nothing under the aim to place a vehicle on'); return true; }
+      const groundY = roomGroundY(room);
+      const rec = createBaseGameVehicle(req.kind, {
+        ownerId: null, team: 0, from: [point[0], groundY(point[0], point[2]), point[2]], yaw: client.lastInput.yaw,
+        groundY, id: `v${room.tick.toString(36)}-${req.kind}-${room.vehicles.size.toString(36)}`,
+      });
+      room.vehicles.set(rec.id, rec);
+    }
+    room.revision++; broadcast(room); return true;
+  }
+
+  // World drones: the owner's dev gun puts a Sentinel into orbit over the owner (never thrown, never
+  // flown by hand), or clears them. Capped per room; the record is owned by the sender so the orbit
+  // follows them and a dead or departed owner parks it where it is, as the UAV does.
+  function droneCommand(ws, msg) {
+    if (!validateHandshake(ws, msg)) return true;
+    const client = socketClients.get(ws);
+    if (!client) { fail(ws, 'not_joined', 'Join a base-game room first'); return true; }
+    const room = client.room;
+    if (room.ownerId !== client.id) { fail(ws, 'not_owner', 'Only the room owner can spawn or clear world drones'); return true; }
+    if (!client.rate.allow(now())) { client.rejectedInputs++; return true; }
+    if (!room.sim) { fail(ws, 'world_not_ready', 'The world is still loading'); return true; }
+    const req = sanitizeBaseGameDroneRequest(msg);
+    if (!req) { fail(ws, 'invalid_drone', 'Bad drone request'); return true; }
+    advance(room);
+    if (req.action === 'clear') {
+      for (const [id, rec] of room.drones) if (rec.def.world && (!req.kind || rec.kind === req.kind)) room.drones.delete(id);
+    } else {
+      let aloft = 0;
+      for (const rec of room.drones.values()) if (rec.def.world && !rec.done) aloft++;
+      if (aloft >= BASE_GAME_WORLD_DRONE_CAP) { fail(ws, 'drone_cap', `At most ${BASE_GAME_WORLD_DRONE_CAP} world drones per room`); return true; }
+      const at = client.controller?.getPosition();
+      if (!at) { fail(ws, 'no_body', 'No body to spawn over'); return true; }
+      const rec = spawnWorldDrone(req.kind, {
+        ownerId: client.id, team: 0, at, look: lookDirection(client.lastInput.yaw, 0), alt: req.alt, radius: req.radius,
+        groundAt: roomGroundY(room), id: `w${room.tick.toString(36)}-${req.kind}-${room.drones.size.toString(36)}`,
+      });
+      room.drones.set(rec.id, rec);
+    }
+    room.revision++; broadcast(room); return true;
+  }
+
+  function vehicleSeatPointSafe(rec) {
+    const sy = Math.sin(rec.body.yaw), cy = Math.cos(rec.body.yaw), o = rec.def.exitOffset;
+    return { position: [rec.body.x + o[0] * cy + o[2] * sy, rec.y + o[1], rec.body.z - o[0] * sy + o[2] * cy], velocity: [rec.body.vx, rec.airV, rec.body.vz] };
+  }
   // One sim tick for a bot: the brain's intent becomes this tick's input, then the ordinary path.
   function stepNpcClient(client) {
     const room = client.room;
@@ -900,9 +1013,16 @@ export function createBaseGameRoomService({
     const next = client.queue.shift();
     client.lastConsumedTick = next.tick;
     client.lastInput = next;
-    // An operator at the stick stands still: the movement keys are the drone's while `controlling`.
-    const flying = !!client.controlling;
-    client.controller.stepOnce({ tick: next.tick, moveX: flying ? 0 : next.moveX, moveZ: flying ? 0 : next.moveZ, yaw: next.yaw, sprint: flying ? false : next.sprint, crouch: next.crouch, stance: stanceName(next.stance) }, flying ? false : next.jump);
+    const controlledVehicle = client.controlling ? client.room.vehicles.get(client.controlling) : null;
+    if (controlledVehicle?.driver === client.id) {
+      const ownerPos = client.controller.getPosition();
+      const seat = stepVehicleSeat(controlledVehicle, next, stepMs / 1000, vehicleWorld(client.room, controlledVehicle, client, ownerPos));
+      if (seat) client.controller.pin(seat.position, seat.velocity, next.tick);
+    } else {
+      // A remote aircraft operator stands still; its movement keys belong to the stick.
+      const flying = !!client.controlling;
+      client.controller.stepOnce({ tick: next.tick, moveX: flying ? 0 : next.moveX, moveZ: flying ? 0 : next.moveZ, yaw: next.yaw, sprint: flying ? false : next.sprint, crouch: next.crouch, stance: stanceName(next.stance) }, flying ? false : next.jump);
+    }
     // Slot and aim are taken as sent. The trigger step (base-game-fire.js, on combat.js's
     // validateShot and player-ammo.js) decides whether a round leaves; hits resolve below.
     // A swap puts one weapon away and brings the next up, and neither can shoot on the way. It is
@@ -970,6 +1090,7 @@ export function createBaseGameRoomService({
   }
   function ownedDrone(room, ownerId, kind) {
     for (const rec of room.drones.values()) if (rec.ownerId === ownerId && rec.kind === kind && !rec.done) return rec;
+    for (const rec of room.vehicles.values()) if (rec.ownerId === ownerId && rec.kind === kind && !rec.done) return rec;
     return null;
   }
   // Fire edge on the gadget slot, once the draw has finished and with one in the hands: the throw
@@ -1002,10 +1123,19 @@ export function createBaseGameRoomService({
   function spawnGadget(client, kind, next) {
     const room = client.room;
     if (!room.combat.getSnapshot(client.id).alive || ownedDrone(room, client.id, kind)) return;
+    const groundY = roomGroundY(room);
+    if (kind === VEHICLE_UGV) {
+      const p = client.controller.getPosition();
+      const rec = createBaseGameVehicle(kind, {
+        ownerId: client.id, team: 0, from: p, yaw: next.yaw, groundY,
+        id: `v${room.tick.toString(36)}-${client.id.slice(0, 6)}-${kind}`,
+      });
+      room.vehicles.set(rec.id, rec);
+      return;
+    }
     updateClientHitPose(client);
     const eye = playerPoseAnchor(client.hitPose, 'eye');
     const look = lookDirection(next.yaw, next.pitch);
-    const groundY = roomGroundY(room);
     const rec = createBaseGameDrone(kind, {
       ownerId: client.id, team: 0,
       from: [eye[0], eye[1] + 0.5, eye[2]], look, throwSpeed: 8,
@@ -1016,24 +1146,58 @@ export function createBaseGameRoomService({
   }
   function dropStick(client) {
     if (!client.controlling) return;
-    const rec = client.room.drones.get(client.controlling);
-    if (rec) releaseDrone(rec);
+    const drone = client.room.drones.get(client.controlling);
+    const vehicle = client.room.vehicles.get(client.controlling);
+    if (drone) releaseDrone(drone);
+    if (vehicle) {
+      const exit = vehicleSeatPointSafe(vehicle);
+      releaseVehicle(vehicle);
+      if (vehicle.def.seat === 'onboard') client.controller?.pin(exit.position, exit.velocity);
+    }
     client.controlling = null;
   }
   // Orders and the stick. Only the owner's input reaches a drone; mode 0 while flying releases it.
   function applyDroneInput(client, next) {
     const di = next.drone;
     const room = client.room;
-    const rec = di?.id ? room.drones.get(di.id) : null;
-    if (!di || !rec || rec.ownerId !== client.id || rec.done) { dropStick(client); return; }
-    if (di.send) { sendDroneTo(rec, di.send); if (client.controlling === rec.id) client.controlling = null; return; }
-    if (di.recall) { recallDrone(rec); if (client.controlling === rec.id) client.controlling = null; return; }
+    const drone = di?.id ? room.drones.get(di.id) : null;
+    const vehicle = di?.id ? room.vehicles.get(di.id) : null;
+    const rec = drone ?? vehicle;
+    const owns = rec?.ownerId === client.id;
+    const canSeat = vehicle?.kind === VEHICLE_BUGGY && !vehicle.done && (!vehicle.driver || vehicle.driver === client.id)
+      && Math.hypot(vehicle.body.x - client.controller.getPosition()[0], vehicle.body.z - client.controller.getPosition()[2]) <= 3;
+    if (!di || !rec || rec.done || (!owns && !canSeat)) { if (client.controlling) dropStick(client); return; }
+    if (di.send) { if (drone) sendDroneTo(rec, di.send); else sendVehicleTo(rec, di.send); if (client.controlling === rec.id) client.controlling = null; return; }
+    if (di.recall) { if (drone) recallDrone(rec); else recallVehicle(rec); if (client.controlling === rec.id) client.controlling = null; return; }
     if (di.mode !== 1) { if (client.controlling === rec.id) dropStick(client); return; }
     if (rec.mode !== 'manual') {
       if (client.controlling && client.controlling !== rec.id) dropStick(client);
-      if (takeOverDrone(rec, { groundY: roomGroundY(room) })) client.controlling = rec.id;
+      const taken = drone ? takeOverDrone(rec, { groundY: roomGroundY(room) }) : takeOverVehicle(rec, client.id);
+      if (taken) client.controlling = rec.id;
     }
-    if (rec.mode === 'manual') { rec.input.pitch = di.pitch; rec.input.roll = di.roll; rec.input.yaw = di.yaw; rec.input.throttle = di.throttle; rec.input.sweep = di.sweep; rec.input.flap = di.flap; }
+    if (drone && rec.mode === 'manual') { rec.input.pitch = di.pitch; rec.input.roll = di.roll; rec.input.yaw = di.yaw; rec.input.throttle = di.throttle; rec.input.sweep = di.sweep; rec.input.flap = di.flap; }
+    if (drone) applyDroneAim(room, rec, di);
+    // A ground station has no rounds in the air to steer: the aim is stored and the turret trains
+    // toward it inside the vehicle's own fixed step, so the slew is deterministic like the drive.
+    else if (rec.def.turret) {
+      if (di.aim) rec.aim = di.aim;
+      rec.firing = di.mode === 1 && di.fire === true;
+    }
+  }
+
+  // The sensor and the trigger. The aim is stored on the record and copied into every missile this
+  // drone already has in the air, which is what makes it steerable after launch rather than a
+  // fire-and-forget shot at wherever the crosshair happened to be.
+  function applyDroneAim(room, rec, di) {
+    if (di.aim) rec.aim = di.aim;
+    if (rec.aim) {
+      for (const proj of room.projectiles?.list ?? []) {
+        if (proj.guide && proj.guide.droneId === rec.id) { proj.guide.aim[0] = rec.aim[0]; proj.guide.aim[1] = rec.aim[1]; proj.guide.aim[2] = rec.aim[2]; }
+      }
+    }
+    if (!di.fire || !rec.aim) return;
+    const shot = fireAgm(rec, rec.aim, roomMs(room) / 1000);
+    if (shot) room.projectiles?.spawn({ ...shot, color: [1, 0.72, 0.4], throwerActorId: rec.ownerId });
   }
   const _droneWorld = { ownerPos: null, ownerYaw: 0, ownerAlive: false, groundY: null, input: null };
   function stepDrones(room) {
@@ -1055,6 +1219,41 @@ export function createBaseGameRoomService({
         // Into the ground, or shot to pieces: it goes off where it ends, on whoever is standing there.
         if (rec.crash && rec.def.crashBlast) detonateBlast(room, rec.crash, { ...rec.def.crashBlast, ownerId: rec.ownerId, weaponId: `${rec.kind}_crash`, contact: true });
         room.drones.delete(rec.id);
+      }
+    }
+  }
+
+  const _vehicleWorld = { ownerPos: null, ownerYaw: 0, ownerAlive: false, groundY: null, seaLevel: -Infinity };
+  function vehicleWorld(room, rec, owner = null, ownerPos = null) {
+    owner ??= room.clients.get(rec.ownerId);
+    const alive = !!owner?.controller && room.combat.getSnapshot(owner.id).alive;
+    _vehicleWorld.ownerPos = ownerPos ?? (alive ? owner.controller.getPosition() : null);
+    _vehicleWorld.ownerYaw = alive ? owner.lastInput.yaw : 0;
+    _vehicleWorld.ownerAlive = alive;
+    _vehicleWorld.groundY = roomGroundY(room);
+    _vehicleWorld.seaLevel = room.water?.enabled ? room.water.level : -Infinity;
+    return _vehicleWorld;
+  }
+  function stepVehicles(room) {
+    if (!room.vehicles.size) return;
+    const dt = stepMs / 1000;
+    for (const rec of room.vehicles.values()) {
+      if (!rec.driver) stepBaseGameVehicle(rec, dt, vehicleWorld(room, rec));
+      // The station only fires while its owner is connected and at the stick: a stale trigger on a
+      // vanished operator would leave a UGV shooting at whatever it was last pointed at.
+      const gunner = rec.firing ? room.clients.get(rec.ownerId) : null;
+      if (rec.firing && (!gunner || gunner.controlling !== rec.id)) rec.firing = false;
+      const shot = fireVehicleTurret(rec);
+      if (shot) {
+        const weapon = getWeapon(shot.weaponId);
+        if (weapon) resolveHitscanShot(room, gunner, shot.weaponId, weapon, shot.origin, shot.dir, rec.id);
+      }
+      const driver = rec.driver ? room.clients.get(rec.driver) : null;
+      if (driver && (rec.mode !== 'manual' || rec.driver !== driver.id)) driver.controlling = null;
+      if (rec.done) {
+        if (rec.crash && rec.def.crashBlast) detonateBlast(room, rec.crash, { ...rec.def.crashBlast, ownerId: rec.ownerId, weaponId: `${rec.kind}_crash`, contact: true });
+        if (driver?.controlling === rec.id) driver.controlling = null;
+        room.vehicles.delete(rec.id);
       }
     }
   }
@@ -1107,28 +1306,41 @@ export function createBaseGameRoomService({
       return;
     }
     // Victims as the shooter saw them: rewound by the client interpolation delay.
+    resolveHitscanShot(room, client, weaponId, weapon, origin, dir, client.controlling);
+  }
+
+  // One hitscan round from an arbitrary origin. Extracted from fireShot so the UGV's weapon station
+  // resolves through exactly the same lag compensation a hand weapon does: victims rewound by the
+  // client interpolation delay, drones as mobs, one shot event for everyone to draw.
+  function resolveHitscanShot(room, shooter, weaponId, weapon, origin, dir, excludeMobId = null) {
     const at = roomMs(room) - BASE_GAME_LAG_COMP_MS;
     const players = [];
     for (const other of room.clients.values()) {
-      if (other === client || !other.controller) continue;
+      if (other === shooter || !other.controller) continue;
       updateClientHitPose(other);
       const history = room.poseHistory.get(other.id);
       const past = history ? samplePlayerHitRigPose(history, at, other.rewindPose) : null;
       const rig = past || other.hitPose;
       players.push({ id: other.id, rig, alive: rig.alive });
     }
-    const hit = resolveHitscan({ shooterId: client.id, origin, dir, range: weapon.range ?? 300, players, occluder: worldOccluder(room) });
-    room.events.shots.push({ shooter: client.id, weapon: weaponId, origin, dir, end: hit.point, normal: hit.normal ?? null, kind: hit.kind, tick: room.tick });
-    if (hit.kind !== 'player') return;
+    // Drones ride in as mobs, which is the capsule list resolveHitscan already has. A drone with a
+    // body radius and nothing reading it was scenery you could shoot straight through.
+    const mobs = droneHitVolumes(room.drones, excludeMobId);
+    const shooterId = shooter?.id ?? null;
+    const hit = resolveHitscan({ shooterId, origin, dir, range: weapon.range ?? 300, players, mobs, occluder: worldOccluder(room) });
+    room.events.shots.push({ shooter: shooterId, weapon: weaponId, origin, dir, end: hit.point, normal: hit.normal ?? null, kind: hit.kind, tick: room.tick });
+    if (hit.kind === 'mob') { hitDrone(room, hit.id, weapon.damage, hit.point, weaponId, shooterId); return hit; }
+    if (hit.kind !== 'player') return hit;
     const victim = room.clients.get(hit.id);
     if (victim) applyDamage(room, victim, weapon.damage, {
-      shooter: client,
+      shooter,
       point: hit.point,
       normal: hit.normal ?? null,
       weaponId,
       zone: hit.zone ?? null,
       side: hit.side ?? 'center',
     });
+    return hit;
   }
 
   function setLoadout(ws, msg) {
@@ -1207,7 +1419,7 @@ export function createBaseGameRoomService({
 
   // Service profiler: one log line per second whenever a wake-up ran long, with the phase split,
   // so a laggy session says where the server's time went instead of leaving us to guess.
-  const prof = { lastWake: 0, maxGap: 0, maxWake: 0, sumWake: 0, wakes: 0, ticks: 0, prepare: 0, think: 0, clients: 0, projectiles: 0, drones: 0, bcast: 0, bytes: 0, since: 0 };
+  const prof = { lastWake: 0, maxGap: 0, maxWake: 0, sumWake: 0, wakes: 0, ticks: 0, prepare: 0, think: 0, clients: 0, projectiles: 0, drones: 0, vehicles: 0, bcast: 0, bytes: 0, since: 0 };
   const PROF_WAKE_WARN_MS = 12;
   function profReport(at) {
     if (at - prof.since < 1000) return;
@@ -1215,8 +1427,8 @@ export function createBaseGameRoomService({
     if (prof.maxWake >= PROF_WAKE_WARN_MS || prof.maxGap >= 50 || (npcs && process.env.BASE_GAME_PROF)) {
       const f = v => v.toFixed(1);
       const s = [...rooms.values()].find(r => r.npcs)?.npcs?.stats;
-      console.log(`[base-game prof] wake max ${f(prof.maxWake)} ms avg ${f(prof.sumWake / Math.max(1, prof.wakes))} ms gap max ${f(prof.maxGap)} ms | ticks ${prof.ticks} prepare ${f(prof.prepare)} think ${f(prof.think)} clients ${f(prof.clients)} proj ${f(prof.projectiles)} drones ${f(prof.drones)} | snapshots ${f(prof.bcast)} ms ${(prof.bytes / 1024).toFixed(0)} KB | npcs ${npcs}`
-        + (s ? ` sync ${f(s.syncMs)} brain ${f(s.thinkMs)} input ${f(s.inputMs)} rays ${s.raycasts} heightAt ${s.heightAt} bakes ${s.bakes}` : ''));
+      console.log(`[base-game prof] wake max ${f(prof.maxWake)} ms avg ${f(prof.sumWake / Math.max(1, prof.wakes))} ms gap max ${f(prof.maxGap)} ms | ticks ${prof.ticks} prepare ${f(prof.prepare)} think ${f(prof.think)} clients ${f(prof.clients)} proj ${f(prof.projectiles)} drones ${f(prof.drones)} vehicles ${f(prof.vehicles)} | snapshots ${f(prof.bcast)} ms ${(prof.bytes / 1024).toFixed(0)} KB | npcs ${npcs}`
+        + formatBaseGameNpcProfStats(s, f));
       for (const r of rooms.values()) r.npcs?.resetStats?.();
     }
     for (const k of Object.keys(prof)) if (k !== 'lastWake') prof[k] = 0;
@@ -1244,10 +1456,12 @@ export function createBaseGameRoomService({
         stepClient(client); enforceKillPlane(client);
       }
       t2 = performance.now(); prof.clients += t2 - t; t = t2;
-      if (room.projectiles?.list.length) room.projectiles.update(stepMs / 1000);
+      if (room.projectiles?.list.length) { stepGuidedProjectiles(room.projectiles.list, stepMs / 1000); room.projectiles.update(stepMs / 1000); }
       t2 = performance.now(); prof.projectiles += t2 - t; t = t2;
       stepDrones(room);
-      prof.drones += performance.now() - t;
+      t2 = performance.now(); prof.drones += t2 - t; t = t2;
+      stepVehicles(room);
+      prof.vehicles += performance.now() - t;
     }
   }
 
@@ -1272,6 +1486,7 @@ export function createBaseGameRoomService({
     if (!client) return false;
     socketClients.delete(ws);
     if (client.ws !== ws) return true;
+    dropStick(client);
     client.ws = null;
     client.disconnectedAt = now();
     requestResync(client);

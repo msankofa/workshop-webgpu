@@ -71,6 +71,21 @@ p2.time('creatures', () => { t2 += 3; });
 p2.beginFrame();
 ok(p2.snapshot().passCreaturesMs === 0, 'default names still zeroed by beginFrame');
 
+// --- disabled mode keeps frame execution and dropped-frame accounting, but does no timing ------
+let t3 = 0, nowCalls = 0;
+const p3 = createFrameProfiler({ enabled: false, now: () => { nowCalls++; return t3; } });
+ok(p3.enabled === false, 'a profiler can start disabled');
+ok(p3.time('creatures', () => { t3 += 5; return 9; }) === 9, 'disabled sync timing still executes and returns the work');
+ok(await p3.timeAsync('grassGpu', async () => { t3 += 7; return 'idle'; }) === 'idle', 'disabled async timing still awaits and returns the work');
+p3.mark('sim', 4); p3.recordGpu('grassGpu', 3); p3.beginFrame();
+ok(nowCalls === 0, 'disabled timing never reads the clock');
+ok(p3.snapshot({ sim: 'simMs' }).simMs === 0 && p3.snapshot().gpuGrassMs === 0, 'disabled timing records no CPU or GPU passes');
+p3.markDropped(2);
+ok(p3.droppedFrames === 2 && p3.snapshot().droppedFrames === 2, 'dropped-frame counting remains available while disabled');
+p3.setEnabled(true);
+ok(p3.enabled === true, 'detailed timing can be enabled for a capture');
+p3.time('creatures', () => { t3 += 2; });
+ok(nowCalls === 2 && p3.snapshot().passCreaturesMs === 2, 're-enabled timing resumes clock reads and recording');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
-

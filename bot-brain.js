@@ -730,7 +730,7 @@ export function createBotBrain({ world, hooks = {}, settings = {} } = {}) {
     BOT_CONFIRM_STRIDE: (v) => { BOT_CONFIRM_STRIDE = v; },
     BOT_MOVE_SPEED: (v) => { BOT_MOVE_SPEED = v; },
     USE_FIELD_LOS_PREFILTER: (v) => { USE_FIELD_LOS_PREFILTER = v; },
-    botAimSettings: (v) => { botAimSettings = v; },
+    botAimSettings: (v) => { botAimSettings = { ...botAimSettings, ...v }; },
     botAutoRefillOnReload: (v) => { botAutoRefillOnReload = v; },
     botBehaviorSettings: (v) => { botBehaviorSettings = v; },
     botDroneSettings: (v) => { botDroneSettings = v; },
@@ -4324,6 +4324,7 @@ export function createBotBrain({ world, hooks = {}, settings = {} } = {}) {
     actors: () => botActors, actorById: (id) => botActorById.get(id),
     // What a hook sees while it runs: the bound actor, its bot record and current target.
     bound: () => ({ actor: activeBotActor, bot, target: botTarget, state: botState, aimPoint: botHasAimPoint ? botAimPoint : null, reloadUntil: botReloadUntil }),
+    aimSettings: () => ({ ...botAimSettings }),
     ammoFor: (entity, weaponId) => withBotActor(entity.botActor, () => ensureBotAmmo(weaponId ?? entity.weapon)),
     state: () => ({ navGrid, visField, cornerMap, goalClaims, botHash, botActorById, botActors, squads, recentAllyHits }),
   };

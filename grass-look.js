@@ -4,6 +4,7 @@
 // before they existed. Ported as ideas (not code) from achrefelouafi/GrassSystemThreeJS:
 //   windDir      coherent 2D gust travelling along a wind heading, plus per-blade flutter
 //   curl         resting circular-arc bend per blade, with the arc normal fed to lighting
+//   faceNormalMix straight blades blend toward their real face normal so side lights do not cut off
 //   translucency backlight glow through the blade when the camera faces the sun
 //   rootShade    darkening toward the blade root
 //   coverage     an FBM patch mask that decides where grass grows (blades outside collapse)
@@ -21,7 +22,7 @@ import {
 
 export const GRASS_LOOK_DEFAULTS = {
   windDir: false, windAngle: 35, windFlutter: 0.4,
-  curl: false, curlAmount: 0.9, curlNormal: 0.7,
+  curl: false, curlAmount: 0.9, curlNormal: 0.7, faceNormalMix: 0.65,
   translucency: false, translucencyAmount: 0.6,
   rootShade: false, rootShadeAmount: 0.5,
   coverage: false, coverageAmount: 0.6, coverageScale: 0.15, coverageEdge: 0.25,
@@ -62,6 +63,7 @@ export function createGrassLook(opts = {}) {
     curl: uniform(flag(o.curl), 'float'),
     curlAmount: uniform(o.curlAmount, 'float'),
     curlNormal: uniform(o.curlNormal, 'float'),
+    faceNormalMix: uniform(o.faceNormalMix, 'float'),
     translucency: uniform(flag(o.translucency), 'float'),
     translucencyAmount: uniform(o.translucencyAmount, 'float'),
     sunDir: uniform(new THREE.Vector3(0.5, 0.75, 0.4).normalize()),
@@ -123,8 +125,13 @@ export function createGrassLook(opts = {}) {
       // flipped per visible side because the blades are DoubleSide and a custom normalNode does
       // not get three's automatic face-direction flip.
       const arcView = cameraViewMatrix.transformDirection(arcN).mul(faceDirection);
-      const upView = vec3(0, 1, 0);
-      const normal = normalize(mix(upView, arcView, u.curlNormal.mul(u.curl)));
+      // A fixed vec3(0,1,0) here is VIEW-up, not world-up. Besides moving with camera pitch, it
+      // makes a muzzle-height point/spot light cross N.L == 0 partway up every blade, producing a
+      // hard horizontal cutoff. Keep an upward foliage bias for overhead sun, but retain enough of
+      // the real blade face for side lights. Curled blades continue to use curlNormal as before.
+      const upView = cameraViewMatrix.transformDirection(vec3(0, 1, 0));
+      const normalMix = clamp(mix(u.faceNormalMix, u.curlNormal, u.curl), 0, 1);
+      const normal = normalize(mix(upView, arcView, normalMix));
       return { dy: yArc.sub(y), dxz: face.mul(zArc), normal };
     },
 

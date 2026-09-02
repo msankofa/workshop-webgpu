@@ -18,6 +18,7 @@ import { createSource, normalizeDescriptor, normalizeTileRequest, tileKey } from
 export const FIELD_PRIORITY = Object.freeze({
   contact: 10,     // what the player and rain touch: the fine, lod-0 window
   water: 20,       // the sea-depth window
+  plan: 25,        // kilometres-ahead planning, on its own scheduler in Base Game
   placement: 30,   // flora's coarse biome/moisture field
   prefetch: 40,    // speculative
 });

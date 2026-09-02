@@ -13,6 +13,7 @@ import { createBaseGameTerrain } from './base-game-terrain.js';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
+import { DEFAULT_BASE_GAME_TREE_SPECIES } from './base-game-tree-species.js';
 
 const geoBytes = geo => {
   let n = geo.index ? geo.index.array.byteLength : 0;
@@ -82,6 +83,7 @@ async function run(label, settings) {
   terrain.dispose();
 }
 
-await run('defaults (45/ha, 260 m)', { treesEnabled: true });
-await run('dense   (200/ha, 260 m)', { treesEnabled: true, treesPerHectare: 200 });
-await run('wide    (45/ha, 600 m)', { treesEnabled: true, treeDrawRadius: 600, treeLodR2: 600 });
+const namedDefaults = { treesEnabled: true, treeSpeciesSelection: DEFAULT_BASE_GAME_TREE_SPECIES };
+await run('defaults (45/ha, 260 m)', namedDefaults);
+await run('dense   (200/ha, 260 m)', { ...namedDefaults, treesPerHectare: 200 });
+await run('wide    (45/ha, 600 m)', { ...namedDefaults, treeDrawRadius: 600, treeLodR2: 600 });

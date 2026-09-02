@@ -59,6 +59,7 @@
   #state-file { display: none; }
   #boot-screen { position: fixed; inset: 0; z-index: 999; display: grid; place-items: center;
     background: #07101e; color: #b9c9df; font: 14px system-ui, sans-serif; }
+  #flight-hud { position: fixed; inset: 0; z-index: 6; pointer-events: none; display: none; }
 </style>
 </head>
 <body>
@@ -67,6 +68,7 @@
 <div id="damage-flash"></div>
 <div id="combat"></div>
 <div id="err"></div>
+<canvas id="flight-hud"></canvas>
 <div id="ctrl">
   <div class="panel-head">
     <div class="head-left"><span>Base Game v0</span><span class="hint">light + sky</span></div>
@@ -107,13 +109,14 @@ import { createSky } from './sky.js';
 import { sunPosition, moonPosition } from './solar-position.js';
 import { lerpHex } from './sky-field.js';
 import { createFrameProfiler } from './frame-profiler.js';
+import { createPipelineMeter } from './gpu-pipeline-meter.js';
 import { buildPerformanceMeasurement, changedPerformanceSettings } from './performance-capture.mjs';
 import { createSlotSection } from './bot-viewer-slots.js';
 import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld, BASE_GAME_TEAMS, BASE_GAME_NPC_ROLE_IDS } from './base-game-protocol.mjs';
 import { createBaseGameWater } from './base-game-water.js';
 import { createBaseGameFlora, BASE_GAME_FLORA_DEFAULTS } from './base-game-flora.js';
 import { createBaseGameForest, BASE_GAME_FOREST_DEFAULTS, BASE_GAME_FOREST_SHADOW_LAYER } from './base-game-forest.js';
-import { BASE_GAME_TREE_DEFAULTS } from './base-game-trees.js';
+import { BASE_GAME_TREE_DEFAULTS, expectedTreesPerChunk } from './base-game-trees.js';
 import { BASE_GAME_TREE_SPECIES, DEFAULT_BASE_GAME_TREE_SPECIES, selectedTreeSpeciesIds } from './base-game-tree-species.js';
 import { createBaseGameClouds, deckHorizonAngle } from './base-game-clouds.js';
 import { createBaseGameRain, rainResponse } from './base-game-rain.js';
@@ -131,6 +134,9 @@ import { createTerrainProjectStore, createBaseGameTerrainStudio } from './base-g
 import { loadStreamedSplatTextures, createStreamedSplatMaterial, updateStreamedSplat } from './terrain-splat-streamed.js';
 import { sanitizeBaseGameTerrainConfig } from './base-game-protocol.mjs';
 import { createBaseGameTerrain, terrainSourceFromDescriptor, BASE_GAME_TERRAIN_DEFAULTS } from './base-game-terrain.js';
+import { createBaseGameTrails, BASE_GAME_TRAIL_DEFAULTS } from './base-game-trails.js';
+import { createRoadSystem } from './roads.js';
+import { groundFromHeightFn } from './road-mesh.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
 import { v5Descriptor } from './terrain-source-v5.js';
 import { migrateProjectToUnbounded } from './terrain-project-v5.js';
@@ -144,8 +150,8 @@ import { attachDracoLoader } from './draco-loader.js';
 import { createWeaponMountSystem } from './weapon-mount.js';
 import { createWeaponViewModel } from './weapon-viewmodel.js';
 import { getWeapon, WEAPONS } from './weapons.js';
-import { BASE_GAME_STANCES, stanceName, stanceIndex, BASE_GAME_WEAPON_IDS, BASE_GAME_WEAPON_SLOTS, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_RELOADABLE_WEAPONS, weaponForSlot, sanitizeBaseGameShotEvent, sanitizeBaseGameHitEvent, sanitizeBaseGameExplosionEvent, sanitizeBaseGameProjectileState } from './base-game-protocol.mjs';
-import { createBaseGamePlayerView } from './base-game-player-view.js';
+import { BASE_GAME_STANCES, stanceName, stanceIndex, BASE_GAME_WEAPON_IDS, BASE_GAME_WEAPON_SLOTS, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_RELOADABLE_WEAPONS, weaponForSlot, sanitizeBaseGameShotEvent, sanitizeBaseGameHitEvent, sanitizeBaseGameExplosionEvent, sanitizeBaseGameProjectileState, sanitizeBaseGameVehicleState } from './base-game-protocol.mjs';
+import { createBaseGamePlayerView, obstructionDistance } from './base-game-player-view.js';
 import { createBaseGamePrediction } from './base-game-prediction.js';
 import { createEnvironmentAudio } from './environment-audio.js';
 import { synthVoice } from './weapon-sfx-synth.js';
@@ -179,7 +185,15 @@ import { createPlayerHitRigDebug } from './player-hit-rig-debug.js';
 import { createBaseGameRemotePlayers, remotePlayerColor } from './base-game-remote-players.js';
 import { isBaseGameGadget, BASE_GAME_GADGET_IDS, BASE_GAME_GADGET_THROW_TICKS, BASE_GAME_GADGET_THROW_ACTION_TICKS, BASE_GAME_GADGET_RELOAD_TICKS, BASE_GAME_SIM_HZ, BASE_GAME_WEAPON_ACTION, defaultGadgetStock } from './base-game-protocol.mjs';
 import { createBaseGameDroneView, CRAFT_TINT } from './base-game-drone-view.js';
-import { createBaseGameDrone, stepBaseGameDrone, sendDroneTo, recallDrone, takeOverDrone, releaseDrone, droneWireState } from './base-game-drones.js';
+import { createBaseGameDrone, spawnWorldDrone, stepBaseGameDrone, sendDroneTo, recallDrone, takeOverDrone, releaseDrone, droneWireState, DRONE_SENTINEL, BASE_GAME_DRONE_DEFS, fireAgm, agmReady, stepGuidedProjectiles, droneHitVolumes, blastDamageOnDrone, damageBaseGameDrone } from './base-game-drones.js';
+import { rayCapsuleHit } from './combat.js';
+import { drawFlightHud, drawSensorHud } from './flight-hud.js';
+import { buildCraftMesh } from './flight-meshes.js';
+import { createWheelMenu } from './wheel-menu.js';
+import { createWindowedBake } from './base-game-world-map.js';
+import { createWorldMapOverlay } from './world-map.js';
+import { BIOME_COLORS } from './biome-classifier-js.js';
+import { VEHICLE_UGV, VEHICLE_BUGGY, BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_DEFS, createBaseGameVehicle, createSeatedController, stepBaseGameVehicle, sendVehicleTo, recallVehicle, takeOverVehicle, releaseVehicle, vehicleSeatPoint, fireVehicleTurret } from './base-game-vehicles.js';
 import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS, BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
 import { ARM_POSE_PRESETS, GAIT_MODELS } from './player-procedural-body.js';
 import {
@@ -210,6 +224,12 @@ const DEFAULT_SETTINGS = Object.freeze({
   terrainVisible: true,
   terrainVolumetric: true,
   terrainSeaLevel: 0,
+  trailsEnabled: true,
+  trailSeed: 1,
+  trailSpacing: BASE_GAME_TRAIL_DEFAULTS.spacing,
+  trailWidth: BASE_GAME_TRAIL_DEFAULTS.width,
+  trailMaxGrade: BASE_GAME_TRAIL_DEFAULTS.maxGrade,
+  trailShow: true,
   waterEnabled: true,
   // A planar mirror renders the visible world a second time. Keep it opt-in: at the old radius-6
   // terrain default that made every other frame submit roughly 169 extra chunk draws.
@@ -241,6 +261,14 @@ const DEFAULT_SETTINGS = Object.freeze({
   treesEnabled: BASE_GAME_TREE_DEFAULTS.treesEnabled,
   treesPerHectare: BASE_GAME_TREE_DEFAULTS.treesPerHectare,
   treeMaxSize: BASE_GAME_TREE_DEFAULTS.treeMaxSize,
+  treePlacement: BASE_GAME_TREE_DEFAULTS.treePlacement,
+  treeClusterSize: BASE_GAME_TREE_DEFAULTS.treeClusterSize,
+  treeClusterSpread: BASE_GAME_TREE_DEFAULTS.treeClusterSpread,
+  treeShoreMargin: BASE_GAME_TREE_DEFAULTS.treeShoreMargin,
+  treeChunkSize: BASE_GAME_TREE_DEFAULTS.treeChunkSize,
+  treeSeedOffset: BASE_GAME_TREE_DEFAULTS.treeSeedOffset,
+  treeSizeVar: BASE_GAME_TREE_DEFAULTS.treeSizeVar,
+  treeSkew: BASE_GAME_TREE_DEFAULTS.treeSkew,
   treeSpeciesSelection: DEFAULT_BASE_GAME_TREE_SPECIES,
   treeTexMode: BASE_GAME_FOREST_DEFAULTS.treeTexMode,
   treeVariantsPerSpecies: BASE_GAME_FOREST_DEFAULTS.treeVariantsPerSpecies,
@@ -406,7 +434,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   // preset that writes the sliders; touching a slider flips it to custom (the fpPreset rule).
   devLightKind: 'lantern',
   devLightLifespan: 30, devLightR: 255, devLightG: 180, devLightB: 80,
-  devLightBrightness: 60, devLightRadius: 25,
+  devLightBrightness: 60, devLightRadius: 25, devLightDecay: 2,
   devLightFloat: false, devLightDrift: false, devLightArc: true,
   devLightHeld: true,
   // Laser sight (double-tap L). The DOT is a real light: a spot with a cone a fifth of a degree
@@ -492,6 +520,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   playerSnapDistance: BASE_GAME_PLAYER_DEFAULT_CONFIG.snapDistance,
   cameraDistance: 5.83,
   droneCameraZoom: 1,   // chase distance as a multiple of the craft's own framing, so one number suits both drones
+  flightHud: true,      // the green head-up display, drawn over any craft you are at the stick of
+  sentinelLowAlt: 150, sentinelLowRadius: 400,      // the dev gun's Sentinel presets: height over the ground and orbit ring
+  sentinelHighAlt: 1500, sentinelHighRadius: 900,
   cameraFollowRate: 14,
   cameraSensitivity: 0.002,
   cameraObstructionPadding: 0.22,
@@ -568,11 +599,13 @@ const NUMBER_LIMITS = Object.freeze({
   sunAzimuth: [0, 360], sunIntensity: [0, 4], ambientIntensity: [0, 2],
   waterFoam: [0, 3], waterClarity: [1, 120],
   terrainSeaLevel: [-120, 120], waveCount: [1, 40], waveBaseLength: [1, 5000], waveLengthMul: [0.05, 1], waveBaseAmp: [0, 50],
+  trailSeed: [0, 1e9], trailSpacing: [120, 1920], trailWidth: [1, 12], trailMaxGrade: [0.05, 1],
   waveAmpMul: [0.05, 1], waveChop: [0, 1], waveWindDeg: [0, 360], waveSpreadDeg: [0, 180], waveSpeed: [0, 100], waveSeed: [0, 1e9],
   playerMoveSpeed: [1, 15], playerSprintMultiplier: [1, 3], playerJumpSpeed: [2, 16],
   playerGravity: [1, 60], playerSlopeLimit: [1, 85], playerStepHeight: [0, 1.2],
   playerGroundDeceleration: [0, 100], playerSlopeSlideDeceleration: [0, 40],
   playerSnapDistance: [0, 1.2], cameraDistance: [1, 12], droneCameraZoom: [0.35, 4], cameraFollowRate: [1, 40],
+  sentinelLowAlt: [30, 5000], sentinelLowRadius: [100, 5000], sentinelHighAlt: [30, 5000], sentinelHighRadius: [100, 5000],
   cameraSensitivity: [0.0005, 0.01], cameraObstructionPadding: [0.05, 0.8],
   cameraSideOffset: [-1.5, 1.5], cameraHeightOffset: [-1, 1.5], cameraForwardOffset: [-1.5, 1.5], cameraFov: [30, 100], fpFov: [30, 110],
   fpCameraSideOffset: [-1.5, 1.5], fpCameraHeightOffset: [-1, 1.5], fpCameraForwardOffset: [-1.5, 1.5],
@@ -580,7 +613,7 @@ const NUMBER_LIMITS = Object.freeze({
   flashlightIntensity: [0, 2000], flashlightRange: [1, 300], flashlightAngle: [1, 80],
   flashlightSoftness: [0, 1], flashlightWarmth: [0, 1], flashlightSpill: [0, 40],
   devLightLifespan: [1, 120], devLightR: [0, 255], devLightG: [0, 255], devLightB: [0, 255],
-  devLightBrightness: [0, 500], devLightRadius: [1, 100],
+  devLightBrightness: [0, 500], devLightRadius: [1, 600], devLightDecay: [0, 4],
   laserHue: [0, 1], laserDotAngle: [0.01, 45], laserIntensity: [0, 500],
   laserBeamOpacity: [0, 1], laserBeamRadius: [0, 1], laserRange: [1, 300],
   npcNoticeMs: [0, 10000], npcAccuracy: [0, 1], npcSpawnDistance: [5, 2000],
@@ -641,6 +674,7 @@ const STRING_VALUES = Object.freeze({
   rainGroundSource: ['fine', 'coarse', 'off'],
   primaryBody: ['sun', 'moon'],
   worldMode: ['empty', 'traversalLab', 'terrain'],
+  treePlacement: ['clustered', 'random', 'scattered', 'ring'],
   rainOccluders: ['off', 'lab', 'on'],
   playerControlMode: ['player', 'orbit'],
   waterLook: [...BASE_GAME_WATER_LOOKS],
@@ -1029,6 +1063,10 @@ await renderer.init();
 // is available at all on this machine.
 let gpuDeviceSupportsTimestamps = null;
 try { gpuDeviceSupportsTimestamps = renderer.hasFeature('timestamp-query'); } catch { /* older backend */ }
+// Costs nothing when nothing compiles, and needs no flag: WebGPU builds a pipeline on the first
+// frame the thing that needs it draws, so the cost arrives scattered through a session rather than
+// at load, and it lands inside the render call where no slot can see it. See passPipelineMs.
+const pipelineMeter = createPipelineMeter(renderer.backend?.device);
 if (GPU_TIMESTAMPS && gpuDeviceSupportsTimestamps === false) {
   console.warn('[base-game] ?gputime requested but this GPU/browser exposes no timestamp-query. '
     + 'Chrome gates it behind chrome://flags/#enable-webgpu-developer-features.');
@@ -1173,6 +1211,28 @@ const terrain = createBaseGameTerrain({
   scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR,
   params: { batchFrustumCulled: BATCH_FRUSTUM_CULLED },
 });
+const trails = createBaseGameTrails({ terrain, options: {
+  enabled: settings.trailsEnabled, seed: settings.trailSeed, spacing: settings.trailSpacing,
+  width: settings.trailWidth, maxGrade: settings.trailMaxGrade,
+} });
+// Use the exact 1.25 m contact field where it is resident, then the already-streamed plan height
+// for the off-screen part of a leg. Requiring both endpoints to be inside the tiny contact window
+// left every 480 m trail edge permanently queued and rendered only its centre junction patch.
+const releaseTrailContact = terrain.acquireContactField();
+const trailSurfaceCell = terrain.system.params.chunkSize / terrain.system.chunkSegments(terrain.system.params.chunkSize);
+const trailHeightAt = (x, z) => {
+  const contact = terrain.contactHeightAt(x, z);
+  if (Number.isFinite(contact)) return contact;
+  const planned = terrain.plan?.sampleAt('heights', x, z);
+  return Number.isFinite(planned) ? planned : terrain.groundHeight(x, z);
+};
+const trailGround = groundFromHeightFn(trailHeightAt, { cell: trailSurfaceCell });
+const roads = createRoadSystem({ parent: scene, network: trails.network, ground: trailGround, options: {
+  width: settings.trailWidth, surfaceCell: trailSurfaceCell, residencyRadius: 70,
+} });
+roads.group.name = 'base-game-trails';
+const trailOrigin = worldCoordinates.getOrigin();
+roads.group.position.set(-trailOrigin[0], -trailOrigin[1], -trailOrigin[2]);
 // Ground textures load in the background; the vertex tint shows until they arrive.
 loadStreamedSplatTextures().then(tex => {
   terrain.setSplatMaterial(createStreamedSplatMaterial(tex, { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade }), tex);
@@ -1265,10 +1325,15 @@ const waterSim = createBaseGameWaterSim({
   waves: waveOptionsFromWorld(settings),
   enabled: settings.waterEnabled && settings.worldMode === 'terrain',
 });
-const playerController = createBaseGamePlayerController({
+const localVehicles = new Map();   // Solo authority; online the local replay records restored from snapshots
+const seatedVehicleWorld = { groundY: null, seaLevel: -Infinity, ownerPos: [0, 0, 0], ownerYaw: 0, ownerAlive: true };
+const bodyController = createBaseGamePlayerController({
   worldQuery,
   spawn: worldSpawn(),
   waterSurfaceAt: (x, z, t) => waterSim.heightAt(x, z, t),
+});
+const playerController = createSeatedController(bodyController, localVehicles, {
+  worldFor: () => { seatedVehicleWorld.groundY = soloGroundY; seatedVehicleWorld.seaLevel = waterSim.enabled ? waterSim.level : -Infinity; return seatedVehicleWorld; },
 });
 const playerFixedDt = 1 / playerController.config.fixedHz;
 const playerView = createBaseGamePlayerView({ scene, camera, worldQuery, worldCoordinates });
@@ -1284,8 +1349,34 @@ const remoteHeadLocal = [0, 0, 0];
 // ---- drones: base-game-drones.js flies them (on the server online, here in Solo), the drone view
 // draws them. Keys: 5 holds the gadget, click throws it, F takes the stick and drops it, B sends it
 // to the point under the crosshair, N recalls it. At the stick: arrows pitch/roll, A/D yaw, W/S throttle.
-const droneView = createBaseGameDroneView({ scene, worldCoordinates, tintFor: () => CRAFT_TINT });   // the flight sim's colours; owner tint can come later
-const droneCtl = { active: false, id: null, toggleEdge: false, sendEdge: false, recallEdge: false, fireHeld: false };
+const vehicleCamOrigin = new THREE.Vector3(), vehicleCamTarget = new THREE.Vector3(), vehicleCamRay = new THREE.Vector3();
+const droneView = createBaseGameDroneView({
+  scene, worldCoordinates, tintFor: () => CRAFT_TINT,
+  cameraObstruction: (origin, target, padding) => {
+    vehicleCamOrigin.fromArray(worldCoordinates.toGlobal(origin.toArray()));
+    vehicleCamTarget.fromArray(worldCoordinates.toGlobal(target.toArray()));
+    return obstructionDistance(worldQuery, vehicleCamOrigin, vehicleCamTarget, padding, vehicleCamRay);
+  },
+});   // the flight sim's colours; owner tint can come later
+const droneCtl = { active: false, id: null, toggleEdge: false, enterExitEdge: false, sendEdge: false, recallEdge: false, fireHeld: false,
+  // Which seat of the craft you are in. 'craft' is flying it; 'missile' is the sensor picture, which
+  // becomes the missile's own camera the moment one is away. F moves between them, X leaves the craft.
+  seat: 'craft', leaveEdge: false, fireEdge: false };
+// The sensor: a WORLD aim direction the mouse slews, so the picture does not roll when the aircraft
+// banks, exactly as the flight sim's gunner ball works. `aim` is the ground point under it.
+// The player's own first-person view, the reference every other sight's slew is scaled against, so
+// the hand feels the same on foot and behind a gun.
+const LOOK_REFERENCE_FOV = 62, TURRET_VIEW_FOV = 58;
+const sensor = { yaw: 0, pitch: -0.7, fov: 30, aim: [0, 0, 0], hasAim: false, range: 0, ready: false, view: 'first', missileId: null };
+const SENSOR_FOV = [10, 20, 30, 45];
+// Free look at the stick. The mouse used to be captured and thrown away while flying: pointer lock
+// held it and nothing read it, which reads as a dead mouse rather than as a decision. The flight sim
+// does the same, so there was nothing to copy. A drag now swings the view around the craft while it
+// keeps flying its heading, and a double click puts it back behind the nose. Held on the button
+// rather than always on, so a hand left on the mouse does not leave the camera facing the tail.
+const freeLook = { yaw: 0, pitch: 0, dragging: false, lastClickMs: 0 };
+const FREE_LOOK_RATE = 0.0022;
+function recentreFreeLook() { freeLook.yaw = 0; freeLook.pitch = 0; }
 const soloDrones = new Map();   // Solo only: the same records the server keeps, stepped in animate()
 // What is in the hands: stock per kind (the server's online, ours in Solo), whether one is out, and
 // the two arm motions as start times (ms). The server owns the counts online; the motions are
@@ -1338,6 +1429,65 @@ const localHeadLocal = [0, 0, 0];
 function localDroneOwnerId() { return isOnline() ? (networkSession?.clientId ?? 'local') : 'local'; }
 function ownedDroneId(kind) { return droneView.ownedBy(localDroneOwnerId(), kind)?.id ?? null; }
 function soloGroundY(x, z) { return settings.worldMode === 'terrain' ? terrain.groundHeight(x, z) : worldSpawn()[1] - 1.5; }
+// Which craft the seat belongs to, and whether it carries a rack at all.
+function seatRecord() { return droneCtl.active ? droneView.drones.get(droneCtl.id) : null; }
+function seatHasRack() { const r = seatRecord(); return !!(r && BASE_GAME_DRONE_DEFS[r.kind]?.agm); }
+// The sensor's aim as a unit world direction, from its yaw and pitch.
+function sensorDir(out) {
+  const cp = Math.cos(sensor.pitch);
+  out[0] = -Math.sin(sensor.yaw) * cp; out[1] = Math.sin(sensor.pitch); out[2] = -Math.cos(sensor.yaw) * cp;
+  return out;
+}
+// Where the sensor ray meets the ground, as a GLOBAL point: marched then bisected against the same
+// height the drones fly over, so the crosshair and the missile agree about where the ground is.
+const _senDir = [0, 0, 0];
+// Where a ground station is being told to look: the sensor line, out to the ground if it meets it
+// and to a fixed reach if it does not. A turret shoots roughly level, so unlike the missile sensor
+// this must still produce a point when the line is at or above the horizon.
+const _turretAim = [0, 0, 0];
+const TURRET_AIM_REACH = 300;
+// Whether the mouse is currently aiming a ground station rather than flying or looking.
+function atTurretStick() {
+  if (!droneCtl.active) return false;
+  return !!BASE_GAME_VEHICLE_DEFS[droneView.drones.get(droneCtl.id)?.kind]?.turret;
+}
+
+function turretAimPoint() {
+  const rec = droneView.drones.get(droneCtl.id);
+  if (!rec?.latest) return null;
+  sensorDir(_senDir);
+  const from = rec.latest.p;
+  if (_senDir[1] < -0.005 && sensorGroundPoint(from, _turretAim)) return [..._turretAim];
+  return [from[0] + _senDir[0] * TURRET_AIM_REACH, from[1] + _senDir[1] * TURRET_AIM_REACH, from[2] + _senDir[2] * TURRET_AIM_REACH];
+}
+
+function sensorGroundPoint(fromGlobal, out) {
+  sensorDir(_senDir);
+  if (_senDir[1] >= -0.005) return false;         // at or above the horizon: nothing to aim at
+  const ground = (x, z) => (isOnline() ? terrainGroundAt(x, z) : soloGroundY(x, z));
+  let prev = 0;
+  for (let d = 60; d <= 20000; d += 60) {
+    const x = fromGlobal[0] + _senDir[0] * d, y = fromGlobal[1] + _senDir[1] * d, z = fromGlobal[2] + _senDir[2] * d;
+    if (y <= ground(x, z)) {
+      let lo = prev, hi = d;
+      for (let i = 0; i < 12; i++) {
+        const mid = (lo + hi) * 0.5;
+        const mx = fromGlobal[0] + _senDir[0] * mid, my = fromGlobal[1] + _senDir[1] * mid, mz = fromGlobal[2] + _senDir[2] * mid;
+        if (my <= ground(mx, mz)) hi = mid; else lo = mid;
+      }
+      out[0] = fromGlobal[0] + _senDir[0] * hi; out[2] = fromGlobal[2] + _senDir[2] * hi;
+      out[1] = ground(out[0], out[2]);
+      sensor.range = hi;
+      return true;
+    }
+    prev = d;
+  }
+  return false;
+}
+// Online there is no local terrain field for the whole map; the resident chunks answer, and beyond
+// them the world's own height function does, which is what the server flies the drones over too.
+function terrainGroundAt(x, z) { return settings.worldMode === 'terrain' ? terrain.groundHeight(x, z) : worldSpawn()[1] - 1.5; }
+
 // Where the crosshair meets the world, as a global point: the world query first, then the terrain
 // field beyond the resident chunks, marched in 10 m steps out to 1.5 km.
 const _sendOrigin = new THREE.Vector3(), _sendDir = new THREE.Vector3();
@@ -1357,51 +1507,189 @@ function droneSendPoint() {
   }
   return null;
 }
+function applyLocalVehicleControl(di) {
+  const rec = di?.id ? localVehicles.get(di.id) : null;
+  if (!rec) return di;
+  // Solo stores the aim and the trigger exactly as the server does; the station trains and fires
+  // inside the vehicle's own fixed step, so both modes run the same code off the same fields.
+  if (rec.def.turret) {
+    if (di.aim) rec.aim = di.aim;
+    rec.firing = di.mode === 1 && di.fire === true;
+  }
+  if (di.mode === 1 && playerController.controlledId !== rec.id) {
+    if (rec.mode !== 'manual') takeOverVehicle(rec, 'local');
+    playerController.setControlling(rec.id);
+  } else if (di.mode !== 1 && playerController.controlledId === rec.id) {
+    const exit = vehicleSeatPoint(rec, true);
+    if (rec.mode === 'manual') releaseVehicle(rec);
+    playerController.setControlling(null);
+    if (rec.def.seat === 'onboard') playerController.pin(exit.position, exit.velocity);
+  }
+  return di;
+}
+// Moving between the seats. Entering the sensor points it wherever the craft's nose is, so the
+// first frame already shows something worth shooting at rather than empty sky.
+function enterSeat(seat) {
+  if (seat === 'missile' && !seatHasRack()) return;
+  recentreFreeLook();   // a seat change starts looking forward, not wherever the last one left off
+  droneCtl.seat = seat;
+  droneView.resetCamera();
+  if (seat !== 'missile') { sensor.ready = false; sensor.missileId = null; return; }
+  const f = droneView.craftFrame(droneCtl.id, _hudFrame);
+  if (f) {
+    sensor.yaw = Math.atan2(-f.forward[0], -f.forward[2]);
+    sensor.pitch = -0.7;
+  }
+  sensor.ready = true;
+}
+function leaveSeat() {
+  recentreFreeLook();
+  freeLook.dragging = false;
+  droneCtl.active = false;
+  droneCtl.seat = 'craft';
+  sensor.ready = false; sensor.missileId = null; sensor.hasAim = false;
+}
+
 // The stick and the orders for this frame's ticks, or null with nothing to fly. Consumes the edges.
 function buildDroneInput() {
+  if (droneCtl.enterExitEdge) {
+    droneCtl.enterExitEdge = false;
+    const seated = playerController.controlledVehicle ?? (droneCtl.active ? localVehicles.get(droneCtl.id) : null);
+    if (seated) {
+      droneCtl.active = false;
+      return applyLocalVehicleControl({ id: seated.id, mode: 0, pitch: 0, roll: 0, yaw: 0, throttle: 0, sweep: false, flap: false, send: null, recall: false });
+    }
+    const here = playerController.getPosition();
+    let nearest = null, nearestD = 3;
+    for (const rec of localVehicles.values()) {
+      if (rec.kind !== VEHICLE_BUGGY || rec.driver || rec.done) continue;
+      const d = Math.hypot(rec.body.x - here[0], rec.body.z - here[2]);
+      if (d <= nearestD) { nearest = rec; nearestD = d; }
+    }
+    if (nearest) {
+      droneCtl.active = true; droneCtl.id = nearest.id; droneView.resetCamera();
+      return applyLocalVehicleControl({ id: nearest.id, mode: 1, pitch: 0, roll: 0, yaw: 0, throttle: 0, sweep: false, flap: false, send: null, recall: false });
+    }
+  }
+  // X always gets out. F takes the stick from the ground, and at the stick of something with a rack
+  // it moves between flying it and its sensor; on a craft with no rack F still just lets go, which
+  // is what it has always done for the quadcopter and the UAV.
+  if (droneCtl.leaveEdge) { droneCtl.leaveEdge = false; leaveSeat(); }
   if (droneCtl.toggleEdge) {
     droneCtl.toggleEdge = false;
-    if (droneCtl.active) droneCtl.active = false;
-    else { const id = ownedDroneId(heldGadgetKind()) ?? ownedDroneId(null); if (id) { droneCtl.active = true; droneCtl.id = id; droneView.resetCamera(); } }
+    if (droneCtl.active && seatHasRack()) enterSeat(droneCtl.seat === 'craft' ? 'missile' : 'craft');
+    else if (droneCtl.active) leaveSeat();
+    else {
+      const id = ownedDroneId(heldGadgetKind()) ?? ownedDroneId(null);
+      if (id) {
+        droneCtl.active = true; droneCtl.id = id; droneCtl.seat = 'craft'; droneView.resetCamera();
+        // A station starts looking down its own barrel rather than at the missile sensor's -0.7.
+        const rec = droneView.drones.get(id);
+        if (BASE_GAME_VEHICLE_DEFS[rec?.kind]?.turret) {
+          // sensorDir points -Z at yaw 0 while the road model's forward is +Z, so the camera sits
+          // behind the barrel only with the half turn added.
+          sensor.yaw = (rec.latest?.yaw ?? 0) + (rec.latest?.turretYaw ?? 0) + Math.PI;
+          sensor.pitch = -0.08;
+        }
+      }
+    }
   }
   if (droneCtl.active && !droneView.drones.has(droneCtl.id)) droneCtl.active = false;
   const id = droneCtl.active ? droneCtl.id : (ownedDroneId(heldGadgetKind()) ?? ownedDroneId(null));
   if (!id) { droneCtl.sendEdge = false; droneCtl.recallEdge = false; return null; }
   const k = (code) => (playerKeys.has(code) ? 1 : 0);
   const di = { id, mode: droneCtl.active ? 1 : 0, pitch: 0, roll: 0, yaw: 0, throttle: 0, sweep: false, flap: false, send: null, recall: false };
-  if (droneCtl.active) {
+  if (droneCtl.active && !BASE_GAME_VEHICLE_DEFS[droneView.drones.get(id)?.kind]) {
     di.pitch = k('ArrowDown') - k('ArrowUp');
     di.roll = k('ArrowRight') - k('ArrowLeft');
     di.yaw = k('KeyD') - k('KeyA');
     di.throttle = k('KeyW') - k('KeyS');
     di.sweep = !!(k('ShiftLeft') || k('ShiftRight'));   // afterburner, as in the sim
   }
-  if (droneCtl.sendEdge) { droneCtl.sendEdge = false; const p = droneSendPoint(); if (p) { di.send = p; di.mode = 0; droneCtl.active = false; } }
-  if (droneCtl.recallEdge) { droneCtl.recallEdge = false; di.recall = true; di.mode = 0; droneCtl.active = false; }
-  return di;
+  if (droneCtl.sendEdge) { droneCtl.sendEdge = false; const p = droneSendPoint(); if (p) { di.send = p; di.mode = 0; leaveSeat(); } }
+  if (droneCtl.recallEdge) { droneCtl.recallEdge = false; di.recall = true; di.mode = 0; leaveSeat(); }
+  // The sensor rides along with the stick: the aim goes up every tick (a missile already in the air
+  // follows it), the trigger only on the tick it was pressed.
+  if (droneCtl.active && droneCtl.seat === 'missile' && sensor.hasAim) {
+    di.aim = [sensor.aim[0], sensor.aim[1], sensor.aim[2]];
+    if (droneCtl.fireEdge) di.fire = true;
+  }
+  // A ground station trains on the sensor line whenever you are at its stick: the chase camera
+  // stays behind the vehicle and the turret slews under it, so the aim is visible before anything
+  // can shoot. The point is world, so a bot brain can hand over the same field later.
+  if (droneCtl.active && BASE_GAME_VEHICLE_DEFS[droneView.drones.get(id)?.kind]?.turret) {
+    const p = turretAimPoint();
+    if (p) di.aim = p;
+    di.fire = weaponState.firing;   // a machine gun is held down, not tapped like the missile release
+  }
+  droneCtl.fireEdge = false;
+  return applyLocalVehicleControl(di);
 }
+// The server's applyDroneAim, on this page's projectile manager: the aim goes to every missile this
+// drone already has up, then the trigger takes one off the rack.
+function applySoloDroneAim(rec, di) {
+  if (di.aim) rec.aim = di.aim;
+  if (rec.aim) {
+    for (const proj of soloProjectiles.list) {
+      if (proj.guide && proj.guide.droneId === rec.id) { proj.guide.aim[0] = rec.aim[0]; proj.guide.aim[1] = rec.aim[1]; proj.guide.aim[2] = rec.aim[2]; }
+    }
+  }
+  if (!di.fire || !rec.aim) return;
+  const shot = fireAgm(rec, rec.aim, performance.now() / 1000);
+  if (shot) {
+    const proj = soloProjectiles.spawn({ ...shot, color: [1, 0.72, 0.4], throwerActorId: rec.ownerId });
+    sensor.missileId = proj.id;
+    audioDirector.localSlotChange();
+  }
+}
+
 // Solo: the server's launchGadget / applyDroneInput / stepDrones, on this page's ground.
 const _soloWorld = { ownerPos: null, ownerYaw: 0, ownerAlive: true, groundY: soloGroundY, input: null };
+const _soloVehicleWorld = { ownerPos: null, ownerYaw: 0, ownerAlive: true, groundY: soloGroundY, seaLevel: -Infinity };
 function stepSoloDrones(dt, canControl, di) {
   // The throw was started by stepGadgetHands; the drone leaves the hands at the release point.
   if (gadgetLocal.spawnAt && performance.now() >= gadgetLocal.spawnAt) {
     const kind = gadgetLocal.spawnKind;
     gadgetLocal.spawnAt = 0; gadgetLocal.spawnKind = null;
     if (kind && !droneView.ownedBy('local', kind) && !combatState.dead) {
-      const eye = fpState.hasEye ? worldCoordinates.toGlobal(fpState.eye) : (() => { const g = playerController.getPosition(); return [g[0], g[1] + 1.7, g[2]]; })();
-      const rec = createBaseGameDrone(kind, { ownerId: 'local', from: [eye[0], eye[1] + 0.5, eye[2]], look: lookDirection(playerView.yaw, playerView.pitch), throwSpeed: 8, groundY: soloGroundY(eye[0], eye[2]) });
-      soloDrones.set(rec.id, rec);
-      audioDirector.localSlotChange();
+      if (kind === VEHICLE_UGV) {
+        const p = playerController.getPosition();
+        const rec = createBaseGameVehicle(kind, { ownerId: 'local', from: p, yaw: playerView.yaw, groundY: soloGroundY });
+        localVehicles.set(rec.id, rec);
+        audioDirector.localSlotChange();
+      } else {
+        const eye = fpState.hasEye ? worldCoordinates.toGlobal(fpState.eye) : (() => { const g = playerController.getPosition(); return [g[0], g[1] + 1.7, g[2]]; })();
+        const rec = createBaseGameDrone(kind, { ownerId: 'local', from: [eye[0], eye[1] + 0.5, eye[2]], look: lookDirection(playerView.yaw, playerView.pitch), throwSpeed: 8, groundY: soloGroundY(eye[0], eye[2]) });
+        soloDrones.set(rec.id, rec);
+        audioDirector.localSlotChange();
+      }
     }
   }
   const rec = di ? soloDrones.get(di.id) : null;
+  const vehicle = di ? localVehicles.get(di.id) : null;
   if (rec && !rec.done) {
     if (di.send) sendDroneTo(rec, di.send);
     else if (di.recall) recallDrone(rec);
     else if (di.mode === 1) { if (rec.mode !== 'manual') takeOverDrone(rec, { groundY: soloGroundY }); if (rec.mode === 'manual') { rec.input.pitch = di.pitch; rec.input.roll = di.roll; rec.input.yaw = di.yaw; rec.input.throttle = di.throttle; rec.input.sweep = di.sweep; rec.input.flap = di.flap; } }
     else if (rec.mode === 'manual') releaseDrone(rec);
+    if (di) applySoloDroneAim(rec, di);
+  }
+  if (vehicle && !vehicle.done) {
+    if (di.send) sendVehicleTo(vehicle, di.send);
+    else if (di.recall) recallVehicle(vehicle);
+    else if (di.mode === 1) {
+      if (vehicle.mode !== 'manual' && takeOverVehicle(vehicle, 'local')) playerController.setControlling(vehicle.id);
+    } else if (vehicle.mode === 'manual') {
+      const exit = vehicleSeatPoint(vehicle, true);
+      releaseVehicle(vehicle); playerController.setControlling(null);
+      if (vehicle.def.seat === 'onboard') playerController.pin(exit.position, exit.velocity);
+    }
   }
   for (const r of soloDrones.values()) if (r.mode === 'manual' && (!di || di.id !== r.id || di.mode !== 1)) releaseDrone(r);
+  for (const r of localVehicles.values()) if (r.mode === 'manual' && (!di || di.id !== r.id || di.mode !== 1)) {
+    const exit = vehicleSeatPoint(r, true); releaseVehicle(r); playerController.setControlling(null);
+    if (r.def.seat === 'onboard') playerController.pin(exit.position, exit.velocity);
+  }
   _soloWorld.ownerPos = playerController.getPosition();
   _soloWorld.ownerYaw = playerView.yaw;
   _soloWorld.ownerAlive = !combatState.dead;
@@ -1409,18 +1697,57 @@ function stepSoloDrones(dt, canControl, di) {
     _soloWorld.input = r.input; stepBaseGameDrone(r, Math.min(dt, 0.05), _soloWorld);
     if (r.done) { if (r.crash && r.def.crashBlast) presentExplosion(r.crash, r.def.crashBlast.radius, { contact: true, weaponId: `${r.kind}_crash` }); soloDrones.delete(r.id); }
   }
-  // Nothing in the air and nothing shown: skip the per-frame list, sanitize and set churn.
-  if (soloDrones.size || droneView.drones.size) droneView.ingest([...soloDrones.values()].map(droneWireState), performance.now());
+  _soloVehicleWorld.ownerPos = playerController.getPosition(); _soloVehicleWorld.ownerYaw = playerView.yaw;
+  _soloVehicleWorld.ownerAlive = !combatState.dead; _soloVehicleWorld.seaLevel = waterSim.enabled ? waterSim.level : -Infinity;
+  for (const r of localVehicles.values()) {
+    if (!r.driver) stepBaseGameVehicle(r, Math.min(dt, 0.05), _soloVehicleWorld);
+    // Solo runs the same fire decision the server does and presents the round; there is nobody to
+    // damage here, so the effect is the whole of it, as with the solo projectiles.
+    const shot = fireVehicleTurret(r);
+    if (shot) presentTurretShot(shot);
+    if (r.done) { if (r.crash && r.def.crashBlast) presentExplosion(r.crash, r.def.crashBlast.radius, { contact: true, weaponId: `${r.kind}_crash` }); localVehicles.delete(r.id); }
+  }
+  if (soloDrones.size || localVehicles.size || droneView.drones.size) droneView.ingestRecords([...soloDrones.values(), ...localVehicles.values()], performance.now());
 }
+// A station's round, drawn: the tracer from the muzzle to whatever the ray met, or to its range.
+const _tsEnd = [0, 0, 0];
+function presentTurretShot(shot) {
+  const w = getWeapon(shot.weaponId);
+  const range = w?.range ?? 300;
+  let hit = null;
+  try { hit = worldQuery.raycast({ origin: shot.origin, direction: shot.dir, maxDistance: range }); } catch { hit = null; }
+  if (hit?.point) { _tsEnd[0] = hit.point[0]; _tsEnd[1] = hit.point[1]; _tsEnd[2] = hit.point[2]; }
+  else for (let i = 0; i < 3; i++) _tsEnd[i] = shot.origin[i] + shot.dir[i] * range;
+  spawnShotEffects({
+    origin: shot.origin, end: [..._tsEnd], dir: shot.dir,
+    normal: hit?.normal ?? null, kind: hit?.point ? 'world' : 'miss', weaponId: shot.weaponId, mount: null,
+  });
+}
+
 function droneHudLine() {
   const owner = localDroneOwnerId();
   const parts = [];
-  for (const rec of droneView.drones.values()) if (rec.owner === owner) parts.push(`${rec.kind} ${rec.mode === 'manual' ? 'FLYING' : rec.state}${Number.isFinite(rec.hp) ? ` ${Math.round(rec.hp)}hp` : ''}`);
+  for (const rec of droneView.drones.values()) {
+    if (rec.owner !== owner && rec.id !== playerController.controlledId) continue;
+    const line = `${rec.kind} ${rec.mode === 'manual' ? (BASE_GAME_VEHICLE_DEFS[rec.kind] ? 'DRIVING' : 'FLYING') : rec.state}${Number.isFinite(rec.hp) ? ` ${Math.round(rec.hp)}hp` : ''}`;
+    parts.push(line);
+  }
   const kind = heldGadgetKind();
   const stockLine = kind ? `<br>${kind} ×${gadgetLocal.stock[kind] ?? 0} ${gadgetLocal.ready ? 'in hand · [click] throw' : gadgetLocal.reloadStart ? 'coming out…' : (gadgetLocal.stock[kind] ?? 0) > 0 ? '[R] bring out the next' : 'none left'}` : '';
   if (!parts.length) return stockLine;
   const boom = droneCtl.active ? ` · [shift+wheel] view ${settings.droneCameraZoom.toFixed(2)}x` : '';
-  return `${stockLine}<br>drone ${parts.join(' · ')}<br>[F] ${droneCtl.active ? 'release' : 'fly'} · [B] send · [N] recall${boom}`;
+  const seated = !!playerController.controlledVehicle;
+  // What the keys do depends on where you are sitting, so the line says the seat you are in.
+  const rack = seatHasRack();
+  const keys = seated ? '[E] get out'
+    : !droneCtl.active ? '[F] take the wheel · [B] send · [N] recall'
+    : rack && droneCtl.seat === 'missile' ? (missileCam.active ? '[F] back to the craft' : '[space] release · [wheel] zoom · [F] back to the craft · [X] get out')
+    : rack ? '[F] the sensor · [X] get out · [B] send · [N] recall'
+    : atTurretStick() ? '[mouse] aim · [click] fire · [F] release · [B] send · [N] recall'
+    : '[F] release · [B] send · [N] recall';
+  const st = droneView.drones.get(droneCtl.id)?.latest;
+  const station = atTurretStick() && Number.isFinite(st?.turretAmmo) ? `<br>station ${st.turretAmmo} rounds` : '';
+  return `${stockLine}<br>craft ${parts.join(' · ')}${station}<br>${keys}${boom}`;
 }
 // Presentation only: bodies consume predicted/authoritative global state and can never move the capsule.
 // Held weapons: one mount system for every body (instanced GLBs, shared anchors and poses).
@@ -1439,36 +1766,161 @@ const playerHitRigDebug = createPlayerHitRigDebug({ THREE, scene, worldCoordinat
 let playerStance = 'stand';
 const weaponState = { slot: 0, lastSlot: 1, aiming: false, reloadEdge: false, firing: false, throwEdge: false };
 // The dev gun (key 9): a tool mode over the held sidearm, not a weapon of its own. 9 cycles
-// off -> bots -> lights -> off. Bots: click asks the room to put a bot where you aim (the server
+// off -> bots -> lights -> vehicles -> off. Bots: click asks the room to put a bot where you aim (the server
 // casts your look ray), R cycles side and role — the old spawner, unchanged. Lights: hold click
 // to charge and release to shoot a light out, E drops one at the crosshair, R cycles the kind.
+// Vehicles: click asks the room owner to place a buggy at the aim point (or places it locally Solo).
 // Lights are purely local, like the flashlight.
 const DEV_LIGHT_CHARGE_MS = 1500;   // environment-viewer's LG_MAX_CHARGE_MS
 const devGun = {
   active: false, tool: 'bots',
   side: 'enemy', roleIndex: 0, clickEdge: false,          // bots tool
   chargeStartMs: null, fireRatio: null, dropEdge: false,  // lights tool
+  vehicleKind: VEHICLE_BUGGY,                            // ground craft tool
+  sentinelPreset: 'low',                                 // aircraft tool
   note: '', noteUntil: 0,
 };
 const SPAWNER_SIDES = ['enemy', 'friendly'];
+// What the wheel offers. Rebuilt on every open, so it always shows the live state rather than a
+// snapshot: the group you are on and the option inside it are both highlighted when it appears.
+// `Weapon` is the way out, and it is a wedge like any other -- getting your trigger back is one
+// visible pick rather than counting presses of a key that cycles in the dark.
+function devWheelGroups() {
+  return [
+    { id: 'off', label: 'Weapon', sublabel: 'put the tool away' },
+    {
+      id: 'bots', label: 'Bots', sublabel: devGun.side,
+      activeIndex: devGun.roleIndex,
+      options: BASE_GAME_NPC_ROLE_IDS.map((role) => ({ id: role, label: role, sublabel: devGun.side })),
+    },
+    {
+      id: 'lights', label: 'Lights',
+      activeIndex: Math.max(0, DEV_LIGHT_KIND_ORDER.indexOf(settings.devLightKind)),
+      options: DEV_LIGHT_KIND_ORDER.map((kind) => ({ id: kind, label: kind })),
+    },
+    {
+      id: 'vehicles', label: 'Ground craft',
+      activeIndex: Math.max(0, BASE_GAME_VEHICLE_KINDS.indexOf(devGun.vehicleKind)),
+      options: BASE_GAME_VEHICLE_KINDS.map((kind) => ({ id: kind, label: BASE_GAME_VEHICLE_DEFS[kind]?.label ?? kind })),
+    },
+    {
+      id: 'sentinel', label: 'Aircraft',
+      activeIndex: devGun.sentinelPreset === 'high' ? 1 : 0,
+      options: [
+        { id: 'low', label: 'Sentinel low', sublabel: `${settings.sentinelLowAlt.toFixed(0)} m` },
+        { id: 'high', label: 'Sentinel high', sublabel: `${settings.sentinelHighAlt.toFixed(0)} m` },
+      ],
+    },
+  ];
+}
+function devWheelActive() {
+  const groups = devWheelGroups();
+  if (!devGun.active) return { groupId: 'off', optionId: null };
+  const g = groups.find((x) => x.id === devGun.tool);
+  return { groupId: devGun.tool, optionId: g?.options?.[g.activeIndex ?? 0]?.id ?? null };
+}
+// One pick applies both rings at once, which is the point: you never have to press anything
+// afterwards to say which bot or which light.
+function devWheelCommit({ groupId, optionId }) {
+  if (groupId === 'off' || !groupId) {
+    if (devGun.active) { devGun.active = false; devGunNote('weapon back in hand'); }
+    return;
+  }
+  devGun.active = true;
+  devGun.tool = groupId;
+  if (optionId) {
+    if (groupId === 'bots') devGun.roleIndex = Math.max(0, BASE_GAME_NPC_ROLE_IDS.indexOf(optionId));
+    else if (groupId === 'lights') { settings.devLightKind = optionId; applyDevLightKind(); syncAllControls(); }
+    else if (groupId === 'vehicles') devGun.vehicleKind = optionId;
+    else if (groupId === 'sentinel') devGun.sentinelPreset = optionId;
+  }
+  if (groupId === 'lights') { devGun.chargeStartMs = null; devGun.fireRatio = null; }
+  if (weaponState.slot !== 1) selectSlot(1);   // the sidearm carries the laser
+}
+const devWheel = createWheelMenu({
+  getGroups: devWheelGroups,
+  getActive: devWheelActive,
+  onCommit: devWheelCommit,
+});
 function devGunNote(text) { devGun.note = text; devGun.noteUntil = performance.now() + 1500; }
-function cycleSpawner() {
-  const next = devGun.roleIndex + 1;
-  if (next >= BASE_GAME_NPC_ROLE_IDS.length) { devGun.roleIndex = 0; devGun.side = SPAWNER_SIDES[(SPAWNER_SIDES.indexOf(devGun.side) + 1) % SPAWNER_SIDES.length]; }
-  else devGun.roleIndex = next;
+function sentinelPreset() {
+  const low = devGun.sentinelPreset === 'low';
+  return { preset: devGun.sentinelPreset, alt: low ? settings.sentinelLowAlt : settings.sentinelHighAlt, radius: low ? settings.sentinelLowRadius : settings.sentinelHighRadius };
 }
 function spawnerPlace() {
+  if (devGun.tool === 'sentinel') {
+    const { preset, alt, radius } = sentinelPreset();
+    if (activeMode === 'solo') {
+      const rec = spawnWorldDrone(DRONE_SENTINEL, { ownerId: 'local', at: playerController.getPosition(), look: lookDirection(playerView.yaw, 0), alt, radius, groundAt: soloGroundY });
+      soloDrones.set(rec.id, rec); devGunNote(`sentinel ${preset}, ${alt} m up`); return;
+    }
+    const ok = networkSession?.sendDrone({ action: 'spawn', kind: DRONE_SENTINEL, preset, alt, radius });
+    devGunNote(ok ? `sentinel ${preset}, ${alt} m up` : 'only the room owner can spawn a sentinel'); return;
+  }
+  if (devGun.tool === 'vehicles') {
+    if (activeMode === 'solo') {
+      const p = droneSendPoint();
+      if (!p) { devGunNote('no ground under aim'); return; }
+      const rec = createBaseGameVehicle(devGun.vehicleKind, { from: p, yaw: playerView.yaw, groundY: soloGroundY });
+      localVehicles.set(rec.id, rec); devGunNote(`placed ${devGun.vehicleKind}`); return;
+    }
+    const ok = networkSession?.sendVehicle({ action: 'spawn', kind: devGun.vehicleKind, aimed: true });
+    devGunNote(ok ? `placed ${devGun.vehicleKind}` : 'only the room owner can place vehicles'); return;
+  }
   const ok = sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS[devGun.side], count: 1, role: BASE_GAME_NPC_ROLE_IDS[devGun.roleIndex], aimed: true });
   devGunNote(ok ? `placed ${devGun.side} ${BASE_GAME_NPC_ROLE_IDS[devGun.roleIndex]}` : (npcNote.textContent || 'not placed'));
 }
 function devGunHudLine() {
   if (!devGun.active) return '';
   const note = devGun.noteUntil > performance.now() ? ` — ${devGun.note}` : '';
-  if (devGun.tool === 'bots') {
-    return `<br>[9] dev gun: bots — ${devGun.side} ${BASE_GAME_NPC_ROLE_IDS[devGun.roleIndex]}${note}<br><span class="dim">click places, R cycles, 9 again for lights</span>`;
-  }
-  return `<br>[9] dev gun: lights — ${settings.devLightKind}${note}<br><span class="dim">hold click charges a shot, E drops, R cycles the kind</span>`;
+  // What is in your hands and what a click will do, then the one gesture that changes or ends it.
+  // The old version explained a four-step cycle, which is the thing the wheel removed.
+  let what = '', how = 'click places';
+  if (devGun.tool === 'bots') { what = `${devGun.side} ${BASE_GAME_NPC_ROLE_IDS[devGun.roleIndex]}`; how = 'click places, R swaps side'; }
+  else if (devGun.tool === 'vehicles') what = devGun.vehicleKind;
+  else if (devGun.tool === 'sentinel') {
+    const { preset, alt, radius } = sentinelPreset();
+    what = `sentinel ${preset}, ${alt.toFixed(0)} m up on a ${radius.toFixed(0)} m ring`;
+  } else { what = settings.devLightKind; how = 'hold click charges, E drops'; }
+  return `<br><span class="dim">TOOL</span> ${what}${note}<br><span class="dim">${how} · hold 9 for the wheel</span>`;
 }
+// The map. North-up, centred on you, with a terrain bake that follows you because this page streams
+// its terrain rather than holding a whole bounded one to bake once. Every position it reads is
+// global; it never touches render-local space, so the floating origin's rebase cannot reach it.
+// The map. The overlay, its projection, zoom, arrows and hover readout are world-map.js's, wired the
+// way environment-viewer.html wires them; only the bake is ours, because this page streams terrain.
+const mapBake = createWindowedBake({
+  sampleHeight: (x, z) => (settings.worldMode === 'terrain' ? terrain.groundHeight(x, z) : worldSpawn()[1] - 1.5),
+  // biomeAt answers a NAME; BIOME_COLORS is the palette world-map.js already uses, so both maps of
+  // this world are the same colours. Unresolved ground answers null and bakes as unexplored.
+  sampleColor: (x, z) => {
+    if (settings.worldMode !== 'terrain') return [56, 62, 54];
+    if (typeof terrain.fieldsReady === 'function' && !terrain.fieldsReady(x, z)) return null;
+    const name = terrain.biomeAt(x, z);
+    return name ? (BIOME_COLORS[name] || [128, 128, 128]) : null;
+  },
+  seaLevel: () => waterSim?.level ?? -Infinity,
+});
+// Everything worth an arrow, in the { p } shape the overlay reads. Drones and ground vehicles share
+// droneView.drones in both Solo and online, so this is the same code either way.
+function mapRemotes() {
+  const out = [];
+  for (const rec of remotePlayers.players.values()) {
+    if (rec.sample) out.push({ id: rec.id, p: rec.sample.position, yaw: rec.sample.yaw });
+  }
+  for (const rec of droneView.drones.values()) {
+    if (rec.latest?.p) out.push({ id: rec.id, p: rec.latest.p, yaw: rec.latest.yaw });
+  }
+  return out;
+}
+const worldMap = createWorldMapOverlay({
+  getBake: () => mapBake.getBake(),
+  getLocal: () => ({ p: playerController.getPosition() }),
+  getRemotes: mapRemotes,
+  getHeading: () => playerView.yaw,
+  getFacing: (p) => p.yaw ?? 0,
+});
+
 const localTrigger = createTriggerState();
 const localThrowTrigger = createTriggerState();
 // The predicted half of a weapon swap. It runs on the SAME tick numbers the server uses, because
@@ -1595,6 +2047,7 @@ function updateDevHeldLight(dt, gunLight) {
   if (gunLight?.muzzle) devHeldLight.position.set(gunLight.muzzle[0], gunLight.muzzle[1], gunLight.muzzle[2]);
   devHeldLight.color.setRGB(settings.devLightR / 255, settings.devLightG / 255, settings.devLightB / 255);
   devHeldLight.distance = settings.devLightRadius;
+  devHeldLight.decay = settings.devLightDecay;
   devHeldLight.intensity = settings.devLightBrightness * devHeldLevel;
 }
 const _weaponLightMuzzle = [0, 0, 0], _weaponLightDir = [0, 0, 0], _weaponLightVec = new THREE.Vector3();
@@ -1614,22 +2067,15 @@ function applyFlashlight() {
 // Dev-gun light kinds: each preset writes the devLight sliders wholesale, so the sliders always
 // show what the next light will be. Order matters — R walks it.
 const DEV_LIGHT_KINDS = Object.freeze({
-  lantern: { devLightLifespan: 30, devLightR: 255, devLightG: 180, devLightB: 80,  devLightBrightness: 60,  devLightRadius: 25, devLightFloat: false, devLightDrift: false, devLightArc: true },
-  ember:   { devLightLifespan: 20, devLightR: 255, devLightG: 90,  devLightB: 30,  devLightBrightness: 30,  devLightRadius: 12, devLightFloat: false, devLightDrift: false, devLightArc: true },
-  floater: { devLightLifespan: 25, devLightR: 150, devLightG: 200, devLightB: 255, devLightBrightness: 60,  devLightRadius: 30, devLightFloat: true,  devLightDrift: true,  devLightArc: true },
-  flare:   { devLightLifespan: 8,  devLightR: 255, devLightG: 40,  devLightB: 40,  devLightBrightness: 140, devLightRadius: 45, devLightFloat: false, devLightDrift: false, devLightArc: false },
+  lantern: { devLightLifespan: 30, devLightR: 255, devLightG: 180, devLightB: 80,  devLightBrightness: 60,  devLightRadius: 25, devLightDecay: 2, devLightFloat: false, devLightDrift: false, devLightArc: true },
+  ember:   { devLightLifespan: 20, devLightR: 255, devLightG: 90,  devLightB: 30,  devLightBrightness: 30,  devLightRadius: 12, devLightDecay: 2, devLightFloat: false, devLightDrift: false, devLightArc: true },
+  floater: { devLightLifespan: 25, devLightR: 150, devLightG: 200, devLightB: 255, devLightBrightness: 60,  devLightRadius: 30, devLightDecay: 2, devLightFloat: true,  devLightDrift: true,  devLightArc: true },
+  flare:   { devLightLifespan: 8,  devLightR: 255, devLightG: 40,  devLightB: 40,  devLightBrightness: 140, devLightRadius: 45, devLightDecay: 2, devLightFloat: false, devLightDrift: false, devLightArc: false },
 });
 const DEV_LIGHT_KIND_ORDER = Object.keys(DEV_LIGHT_KINDS);
 function applyDevLightKind() {
   const preset = DEV_LIGHT_KINDS[settings.devLightKind];
   if (preset) Object.assign(settings, preset);
-}
-function devLightCycleKind() {
-  const at = DEV_LIGHT_KIND_ORDER.indexOf(settings.devLightKind);
-  settings.devLightKind = DEV_LIGHT_KIND_ORDER[(at + 1) % DEV_LIGHT_KIND_ORDER.length];   // custom -> lantern
-  applyDevLightKind();
-  syncAllControls();
-  scheduleAutosaveSafe();
 }
 // The visor: night vision and the two thermal palettes, from vision-modes.js. The palette itself is
 // already in the post pipeline; this is the switch, plus the two things a mode change has to do to
@@ -1652,6 +2098,7 @@ const VISOR_HEATS = [
   ['base-game-water', HEAT.water],
   ['base-game-rain', HEAT.water],
   ['base-game-terrain', HEAT.terrain],
+  ['base-game-trails', HEAT.terrain],
   ['TerrainChunks', HEAT.terrain],
 ];
 let visorUntaggable = [];
@@ -1882,8 +2329,31 @@ function spawnLocalShotEffects(weaponId, tick, trigger = localTrigger) {
   }
   const range = weapon.range ?? 300;
   let end = [origin[0] + dir[0] * range, origin[1] + dir[1] * range, origin[2] + dir[2] * range], kind = 'none';
-  try { const hit = worldQuery.raycast({ origin, direction: dir, maxDistance: range }); if (hit?.point) { end = hit.point; kind = 'world'; } } catch { /* no provider yet */ }
+  let reach = range;
+  try { const hit = worldQuery.raycast({ origin, direction: dir, maxDistance: range }); if (hit?.point) { end = hit.point; kind = 'world'; reach = Math.hypot(end[0] - origin[0], end[1] - origin[1], end[2] - origin[2]); } } catch { /* no provider yet */ }
+  // Drones, in front of whatever the world returned. Online the server owns this; solo it is ours.
+  const droneHit = nearestSoloDroneHit(origin, dir, reach);
+  if (droneHit) { end = droneHit.point; kind = 'mob'; hitSoloDrone(droneHit.id, weapon.damage); }
   spawnShotEffects({ origin, end, dir, normal: null, kind, weaponId, mount: playerBodies.localMount, local: true });
+}
+
+// The nearest live local drone a ray meets, or null. The same sphere the server tests, through the
+// same capsule routine, so a shot that connects in one connects in the other.
+function nearestSoloDroneHit(origin, dir, range, exclude = null) {
+  let best = null;
+  for (const v of droneHitVolumes(soloDrones, exclude ?? (droneCtl.active ? droneCtl.id : null))) {
+    const res = rayCapsuleHit(origin, dir, range, v);
+    if (res.hit && (!best || res.distance < best.distance)) best = { id: v.id, point: res.point, distance: res.distance };
+  }
+  return best;
+}
+
+// Damage onto one local drone. A killed drone falls and goes off where it lands, so nothing here
+// decides where the explosion is -- stepSoloDrones presents it when the record reports its crash.
+function hitSoloDrone(id, damage) {
+  const rec = soloDrones.get(id);
+  if (!rec || rec.done) return;
+  damageBaseGameDrone(rec, damage, { roll: Math.random() });   // spawnShotEffects draws the impact
 }
 
 // bot-viewer-v3's spawnBlastFx: light regardless of effect state, reach scales with the drawn
@@ -1903,6 +2373,32 @@ const grenadeMat = new THREE.MeshStandardMaterial({ color: 0x39432f, roughness: 
 const projectileMeshes = [];
 const projectileTracks = new Map();   // id -> { track, weapon }
 const _projSample = { position: [0, 0, 0] };
+// A missile is 1.6 m of shaped body, not a spark: it gets the craft mesh and an attitude, because
+// the camera rides it and a sphere from three metres away is a bug report.
+const agmMeshes = [];
+const _agmDir = new THREE.Vector3(), _agmQuat = new THREE.Quaternion(), _agmUp = new THREE.Vector3(0, 0, -1);
+function agmMeshAt(index) {
+  let mesh = agmMeshes[index];
+  if (!mesh) {
+    mesh = buildCraftMesh('agm', 0x4a4d52, { standard: (c, e = 0x000000) => new THREE.MeshStandardMaterial({ color: c, emissive: e, roughness: 0.6, metalness: 0.2 }), basic: (c, o = 1) => new THREE.MeshBasicMaterial({ color: c, transparent: o < 1, opacity: o }) });
+    mesh.name = 'base-game-agm'; mesh.frustumCulled = false;
+    scene.add(mesh); agmMeshes[index] = mesh;
+  }
+  return mesh;
+}
+// Place one where it is, pointed along where it is going. Returns the mesh so the camera can use it.
+function placeAgmMesh(index, localPos, velocity) {
+  const mesh = agmMeshAt(index);
+  mesh.position.set(localPos[0], localPos[1], localPos[2]);
+  const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
+  if (speed > 0.01) {
+    _agmDir.set(velocity[0] / speed, velocity[1] / speed, velocity[2] / speed);
+    mesh.quaternion.setFromUnitVectors(_agmUp, _agmDir);
+  }
+  mesh.visible = true;
+  return mesh;
+}
+
 function projectileMeshAt(index) {
   let mesh = projectileMeshes[index];
   if (!mesh) { mesh = new THREE.Mesh(projectileGeom, rocketMat); mesh.name = 'base-game-projectile'; mesh.frustumCulled = false; scene.add(mesh); projectileMeshes[index] = mesh; }
@@ -1915,7 +2411,15 @@ function ingestProjectiles(snapshot) {
     if (!state) continue;
     seen.add(state.id);
     let rec = projectileTracks.get(state.id);
-    if (!rec) { rec = { track: createRemoteTrack(), weapon: state.weapon, trailAccum: 0 }; projectileTracks.set(state.id, rec); }
+    if (!rec) {
+      rec = { id: state.id, owner: state.owner, track: createRemoteTrack(), weapon: state.weapon, velocity: [0, 0, 0], trailAccum: 0 };
+      projectileTracks.set(state.id, rec);
+      // Ours, and we are sitting in the sensor waiting for it: this is the round the camera rides.
+      // The server names the id, so the client learns which one is his only when it appears.
+      if (state.weapon === 'agm' && state.owner === localDroneOwnerId() && droneCtl.seat === 'missile' && !sensor.missileId) sensor.missileId = state.id;
+    }
+    // The track interpolates position only, so orientation comes from the latest reported velocity.
+    rec.velocity[0] = state.v[0]; rec.velocity[1] = state.v[1]; rec.velocity[2] = state.v[2];
     rec.track.push(snapshot.serverTime, { position: state.p, velocity: state.v, yaw: 0, pitch: 0, grounded: false, spawnRevision: 0 });
   }
   for (const id of projectileTracks.keys()) if (!seen.has(id)) projectileTracks.delete(id);
@@ -1926,23 +2430,39 @@ const _soloTrail = [0, 0, 0];
 const soloProjectiles = createProjectileManager({
   trailIntervalS: 0.035,
   terrainHeight: (x, z) => (settings.worldMode === 'terrain' ? terrain.groundHeight(x, z) : -1e9),
-  raycast(from, to) {
+  raycast(from, to, radius, ownerId, proj) {
     const dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
     const range = Math.hypot(dx, dy, dz);
     if (!(range > 0)) return null;
+    const dir = [dx / range, dy / range, dz / range];
+    // Drones first, never the aircraft that fired it: a missile leaves from inside its own hit sphere.
+    const drone = nearestSoloDroneHit(from, dir, range, proj?.guide?.droneId ?? null);
     let hit = null;
-    try { hit = worldQuery.raycast({ origin: from, direction: [dx / range, dy / range, dz / range], maxDistance: range }); } catch { return null; }
+    try { hit = worldQuery.raycast({ origin: from, direction: dir, maxDistance: range }); } catch { hit = null; }
+    if (drone && (!hit?.point || drone.distance <= Math.hypot(hit.point[0] - from[0], hit.point[1] - from[1], hit.point[2] - from[2]))) {
+      return { point: drone.point, kind: 'mob', id: drone.id };
+    }
     if (!hit?.point) return null;
     // Ground contact belongs to the entity so grenades bounce (the server's rule, mirrored).
     if (settings.worldMode === 'terrain' && hit.normal && hit.normal[1] > 0.5) return null;
     return { point: hit.point, kind: 'world', id: null };
   },
-  onDetonate: (point, proj, init) => presentExplosion(point, proj.state.blastRadius, { contact: isSurfaceDetonation(init?.cause), weaponId: proj.weaponId }),
+  onDetonate: (point, proj, init) => { blastSoloDrones(point, proj.state.blastRadius, proj.state.damage, proj.weaponId); presentExplosion(point, proj.state.blastRadius, { contact: isSurfaceDetonation(init?.cause), weaponId: proj.weaponId }); },
   onTrail: (proj, point) => {
     const l = worldCoordinates.toRenderLocal(point, _soloTrail);
     emitTrailPuff(proj.weaponId, l[0], l[1], l[2]);
   },
 });
+
+// Every local drone inside a blast takes it, so a missile that lands beside one brings it down. A
+// drone's own crash blast is skipped, or two coming down together would set each other off forever.
+function blastSoloDrones(point, radius, damage, weaponId = null) {
+  for (const rec of [...soloDrones.values()]) {
+    if (rec.done || `${rec.kind}_crash` === weaponId) continue;
+    const dmg = blastDamageOnDrone(rec, point, radius, damage);
+    if (dmg > 0) damageBaseGameDrone(rec, dmg, { roll: Math.random() });
+  }
+}
 
 // Dev-gun lights: the environment-viewer entity layer, run purely locally. Entities simulate in
 // GLOBAL space (soloProjectiles' convention); the pool converts to render-local at draw time.
@@ -1961,6 +2481,7 @@ function devLightParams() {
     lifespan: settings.devLightLifespan,
     r: settings.devLightR, g: settings.devLightG, b: settings.devLightB,
     brightness: settings.devLightBrightness, radius: settings.devLightRadius,
+    decay: settings.devLightDecay,
   };
 }
 function devLightRoom() {
@@ -2009,12 +2530,23 @@ function emitTrailPuff(weaponId, x, y, z) {
     rise: 0.3, opacity: rocket ? 0.34 : 0.16,
   });
 }
+// Where the missile the camera is riding ended up this frame, in render-local space, or null when
+// there isn't one. Filled by updateProjectiles so the camera block reads a placed mesh, not a guess.
+const missileCam = { active: false, position: [0, 0, 0], velocity: [0, 0, 0], id: null };
 function updateProjectiles(now, dt) {
-  let n = 0;
-  if (!isOnline() && soloProjectiles.list.length) soloProjectiles.update(dt);
+  let n = 0, agmN = 0;
+  missileCam.active = false;
+  if (!isOnline() && soloProjectiles.list.length) { stepGuidedProjectiles(soloProjectiles.list, dt); soloProjectiles.update(dt); }
   for (const proj of soloProjectiles.list) {
-    const mesh = projectileMeshAt(n++);
     const l = worldCoordinates.toRenderLocal(proj.transform.p, _fxLocal);
+    if (proj.weaponId === 'agm') {
+      const v = [proj.sim.vx, proj.sim.vy, proj.sim.vz];
+      placeAgmMesh(agmN++, l, v);
+      emitTrailPuff('rpg', l[0], l[1], l[2]);
+      if (proj.id === sensor.missileId) { missileCam.active = true; missileCam.id = proj.id; missileCam.position[0] = l[0]; missileCam.position[1] = l[1]; missileCam.position[2] = l[2]; missileCam.velocity[0] = v[0]; missileCam.velocity[1] = v[1]; missileCam.velocity[2] = v[2]; }
+      continue;
+    }
+    const mesh = projectileMeshAt(n++);
     mesh.position.set(l[0], l[1], l[2]);
     const mat = proj.weaponId === 'rpg' ? rocketMat : grenadeMat;
     if (mesh.material !== mat) mesh.material = mat;
@@ -2024,8 +2556,14 @@ function updateProjectiles(now, dt) {
   for (const rec of projectileTracks.values()) {
     const sample = rec.track.sample(renderTime, { maxExtrapolationMs: 250 }, _projSample);
     if (!sample) continue;
-    const mesh = projectileMeshAt(n++);
     const l = worldCoordinates.toRenderLocal(sample.position, _fxLocal);
+    if (rec.weapon === 'agm') {
+      placeAgmMesh(agmN++, l, rec.velocity);
+      emitTrail(rec, dt, l[0], l[1], l[2]);
+      if (rec.id === sensor.missileId) { missileCam.active = true; missileCam.id = rec.id; missileCam.position[0] = l[0]; missileCam.position[1] = l[1]; missileCam.position[2] = l[2]; missileCam.velocity[0] = rec.velocity[0]; missileCam.velocity[1] = rec.velocity[1]; missileCam.velocity[2] = rec.velocity[2]; }
+      continue;
+    }
+    const mesh = projectileMeshAt(n++);
     mesh.position.set(l[0], l[1], l[2]);
     emitTrail(rec, dt, l[0], l[1], l[2]);
     const mat = rec.weapon === 'rpg' ? rocketMat : grenadeMat;
@@ -2033,6 +2571,9 @@ function updateProjectiles(now, dt) {
     mesh.visible = true;
   }
   for (let i = n; i < projectileMeshes.length; i++) projectileMeshes[i].visible = false;
+  for (let i = agmN; i < agmMeshes.length; i++) agmMeshes[i].visible = false;
+  // The round the camera was riding is gone: it hit something, or its life ran out. Back to flying.
+  if (sensor.missileId && !missileCam.active) { sensor.missileId = null; if (droneCtl.active && droneCtl.seat === 'missile') enterSeat('craft'); }
 }
 let shownCombatStatus = null, shownDamageFlash = null;
 // One slot's chip: the key that selects it, the weapon, and its own magazine. Melee has no ammo,
@@ -2250,6 +2791,7 @@ const stopRebasePresentation = worldCoordinates.onRebase(event => {
   rebaseShift.fromArray(event.delta);
   debrisSim.clear();   // pieces are render-local; the origin just moved under them
   traversalLab.root.position.add(rebaseShift);
+  roads.group.position.add(rebaseShift);
   if (settings.playerControlMode === 'orbit') {
     camera.position.add(rebaseShift);
     controls.target.add(rebaseShift);
@@ -2258,6 +2800,10 @@ const stopRebasePresentation = worldCoordinates.onRebase(event => {
 
 let soloTriggerTick = 0;
 function resetPlayer() {
+  const seated = playerController.controlledVehicle;
+  if (seated?.mode === 'manual') releaseVehicle(seated);
+  playerController.setControlling(null);
+  droneCtl.active = false; droneCtl.id = null;
   audioDirector.resetLocal();
   localAmmo.resetPlayer(LOCAL_AMMO_ID);
   Object.assign(localTrigger, createTriggerState());
@@ -2273,6 +2819,7 @@ function resetPlayer() {
 
 function clearPlayerInput() {
   playerKeys.clear();
+  if (devWheel.isOpen) devWheel.close(false);
   pointerLook.clear();
   jumpEdgeQueued = false;
   playerController.clearJump();
@@ -2486,6 +3033,18 @@ function applyFloraSettings() {
   });
 }
 
+const TRAIL_APPLY_KEYS = ['trailsEnabled', 'worldMode', 'trailSeed', 'trailSpacing', 'trailWidth', 'trailMaxGrade', 'trailShow'];
+const appliedTrails = {};
+function applyTrailSettings() {
+  let dirty = false;
+  for (const key of TRAIL_APPLY_KEYS) if (appliedTrails[key] !== settings[key]) { appliedTrails[key] = settings[key]; dirty = true; }
+  if (!dirty) return;
+  const enabled = settings.trailsEnabled && settings.worldMode === 'terrain';
+  trails.setOptions({ enabled, seed: settings.trailSeed, spacing: settings.trailSpacing,
+    width: settings.trailWidth, maxGrade: settings.trailMaxGrade });
+  roads.setVisible(enabled && settings.trailShow);
+}
+
 // Trees over the same streamed fields (base-game-forest.js + base-game-trees.js). Placement reads
 // the 8 m window's coverTree channel; the trunks sit on the collision surface, so a trunk and the
 // player's feet cannot disagree about the ground.
@@ -2504,7 +3063,9 @@ forest.onMeshes(meshes => {
   forestMirrorMeshes = meshes.slice();
   for (const mesh of forestMirrorMeshes) if (!reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh);
 });
-const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'treeMaxSize', 'treeSpeciesSelection',
+const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'treePlacement', 'treeClusterSize',
+  'treeClusterSpread', 'treeShoreMargin', 'treeChunkSize', 'treeSeedOffset',
+  'treeMaxSize', 'treeSizeVar', 'treeSkew', 'treeSpeciesSelection',
   'treeTexMode', 'treeVariantsPerSpecies', 'treeLeafSize', 'treeTrunkHeight', 'treeTrunkWidth',
   'treeVerticalOffset', 'treeDrawRadius', 'treeLodR0', 'treeLodR1', 'treeLodR2',
   'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway',
@@ -2598,7 +3159,9 @@ for (const material of traversalLab.materials) {
   applyWetSurface(material, rain.uniforms, { baseColor: materialColor, rippleScale: 2.6, puddleScale: 0.12 });
 }
 
-const frameProfiler = createFrameProfiler();
+// Basic FPS/draw stats stay live, but pass-level CPU timing is capture-only. GPU timestamp mode is
+// the explicit exception: asking the renderer for timestamp queries also asks for matching CPU data.
+const frameProfiler = createFrameProfiler({ enabled: GPU_TIMESTAMPS });
 // The slots this page actually times. frame-profiler's default map is the env-viewer's, which does
 // not include terrain or fx, so a snapshot taken with it reports zero for them.
 const BASE_GAME_PASS_PREFIXES = Object.freeze({
@@ -2608,6 +3171,15 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
   // The encode, split by mirror frame. reflect is the mirror's own time; postMirror/postPlain are
   // the whole encode on frames where it did and did not run. All three are inside postRender.
   reflect: 'passReflectMs', postMirror: 'passPostMirrorMs', postPlain: 'passPostPlainMs',
+  // The same encode bucketed by whether the shadow map redrew, and by which of the two render
+  // paths ran. Both need the other bucket to appear in the capture to be worth anything: shadows
+  // want shadowUpdateEvery above 1, the paths want depth of field or the visor toggled.
+  postShadow: 'passPostShadowMs', postNoShadow: 'passPostNoShadowMs',
+  postChain: 'passPostChainMs', postDirect: 'passPostDirectMs',
+  // Pipeline creation: the cost three pays inside render() the first frame a material draws, which
+  // no other slot can see. Frame-wide, not a partition slot -- most of it is inside postRender.
+  pipeline: 'passPipelineMs', pipelineRender: 'passPipelineRenderMs',
+  pipelineCompute: 'passPipelineComputeMs',
   playerSim: 'passPlayerSimMs', playerView: 'passPlayerViewMs', bodies: 'passBodiesMs',
   audio: 'passAudioMs',
   // Terrain, split: system.update vs the unbudgeted changed-frame fold-in vs the field windows,
@@ -2622,7 +3194,8 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
 });
 // Slots that partition the frame. Sub-slots are excluded from the residual: every terrain* one is
 // either inside terrain's own slot (fold, field, and the fold's colorize/batch/collider split) or
-// outside the frame entirely (install), and reflect/postMirror/postPlain are all inside postRender.
+// outside the frame entirely (install), and reflect/post*/pipeline* are all inside postRender or
+// overlap it.
 const BASE_GAME_FRAME_SLOTS = ['terrain', 'water', 'fx', 'grassGpu', 'forestGpu', 'sky', 'weather', 'rainBake',
   'playerSim', 'playerView', 'bodies', 'audio', 'postRender'];
 function profiledMs() {
@@ -2751,6 +3324,7 @@ function updateWorld(dt) {
   if (terrain.volumetric !== (settings.terrainVolumetric && canVolumetric)) terrain.setVolumetric(settings.terrainVolumetric && canVolumetric);
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
   applyWaterSettings();
+  applyTrailSettings();
   applyFloraSettings();
   applyForestSettings();
   applyCloudSettings();
@@ -3000,6 +3574,8 @@ function changed(key) {
     syncAllControls();
   } else if (key === 'treeSpeciesSelection' || key === 'treeVariantsPerSpecies') {
     controlRegistry.get('treeVariantsPerSpecies')?.sync();
+  } else if (key === 'treePlacement' || key === 'treesPerHectare' || key === 'treeChunkSize') {
+    syncTreePlacementControls();   // the stand and cell readouts derive from these
   } else if (key === 'cameraOffsetTarget') {
     syncAllControls();   // the three offset sliders now show the other mode's numbers
   } else if (key === 'unlimitedAmmo') {
@@ -3343,6 +3919,21 @@ function refreshTerrainRuntimeLine() {
     : `Terrain inactive.${volNote}`);
 }
 refreshTerrainRuntimeLine();
+const trailsSec = createSection(ctrlBody, 'Trails', { collapsed: true });
+addToggle(trailsSec, 'trailsEnabled', 'Generate world trails');
+addRange(trailsSec, 'trailSeed', 'Trail seed', 0, 1e9, 1, value => value.toFixed(0));
+addRange(trailsSec, 'trailSpacing', 'Site spacing', 120, 1920, 30, value => `${value.toFixed(0)} m`);
+addRange(trailsSec, 'trailWidth', 'Trail width', 1, 12, 0.2, value => `${value.toFixed(1)} m`);
+addRange(trailsSec, 'trailMaxGrade', 'Maximum grade', 0.05, 1, 0.01, value => value.toFixed(2));
+addToggle(trailsSec, 'trailShow', 'Draw trail meshes');
+const trailRuntimeLine = document.createElement('div');
+trailRuntimeLine.className = 'note';
+trailsSec.append(trailRuntimeLine);
+function refreshTrailRuntimeLine() {
+  const st = trails.stats;
+  setTextIfChanged(trailRuntimeLine, `Plan ${(st.planCoverage * 100).toFixed(0)}% @ ${st.planOriginPX ?? '?'},${st.planOriginPZ ?? '?'} · ${st.sites} sites · ${st.routed} routed / ${st.pending} pending · ${st.edges} edges · ${roads.residentEdgeCount} resident · ${roads.pendingBuilds} mesh builds · route ${st.lastRouteMs.toFixed(1)} ms (max ${st.maxRouteMs.toFixed(1)})`);
+}
+refreshTrailRuntimeLine();
 const labSummary = document.createElement('div');
 labSummary.className = 'note';
 labSummary.textContent = `${traversalLab.stats.primitiveCount} diagnostic solids / `
@@ -3360,7 +3951,7 @@ addSelect(playerSec, 'weaponPrimary', 'Primary weapon (1)', [...BASE_GAME_WEAPON
 addSelect(playerSec, 'weaponSidearm', 'Sidearm (2)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponMelee', 'Melee (3)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
 addSelect(playerSec, 'weaponThrowable', 'Throwable (4)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
-const gadgetLabel = id => ({ none: 'None', quad: 'Quadcopter', uav: 'UAV' })[id] ?? id;
+const gadgetLabel = id => ({ none: 'None', quad: 'Quadcopter', uav: 'UAV', ugv: 'UGV' })[id] ?? id;
 addSelect(playerSec, 'weaponGadget', 'Gadget (5)', [...BASE_GAME_GADGET_IDS], BASE_GAME_GADGET_IDS.map(gadgetLabel));
 addSelect(playerSec, 'weaponGadget2', 'Gadget (6)', [...BASE_GAME_GADGET_IDS], BASE_GAME_GADGET_IDS.map(gadgetLabel));
 addSelect(playerSec, 'weaponLauncher', 'Launcher (7)', [...BASE_GAME_WEAPON_IDS], BASE_GAME_WEAPON_IDS.map(weaponLabel));
@@ -3416,12 +4007,14 @@ addRange(devLightSec, 'devLightR', 'Red', 0, 255, 1, value => value.toFixed(0));
 addRange(devLightSec, 'devLightG', 'Green', 0, 255, 1, value => value.toFixed(0));
 addRange(devLightSec, 'devLightB', 'Blue', 0, 255, 1, value => value.toFixed(0));
 addRange(devLightSec, 'devLightBrightness', 'Brightness', 0, 500, 1, value => value.toFixed(0));
-addRange(devLightSec, 'devLightRadius', 'Reach', 1, 100, 1, value => `${value.toFixed(0)} m`);
+addRange(devLightSec, 'devLightRadius', 'Reach', 1, 600, 1, value => `${value.toFixed(0)} m`);
+addRange(devLightSec, 'devLightDecay', 'Falloff', 0, 4, 0.05, value => value <= 0.01 ? 'none' : value.toFixed(2)).title =
+  'The exponent in 1/distance^n. 2 is physically correct and dims fast; lower it to carry a light further, 0 to hold full brightness out to the reach.';
 addToggle(devLightSec, 'devLightFloat', 'Float in the air');
 addToggle(devLightSec, 'devLightDrift', 'Drift while floating');
 addToggle(devLightSec, 'devLightArc', 'Shots arc under gravity');
 const devLightNote = document.createElement('div'); devLightNote.className = 'note';
-devLightNote.textContent = 'Press 9 twice for the light tool: hold click to charge a shot, E drops a light at the crosshair, R cycles the kind. Eight lights can burn at once; the ninth is refused until one expires. Like the flashlight, they are yours alone: other players do not see them.';
+devLightNote.textContent = 'Press 9 twice for the light tool: hold click to charge a shot, E drops a light at the crosshair, R cycles the kind. Eight lights can burn at once; the ninth is refused until one expires. Reach is where the light stops; falloff is how fast it dims on the way there, so a distant light needs both. Like the flashlight, they are yours alone: other players do not see them.';
 devLightSec.append(devLightNote);
 
 addToggle(playerSec, 'unlimitedAmmo', 'Unlimited ammo');
@@ -3454,7 +4047,7 @@ addAction(npcButtons, 'Add enemy', () => sendNpc({ action: 'spawn', team: BASE_G
 addAction(npcButtons, 'Add 4 enemy', () => sendNpc({ action: 'spawn', team: BASE_GAME_TEAMS.enemy, count: 4 }));
 addAction(npcButtons, 'Clear bots', () => sendNpc({ action: 'clear', team: null }));
 const npcHelp = document.createElement('div'); npcHelp.className = 'note';
-npcHelp.textContent = 'Friendlies spawn beside you and never aim at players; enemies spawn ahead of you at the spawn distance. Key 9 holds the dev gun: first press is the bot spawner (click places a bot where you aim, R cycles the side and role), second press is the light tool, third puts it away.';
+npcHelp.textContent = 'Friendlies spawn beside you and never aim at players; enemies spawn ahead of you at the spawn distance. Key 9 cycles the dev gun through bots, lights, vehicles, and off; the vehicle tool places a buggy where you aim.';
 npcSec.append(npcHelp);
 
 // Weapon spread: bot-viewer-v3's labels and ranges, over shot-spread.js instead of botAimSettings.
@@ -3535,6 +4128,10 @@ addRange(playerSec, 'cameraDistance', 'Third-person distance', 1, 12, 0.25, valu
 addRange(playerSec, 'droneCameraZoom', 'Drone chase distance', 0.35, 4, 0.05, value => `${value.toFixed(2)}x`).title =
   "How far the chase camera sits behind a drone you are flying, as a multiple of that craft's own framing. "
   + 'SHIFT and the wheel change it at the stick, the way they move the third-person boom on foot.';
+addRange(playerSec, 'sentinelLowAlt', 'Sentinel low orbit height', 30, 5000, 10, value => `${value.toFixed(0)} m`);
+addRange(playerSec, 'sentinelLowRadius', 'Sentinel low orbit ring', 100, 5000, 10, value => `${value.toFixed(0)} m`);
+addRange(playerSec, 'sentinelHighAlt', 'Sentinel high orbit height', 30, 5000, 10, value => `${value.toFixed(0)} m`);
+addRange(playerSec, 'sentinelHighRadius', 'Sentinel high orbit ring', 100, 5000, 10, value => `${value.toFixed(0)} m`);
 addRange(playerSec, 'cameraFollowRate', 'Camera damping rate', 1, 40, 1, value => `${value.toFixed(0)} /s`);
 addRange(playerSec, 'cameraSensitivity', 'Mouse sensitivity', 0.0005, 0.01, 0.0005, value => value.toFixed(4));
 addRange(playerSec, 'cameraObstructionPadding', 'Camera wall padding', 0.05, 0.8, 0.01, value => `${value.toFixed(2)} m`);
@@ -3566,6 +4163,7 @@ playerButtons.append(resetPlayerButton, captureMouseButton); playerSec.append(pl
 const playerStatus = document.createElement('div'); playerStatus.className = 'note';
 playerStatus.textContent = 'WASD move / Shift sprint / Space jump (swim up) / Ctrl swim down / mouse look / V view / R reset';
 playerSec.append(playerStatus);
+addToggle(playerSec, 'flightHud', 'Flight display at the stick');
 
 addToggle(networkSec, 'remoteBodiesEnabled', 'Remote player bodies');
 addToggle(networkSec, 'remotePlayersEnabled', 'Remote diagnostic capsules');
@@ -3764,49 +4362,87 @@ function refreshGrassRuntimeLine() {
 }
 
 // ---- Trees (tree plan T2) ----
-// Density is the world's; everything below the divider is this peer's own quality. The per-rung
-// distance and the per-rung switch are two different measurements: collapsing a band moves those
-// trees to the next rung, hiding one takes them off the screen, which is what isolates a rung's
-// raster cost.
-addToggle(plantsSec, 'treesEnabled', 'Trees');
-addCommitRange(plantsSec, 'treesPerHectare', 'Trees per hectare (asked)', 0, 400, 1, value => value.toFixed(0));
-addMultiChecks(plantsSec, 'treeSpeciesSelection', 'Species present', BASE_GAME_TREE_SPECIES);
+// Three questions in the order the forest answers them: where a tree stands (the keys that decide
+// which trees exist), what it is (species, size, look), and how this peer draws it (radius, LOD
+// rings, shadows, capacity). Nested the way Weather nests Clouds and Rain.
+const treesSec = createSection(plantsSec, 'Trees', { collapsed: false });
+addToggle(treesSec, 'treesEnabled', 'Trees');
+const treePlaceSec = createSection(treesSec, 'Tree placement', { collapsed: false });
+const treeLookSec = createSection(treesSec, 'Tree species and look', { collapsed: false });
+const treeDrawSec = createSection(treesSec, 'Tree drawing', { collapsed: true });
+
+// Placement. Every control here changes which trees exist, so all of them commit on release.
+addCommitRange(treePlaceSec, 'treesPerHectare', 'Trees per hectare (asked)', 0, 400, 1, value => value.toFixed(0));
+addSelect(treePlaceSec, 'treePlacement', 'Placement pattern', ['clustered', 'random', 'scattered', 'ring'],
+  ['Stands, clumped around random centres', 'Uniform, anywhere in the cell', 'Even, a jittered grid', 'Ring around the cell centre']);
+// The stand controls only act in the stands pattern. They stay visible and grey out otherwise, so
+// the numbers a saved forest was built with are never hidden.
+addCommitRange(treePlaceSec, 'treeClusterSize', 'Trees per stand', 1, 40, 1,
+  value => `${value.toFixed(0)} · ~${Math.max(1, Math.round(expectedTreesPerChunk(settings.treesPerHectare, settings.treeChunkSize) / value)).toFixed(0)} stands per cell`);
+// Each axis adds two draws of +/-radius, so a stand reaches twice the radius and thins toward it.
+addCommitRange(treePlaceSec, 'treeClusterSpread', 'Stand radius', 0.01, 0.5, 0.01,
+  value => `${(value * settings.treeChunkSize).toFixed(0)} m, reach ${(2 * value * settings.treeChunkSize).toFixed(0)} m`);
+addCommitRange(treePlaceSec, 'treeShoreMargin', 'Shore margin', 0, 30, 0.1, value => `${value.toFixed(1)} m above sea level`);
+// The cell is the unit of placement: the density above is asked per cell, a stand radius is a
+// fraction of it, and a cell's trees are a pure function of its coordinates and the seed.
+addCommitRange(treePlaceSec, 'treeChunkSize', 'Placement cell', 24, 384, 8,
+  value => `${value.toFixed(0)} m · ~${expectedTreesPerChunk(settings.treesPerHectare, value).toFixed(0)} trees asked per cell`);
+addCommitRange(treePlaceSec, 'treeSeedOffset', 'Forest seed offset', 0, 9999, 1, value => value.toFixed(0));
+for (const key of ['treeClusterSize', 'treeClusterSpread']) {
+  const control = controlRegistry.get(key), sync = control.sync;
+  control.sync = () => { sync(); control.element.disabled = settings.treePlacement !== 'clustered'; };
+}
+function syncTreePlacementControls() {
+  for (const key of ['treeClusterSize', 'treeClusterSpread', 'treeChunkSize']) controlRegistry.get(key)?.sync();
+}
+
+// Species and look.
+addMultiChecks(treeLookSec, 'treeSpeciesSelection', 'Species present', BASE_GAME_TREE_SPECIES);
+addCommitRange(treeLookSec, 'treeMaxSize', 'Max tree size', 0.05, 3, 0.05, value => value.toFixed(2));
+// Both act inside the size pipeline: variation opens the span below max size, skew loads the dice.
+addCommitRange(treeLookSec, 'treeSizeVar', 'Size variation', 0, 1, 0.05,
+  value => `${value.toFixed(2)} · smallest ${(Math.max(0.12, 1 - value) * 100).toFixed(0)}% of max`);
+addCommitRange(treeLookSec, 'treeSkew', 'Size skew', -3, 3, 0.05,
+  value => `${value.toFixed(2)} · ${value > 0 ? 'more small trees' : value < 0 ? 'more large trees' : 'even'}`);
 // The ez-tree presets carry white bark and leaf colours meant to multiply these photos, so
 // procedural shows them washed out. Rebuild-class: the leaf geometry differs by mode.
-addSelect(plantsSec, 'treeTexMode', 'Tree textures', ['authored', 'procedural'],
+addSelect(treeLookSec, 'treeTexMode', 'Tree textures', ['authored', 'procedural'],
   ['Bark photos and leaf atlas', 'Procedural bark grain, flat leaves']);
 // Species x variants is the variant count, and the variant count is the draw count and the
 // material count both. Rebuild-class: it rebakes the palette.
-addCommitRange(plantsSec, 'treeVariantsPerSpecies', 'Variants per species', 1, 8, 1,
+addCommitRange(treeLookSec, 'treeVariantsPerSpecies', 'Variants per species', 1, 8, 1,
   value => {
     const species = selectedTreeSpeciesIds(settings.treeSpeciesSelection).length;
     return `${value.toFixed(0)} · ${(species * value).toFixed(0)} variants, ${(species * value * 7).toFixed(0)} draws`;
   });
-addCommitRange(plantsSec, 'treeMaxSize', 'Max tree size', 0.05, 3, 0.05, value => value.toFixed(2));
 // Shape, not scale: these three move the trunk and the leaves against each other, where max
 // tree size moves the whole tree. Rebuild-class, so they commit on release.
-addCommitRange(plantsSec, 'treeTrunkHeight', 'Trunk height', 0.05, 5, 0.05, value => `${value.toFixed(2)}x`);
-addCommitRange(plantsSec, 'treeTrunkWidth', 'Trunk width', 0.05, 5, 0.05, value => `${value.toFixed(2)}x`);
-addCommitRange(plantsSec, 'treeLeafSize', 'Leaf size', 0.05, 5, 0.05, value => `${value.toFixed(2)}x`);
-addRange(plantsSec, 'treeVerticalOffset', 'Trunk vertical bias (m)', -1, 1, 0.01, value => `${value.toFixed(2)} m`);
-addRange(plantsSec, 'treeLeafSway', 'Canopy sway', 0, 4, 0.05, value => value.toFixed(2));
-addRange(plantsSec, 'treeDrawRadius', 'Draw radius', 40, 900, 5, value => `${value.toFixed(0)} m`);
-addRange(plantsSec, 'treeLodR0', 'LOD0 distance (full detail)', 5, 900, 5, value => `${value.toFixed(0)} m`);
-addToggle(plantsSec, 'treeLod0', 'Draw LOD0');
-addRange(plantsSec, 'treeLodR1', 'LOD1 distance', 5, 900, 5, value => `${value.toFixed(0)} m`);
-addToggle(plantsSec, 'treeLod1', 'Draw LOD1');
-addRange(plantsSec, 'treeLodR2', 'LOD2 distance (the forest ends here)', 5, 900, 5, value => `${value.toFixed(0)} m`);
-addToggle(plantsSec, 'treeLod2', 'Draw LOD2');
-addToggle(plantsSec, 'treeBark', 'Draw trunks');
-addToggle(plantsSec, 'treeLeaves', 'Draw leaves');
-addToggle(plantsSec, 'treeBarkShadows', 'Trunks cast shadows');
-addToggle(plantsSec, 'treeLeafShadows', 'Canopies cast shadows');
-addCommitRange(plantsSec, 'treeCapPerVariant', 'Instances per variant (capacity)', 64, 8192, 64, value => value.toFixed(0));
+addCommitRange(treeLookSec, 'treeTrunkHeight', 'Trunk height', 0.05, 5, 0.05, value => `${value.toFixed(2)}x`);
+addCommitRange(treeLookSec, 'treeTrunkWidth', 'Trunk width', 0.05, 5, 0.05, value => `${value.toFixed(2)}x`);
+addCommitRange(treeLookSec, 'treeLeafSize', 'Leaf size', 0.05, 5, 0.05, value => `${value.toFixed(2)}x`);
+
+// Drawing: this peer's own quality. The per-rung distance and the per-rung switch are two
+// different measurements: collapsing a band moves those trees to the next rung, hiding one takes
+// them off the screen, which is what isolates a rung's raster cost.
+addRange(treeDrawSec, 'treeVerticalOffset', 'Trunk vertical bias (m)', -1, 1, 0.01, value => `${value.toFixed(2)} m`);
+addRange(treeDrawSec, 'treeLeafSway', 'Canopy sway', 0, 4, 0.05, value => value.toFixed(2));
+addRange(treeDrawSec, 'treeDrawRadius', 'Draw radius', 40, 900, 5, value => `${value.toFixed(0)} m`);
+addRange(treeDrawSec, 'treeLodR0', 'LOD0 distance (full detail)', 5, 900, 5, value => `${value.toFixed(0)} m`);
+addToggle(treeDrawSec, 'treeLod0', 'Draw LOD0');
+addRange(treeDrawSec, 'treeLodR1', 'LOD1 distance', 5, 900, 5, value => `${value.toFixed(0)} m`);
+addToggle(treeDrawSec, 'treeLod1', 'Draw LOD1');
+addRange(treeDrawSec, 'treeLodR2', 'LOD2 distance (the forest ends here)', 5, 900, 5, value => `${value.toFixed(0)} m`);
+addToggle(treeDrawSec, 'treeLod2', 'Draw LOD2');
+addToggle(treeDrawSec, 'treeBark', 'Draw trunks');
+addToggle(treeDrawSec, 'treeLeaves', 'Draw leaves');
+addToggle(treeDrawSec, 'treeBarkShadows', 'Trunks cast shadows');
+addToggle(treeDrawSec, 'treeLeafShadows', 'Canopies cast shadows');
+addCommitRange(treeDrawSec, 'treeCapPerVariant', 'Instances per variant (capacity)', 64, 8192, 64, value => value.toFixed(0));
 // The density slider asks; the cover gate decides. Without this line a slider reading 45 while the
 // world stands 6 looks like a bug rather than like slope and dryness thinning the forest.
 const forestRuntimeLine = document.createElement('div');
 forestRuntimeLine.className = 'note';
-plantsSec.append(forestRuntimeLine);
+treesSec.append(forestRuntimeLine);
 function refreshForestRuntimeLine() {
   const f = forest.sampleDetail();   // per-rung counts are a scan; this is the interval that pays for it
   if (!f.enabled) { setTextIfChanged(forestRuntimeLine, 'Trees off.'); return; }
@@ -4042,6 +4678,26 @@ receiveNetworkStatus = status => {
 function applyPlayerSnapshot(snapshot, session) {
   if (!simulationReady || !session?.clientId) return;
   const local = snapshot.players?.find(player => player.id === session.clientId);
+  const seenVehicles = new Set();
+  for (const raw of snapshot.vehicles ?? []) {
+    const state = sanitizeBaseGameVehicleState(raw);
+    if (!state) continue;
+    seenVehicles.add(state.id);
+    let rec = localVehicles.get(state.id);
+    if (!rec) {
+      rec = createBaseGameVehicle(state.kind, { ownerId: state.owner, team: state.team, from: state.p, yaw: state.yaw, groundY: soloGroundY, id: state.id });
+      localVehicles.set(state.id, rec);
+    }
+    // The driver's exact body is installed by prediction from player.vehicle. Do not replace it
+    // first with the coarser public wire state or the error measurement would lose its baseline.
+    if (local?.vehicle?.id !== state.id) {
+      rec.body.x = state.p[0]; rec.y = state.p[1]; rec.body.z = state.p[2]; rec.body.yaw = state.yaw;
+      rec.body.vx = state.v[0]; rec.airV = state.v[1]; rec.body.vz = state.v[2]; rec.body.steering = state.steer;
+      rec.pitch = state.pitch; rec.roll = state.roll; rec.hp = state.hp; rec.mode = state.mode; rec.state = state.state;
+      rec.target = state.target; rec.driver = state.driver;
+    }
+  }
+  for (const id of [...localVehicles.keys()]) if (!seenVehicles.has(id)) localVehicles.delete(id);
   if (local) {
     if (local.gadgets) Object.assign(gadgetLocal.stock, local.gadgets);
     if (!gadgetLocal.throwStart && !gadgetLocal.reloadStart) gadgetLocal.ready = local.gadgetReady !== false;   // between motions the server's word is final
@@ -4090,7 +4746,7 @@ function applyPlayerSnapshot(snapshot, session) {
     if (blast) presentExplosion(blast.p, blast.radius, { contact: blast.contact, weaponId: blast.weapon });
   }
   ingestProjectiles(snapshot);
-  droneView.ingest(snapshot.drones, snapshot.serverTime);
+  droneView.ingest([...(snapshot.drones ?? []), ...(snapshot.vehicles ?? [])], snapshot.serverTime);
 }
 let loadoutSentFor = null;   // session the loadout was last pushed to
 receiveNetworkSnapshot = (snapshot, session = networkSession) => {
@@ -4451,7 +5107,10 @@ addEventListener('keydown', event => {
     event.preventDefault();
     playerKeys.add(event.code);
   }
-  if (event.code === 'Space' && !event.repeat) jumpEdgeQueued = true;
+  if (event.code === 'Space' && !event.repeat) {
+    if (droneCtl.active && droneCtl.seat === 'missile') droneCtl.fireEdge = true;   // at the sensor, space is the trigger
+    else jumpEdgeQueued = true;
+  }
   if (event.code === 'KeyV' && !event.repeat) {
     settings.playerViewMode = settings.playerViewMode === 'thirdPerson' ? 'firstPerson' : 'thirdPerson';
     playerView.resetSmoothing();
@@ -4459,17 +5118,21 @@ addEventListener('keydown', event => {
     changed('playerViewMode');
   }
   if (event.code === 'KeyT' && !event.repeat) { resetPlayer(); scheduleAutosave(); }
+  if (event.code === 'KeyM' && !event.repeat) {
+    worldMap.toggle();
+    if (worldMap.isOpen()) document.exitPointerLock?.();
+    else renderer.domElement.requestPointerLock?.();
+  }
   if (event.code === 'KeyR' && !event.repeat) {
-    if (devGun.active && devGun.tool === 'bots') cycleSpawner();
-    else if (devGun.active && devGun.tool === 'lights') devLightCycleKind();
+    // The wheel owns every option that used to live on R, except the bots' side: that is a second
+    // axis on one group rather than a choice among the wedges, and ten role-and-side wedges would
+    // not be readable. Everything else here reloads, as it always did.
+    if (devGun.active && devGun.tool === 'bots') devGun.side = SPAWNER_SIDES[(SPAWNER_SIDES.indexOf(devGun.side) + 1) % SPAWNER_SIDES.length];
     else weaponState.reloadEdge = true;
   }
-  if (event.code === 'Digit9' && !event.repeat) {
-    if (!devGun.active) { devGun.active = true; devGun.tool = 'bots'; }
-    else if (devGun.tool === 'bots') { devGun.tool = 'lights'; }
-    else { devGun.active = false; devGun.chargeStartMs = null; devGun.fireRatio = null; }
-    if (devGun.active && weaponState.slot !== 1) selectSlot(1);   // the sidearm carries the laser
-  }
+  // Hold 9 for the wheel; releasing it commits whatever is shown. It replaces a cycle that had to be
+  // counted in the dark and whose last stop before "off" spawned a 20 m aircraft.
+  if (event.code === 'Digit9' && !event.repeat) devWheel.open();
   // H for helmet. V is the view toggle and N is the drone recall, so neither obvious letter was free.
   // The key writes the setting, so the panel dropdown and the key are one switch rather than two.
   if (event.code === 'KeyH' && !event.repeat) {
@@ -4479,8 +5142,12 @@ addEventListener('keydown', event => {
     scheduleAutosaveSafe();
   }
   if (event.code === 'KeyG' && !event.repeat) weaponState.throwEdge = true;
-  if (event.code === 'KeyE' && !event.repeat && devGun.active && devGun.tool === 'lights') devGun.dropEdge = true;
+  if (event.code === 'KeyE' && !event.repeat) {
+    if (devGun.active && devGun.tool === 'lights') devGun.dropEdge = true;
+    else droneCtl.enterExitEdge = true;
+  }
   if (event.code === 'KeyF' && !event.repeat) droneCtl.toggleEdge = true;
+  if (event.code === 'KeyX' && !event.repeat) droneCtl.leaveEdge = true;   // out of the craft from any seat
   if (event.code === 'KeyB' && !event.repeat) droneCtl.sendEdge = true;
   if (event.code === 'KeyN' && !event.repeat) droneCtl.recallEdge = true;
   if (event.code === 'KeyL' && !event.repeat) {
@@ -4509,6 +5176,16 @@ addEventListener('keydown', event => {
 // Right mouse button aims while held (pointer-locked play only).
 renderer.domElement.addEventListener('mousedown', (event) => {
   if (event.button === 2) weaponState.aiming = true;
+  if (event.button === 0 && devWheel.isOpen) return;   // picking a tool is not placing one
+  // Flying an aircraft the left button is not a trigger, since there is nothing in your hands: it
+  // drags the view, and two clicks inside the double-click window put it back behind the nose. A
+  // turret station keeps its trigger, because there the button really does fire something.
+  if (event.button === 0 && droneCtl.active && droneCtl.seat === 'craft' && !atTurretStick()) {
+    const now = performance.now();
+    if (tapKind(freeLook.lastClickMs, now) === 'double') { recentreFreeLook(); freeLook.lastClickMs = 0; }
+    else { freeLook.lastClickMs = now; freeLook.dragging = true; }
+    return;
+  }
   if (event.button === 0 && document.pointerLockElement === renderer.domElement) {
     if (devGun.active && devGun.tool === 'lights') devGun.chargeStartMs = performance.now();
     else if (devGun.active) devGun.clickEdge = true;
@@ -4516,6 +5193,7 @@ renderer.domElement.addEventListener('mousedown', (event) => {
   }
 });
 addEventListener('mouseup', (event) => {
+  if (event.button === 0) freeLook.dragging = false;
   if (event.button === 2) weaponState.aiming = false;
   if (event.button === 0) {
     weaponState.firing = false;
@@ -4527,16 +5205,48 @@ addEventListener('mouseup', (event) => {
 });
 document.addEventListener('pointerlockchange', () => {
   pointerLook.clear();
+  if (document.pointerLockElement !== renderer.domElement && devWheel.isOpen) devWheel.close(false);
   if (document.pointerLockElement !== renderer.domElement) { weaponState.firing = false; devGun.chargeStartMs = null; }
 });
 renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
-addEventListener('keyup', event => playerKeys.delete(event.code));
+addEventListener('keyup', event => {
+  playerKeys.delete(event.code);
+  // Releasing 9 commits the wheel. A tap that never moved the mouse re-picks what was already there,
+  // so the gesture is safe to abandon halfway.
+  if (event.code === 'Digit9' && devWheel.isOpen) devWheel.close(true);
+});
 addEventListener('blur', clearPlayerInput);
 renderer.domElement.addEventListener('click', () => {
   if (!gameplayPaused && settings.playerControlMode === 'player'
     && document.pointerLockElement !== renderer.domElement) renderer.domElement.requestPointerLock?.();
 });
+// Slewing the sensor. The rate scales with the field of view, so zooming in slows the hand: at 10
+// degrees a pixel is a third of what it is at 30, which is what makes a far target holdable.
 addEventListener('mousemove', event => {
+  if (devWheel.isOpen) { devWheel.handleMouseMove(event); return; }   // the wheel wins the mouse
+  if (!droneCtl.active || document.pointerLockElement !== renderer.domElement) return;
+  // Flying an aircraft, a drag is free look: the view swings around the craft while it keeps flying
+  // its heading. A turret station and the missile sensor both aim on the mouse, so neither is one.
+  if (droneCtl.seat === 'craft' && !atTurretStick()) {
+    if (!freeLook.dragging) return;
+    const f = FREE_LOOK_RATE * settings.cameraSensitivity;
+    const y = freeLook.yaw - event.movementX * f;
+    freeLook.yaw = Math.atan2(Math.sin(y), Math.cos(y));   // the protocol's own wrap idiom
+    freeLook.pitch = Math.max(-1.2, Math.min(1.2, freeLook.pitch - event.movementY * f));
+    return;
+  }
+  if (droneCtl.seat !== 'missile' && !atTurretStick()) return;   // a ground station aims on the mouse as the sensor does
+  // `cameraSensitivity` is radians per pixel already (pointer-look's consume uses it raw), so it is
+  // scaled only by the field of view actually on screen: a zoomed sensor slows the hand, a wide
+  // chase view does not. Multiplying it by a second rate made a 90 degree turn 357,000 pixels.
+  const fovNow = droneCtl.seat === 'missile' ? sensor.fov : TURRET_VIEW_FOV;
+  const k = settings.cameraSensitivity * (fovNow / LOOK_REFERENCE_FOV);
+  sensor.yaw -= event.movementX * k;
+  sensor.pitch = Math.max(-1.45, Math.min(0.25, sensor.pitch - event.movementY * k));
+}, { capture: true });
+
+addEventListener('mousemove', event => {
+  if (devWheel.isOpen) return;   // the capture-phase handler above is driving the wheel with it
   if (gameplayPaused || settings.playerControlMode !== 'player'
     || document.pointerLockElement !== renderer.domElement) return;
   if (droneCtl.active) return;   // at the stick the mouse is not the look: the flight sim's keys fly, the body's view stays put
@@ -4564,6 +5274,11 @@ renderer.domElement.addEventListener('wheel', event => {
   // it was reachable only from the panel once the wheel changed jobs. Pointer free = zoom, since
   // there is no weapon to change while you are setting the scene up.
   if (document.pointerLockElement !== renderer.domElement) { zoomCamera(direction); return; }
+  if (droneCtl.active && droneCtl.seat === 'missile') {   // at the sensor the wheel is the lens, in the sim's four steps
+    const i = SENSOR_FOV.indexOf(sensor.fov);
+    sensor.fov = SENSOR_FOV[Math.max(0, Math.min(SENSOR_FOV.length - 1, i + direction))];
+    return;
+  }
   if (event.shiftKey || droneCtl.active) { zoomCamera(direction); return; }   // flying, the wheel is the boom: the gun is not in your hands
   cycleSlot(direction);
 }, { passive: true });
@@ -4571,6 +5286,142 @@ renderer.domElement.addEventListener('wheel', event => {
 syncAllControls();
 syncNetworkControlPermissions();
 updateWorld(0);
+
+// --------------------- the seat camera and the head-up display ---------------------
+//
+// Three pictures, one for each thing you can be looking through: the craft (chase behind it, or
+// first person from the nose), the sensor before a launch (a stabilised world-frame aim, the flight
+// sim's gunner ball), and the missile once one is away (down the seeker, or trailing it). V swaps
+// first and third person in whichever of them you are in.
+const _hudFrame = { position: [0, 0, 0], forward: [0, 0, -1], up: [0, 1, 0], velocity: [0, 0, 0], kind: null, agm: null, hp: 0 };
+const _seatEye = new THREE.Vector3(), _seatLook = new THREE.Vector3(), _seatDir = new THREE.Vector3();
+const _senAimDir = [0, 0, 0], _senEyeGlobal = [0, 0, 0];
+const _hudFwd = new THREE.Vector3();
+function placeSeatCamera(dt) {
+  const firstPerson = settings.playerViewMode === 'firstPerson';
+  if (droneCtl.seat === 'missile' && missileCam.active) {
+    // Riding the round. First person is the seeker itself; third trails it by a few body lengths.
+    _seatDir.set(missileCam.velocity[0], missileCam.velocity[1], missileCam.velocity[2]);
+    if (_seatDir.lengthSq() < 1e-6) _seatDir.set(0, 0, -1); else _seatDir.normalize();
+    _seatEye.set(missileCam.position[0], missileCam.position[1], missileCam.position[2]);
+    if (firstPerson) _seatEye.addScaledVector(_seatDir, 1.0);
+    else _seatEye.addScaledVector(_seatDir, -7).add(_seatLook.set(0, 2.2, 0));
+    camera.position.copy(_seatEye);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(_seatLook.copy(_seatEye).addScaledVector(_seatDir, 100));
+    camera.fov = firstPerson ? 62 : 58;
+    camera.updateProjectionMatrix();
+    return;
+  }
+  if (droneCtl.seat === 'missile') {
+    // Waiting to shoot. The camera looks straight down the aim, so the crosshair in the middle of
+    // the screen IS the impact point and nothing has to be projected onto it.
+    const eye = droneView.sensorEye(droneCtl.id, _seatEye);
+    if (!eye) { droneView.placeCamera(camera, droneCtl.id, dt, { zoom: settings.droneCameraZoom }); return; }
+    worldCoordinates.toGlobal([eye.x, eye.y, eye.z], _senEyeGlobal);
+    sensor.hasAim = sensorGroundPoint(_senEyeGlobal, sensor.aim);
+    sensorDir(_senAimDir);
+    camera.position.copy(eye);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(_seatLook.copy(eye).addScaledVector(_seatDir.set(_senAimDir[0], _senAimDir[1], _senAimDir[2]), 1000));
+    camera.fov = sensor.fov;
+    camera.updateProjectionMatrix();
+    return;
+  }
+  // A turret station already turns the view with the mouse, so free look is only for an aircraft.
+  const look = atTurretStick() ? null : freeLook;
+  if (firstPerson && droneView.placeCockpitCamera(camera, droneCtl.id, { look })) return;
+  // At a ground station the boom rides behind the AIM, so the mouse turns the view and the turret
+  // together while the hull carries on wherever it was driving.
+  droneView.placeCamera(camera, droneCtl.id, dt,
+    { zoom: settings.droneCameraZoom, aimDir: atTurretStick() ? sensorDir(_senAimDir) : null, look });
+}
+
+const hudCanvas = document.getElementById('flight-hud');
+const hudCtx = hudCanvas.getContext('2d');
+const _hudProj = new THREE.Vector3(), _hudCamFwd = new THREE.Vector3(), _hudCamRel = new THREE.Vector3();
+// A world point in render-local space to canvas pixels, with a flag for "behind the lens" so the
+// ladder does not draw a mirror image of itself when the camera looks away from the nose.
+function hudProject(x, y, z) {
+  const e = camera.matrixWorld.elements;
+  _hudCamFwd.set(-e[8], -e[9], -e[10]);
+  _hudCamRel.set(x - e[12], y - e[13], z - e[14]);
+  const behind = _hudCamRel.dot(_hudCamFwd) <= 0;
+  _hudProj.set(x, y, z).project(camera);
+  return { x: (_hudProj.x * 0.5 + 0.5) * hudCanvas.width, y: (-_hudProj.y * 0.5 + 0.5) * hudCanvas.height, behind };
+}
+const _hudState = { position: null, forward: null, up: null, velocity: null, fovDeg: 60, project: hudProject, agl: NaN, throttle: NaN, boost: false, label: '', warnings: [] };
+const _sensorState = { range: NaN, timeToGo: NaN, blastRadius: 0, fovDeg: 30, valid: true, label: '', lines: [], warnings: [] };
+function seatGroundAt(x, z) { return isOnline() ? terrainGroundAt(x, z) : soloGroundY(x, z); }
+function drawSeatHud() {
+  const on = droneCtl.active && settings.flightHud;
+  if (hudCanvas.style.display !== (on ? 'block' : 'none')) hudCanvas.style.display = on ? 'block' : 'none';
+  if (!on) return;
+  const w = hudCanvas.width, h = hudCanvas.height;
+  hudCtx.clearRect(0, 0, w, h);
+  const frame = droneView.craftFrame(droneCtl.id, _hudFrame);
+  const rack = frame ? frame.agm : null;
+  // The sensor picture, before a round is away: range, rounds left, and the blast on the ground.
+  if (droneCtl.seat === 'missile' && !missileCam.active) {
+    const def = frame ? BASE_GAME_DRONE_DEFS[frame.kind]?.agm : null;
+    _sensorState.range = sensor.hasAim ? sensor.range : NaN;
+    _sensorState.timeToGo = sensor.hasAim && def ? sensor.range / def.speed : NaN;
+    _sensorState.blastRadius = def ? def.blastRadius : 0;
+    _sensorState.fovDeg = sensor.fov;
+    _sensorState.valid = sensor.hasAim;
+    _sensorState.label = 'SENSOR';
+    _sensorState.lines = [rack === null ? '' : 'AGM ' + rack, sensor.hasAim ? '[space] release' : 'NO GROUND RETURN'].filter(Boolean);
+    _sensorState.warnings = rack === 0 ? ['RACK EMPTY'] : [];
+    drawSensorHud(hudCtx, w, h, _sensorState);
+    return;
+  }
+  // Riding the round: the same green display, flown from the missile.
+  if (droneCtl.seat === 'missile' && missileCam.active) {
+    const v = missileCam.velocity, speed = Math.hypot(v[0], v[1], v[2]) || 1;
+    const globalP = worldCoordinates.toGlobal(missileCam.position, _senEyeGlobal);
+    _hudState.position = missileCam.position;
+    _hudState.forward = [v[0] / speed, v[1] / speed, v[2] / speed];
+    _hudState.up = [0, 1, 0];
+    _hudState.velocity = v;
+    _hudState.fovDeg = camera.fov;
+    _hudState.agl = globalP[1] - seatGroundAt(globalP[0], globalP[2]);
+    _hudState.throttle = NaN;
+    _hudState.label = sensor.hasAim
+      ? 'AGM  ' + (Math.hypot(sensor.aim[0] - globalP[0], sensor.aim[2] - globalP[2]) / 1000).toFixed(2) + ' KM TO GO'
+      : 'AGM  RUNNING';
+    _hudState.warnings = [];
+    drawFlightHud(hudCtx, w, h, _hudState);
+    return;
+  }
+  // Flying the craft. At a ground station the camera is behind the AIM rather than behind the nose,
+  // so the horizon, ladder and heading have to come from the camera; feeding them the hull's facing
+  // drew a picture for a viewpoint that was not on the screen.
+  if (!frame) return;
+  const station = atTurretStick();
+  const globalP = worldCoordinates.toGlobal(frame.position, _senEyeGlobal);
+  _hudState.position = frame.position;
+  if (station) {
+    camera.getWorldDirection(_hudFwd);
+    _hudState.forward = [_hudFwd.x, _hudFwd.y, _hudFwd.z];
+    _hudState.up = [camera.up.x, camera.up.y, camera.up.z];
+  } else {
+    _hudState.forward = frame.forward;
+    _hudState.up = frame.up;
+  }
+  _hudState.velocity = frame.velocity;
+  _hudState.fovDeg = camera.fov;
+  _hudState.agl = globalP[1] - seatGroundAt(globalP[0], globalP[2]);
+  _hudState.throttle = NaN;
+  const rounds = frame.turretAmmo;
+  _hudState.label = frame.kind.toUpperCase() + '  ' + Math.round(frame.hp) + ' HP'
+    + (rack === null ? '' : '  AGM ' + rack)
+    + (Number.isFinite(rounds) ? '  ' + rounds + ' RDS' : '');
+  // A ground vehicle cannot fly into terrain, so the aircraft's descent warning is not its warning.
+  _hudState.warnings = station
+    ? (rounds === 0 ? ['NO ROUNDS'] : [])
+    : (_hudState.agl < 25 && frame.velocity[1] < -2 ? ['PULL UP'] : []);
+  drawFlightHud(hudCtx, w, h, _hudState);
+}
 
 // --------------------- frame + stats ---------------------
 const statsEl = document.getElementById('stats');
@@ -4616,8 +5467,11 @@ let fpsFrames = 0;
 let shownFps = 0;
 let worstPeak = 0;
 let shownWorst = 0;
-let lastRenderInfo = { drawCalls: 0, triangles: 0 };
-let latestPerformanceFrame = null;
+let lastRenderInfo = { drawCalls: 0, triangles: 0, renderCalls: 0, pipelinesBuilt: 0, pipelineMs: 0 };
+// Pipelines built since the HUD last flushed. Shown only when non-zero: a warm session must not
+// carry a permanent "0 pipelines" on the line, and a walk that keeps compiling should be visible
+// without having to run a capture first.
+const pipelineWindow = { built: 0, ms: 0 };
 let activePerformanceCapture = null;
 
 function copyPerformanceSettings() {
@@ -4714,7 +5568,7 @@ async function finishPerformanceCapture(capture, finishedAt) {
   const clockWasRunning = capture.settingsAtStart.todPlaying && settingsAtEnd.todPlaying;
   const expectedDynamicChanges = allChanges.filter(change => change.key === 'todHour' && clockWasRunning);
   const changedSettingsDuringCapture = allChanges.filter(change => !expectedDynamicChanges.includes(change));
-  const droppedFramesEnd = frameProfiler.snapshot().droppedFrames;
+  const droppedFramesEnd = frameProfiler.droppedFrames;
 
   try {
     const performanceResult = buildPerformanceMeasurement(capture.samples, {
@@ -4750,23 +5604,24 @@ async function finishPerformanceCapture(capture, finishedAt) {
 }
 
 function recordPerformanceFrame(frameStart, frameMs) {
-  latestPerformanceFrame = {
+  const capture = activePerformanceCapture;
+  if (!capture) return;   // idle frames allocate no sample and take no pass snapshot
+  const sample = {
     frameMs,
     drawCalls: lastRenderInfo.drawCalls,
     triangles: lastRenderInfo.triangles,
+    // Whole scene renders this frame (main + shadow + mirror), and the pipelines three had to
+    // build inside them. A frame that built one is not comparable to a frame that built none.
+    renderCalls: lastRenderInfo.renderCalls,
+    pipelinesBuilt: lastRenderInfo.pipelinesBuilt,
+    passes: frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES),
   };
-  const capture = activePerformanceCapture;
-  if (!capture) return;
-  // Only allocated while a capture is running, so the idle frame stays allocation-free.
-  latestPerformanceFrame.passes = frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES);
   // Not a measurement: frame-profiler defines it as a sum that degenerates to passPostMs here.
-  delete latestPerformanceFrame.passes.passGpuAwaitMs;
+  delete sample.passes.passGpuAwaitMs;
 
   // Trim the first draw-to-draw interval at the click boundary instead of attributing
   // pre-capture time to the requested measurement window.
-  const sample = capture.samples.length === 0
-    ? { ...latestPerformanceFrame, frameMs: Math.min(frameMs, Math.max(0.001, frameStart - capture.startedAt)) }
-    : latestPerformanceFrame;
+  if (capture.samples.length === 0) sample.frameMs = Math.min(frameMs, Math.max(0.001, frameStart - capture.startedAt));
   capture.samples.push(sample);
   const now = performance.now();
   if (now - capture.lastProgressAt >= 500) {
@@ -4777,6 +5632,7 @@ function recordPerformanceFrame(frameStart, frameMs) {
   }
   if (now < capture.endsAt) return;
   activePerformanceCapture = null;
+  frameProfiler.setEnabled(GPU_TIMESTAMPS);
   finishPerformanceCapture(capture, now);
 }
 
@@ -4791,22 +5647,15 @@ recordPerformanceButton.addEventListener('click', () => {
     startedAt,
     endsAt: startedAt + requestedWindowSeconds * 1000,
     settingsAtStart: copyPerformanceSettings(),
-    droppedFramesStart: frameProfiler.snapshot().droppedFrames,
+    droppedFramesStart: frameProfiler.droppedFrames,
     samples: [],
     lastProgressAt: 0,
   };
   setPerformanceCaptureBusy(true);
 
-  if (requestedWindowSeconds === 0) {
-    if (!latestPerformanceFrame) {
-      captureStatus.textContent = 'No rendered frame is available yet.';
-      setPerformanceCaptureBusy(false);
-      return;
-    }
-    capture.samples.push(latestPerformanceFrame);
-    finishPerformanceCapture(capture, startedAt);
-    return;
-  }
+  // Even an instantaneous capture waits for one newly profiled frame. Idle frames deliberately do
+  // not carry pass timing, so reusing the previous frame would produce a misleading zero map.
+  frameProfiler.setEnabled(true);
   activePerformanceCapture = capture;
   const description = label ? `“${label}”` : 'performance';
   captureStatus.textContent = `Measuring ${description}… ${requestedWindowSeconds.toFixed(1)} s remaining`;
@@ -4877,12 +5726,17 @@ function updateStats(frameMs) {
   shownFps = fpsFrames * 1000 / fpsElapsed;
   shownWorst = worstPeak;
   fpsElapsed = 0; fpsFrames = 0; worstPeak = 0;
-  const dropped = frameProfiler.snapshot().droppedFrames;
+  const dropped = frameProfiler.droppedFrames;
   const sessionText = activeMode === 'solo' ? 'solo'
     : activeMode === 'menu' ? 'menu'
       : `${networkSession?.roomCode || 'online'} ${networkSession?.owner ? 'owner' : 'player'} ${networkStatus.state || ''}`;
+  const pipelineText = pipelineWindow.built
+    ? ` · ${pipelineWindow.built} pipelines ${pipelineWindow.ms.toFixed(1)} ms`
+    : '';
+  pipelineWindow.built = 0; pipelineWindow.ms = 0;
   statsEl.textContent = `${shownFps.toFixed(0)} fps · worst ${shownWorst.toFixed(1)} ms · `
-    + `${lastRenderInfo.drawCalls} draws · ${formatTriangles(lastRenderInfo.triangles)} tris · ${dropped} dropped · ${sessionText}`;
+    + `${lastRenderInfo.drawCalls} draws · ${formatTriangles(lastRenderInfo.triangles)} tris · ${dropped} dropped`
+    + `${pipelineText} · ${sessionText}`;
   if (settings.todPlaying && panelElementVisible(timeSec)) controlRegistry.get('todHour')?.sync();
   if (panelElementVisible(networkDebug)) renderNetworkDebug();
   if (panelElementVisible(playerStatus)) {
@@ -4898,20 +5752,22 @@ async function animate() {
   if (frameCapHolds(performance.now())) return;
   frameBusy = true;
   try {
-    frameProfiler.beginFrame();
+    const profileFrame = frameProfiler.enabled;
+    if (profileFrame) frameProfiler.beginFrame();
     const frameStart = performance.now();
     const frameMs = Math.max(0, frameStart - lastFrameStart);
     lastFrameStart = frameStart;
     const dt = Math.min(0.1, frameMs / 1000);
     // Region marks: these blocks declare bindings the rest of the frame reads, so they cannot be
     // wrapped in closures the way the pass slots below are.
-    const tSim = performance.now();
+    const tSim = profileFrame ? performance.now() : 0;
 
     const online = isOnline();
     const canControl = !gameplayPaused && settings.playerControlMode === 'player';
     const gadgetHands = stepGadgetHands(performance.now(), canControl);
     const droneInput = canControl ? buildDroneInput() : null;
-    const atStick = droneCtl.active;   // the movement keys are the drone's; the body stands (the server's rule too)
+    const atStick = droneCtl.active;
+    const drivingVehicle = atStick && !!BASE_GAME_VEHICLE_DEFS[droneView.drones.get(droneCtl.id)?.kind];
     if (canControl && !atStick && document.pointerLockElement === renderer.domElement) {
       pointerLook.consume(settings.cameraSensitivity, pointerLookDelta);
       playerView.addLook(pointerLookDelta.deltaYaw, pointerLookDelta.deltaPitch);
@@ -4919,8 +5775,8 @@ async function animate() {
       pointerLook.clear();
     }
     const input = canControl ? {
-      moveX: atStick ? 0 : (playerKeys.has('KeyD') ? 1 : 0) - (playerKeys.has('KeyA') ? 1 : 0),
-      moveZ: atStick ? 0 : (playerKeys.has('KeyW') ? 1 : 0) - (playerKeys.has('KeyS') ? 1 : 0),
+      moveX: atStick && !drivingVehicle ? 0 : (playerKeys.has('KeyD') ? 1 : 0) - (playerKeys.has('KeyA') ? 1 : 0),
+      moveZ: atStick && !drivingVehicle ? 0 : (playerKeys.has('KeyW') ? 1 : 0) - (playerKeys.has('KeyS') ? 1 : 0),
       yaw: playerView.yaw,
       pitch: playerView.pitch,
       sprint: !atStick && (playerKeys.has('ShiftLeft') || playerKeys.has('ShiftRight')),
@@ -4980,8 +5836,8 @@ async function animate() {
     } else {
       playerController.interpolatedPosition(1, playerRenderPosition);
     }
-    frameProfiler.mark('playerSim', performance.now() - tSim);
-    const tView = performance.now();
+    if (profileFrame) frameProfiler.mark('playerSim', performance.now() - tSim);
+    const tView = profileFrame ? performance.now() : 0;
     if (canControl) {
       worldCoordinates.maybeRebase(playerController.getPosition(playerPositionScratch));
       playerView.syncCapsule(playerRenderPosition, {
@@ -5010,7 +5866,7 @@ async function animate() {
         comfortRateY: comfortOn ? comfort.y : 0,
       });
       applyAimOptics();   // FOV/zoom/eye push before the gun frame reads the camera
-      if (droneCtl.active) droneView.placeCamera(camera, droneCtl.id, dt, { zoom: settings.droneCameraZoom });   // at the stick, the camera rides the drone (it owns the fov, as the sim's chase view does)
+      if (droneCtl.active) placeSeatCamera(dt);   // at the stick the camera rides the craft, the sensor, or the missile
     } else {
       if (settings.playerControlMode === 'orbit') controls.update();
       playerView.syncCapsule(playerRenderPosition, {
@@ -5019,8 +5875,8 @@ async function animate() {
       });
     }
     // Bodies read the same render position the capsule uses; the controller is never touched.
-    frameProfiler.mark('playerView', performance.now() - tView);
-    const tBodies = performance.now();
+    if (profileFrame) frameProfiler.mark('playerView', performance.now() - tView);
+    const tBodies = profileFrame ? performance.now() : 0;
     // Third-person rigs show only in third-person view, lower-body rigs only in first-person.
     const firstPerson = settings.playerViewMode === 'firstPerson';
     const bodyVisible = settings.playerBodyMode === 'lowerBody' ? firstPerson : true;
@@ -5126,77 +5982,124 @@ async function animate() {
     const localHands = playerBodies.heldAnchor('local', localHeadLocal);
     if (!localHands) { localHeadLocal[0] = playerRenderPosition[0]; localHeadLocal[1] = playerRenderPosition[1] + 2.3; localHeadLocal[2] = playerRenderPosition[2]; }
     droneView.showHeld('local', gadgetHands.inHand ? gadgetHands.kind : null, localHeadLocal, localHands ? localHands.yaw : playerView.yaw, !localHands);
-    frameProfiler.mark('bodies', performance.now() - tBodies);
+    if (profileFrame) frameProfiler.mark('bodies', performance.now() - tBodies);
     sky.group.position.copy(camera.position);
-    frameProfiler.time('audio', () => envAudio.update(frameStart));
-    frameProfiler.time('terrain', () => terrain.update(playerController.getPosition(playerPositionScratch), dt));
+    let passStart = profileFrame ? performance.now() : 0;
+    envAudio.update(frameStart);
+    if (profileFrame) frameProfiler.mark('audio', performance.now() - passStart);
+    passStart = profileFrame ? performance.now() : 0;
+    terrain.update(playerController.getPosition(playerPositionScratch), dt);
+    const trailFocus = playerController.getPosition(playerPositionScratch);
+    trails.update(trailFocus);
+    roads.setResidency(trailFocus[0], trailFocus[2], 70);
+    roads.update();
+    if (profileFrame) frameProfiler.mark('terrain', performance.now() - passStart);
     // terrain.update's own slot hides three very different costs; split them out.
     const terrainCost = terrain.frameCost;
-    frameProfiler.mark('terrainFold', terrainCost.foldMs);
-    frameProfiler.mark('terrainField', terrainCost.fieldMs);
-    frameProfiler.mark('terrainInstall', terrainCost.installMs);
-    frameProfiler.mark('terrainColorize', terrainCost.colorizeMs);
-    frameProfiler.mark('terrainBatch', terrainCost.batchMs);
-    frameProfiler.mark('terrainCollider', terrainCost.colliderMs);
+    if (profileFrame) {
+      frameProfiler.mark('terrainFold', terrainCost.foldMs);
+      frameProfiler.mark('terrainField', terrainCost.fieldMs);
+      frameProfiler.mark('terrainInstall', terrainCost.installMs);
+      frameProfiler.mark('terrainColorize', terrainCost.colorizeMs);
+      frameProfiler.mark('terrainBatch', terrainCost.batchMs);
+      frameProfiler.mark('terrainCollider', terrainCost.colliderMs);
+    }
     if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
-    frameProfiler.time('water', () => {
-      water.update(dt, camera.position, playerController.waterTime + playerInterpolationAlpha * playerFixedDt);
-      if (water.underwater !== underwaterAudio) { underwaterAudio = water.underwater; envAudio.setUnderwater?.(underwaterAudio); }
-    });
+    passStart = profileFrame ? performance.now() : 0;
+    water.update(dt, camera.position, playerController.waterTime + playerInterpolationAlpha * playerFixedDt);
+    if (water.underwater !== underwaterAudio) { underwaterAudio = water.underwater; envAudio.setUnderwater?.(underwaterAudio); }
+    if (profileFrame) frameProfiler.mark('water', performance.now() - passStart);
     if (frameStart >= runtimeStatusNextMs) {
       runtimeStatusNextMs = frameStart + 1000;
       if (panelElementVisible(terrainRuntimeLine)) refreshTerrainRuntimeLine();
       if (panelElementVisible(grassRuntimeLine)) refreshGrassRuntimeLine();
       if (panelElementVisible(forestRuntimeLine)) refreshForestRuntimeLine();
+      if (panelElementVisible(trailRuntimeLine)) refreshTrailRuntimeLine();
     }
     // Terrain chunks, trees and grass stream in long after boot, and a material built while the visor
     // is already up would have no heat and render as a lit colour object in a heat frame. Re-sweeping
     // once a second catches them. It only runs with the visor up, and a tagged material is skipped,
     // so the steady-state cost is one scene walk over a few hundred objects.
     if (settings.visorMode !== 'rgb' && (visorSweepTick += dt) >= 1) { visorSweepTick = 0; applyVisor(); }
-    frameProfiler.time('fx', () => { updateProjectiles(performance.now(), dt); updateShotEffects(performance.now()); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt); devLightRegistry.tick(dt, { now: performance.now() / 1000, terrainHeight: devLightGround }); devLightPool.sync(devLightRegistry.renderList(), devLightToLocal); const gunLight = weaponLightSource(canControl); weaponLight.update(dt, gunLight); weaponLaser.update(dt, gunLight); updateDevHeldLight(dt, gunLight); });
+    passStart = profileFrame ? performance.now() : 0;
+    const fxNow = performance.now();
+    updateProjectiles(fxNow, dt); updateShotEffects(fxNow); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt);
+    devLightRegistry.tick(dt, { now: fxNow / 1000, terrainHeight: devLightGround }); devLightPool.sync(devLightRegistry.renderList(), devLightToLocal);
+    const gunLight = weaponLightSource(canControl); weaponLight.update(dt, gunLight); weaponLaser.update(dt, gunLight); updateDevHeldLight(dt, gunLight);
+    if (profileFrame) frameProfiler.mark('fx', performance.now() - passStart);
     // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
-    await frameProfiler.timeAsync('grassGpu', () => flora.update(frameStart / 1000));
-    await frameProfiler.timeAsync('forestGpu', () => forest.update());
-    frameProfiler.time('sky', () => updateWorld(dt));
+    passStart = profileFrame ? performance.now() : 0;
+    await flora.update(frameStart / 1000);
+    if (profileFrame) frameProfiler.mark('grassGpu', performance.now() - passStart);
+    passStart = profileFrame ? performance.now() : 0;
+    await forest.update();
+    if (profileFrame) frameProfiler.mark('forestGpu', performance.now() - passStart);
+    passStart = profileFrame ? performance.now() : 0;
+    updateWorld(dt);
+    if (profileFrame) frameProfiler.mark('sky', performance.now() - passStart);
     // After the sky slot: the drop tint reads scene.background, which updateWorld has just written.
-    frameProfiler.time('weather', () => {
-      rain.update(dt, camera, {
-        underwater: settings.rainUnderwaterOff && water.underwater,
-        skyColor: scene.background,
-      });
-      // The lockstep clock the swell already rides: the one clock the client and the server agree
-      // on, so two peers strike at the same instant without a message.
-      lightning.update(dt, playerController.waterTime, camera.position, {
-        onThunder: distance => { if (settings.weatherThunder) audioDirector.thunderAt(distance, settings.weatherThunderVolume); },
-      });
-      const bedLevel = settings.weatherRainBed && !gameplayPaused ? rain.system.getDensity() : 0;
-      audioDirector.setRainBed(bedLevel, settings.weatherRainBedVolume);
+    passStart = profileFrame ? performance.now() : 0;
+    rain.update(dt, camera, {
+      underwater: settings.rainUnderwaterOff && water.underwater,
+      skyColor: scene.background,
     });
+    // The lockstep clock the swell already rides: the one clock the client and the server agree
+    // on, so two peers strike at the same instant without a message.
+    lightning.update(dt, playerController.waterTime, camera.position, {
+      onThunder: distance => { if (settings.weatherThunder) audioDirector.thunderAt(distance, settings.weatherThunderVolume); },
+    });
+    const bedLevel = settings.weatherRainBed && !gameplayPaused ? rain.system.getDensity() : 0;
+    audioDirector.setRainBed(bedLevel, settings.weatherRainBedVolume);
+    if (profileFrame) frameProfiler.mark('weather', performance.now() - passStart);
     // Its own slot: the bake is a whole extra scene render, and folded into `weather` it would read
     // as rain randomly costing several milliseconds.
-    frameProfiler.time('rainBake', updateRainOccluders);
+    passStart = profileFrame ? performance.now() : 0;
+    updateRainOccluders();
+    if (profileFrame) frameProfiler.mark('rainBake', performance.now() - passStart);
     if (!terrainStudio.open) {
-      // postRender is CPU encode (measured: gpuRenderMs ~1 ms against passPostMs 3-12), and the
-      // planar mirror re-renders the whole scene inside it every reflectRate frames. Split the
-      // encode by whether the mirror ran, so its marginal cost is a measurement, not a subtraction
-      // of two numbers from different captures.
-      const reflectPassesBefore = water.reflectStats.passes;
-      const encodeStart = performance.now();
+      // postRender is one timer around four different things: the shadow map redraw, the planar
+      // mirror's whole extra scene render, the post chain, and the main pass. Each of the marks
+      // below carves one of them out, because a single number for "the render" cannot say which
+      // grew -- and passPost was the only slot that spiked in every capture.
+      const reflectPassesBefore = profileFrame ? water.reflectStats.passes : 0;
+      // Read before the render: three clears needsUpdate once it has drawn the map, so afterwards
+      // there is no way to tell a frame that redrew shadows from one that reused them.
+      const shadowRedrew = profileFrame && renderer.shadowMap.enabled && rig.dirLight.castShadow
+        && (rig.dirLight.shadow.autoUpdate || rig.dirLight.shadow.needsUpdate);
+      const encodeStart = profileFrame ? performance.now() : 0;
       // The pipeline runs when either effect wants it. Plain sight with depth of field off keeps the
       // direct render, so the common case still costs no full-screen pass.
-      if (settings.dofEnabled || settings.visorMode !== 'rgb') {
+      const chained = settings.dofEnabled || settings.visorMode !== 'rgb';
+      if (chained) {
         syncDofParams();
         if (settings.dofEnabled && settings.dofAutoFocus) depthOfField.updateFocus(dt, measureCentreDistance());
         postPipeline.render();
       } else {
         renderer.render(scene, camera);
       }
-      const encodeMs = performance.now() - encodeStart;
-      frameProfiler.mark('postRender', encodeMs);
-      const mirrored = water.reflectStats.passes > reflectPassesBefore;
-      frameProfiler.mark('reflect', mirrored ? water.reflectStats.lastMs : 0);
-      frameProfiler.mark(mirrored ? 'postMirror' : 'postPlain', encodeMs);
+      if (profileFrame) {
+        const encodeMs = performance.now() - encodeStart;
+        frameProfiler.mark('postRender', encodeMs);
+        const mirrored = water.reflectStats.passes > reflectPassesBefore;
+        frameProfiler.mark('reflect', mirrored ? water.reflectStats.lastMs : 0);
+        frameProfiler.mark(mirrored ? 'postMirror' : 'postPlain', encodeMs);
+        // The same encode, bucketed two more ways. Shadows need shadowUpdateEvery above 1 to give
+        // both buckets in one capture; the post chain is whichever branch the settings chose.
+        frameProfiler.mark(shadowRedrew ? 'postShadow' : 'postNoShadow', encodeMs);
+        frameProfiler.mark(chained ? 'postChain' : 'postDirect', encodeMs);
+      }
+    }
+    // Drained every frame, profiling or not: the counters are cumulative, so skipping idle frames
+    // would hand the first profiled frame every pipeline built since the page loaded. Marked
+    // against the frame rather than a pass -- a compile can also land in a warmup or a compute
+    // submit -- but the bulk of it is inside the render call above, so it is not a partition slot.
+    const pipelineCost = pipelineMeter.take();
+    pipelineWindow.built += pipelineCost.render + pipelineCost.compute;
+    pipelineWindow.ms += pipelineCost.ms;
+    if (profileFrame) {
+      frameProfiler.mark('pipeline', pipelineCost.ms);
+      frameProfiler.mark('pipelineRender', pipelineCost.renderMs);
+      frameProfiler.mark('pipelineCompute', pipelineCost.computeMs);
     }
     if (GPU_TIMESTAMPS) resolveFrameTimestamps();
     // Everything in the frame that no slot above covers. snapshot() allocates, so this residual is
@@ -5205,8 +6108,18 @@ async function animate() {
     lastRenderInfo = {
       drawCalls: renderer.info.render.drawCalls,
       triangles: renderer.info.render.triangles,
+      // Nested render calls: the shadow map and the planar mirror each raise this above 1, so a
+      // capture says how many whole scene renders the frame really paid for.
+      renderCalls: renderer.info.render.frameCalls,
+      // Copied, not referenced: take() reuses its result object.
+      pipelinesBuilt: pipelineCost.render + pipelineCost.compute,
+      pipelineMs: pipelineCost.ms,
     };
     sky.flushDisposals();
+    drawSeatHud();
+    // Only while the map is up: a bake is ~165k terrain samples and stalls the frame it runs in.
+    mapBake.step(playerController.getPosition(), worldMap.isOpen());
+    worldMap.update();
     updateStats(frameMs);
     recordPerformanceFrame(frameStart, frameMs);
   } finally {
@@ -5214,11 +6127,22 @@ async function animate() {
   }
 }
 
+function sizeHudCanvas() {
+  // Backing store in device pixels, CSS box in layout pixels, so the display is sharp on a scaled
+  // screen and the drawing code can keep thinking in one coordinate system.
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  hudCanvas.width = Math.round(window.innerWidth * ratio);
+  hudCanvas.height = Math.round(window.innerHeight * ratio);
+  hudCanvas.style.width = window.innerWidth + 'px';
+  hudCanvas.style.height = window.innerHeight + 'px';
+}
+sizeHudCanvas();
 addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
+  sizeHudCanvas();
 });
 
 addEventListener('beforeunload', () => {
@@ -5229,6 +6153,9 @@ addEventListener('beforeunload', () => {
   remotePlayers.dispose();
   envAudio.dispose();
   traversalLab.dispose();
+  roads.dispose();
+  trails.dispose();
+  releaseTrailContact();
   terrain.dispose();
 }, { once: true });
 

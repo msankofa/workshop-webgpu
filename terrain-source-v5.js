@@ -204,11 +204,13 @@ export function createV5Source(descriptorLike) {
   // than the warp alone can move it (a carved cave mouth), so a heightfield collider would float.
   const warpReach = density.warp_strength_surface + density.warp_strength_global + 2;
   // The hole test only needs to know whether rock exists above h - warpReach, so the scan stops
-  // there instead of at y_min; and since every collider query asks this several times per step
-  // for a body that barely moved, answers are cached per half-metre cell (holes are cave mouths,
-  // metres wide, so the cell never straddles one meaningfully). Uncached: ~60 density samples.
-  const HOLE_CELL = 0.5, HOLE_CACHE_MAX = 1 << 16;
-  const holeCache = new Map();
+  // there instead of at y_min. Collider queries repeat exact X/Z points several times per step;
+  // a fixed direct-mapped cache removes those scans without sharing an answer across distinct
+  // points near a cave boundary. A collision merely recomputes and replaces the slot.
+  const HOLE_CACHE_SIZE = 1 << 16, HOLE_CACHE_MASK = HOLE_CACHE_SIZE - 1;
+  const holeCacheX = new Float64Array(HOLE_CACHE_SIZE);
+  const holeCacheZ = new Float64Array(HOLE_CACHE_SIZE);
+  const holeCacheState = new Uint8Array(HOLE_CACHE_SIZE); // 0 empty, 1 false, 2 true
   function holeAtUncached(x, z) {
     const h = heightAt(x, z);
     const floor = Math.max(density.y_min, h - warpReach);
@@ -216,12 +218,12 @@ export function createV5Source(descriptorLike) {
     return densityAt(x, floor, z, h) < 0;
   }
   function holeAt(x, z) {
-    const key = Math.round(x / HOLE_CELL) * 1048576 + Math.round(z / HOLE_CELL);
-    let v = holeCache.get(key);
-    if (v === undefined) {
-      if (holeCache.size >= HOLE_CACHE_MAX) holeCache.clear();
-      v = holeAtUncached(x, z); holeCache.set(key, v);
-    }
+    const qx = Math.round(x * 2), qz = Math.round(z * 2);
+    const slot = (Math.imul(qx, 73856093) ^ Math.imul(qz, 19349663)) & HOLE_CACHE_MASK;
+    const state = holeCacheState[slot];
+    if (state && holeCacheX[slot] === x && holeCacheZ[slot] === z) return state === 2;
+    const v = holeAtUncached(x, z);
+    holeCacheX[slot] = x; holeCacheZ[slot] = z; holeCacheState[slot] = v ? 2 : 1;
     return v;
   }
 

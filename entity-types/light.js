@@ -25,7 +25,7 @@ function clampNumber(value, fallback, min, max) {
 function normalizeParamsPacket(packet = {}, base = {}) {
   const b = {
     trajectory: 'arc', float: true, drift: false,
-    lifespan: 15, r: 255, g: 180, b: 80, brightness: 60, radius: 30,
+    lifespan: 15, r: 255, g: 180, b: 80, brightness: 60, radius: 30, decay: 2,
     ...base,
   };
   return {
@@ -37,7 +37,8 @@ function normalizeParamsPacket(packet = {}, base = {}) {
     g: clampNumber(packet.g, b.g, 0, 255),
     b: clampNumber(packet.b, b.b, 0, 255),
     brightness: clampNumber(packet.brightness, b.brightness, 0, 500),
-    radius: clampNumber(packet.radius, b.radius, 0.1, 200),
+    radius: clampNumber(packet.radius, b.radius, 0.1, 600),
+    decay: clampNumber(packet.decay, b.decay, 0, 4),
   };
 }
 
@@ -62,6 +63,7 @@ export const LightEntity = {
       state: {
         color: c,
         radius: p.radius,
+        decay: p.decay,
         brightness: p.brightness,
         lifespan: p.lifespan,
         totalLife: p.lifespan,
@@ -125,6 +127,7 @@ export const LightEntity = {
       p: [p[0], p[1], p[2]],
       color: [s.color.r, s.color.g, s.color.b],
       radius: s.radius,
+      decay: s.decay,
       intensity,
       lifespan: s.lifespan,
       totalLife: s.totalLife,

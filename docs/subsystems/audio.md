@@ -80,6 +80,9 @@ populated, as it is for the `'http'` source. Returns:
   `'http'` the active source without starting playback; `activate: true` also starts track 1.
   Returns `false` (and leaves the source alone) if the listing is unreachable or has no audio files.
   Unlike the `'game'` source it needs no `sfxDirHandle`, which is what makes it work over plain http.
+  `listUrl`/`baseUrl` point it at any served folder: `pokemon-lab.html` passes serve.py's
+  `GET /api/list-pokemon-music` (the `pokemon/Stadium Music/` rip; `GET /api/list-pokemon-cries` is
+  the sibling listing of `pokemon/poke_cries/`, both served by the shared `_handle_list_audio_dir`).
 - `loadSfxHttp(baseUrl?)` — same `sound-map.json` shape, fetched over http instead of a picked
   folder; no permission/gesture needed since it's a same-origin static-file fetch. `restoreSfxFolder()`
   calls this automatically whenever no folder handle is stored or its permission isn't silently
@@ -89,6 +92,26 @@ populated, as it is for the `'http'` source. Returns:
 - `setUnderwater(on)` swings a master-bus low-pass between 620 Hz (submerged) and 20 kHz (bypassed); Base Game calls it when the camera crosses the water surface.
 - `setVolume(kind,v)`, `setMuted(kind,b)`, music controls, `subscribe()`/`getState()` (drives the
   Audio tab in `environment-ui.js`), `dispose()`.
+- `playBufferAt(buffer, position, vol?, opts?)` — the positional chain `playAt` uses, for a buffer
+  the caller decoded itself (via the exported `decodeAudio`) instead of a registered event.
+  `pokemon-lab.html` plays cries through it, decoded lazily per species. `opts.playbackRate` sets the
+  source rate (tempo, dragging pitch with it) and `opts.pitchRatio` is the pitch the caller wants: the
+  difference is made up by a `music-pitch-processor` worklet node (0.5–2×, so extreme combinations stop
+  short) inserted only when it matters and only once the module has loaded — `preparePitchWorklet()`
+  loads it ahead of the first press. `opts.offset`/`opts.duration` (seconds into the buffer) and `opts.delay` (seconds from
+  now) play a slice on a schedule, and `opts.insert(ctx, input, { source, startTime, duration })` lets the
+  caller put its own nodes between the source and the panner and return the chain's output — the lab's
+  bass shelf, vibrato, tremolo and envelope live there, not in the controller.
+- `setMusicSpeakerBehavior` accepts a fifth behavior, **`'fixed'`**: the orb holds a world position
+  instead of following the player/camera (seeded in front of the camera, or wherever the orb was when
+  switched). `setMusicSpeakerPosition(pos)` sets that position directly — it also forces the behavior
+  to `'fixed'` and snaps the orb, which is what a host's drag calls per pointer move.
+  `getMusicSpeakerObject()` returns the orb group so a host can raycast it to make it draggable.
+- `setWorldScale(s)` (also the `worldScale` construction option, default 1): multiplies every distance in
+  the speaker path — the orb's follow offsets and size, and the music panner's `refDistance`/`maxDistance`
+  — for a scene whose units are not metres. `pokemon-lab.html` sets it per species from the measured rig
+  (span / 1.8; the models are 9–147 units tall), which is what made the orb audible there at all. A held
+  `fixed` position is dropped on rescale.
 - `getMusicProgress()` → `{label, path, currentTime, duration, playing}` and `seekMusic(fraction)`
   (0–1 of the duration) — transport position for a progress/seek bar. Deliberately **not** part of
   `getState()`: it changes every frame, while `notify()` only fires on real state changes, so a UI

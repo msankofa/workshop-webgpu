@@ -39,6 +39,9 @@ export function cullInstance(rec, cam, maxDist) {
 //   maxDrawRadius = Infinity,  // Milestone 3 hard far cutoff (world units); instances beyond
 //                               // this are rejected outright rather than falling through to an
 //                               // ever-growing billboard population.
+//   shadowReach = 0,           // shadow list radius (2026-08-30): an instance within it is a
+//                               // shadow caster whether or not the cone keeps it -- the light
+//                               // does not look where the camera looks. 0 = no shadow list.
 // }
 export function classifyInstance(rec, cam, params) {
   const dx = rec.x - cam.x;
@@ -69,7 +72,10 @@ export function classifyInstance(rec, cam, params) {
     }
   }
 
-  return { dist, farLive, coneLive, live: farLive && coneLive };
+  const shadowReach = params.shadowReach ?? 0;
+  const shadowLive = shadowReach > 0 && dist <= shadowReach;
+
+  return { dist, farLive, coneLive, live: farLive && coneLive, shadowLive };
 }
 
 // Threshold-gated recull predicate (Milestone 4). Exact float-equality dirty checks recull

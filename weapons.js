@@ -44,6 +44,21 @@ const tracerFx = (overrides = {}) => ({
 });
 
 export const WEAPONS = {
+  // Vehicle-mounted, and deliberately absent from BASE_GAME_WEAPON_IDS: getWeapon() finds it so the
+  // server's shot path is unchanged, while sanitizeBaseGameLoadout can never put it in a hand.
+  ugv_mg: {
+    id: 'ugv_mg',
+    displayName: 'UGV 12.7',
+    mode: 'hitscan',
+    damage: 34,
+    range: 420,
+    tracerColor: [1, 0.82, 0.4],
+    // It really does flash and trace, so it carries the same FX contract every other gun does; the
+    // only hand-weapon field it lacks is `model`, because nothing holds it.
+    muzzleFx: muzzleFx({ flashSize: 0.42, flashDuration: 0.05, smokeCount: 3, smokeSize: 0.5 }),
+    tracerFx: tracerFx({ speed: 900, length: 2.2, width: 0.05, opacity: 0.9, glow: 0.45, minVisibleDistance: 6 }),
+    vehicleOnly: true,
+  },
   m1911: {
     id: 'm1911',
     displayName: 'M1911',
@@ -345,5 +360,7 @@ export function swapMsFor(id) {
 }
 
 export function enabledWeapons() {
-  return Object.values(WEAPONS).filter(w => !w.disabled);
+  // `vehicleOnly` guns are mounted, never carried, so they never belong in a list of weapons a
+  // player can be given. getWeapon() still reaches them, which is all the shot path needs.
+  return Object.values(WEAPONS).filter(w => !w.disabled && !w.vehicleOnly);
 }

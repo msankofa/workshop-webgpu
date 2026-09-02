@@ -46,6 +46,7 @@ export function makeRoadVehicle(options = {}) {
     longitudinalSpeed: 0,
     lateralSpeed: 0,
     acceleration: 0,
+    grade: Number.isFinite(options.grade) ? options.grade : 0,
   };
 }
 
@@ -80,6 +81,9 @@ export function stepRoadVehicle(body, input = {}, dt = 1 / 120) {
   const brakeDirection = Math.sign(vLong || 1);
   let longitudinalForce = driveForce - reverseForce - brake * d.brakeForce * brakeDirection;
   if (handbrake) longitudinalForce -= d.handbrakeForce * brakeDirection;
+  // Positive grade is uphill in the vehicle's forward direction. Callers that live on a
+  // plane leave it at zero; terrain-aware callers update it from their ground fit.
+  longitudinalForce -= d.mass * G * Math.sin(Number(body.grade) || 0);
 
   // Rolling and aerodynamic drag are both real forces, so mass changes acceleration and
   // power/drag produces top speed rather than an arbitrary clamp.

@@ -100,10 +100,23 @@ function dropOntoGround(positions, rows, stride, ground, lift, { col0 = 0, colCo
 
 // Hosts that have no envelope to offer (flat ground, or a field with no mesh behind it) get one
 // that just answers the point height -- the geometry code never needs to know which it has.
-export function groundFromHeightFn(heightAt) {
-  return typeof heightAt === 'function'
-    ? { heightAt, maxNear: (x, z) => heightAt(x, z) }
-    : heightAt;
+export function groundFromHeightFn(heightAt, options = {}) {
+  if (typeof heightAt !== 'function') return heightAt;
+  const cell = Number(options.cell ?? heightAt.cell);
+  if (!(cell > 0)) return { heightAt, maxNear: (x, z) => heightAt(x, z) };
+  return {
+    heightAt,
+    maxNear(x, z, radius = cell) {
+      const rings = Math.max(1, Math.ceil(radius / cell));
+      let highest = heightAt(x, z);
+      for (let iz = -rings; iz <= rings; iz++) for (let ix = -rings; ix <= rings; ix++) {
+        const dx = ix * cell, dz = iz * cell;
+        if (dx * dx + dz * dz > (radius + cell * 0.5) ** 2) continue;
+        highest = Math.max(highest, heightAt(x + dx, z + dz));
+      }
+      return highest;
+    },
+  };
 }
 
 // Left/right paved edges per sample, each already dropped onto the ground at its own position.

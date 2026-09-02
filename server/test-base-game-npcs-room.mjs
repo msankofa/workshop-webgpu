@@ -2,7 +2,7 @@
 // socketless players with a team, they move, they shoot each other, the dead respawn (or not),
 // and a player is a target for the enemy side only. Run: node server/test-base-game-npcs-room.mjs
 import assert from 'node:assert/strict';
-import { createBaseGameRoomService } from './base-game-rooms.js';
+import { createBaseGameRoomService, formatBaseGameNpcProfStats } from './base-game-rooms.js';
 import { BASE_GAME_PROTOCOL_VERSION, BASE_GAME_SIM_HZ, BASE_GAME_TEAMS } from '../base-game-protocol.mjs';
 import { analyticDescriptor } from '../terrain-source-analytic.js';
 
@@ -21,6 +21,9 @@ const guest = socket();
 service.handle(guest, { type: 'base:join', protocol: BASE_GAME_PROTOCOL_VERSION, room: 'NPCS' });
 await service.ensureWorld();
 const ownerId = message(owner, 'base:joined').clientId;
+const profLine = formatBaseGameNpcProfStats({ syncMs: 1, thinkMs: 2, inputMs: 3, raycasts: 4, heights: 5, bakes: 6 });
+assert.match(profLine, /heightAt 5\b/, 'the profiler prints the real height counter');
+assert.doesNotMatch(profLine, /undefined/, 'the profiler has no undefined counter');
 
 let tick = 0;
 const base = { moveX: 0, moveZ: 0, yaw: 0, pitch: 0, sprint: false, crouch: false, stance: 0, jump: false, slot: 0, aim: false, reload: false, fire: false, throw: false };
@@ -43,6 +46,19 @@ service.handle(guest, { type: 'base:npc', protocol: BASE_GAME_PROTOCOL_VERSION, 
 assert.equal(message(guest, 'base:error')?.code, 'not_owner');
 service.handle(owner, { type: 'base:npc', protocol: BASE_GAME_PROTOCOL_VERSION, action: 'spawn', team: BASE_GAME_TEAMS.enemy, count: 2 });
 service.handle(owner, { type: 'base:npc', protocol: BASE_GAME_PROTOCOL_VERSION, action: 'spawn', team: BASE_GAME_TEAMS.friendly, count: 2, role: 'medic' });
+const room = service.rooms.get('NPCS');
+let aim = room.npcs.brain.aimSettings();
+assert.equal(aim.reactionEnabled, true, 'a partial room setting preserves the reaction gate');
+assert.equal(aim.reactionMs, 260, 'the default room notice time reaches the brain');
+service.handle(owner, { type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION, patch: { npcNoticeMs: 777, npcAccuracy: 1 } });
+aim = room.npcs.brain.aimSettings();
+assert.equal(aim.reactionMs, 777, 'notice-time changes reach the brain');
+assert.equal(aim.reactionEnabled, true, 'notice-time changes retain the rest of the aim settings');
+assert.equal(aim.baseSpreadDeg, 0, 'accuracy 1 removes base spread');
+assert.equal(aim.bloomMaxDeg, 0, 'accuracy 1 removes bloom');
+service.handle(owner, { type: 'base:set_world', protocol: BASE_GAME_PROTOCOL_VERSION, patch: { npcNoticeMs: 260, npcAccuracy: 0.5 } });
+aim = room.npcs.brain.aimSettings();
+assert.ok(aim.baseSpreadDeg > 0 && aim.bloomMaxDeg > 0, 'accuracy 0.5 restores donor dispersion');
 let snap = drive(0.5);
 assert.equal(npcs(snap).length, 4, 'four bots on the wire');
 assert.equal(npcs(snap, BASE_GAME_TEAMS.enemy).length, 2);

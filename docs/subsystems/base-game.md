@@ -59,6 +59,7 @@ This is "Day 1 plus the minimum Day 2 sky": light/day/night own the state; the s
 | Procedural weapon handling voices (reload, draw) | `weapon-sfx-synth.js` |
 | Drone autonomy, manual flight, wire state | `base-game-drones.js` on `bot-drones.js` + `flight-model.js` |
 | Drone meshes, pose, chase camera | `base-game-drone-view.js` on `flight-meshes.js` |
+| Ground-vehicle autonomy, seats and wire state | `base-game-vehicles.js` on `city-vehicle-model.js` |
 
 `base-game.html` is integration wiring. It does not duplicate any renderer subsystem, sky shader,
 or server room logic.
@@ -439,6 +440,35 @@ component toggles to stay independent, online pause to leave the clock running, 
 it, and Main Menu to disconnect without a reconnect.
 
 ## World implementation roadmap
+
+### World plan and trails (implemented 2026-09-01)
+
+Base Game now holds a second, CPU-only field scheduler for a coarse world plan. The plan window is
+16 by 16 tiles, each 16 intervals at 30 m posts: roughly 7.7 km of terrain centred on the player.
+It carries band-limited `heights`, `biomeIds`, and derived `planWalk`; `gpu:false` means no unused
+textures or uploads. `base-game-plan.js` encodes water and cliff as zero and walkable grade classes
+as 1..255. `base-game-sites.js` deterministically jitters one placeholder site per 480 m tile and
+snaps it to the flattest nearby walkable post; `{x,z,tier}` is the seam future structure worldgen
+will replace.
+
+`base-game-trails.js` turns settled sites into canonically ordered relative-neighbourhood legs,
+routes one eligible leg per frame through `trail-router.js`, discounts already committed corridors,
+and commits the resulting 6 m samples to one bounded `road-network.js` graph. The placement field's
+three cover channels are attenuated both when a trail arrives after a tile and when a tile derives
+after a trail. `terrain.coverAt` returns null while an overlapping leg remains unsettled, so tree
+placement waits instead of recording a tree that a later trail would cover. Grass can disappear on
+its next recull after a late stamp.
+
+The Trails panel exposes the shared world inputs `trailsEnabled`, `trailSeed`, `trailSpacing`,
+`trailWidth`, and `trailMaxGrade`; `trailShow` is local presentation. Protocol 18 relays and clamps
+the shared inputs. The runtime line reports plan coverage, sites, routed/pending legs, topology,
+resident edges and mesh backlog once per second. Road meshes use the fine contact window, are built
+one item per frame, fade at their 70 m residency edge, move with render-origin rebases, and carry
+terrain heat in visor modes.
+
+Focused tests: `test-base-game-plan.mjs`, `test-base-game-sites.mjs`,
+`test-base-game-trails.mjs`, `test-trail-router.mjs`, and
+`test-road-system-incremental.mjs`.
 
 This roadmap governs the progression from the sky-only v0 to a traversable, streamable world. The
 systems are introduced one at a time and each phase ends at an explicit visual, correctness, and
@@ -1464,6 +1494,323 @@ nobody calls it), crash FX when a deadstick reaches the ground, sounds, the lab'
 only ground, and every number, which has never been seen in a browser. Tests:
 `test-base-game-drones.mjs`, `server/test-base-game-drones-room.mjs`.
 
+**The Sentinel (2026-09-01, protocol 17).** A third drone kind, `sentinel` in `base-game-drones.js`, is a
+world drone rather than a gadget: nobody carries or throws it (`world: true`, which is what the room's
+cap and `clear` count). Its owner flies, sends and recalls it with F, B and N like any other drone; the
+first version refused the stick (`pilotable: false`) and that was reversed on 2026-09-02. The room
+owner's dev gun spawns it: the key-9 tool cycle gained a
+`sentinel` stop after vehicles, `R` switches the `low` and `high` presets, and the click sends
+`base:drone { action: 'spawn', kind, preset, alt, radius }` (`sanitizeBaseGameDroneRequest`; `clear`
+removes them; `BASE_GAME_WORLD_DRONE_CAP` = 4 per room). Solo builds the same record locally.
+`spawnWorldDrone` puts it on its ring already in `follow` at circuit speed, `radius` ahead of the
+spawner along their look at `alt` over the ground there, leaving along the ring in the direction the
+record will orbit — the first version left across it and the first thing it did was a 180-degree turn
+a kilometre outside the ring. The record is owned by the spawner so the orbit follows them; a dead or
+departed owner parks it in `hold` where it is, as the UAV does. It flies the plane airframe at a 70 m/s
+loiter with `turn` 0.35, because the tightest ring is speed/turn and the low preset's 400 m ring was
+not flyable at the UAV's 120 m/s and 0.2. Presets are four sliders in the player section
+(`sentinelLowAlt` 150 m / `sentinelLowRadius` 400 m, `sentinelHighAlt` 1500 m / `sentinelHighRadius`
+900 m), sent with the request and clamped server-side to `BASE_GAME_SENTINEL_LIMITS`. It draws as
+`flight-meshes.js`'s `sentinel` at its authored 20 m span, so `meshScale` is 1; the HUD lists it on an
+`overhead` line without the F/B/N hint. Not done: it is not a hit volume (no drone is), it has no
+sound, and its look in a browser has been seen once, in the reconstruction viewer, not in this page.
+Tests: the Sentinel cases in both drone tests and `test-flight-meshes-sentinel.mjs`.
+
+**The Sentinel's missile and its seats (2026-09-02, protocol 19).** The Sentinel is flyable, carries
+four guided missiles, and every craft you are at the stick of now has a green head-up display over
+it. The seats are `droneCtl.seat`: `craft` is flying it, `missile` is the sensor picture, and F moves
+between them while X gets out (a craft with no rack keeps F's old meaning, which is to let go). At
+the sensor, the mouse slews a world-frame aim the way the flight sim's gunner ball does, the wheel
+steps the lens through 10/20/30/45 degrees, and space releases a round. The camera then rides that
+round until it is gone, and slewing the sensor mid-flight steers it, so it is television-guided
+rather than fire-and-forget.
+
+The missile is not a new kind of thing: it is an ordinary projectile from `bot-projectiles.js` with a
+`guide` field, so it inherits every hit, ground and detonation path those already have.
+`fireAgm(rec, aim, now)` takes a round off the rack and returns what to spawn (the server spawns into
+its room manager, Solo into the page's), and `stepGuidedProjectiles(list, dt)` turns each guided
+velocity toward its aim and carries the proximity fuse. Both live in `base-game-drones.js` and both
+run identically on the server and in Solo. The fuse zeroes the entity's remaining life on arrival, so
+the entity detonates itself through the airburst path it already had — needed because a round aimed
+where nothing answers a raycast would otherwise sail through and fly on for thirty seconds. The rack
+is `agm` on the def: four rounds, 120 m/s, 3.0 rad/s, a 10 m blast for 120 damage, 1.2 s between
+rounds. The turn rate is the number that matters: the turning circle is speed / turn, and at the
+1.2 rad/s first written it was 100 m, which put a target directly below the drone inside the circle
+where the round simply could not reach it. Rounds left ride the wire as `agm`. Design and the numbers:
+`docs/superpowers/specs/2026-09-02-sentinel-agm-design.md`. Tests: `test-base-game-agm.mjs`,
+`test-flight-hud.mjs`, and a shot end to end in `server/test-base-game-drones-room.mjs`.
+
+**A map, and a mouse that does something while you fly (2026-09-02).**
+
+*The map*, on `M`. It is `world-map.js`'s own `createWorldMapOverlay`, wired the way
+`environment-viewer.html` wires it: the panel, the north-up projection, the zoom, the arrows and the
+hover readout are all that module's. The only new part is the bake. `bakeMapCanvas` covers a bounded
+authored map once over a fixed extent; this page streams an unbounded window, so
+`base-game-world-map.js` bakes a square that follows the player and is redone every 60 m of walking,
+in the exact field shape the overlay already reads (`worldX/worldZ/wx0/wz0/sxu/szv/canvas/
+terrainDetailCanvas`). The relief-and-contour layer comes from `bakeDetailCanvas`, split out of
+`bakeMapCanvas` so both bakes produce the same layer rather than two copies. Biome colours are
+`BIOME_COLORS`, the palette that module already uses. Unresolved ground answers null and bakes as
+unexplored. Everything read is a GLOBAL position, so the floating origin's rebase cannot reach it.
+
+An earlier version of this replaced the overlay as well, on the strength of a review that said the
+whole module was coupled to the bounded map. Only `bakeMapCanvas` is; the overlay reads six numbers
+and two canvases and does not care where they came from. That rewrite reinvented the projection, the
+panel, the zoom and the arrow colours, and drew east on the wrong side, because `worldToBigMap` puts
+east at negative X and the hand-written arithmetic did not. `test-base-game-world-map.mjs` now pins
+the bake against the fields the overlay reads, which is what a blank map would have looked like.
+
+*Free look.* The mouse used to be captured and discarded at the stick — pointer lock held it and
+`pointerLook.clear()` threw every delta away, which reads as a dead mouse rather than as a decision.
+The flight sim has exactly one mouse handler and it only runs in the gunner view, so there was
+nothing to copy and this is new in both pages. Holding the left button now drags the view around the
+craft while it keeps flying its heading, and a double click (`tapKind`, the flashlight's own idiom)
+puts it back behind the nose. It works in both views: `placeCamera` swings the boom in the craft's
+own frame so it still rides the roll, and `placeCockpitCamera` turns the view inside a held attitude.
+A seat change or leaving the craft recentres it. A turret station is excluded, because there the
+mouse already aims the gun and the button really does fire something.
+
+**The dev gun is a two-ring wheel, not a cycle (2026-09-02).** Key 9 used to step through
+bots, lights, vehicles, sentinel and off, with one line of corner text as the only feedback, and R
+cycled the option inside whichever tool you were on. Three things were wrong with that, and they were
+one problem: you could not see what you were holding, you could not see what R would do next, and
+getting back to your weapon meant counting presses of a key whose last stop before "off" spawns a
+20 m aircraft. Firing is gated `weaponState.firing && !devGun.active`, so a miscounted press means a
+click places instead of shooting. That is exactly the reported "I tried to switch back to shooting
+and it spawned another sentinel".
+
+Now: **hold 9** and the wheel opens on what you already have. Moving the mouse a little picks the
+GROUP by direction — Weapon, Bots, Lights, Ground craft, Aircraft. Pushing further out locks that
+group and the OUTER ring picks the option inside it, also by direction. Coming back in unlocks, so
+you can change your mind without letting go. Releasing 9 commits both at once. A tap that never moved
+re-picks what was already there, which makes the gesture safe to abandon.
+
+`Weapon` is a wedge like any other, so putting the tool away is one visible pick. Everything R used
+to cycle is now on the outer ring, and R keeps only the bots' side (enemy or friendly): that is a
+second axis on one group rather than a choice among wedges, and ten role-and-side wedges would not be
+readable. `cycleSpawner` and `devLightCycleKind` are gone. The ground-craft group gained the UGV
+beside the buggy, which the server already accepted (`BASE_GAME_VEHICLE_KINDS`) and the dev gun had
+never offered.
+
+The wheel is `wheel-menu.js`: environment-viewer's `toolRadial` moved into a module, as a PORT
+rather than a reimplementation. The angle maths, the 92 px radius, the 14 px dead zone, the button
+markup and its click-to-commit, the centre dot and the colours are the source's, kept so the wheel in
+both pages is the same wheel; the first version of this module rewrote all of that in a different
+idiom and quietly dropped the clickable wedge, which is a thing the source has and nothing asked to
+lose. The additions are the outer ring, the sublabel under a wedge, and callbacks in place of the
+source's direct `toolOptions()` / `selectLocalTool()`. Locking the group on the way out is what makes
+two rings work at all: the outer options span the whole circle so each is a big target, which they
+could not do if the same angle still had to mean a group as well.
+The geometry and the selection rule are exported pure and covered by `test-wheel-menu.mjs`, including
+a sweep proving every dev-gun group and every option is reachable — an option no gesture can reach is
+the failure no screenshot would show. The DOM half is not tested and cannot be without a browser.
+`environment-viewer.html` still carries the original inline copy; migrating it onto this module is a
+deliberate follow-up, not something this change did on its way past. Review that led here:
+`docs/superpowers/reviews/2026-09-02-wheel-menu-import.md`.
+
+**Drones can be shot down, and they always come down (2026-09-02).** Two defects, both of them the
+same complaint: a drone hanging in the air instead of going off.
+
+*It could not be hit.* `bodyRadius` had been on every drone def since they were written and nothing
+read it, so a drone was scenery a bullet went straight through. `droneHitVolume(rec)` turns a drone
+into a `combat.js` mob entry, which is a sphere at its position when the capsule height is zero, the
+same shape the flight sim uses (`hitRadius`). `resolveHitscan` already took a `mobs` list, so the
+server's shot path and its projectile raycast both pass one, and `hitDrone` routes the damage.
+`detonateBlast` sweeps the drones too, through `blastDamageOnDrone`, whose falloff measures from the
+SURFACE rather than the centre — a blast beside a 20 m wing has hit the wing. Solo mirrors all three
+in `base-game.html` (`nearestSoloDroneHit`, `hitSoloDrone`, `blastSoloDrones`) so single player is
+not a different game. A projectile's raycast is handed the projectile itself as a fifth argument
+(`bot-projectiles.js` wraps `ctx.raycast` to supply it), because a missile leaves from a metre under
+a drone whose hit sphere is eight metres, and without that exclusion every missile detonated on the
+aircraft that fired it.
+
+*It did not reliably crash.* Three fixes. A killed drone now always falls: `damageBaseGameDrone` used
+to end it on the spot on a high roll, which put the explosion wherever it was hit, often a couple of
+hundred metres up with nothing on the ground to show for it. The roll now only picks how it falls,
+wild or tumbling, and only a drone already on the deck ends where it is. Under the stick, resting on
+the ground for `GROUND_REST_S` (0.6 s) is a crash: the flight model only calls it one above 9 m/s
+down or 34 m/s forward, so a gentle arrival used to skid along the surface with the engine running —
+measured at 48 seconds before anything ended it. And the deadstick branch has a backstop: at or below
+`groundY + GROUND_TOUCH`, it is down, whatever the fall thought. `test-base-game-drones.mjs` walks
+every kind against every roll and asserts each one reaches the ground, on the ground, inside 25 s,
+while a drone flown normally is left alone.
+
+**Banking, fixed by the Sentinel's size.** Every drone under autonomy was drawn banked *out* of its
+turn. `bot-drones.js`'s bank is cosmetic and positive for a left turn, written for bot-viewer's
+`lookAt` + `rotateY(PI)` + `rotateZ` pose where the flip mirrors the roll axis; `quatFromHeading`
+rolls the physics way, positive right wing down. The wire now carries the physics sign
+(`droneWireState` and Solo's `ingestRecords` negate the record's bank; `stepManual` and `releaseDrone`
+write the record in the cosmetic sign), so "drawn attitude equals the physics attitude" still holds
+and a test pins a turning Sentinel's right wing to the side of the turn. Nobody saw it on the 2 m UAV
+at 300 m.
+
+### Ground vehicles: UGV and buggy (shipped 2026-09-01, Node-tested, unseen in a browser)
+
+Plan: [2026-09-01-base-game-vehicles.md](../superpowers/plans/2026-09-01-base-game-vehicles.md).
+Protocol 16 adds `vehicles` to snapshots and an exact `vehicle` seat body to the owning driver's
+player entry. The default loadout is unchanged; `ugv` is available in either gadget selector with
+stock one. The room owner can place or clear world vehicles through `base:vehicle`; key 9's third
+dev-gun tool places the plan's `buggy`.
+
+`base-game-vehicles.js` is the shared renderer-free owner. Both rows use
+`city-vehicle-model.js`: the UGV is autonomous and remotely driven, while the buggy is parked until
+an onboard driver presses E. A three-point support plane supplies height, pitch and roll. The road
+body's optional `grade` adds gravity along that plane; a support drop switches to ballistic vertical
+motion until landing. Water below the configured sea surface floods the engine. Autonomous UGV
+orders mirror the drones (`follow`, `goto`, `hold`, `return`) with a 10 Hz, id-staggered three-heading
+grade probe and one reverse-and-turn stuck recovery.
+
+Driving is lockstep-predicted. A driven vehicle steps only inside its driver's numbered tick, never
+again in the room-wide vehicle pass. `createSeatedController` presents the existing player-controller
+surface to Solo and `base-game-prediction.js`; its body controller is pinned in place without the
+allocation and contact reset of `applyState`. Onboard bodies ride the buggy seat. A remote UGV
+operator remains where they took the wheel. Reconciliation compares the vehicle body as well as the
+player body, so remote UGV drift is visible even while the operator's feet have not moved, restores
+the nine-number `vehicleSeatState`, and replays unacknowledged movement ticks.
+
+**Meshes (rebuilt 2026-09-02).** `flight-meshes.js` registers `ugv` and `buggy` builders with
+steerable/spinning wheels. The first pass stacked boxes and hand-authored the wheel positions, and
+they had drifted: the drawn wheelbase was 0.72 m against a simulated 1.1 m (UGV) and 1.52 m against
+2.4 m (buggy), and because the record's `y` is *ground + clearance* while both meshes put their
+tyre bottoms at y = 0, every vehicle floated by exactly its own clearance — 0.25 m and 0.40 m. Both
+were read off the code, not seen in a browser.
+
+`buildCraftMesh(kind, tint, materials, dims)` now takes an optional fourth argument, and the view
+passes the vehicle's own def, so the wheels are placed from `wheelbase`, `track` and `clearance` —
+the same three numbers `fitVehicleGround` samples the support plane at. Tyre bottoms sit at
+`-clearance`, so the contact patch is the one the physics assumes. Every other caller passes three
+arguments and is unaffected.
+
+The geometry itself is no longer a box stack. The buggy is authored to light-strike-vehicle
+proportions (3.60 x 1.98 x 2.07 m): an extruded bonnet profile, a tube spaceframe, a full roll cage,
+bucket seats placed on `seatOffset` so the driver stands on the driver's seat, a steering wheel,
+wishbones, shocks, a brush guard, a light bar, a cargo deck and a spare wheel.
+
+The UGV is a reconstruction of the **Roboneers Sablynx / Lynx ("Рись")**, worked up in
+`scratchpads/sablynx-ugv/` and measured in that folder's `intake-analysis.md`. Both references are
+perspective photographs rather than an orthographic three-view, so the img2threejs silhouette-IoU
+gate cannot run against them; the folder's README records which pipeline steps were run and which
+were skipped, and what replaces the missing gate. Every proportion is a fraction of the tyre
+diameter above ground, the tyre is 0.55 x wheelbase, and the absolute metres all come from the
+simulation def, which puts the model at about 0.85x the real machine (2.08 x 1.09 x 2.06 m). It
+carries a lofted monocoque hull tub with a sloped nose, a bolted top flange, an expanded-metal
+deck, a tubular perimeter cargo rail with slotted mounting plates and clamp blocks, mudguards, tow
+eyes, a rear sensor mast with a camera, dome and whip antennas, and the RWS: pedestal, louvred gun
+cowl, ammunition drum, barrel and optic. **The weapon is cosmetic** — the def is still unarmed —
+but the whole station is kept out of the static merge and exposed as `userData.turret`, so the
+turret follow-up trains it rather than re-authoring the mesh.
+
+**The station trains (shipped 2026-09-02, protocol 20, Node-tested, unseen in a browser).** Step 1
+of [2026-09-02-base-game-vehicle-mounts.md](../superpowers/plans/2026-09-02-base-game-vehicle-mounts.md):
+it aims, it does not shoot.
+
+The precedent is not the flight sim directly but this game's own port of it, the Sentinel's AGM:
+`tick.drone` already carries a world-point `aim`, vehicles already ride that channel, and the AGM's
+`fireAgm` already established the seam where a pure function decides and the caller acts. So no new
+input field was needed.
+
+`def.turret` carries `pivot` (the trunnion in the SIM frame, forward +Z), `yawRate`, `pitchRate`,
+`pitchMin`, `pitchMax` and `tolerance`. `aimVehicleTurret(rec, dt, aim)` converts a **world point**
+into hull-relative angles through `vehicleBasis` (yaw, pitch and roll as an orthonormal frame),
+slews both angles at their own rate, clamps pitch, and returns `{ onTarget, reachable }`. It runs
+inside `stepFixed`, so the slew is deterministic and replay-safe like the drive, and the server and
+Solo run the identical call off the identical stored `rec.aim`.
+
+Two decisions worth keeping:
+
+- **The aim is a world point, never a hull-relative angle pair**, and the slew, clamp and
+  reachability answer all live below that seam. A bot brain naturally has a target's position, so AI
+  aiming later is a new caller rather than a rewrite — and because the limits are below the seam, an
+  AI-aimed station cannot snap where a player-aimed one slews. A test flies the same aim at a level
+  hull and at one pitched and rolled and asserts both train to the same world direction.
+- **An unarmed vehicle sends `null`, not zero**, so a remote can tell "no turret" from "turret
+  pointing straight ahead" and does not draw a buggy aiming at the horizon.
+
+The mesh gained a nested `elevation` cradle at the trunnion, exposed as `userData.elevation`, so the
+gun pitches without tilting the pedestal with it. `mergeByMaterial`'s skip walk now stops at the
+merge root, or merging a group that is itself in the skip set would have skipped all of its own
+meshes. The simulation's `pivot` and the drawn trunnion are authored separately, so
+`test-vehicle-meshes.mjs` asserts they agree — including that their z values are negations, since
+craft meshes point their nose down -Z while the road model drives +Z forward.
+
+**It fires (shipped 2026-09-02, protocol 21, Node-tested, unseen in a browser).** Step 2 of the same
+plan, owner-triggered only.
+
+`fireVehicleTurret(rec)` returns one round or null, following `fireAgm`'s seam exactly: it decides,
+the caller acts, because the server resolves into its room with lag compensation and Solo only
+presents the effect. It refuses on four counts — no trigger, no ammunition, cooldown unpaid, or the
+barrel **not yet trained**. That last one is the AC-130's rule (`fireMount` refuses rather than
+firing wide) and it is what makes the slew rate matter in play rather than only in the picture.
+
+Rate of fire is a cooldown debt paid down in the fixed step, so a fast tick cannot spray and a slow
+one cannot swallow rounds. There is no rearm: a fresh UGV comes with a full mount, as the Sentinel's
+rack does.
+
+On the server, `fireShot`'s hitscan tail was extracted into `resolveHitscanShot(room, shooter,
+weaponId, weapon, origin, dir, excludeMobId)` and the station calls it, so a vehicle round is
+resolved by **the same code, with the same pose-history rewind**, as a round from a hand weapon.
+The station only fires while its owner is connected and at the stick; a stale trigger on a vanished
+operator would otherwise leave a UGV shooting at whatever it was last pointed at.
+
+The gun is `ugv_mg` in `weapons.js`, marked `vehicleOnly`. `getWeapon` reaches it so the shot path
+is unchanged, but it is absent from `BASE_GAME_WEAPON_IDS`, so `sanitizeBaseGameLoadout` refuses it
+and `enabledWeapons()` skips it — it can never end up in a hand. It carries the same muzzle and
+tracer FX contract every other gun does; the one hand-weapon field it lacks is `model`, because
+nothing holds it, and `test-weapons.mjs` asserts exactly that of a `vehicleOnly` entry.
+
+Client: at a station's stick the mouse slews the sensor and the sensor line is sent as the aim every
+tick (`turretAimPoint`, the ground if the line meets it and a 300 m reach if it does not, because a
+turret shoots roughly level where the missile sensor only ever looked down). The trigger is **held**,
+not an edge — a machine gun, not the missile release. The chase camera rides behind the *aim*
+(`placeCamera`'s `aimDir`) rather than behind the hull, so the mouse turns the view and the gun
+together while the vehicle carries on driving wherever it was pointed. Entering a station sets the
+look down its own barrel, with a half turn added because `sensorDir` points -Z at yaw 0 while the
+road model's forward is +Z. The view eases the drawn angles rather than snapping them: the wire
+arrives at 20 Hz and the slew is already rate-limited in the simulation.
+
+**Two things the first cut got wrong, both found by driving it.**
+
+*The sight barely moved.* `cameraSensitivity` is already radians per pixel — `base-game-pointer-look.js`'s
+`consume()` uses it raw, and the default 0.002 gives a 90 degree turn in 785 px on foot. The sensor
+handler multiplied it by a second rate (`0.0022 * (fov / 30) * cameraSensitivity`), so the effective
+rate was about 450x too slow: **184,655 px** to swing a turret 90 degrees, and 357,000 px on the
+missile sensor, which had the same bug and was equally unusable. The rate is now scaled only by the
+field of view actually on screen against the player's own first-person 62 degrees, so a sight feels
+like the hand does on foot and a zoomed sensor properly slows: 840 px at the turret's chase view,
+1,623 at the sensor's 30 degrees, 4,869 at its 10.
+
+*The HUD was drawn for the wrong viewpoint.* A vehicle stick fell through to the "flying the craft"
+branch, which feeds `drawFlightHud` the **craft's** forward and up. That was right while the chase
+camera sat behind the nose, and wrong the moment the camera moved behind the aim: the horizon,
+ladder and heading were all drawn for a viewpoint that was not on the screen. At a station the HUD
+now takes its frame from the camera, reports rounds remaining, and drops the aircraft's `PULL UP`
+descent warning, which a ground vehicle cannot earn.
+
+**Still one-sided.** Nothing can shoot a vehicle back: `damageBaseGameVehicle` exists and nothing
+calls it, and there is no `vehicleHitVolumes` beside the drones'. Step 3 of the plan.
+
+Assembling from primitives cost 44 and 85 parts, and `buildCraftMesh` disables frustum culling on
+every one, so each was a guaranteed draw call against a 6-18 house average. `mergeByMaterial` bakes
+the static parts into one geometry per material — relative to its root, not the world, or a wheel's
+spin group would take its pivot offset twice — and each wheel's rings merge separately so the pivot
+still steers and the spin group still rolls. Both vehicles now draw in 14 meshes, at 1,528 and
+2,920 triangles, next to the Sentinel's 12 and 2,556.
+
+The combined craft view retains the drone API, caches one held mesh per gadget kind, consumes live
+Solo records without wire serialization/sanitization, and reuses the player camera's obstruction
+query for ground chase cameras. Controls are movement keys plus Ctrl handbrake; F takes/releases an
+owned UGV remotely, B sends it, N recalls it, and E enters/exits a nearby buggy.
+
+Coverage: `test-base-game-vehicles.mjs`, `test-city-vehicle-model.mjs`,
+`server/test-base-game-vehicles-room.mjs`, `test-vehicle-meshes.mjs` (drawn track and wheelbase
+equal the def's, tyre bottoms at `-clearance`, front wheels at -Z, roll and steer survive the
+merge, a stretched def moves the wheels — which is what stops the two drifting apart again, the
+UGV's bands match the intake table, its turret group survives the merge, and every part encloses
+positive volume, since the hull loft's first winding was inside-out and nothing else caught it),
+plus the existing drone, player, session and room suites.
+There are still no vehicle hit volumes, collisions with actors/trees/other vehicles, rollover,
+passengers, seated animation, first-person seat view, turret, or nav-grid routing.
+
 ### NPC bots, slice 2: the server (shipped 2026-08-27, Node-tested, unseen in a browser)
 
 Plan: [2026-08-27-base-game-npc-bots.md](../superpowers/plans/2026-08-27-base-game-npc-bots.md).
@@ -1541,7 +1888,7 @@ the spawner refusing a point in the sea (today it falls back to the aimed point)
   select; buttons Add friendly / Add 4 friendly / Add enemy / Add 4 enemy / Clear bots, sent by
   `session.sendNpc`. Solo shows a note: bots need a room for now (the loopback room is not built).
 - **The dev gun, key 9.** A tool mode over the held sidearm rather than a seventh slot: `9`
-  cycles off → bots → lights → off and draws the sidearm (so the laser has a muzzle). The trigger
+  cycles off → bots → lights → vehicles → sentinel → off and draws the sidearm (so the laser has a muzzle). The trigger
   stays quiet while any tool is up; the combat HUD shows the current tool, pick and last result.
   - **Bots** (first press — the old spawner, unchanged): click sends `base:npc` with
     `aimed: true` and the server casts the requester's own look ray (`aimedGroundPoint`: world
@@ -1560,6 +1907,13 @@ the spawner refusing a point in the sea (today it falls back to the aimed point)
     are presets that write the `devLightKind`/`devLight*` settings; touching a slider flips the
     kind to `custom` (the `fpPreset` rule). Panel section "Dev gun lights (9)" under Player.
     Nothing is replicated — like the flashlight, the lights are yours alone.
+    Reach (`devLightRadius`) runs to 600 m, matched by the clamp in `entity-types/light.js`, so a
+    light can be placed high enough to matter from the air. Reach is only the cutoff distance: the
+    falloff inside it is `1 / d^decay`, so reach alone does not carry a light's brightness across
+    that distance. Falloff (`devLightDecay`, 0..4, default 2) is that exponent, carried per light
+    through the entity params and applied per slot by the pool, so 2 stays physically correct while
+    lower values reach further and 0 holds full brightness out to the cutoff. It applies to placed
+    lights, shot lights in flight, and the held lantern alike.
 - `npcAccuracy` is on the wire and in the panel but **not read by the server yet**: an NPC's spread
   is the player trigger's. `npcNoticeMs` reaches the brain as `reactionMs`.
 
@@ -2792,7 +3146,9 @@ Two conclusions, and the second is the important one:
 The mirror's cost is cross-validated: `passPostMirrorMs - passPostPlainMs` matches `passReflectMs`
 to within 0.1 ms in every capture (3.1/3.2, 2.6/2.5, 2.8/2.8, 2.1/2.1, 1.5/1.5, 1.4/1.4). It costs
 **1.4-3.2 ms** on the frames it runs. What owns the remaining 3-6 ms of base-scene encode is still
-open, and it is not draws.
+open, and it is not draws — regressing `passPostMs` against `drawCalls` over all 102 captures that
+carry both gives 0.011 ms per draw call (2 draws → 13.4 ms, 471 draws → 8.3 ms), so the encode is
+very nearly flat in what is drawn. The pipeline meter below is the first instrument aimed at it.
 
 **Profiling the encode.** `postRender` is CPU encode, and the planar mirror re-renders the whole
 scene inside it every `reflectRate` frames, so a single number hides the split. Three sub-slots,
@@ -2803,9 +3159,43 @@ all inside `postRender`, separate it:
 | `passReflectMs` | the mirror's own encode (`reflectStats.lastMs`) on frames it ran |
 | `passPostMirrorMs` | the whole encode, on frames the mirror ran |
 | `passPostPlainMs` | the whole encode, on frames it did not |
+| `passPostShadowMs` | the whole encode, on frames the shadow map redrew |
+| `passPostNoShadowMs` | the whole encode, on frames it did not |
+| `passPostChainMs` | the whole encode, on frames the DOF/visor pipeline ran |
+| `passPostDirectMs` | the whole encode, on frames it was a direct `renderer.render` |
 
 `passPostMirrorMs.p50 - passPostPlainMs.p50` is the mirror's marginal cost, measured within one
-capture rather than subtracted across two.
+capture rather than subtracted across two. The shadow and chain pairs work the same way, and each
+needs both of its buckets to be populated to say anything: **set `shadowUpdateEvery` above 1** or
+every frame lands in `passPostShadowMs` and the pair is silent, and the chain pair only splits if
+depth of field or the visor is toggled during the window.
+
+**Pipeline creation, the part no split of the encode can reach (2026-09-02).** WebGPU builds a
+pipeline lazily, on the first frame the thing that needs it draws, and three creates it
+*synchronously* inside `render()` unless `compileAsync()` supplied a promises array. That cost is
+inside `postRender` but is not encode — it is compilation, and it arrives scattered through a
+session as new things come into view, which is the shape of "the frame time spikes when I start
+moving". `gpu-pipeline-meter.js` counts it directly (see `docs/subsystems/infra.md`):
+
+| Reported as | What |
+|---|---|
+| `passPipelineMs` | ms the frame spent building pipelines; `.frames` is how many frames paid |
+| `passPipelineRenderMs` / `passPipelineComputeMs` | the same, split by pipeline kind |
+| `pipelinesBuilt` | pipelines built per frame (top-level in the record, not a pass) |
+| `renderCalls` | whole scene renders per frame — above 1 means a shadow map or mirror redrew |
+
+`passPipelineMs` is deliberately **not** sparse: the honest reading is per-frame cost over the whole
+window, and `frames` already says how rare it was. It is also excluded from
+`BASE_GAME_FRAME_SLOTS`, because it overlaps `postRender` rather than partitioning the frame. The
+meter is drained every frame whether or not a capture is running — the counters are cumulative, so
+skipping idle frames would hand the first profiled frame every pipeline built since load — and the
+stats line grows a `N pipelines X ms` segment for the last half-second whenever that is non-zero.
+
+**Base Game calls `compileAsync` nowhere.** `base-game-forest.js` is the only caller in the repo,
+added 2026-08-28 after the trees produced a hard freeze and 1000 ms walking spikes; nothing else was
+ever measured against a real backend, so nothing else got the treatment. That audit also records
+that **shadow-map pipelines are warmed nowhere at all**, because `compileAsync()` walks the normal
+render list and does not run the shadow pass.
 
 These three are **sparse passes** (`SPARSE_PASSES` in `performance-capture.mjs`): they run on only
 some frames by design, so they are summarised over their non-zero samples only and carry a `frames`

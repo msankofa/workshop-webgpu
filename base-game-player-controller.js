@@ -520,6 +520,18 @@ export function createBaseGamePlayerController({ worldQuery, spawn = [0, 1.2, 0]
     getVelocity(out = [0, 0, 0]) {
       out[0] = velocity[0]; out[1] = velocity[1]; out[2] = velocity[2]; return out;
     },
+    // A seat owns the body transform for this tick. Keep the arrays alive: applyState is a
+    // reconciliation operation and deliberately validates, allocates and clears contacts.
+    pin(nextPosition, nextVelocity = [0, 0, 0], tick = null) {
+      if (!Array.isArray(nextPosition) || nextPosition.length !== 3 || !nextPosition.every(Number.isFinite)) return false;
+      if (!Array.isArray(nextVelocity) || nextVelocity.length !== 3 || !nextVelocity.every(Number.isFinite)) return false;
+      previousPosition[0] = position[0]; previousPosition[1] = position[1]; previousPosition[2] = position[2];
+      position[0] = nextPosition[0]; position[1] = nextPosition[1]; position[2] = nextPosition[2];
+      velocity[0] = nextVelocity[0]; velocity[1] = nextVelocity[1]; velocity[2] = nextVelocity[2];
+      if (Number.isSafeInteger(tick)) clockTick = tick; else clockTick++;
+      grounded = false; ceiling = false; swimming = false; contacts = []; surface = null;
+      return true;
+    },
     getCapsule() { return capsuleAt(position, livePose()); },
     get grounded() { return grounded; },
     get ceiling() { return ceiling; },

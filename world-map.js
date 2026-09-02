@@ -168,6 +168,32 @@ export function overlayColorizer(loadedMap, overlayId) {
 // Samples loadedMap (from terrain-loader.js) on a res x res grid and returns a ready-to-blit
 // canvas plus the world->pixel metadata the affines need. res upsamples past the ~96-cell
 // source grid for a crisp big map. `overlayId` selects the data layer (see MAP_OVERLAYS).
+// The relief-and-contour layer blitted over the colour bake. Split out of bakeMapCanvas so a
+// windowed bake (base-game-world-map.js) produces the same layer instead of a second copy.
+export function bakeDetailCanvas({ res, sxu, szv, sampleHeight, seaLevel = 0, minHeight, maxHeight }) {
+  const rawStep = Math.max(1, (maxHeight - minHeight) / 14);
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const contourStep = Math.max(1, Math.round(rawStep / magnitude) * magnitude);
+  const canvas = document.createElement('canvas');
+  canvas.width = res; canvas.height = res;
+  const detailData = new Uint8ClampedArray(res * res * 4);
+  for (let iz = 0; iz < res; iz++) for (let ix = 0; ix < res; ix++) {
+    const o = (iz * res + ix) * 4;
+    const h = sampleHeight(ix, iz);
+    if (h < seaLevel - 0.05) continue;
+    const gx = (sampleHeight(ix + 1, iz) - sampleHeight(ix - 1, iz)) / (2 * sxu);
+    const gz = (sampleHeight(ix, iz + 1) - sampleHeight(ix, iz - 1)) / (2 * szv);
+    const invLength = 1 / Math.hypot(gx, 1, gz);
+    const shade = clamp(0.52 + ((-gx * 0.42 + 0.78 - gz * 0.46) * invLength) * 0.48, 0.35, 1);
+    const contourBand = Math.abs(h / contourStep - Math.round(h / contourStep));
+    const contourAlpha = contourBand < 0.055 ? (Math.round(h / contourStep) % 5 === 0 ? 105 : 66) : 0;
+    detailData[o] = 5; detailData[o + 1] = 8; detailData[o + 2] = 10;
+    detailData[o + 3] = Math.max(Math.round((1 - shade) * 65), contourAlpha);
+  }
+  canvas.getContext('2d').putImageData(new ImageData(detailData, res, res), 0, 0);
+  return canvas;
+}
+
 export function bakeMapCanvas(loadedMap, { res = 384, overlayId = 'biome' } = {}) {
   const worldX = loadedMap.worldX, worldZ = loadedMap.worldZ;
   const sxu = worldX / res, szv = worldZ / res;
@@ -184,26 +210,7 @@ export function bakeMapCanvas(loadedMap, { res = 384, overlayId = 'biome' } = {}
   for (let iz = 0; iz < res; iz += 4) for (let ix = 0; ix < res; ix += 4) {
     const h = sampleHeight(ix, iz); minHeight = Math.min(minHeight, h); maxHeight = Math.max(maxHeight, h);
   }
-  const rawStep = Math.max(1, (maxHeight - minHeight) / 14);
-  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
-  const contourStep = Math.max(1, Math.round(rawStep / magnitude) * magnitude);
-  const terrainDetailCanvas = document.createElement('canvas');
-  terrainDetailCanvas.width = res; terrainDetailCanvas.height = res;
-  const detailData = new Uint8ClampedArray(res * res * 4);
-  for (let iz = 0; iz < res; iz++) for (let ix = 0; ix < res; ix++) {
-    const o = (iz * res + ix) * 4;
-    const h = sampleHeight(ix, iz);
-    if (h < seaLevel - 0.05) continue;
-    const gx = (sampleHeight(ix + 1, iz) - sampleHeight(ix - 1, iz)) / (2 * sxu);
-    const gz = (sampleHeight(ix, iz + 1) - sampleHeight(ix, iz - 1)) / (2 * szv);
-    const invLength = 1 / Math.hypot(gx, 1, gz);
-    const shade = clamp(0.52 + ((-gx * 0.42 + 0.78 - gz * 0.46) * invLength) * 0.48, 0.35, 1);
-    const contourBand = Math.abs(h / contourStep - Math.round(h / contourStep));
-    const contourAlpha = contourBand < 0.055 ? (Math.round(h / contourStep) % 5 === 0 ? 105 : 66) : 0;
-    detailData[o] = 5; detailData[o + 1] = 8; detailData[o + 2] = 10;
-    detailData[o + 3] = Math.max(Math.round((1 - shade) * 65), contourAlpha);
-  }
-  terrainDetailCanvas.getContext('2d').putImageData(new ImageData(detailData, res, res), 0, 0);
+  const terrainDetailCanvas = bakeDetailCanvas({ res, sxu, szv, sampleHeight, seaLevel, minHeight, maxHeight });
   const canvas = document.createElement('canvas');
   canvas.width = res; canvas.height = res;
   canvas.getContext('2d').putImageData(new ImageData(data, res, res), 0, 0);
@@ -212,7 +219,8 @@ export function bakeMapCanvas(loadedMap, { res = 384, overlayId = 'biome' } = {}
 
 // --- browser: full-screen map overlay (M) ------------------------------------------------
 
-function drawArrow(ctx, x, y, angle, size, color) {
+// Exported so base-game-world-map.js draws the same arrow rather than keeping a second copy.
+export function drawArrow(ctx, x, y, angle, size, color) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);

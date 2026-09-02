@@ -206,6 +206,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     });
     grass.setWorldOrigin?.(readOrigin()[0], readOrigin()[2]);
     grass.mesh.frustumCulled = false;
+    grass.mesh.name = 'base-game-grass';
     scene.add(grass.mesh);
     onMeshCb?.(grass.mesh);
     grass.setWind?.(cfg.grassWind);

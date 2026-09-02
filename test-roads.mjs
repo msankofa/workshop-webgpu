@@ -25,6 +25,13 @@ const flat = () => 0;
 const slope = (x) => x * 0.1;                       // a 10% ramp along +X
 const bumpy = (x, z) => Math.sin(x * 0.5) * 0.6 + Math.cos(z * 0.4) * 0.4;
 
+// A bare height function can ask for the same max-near envelope the park ground used. This is the
+// adapter Base Game trails use over the fine contact window.
+{
+  const ground = groundFromHeightFn((x) => x === 1 ? 5 : 0, { cell: 1 });
+  ok(ground.maxNear(0, 0, 1) === 5, 'groundFromHeightFn samples a cell-spaced max-near envelope');
+}
+
 // ---- curve evaluation ----
 {
   const points = [p(0, 0), p(10, 0), p(20, 0)];

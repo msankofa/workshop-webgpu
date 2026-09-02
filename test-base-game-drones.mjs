@@ -1,13 +1,15 @@
 // Node tests for base-game-drones.js: throw, follow, send, hold, recall, take over, release,
 // shoot-down, and the wire round-trip. Run: node test-base-game-drones.mjs
 import {
-  DRONE_QUAD, DRONE_UAV, BASE_GAME_DRONE_DEFS,
-  createBaseGameDrone, stepBaseGameDrone, sendDroneTo, recallDrone,
+  DRONE_QUAD, DRONE_UAV, DRONE_SENTINEL, BASE_GAME_DRONE_DEFS,
+  createBaseGameDrone, spawnWorldDrone, stepBaseGameDrone, sendDroneTo, recallDrone,
   takeOverDrone, releaseDrone, damageBaseGameDrone,
+  droneHitVolume, droneHitVolumes, blastDamageOnDrone,
   droneWireState, sanitizeBaseGameDroneState, sanitizeDroneInput,
   quatFromHeading, headingFromQuat,
 } from './base-game-drones.js';
 import { analyticHeightAt } from './flight-terrain.js';
+import { rayCapsuleHit } from './combat.js';
 import * as THREE from 'three';
 
 let failed = 0;
@@ -146,7 +148,11 @@ for (const kind of [DRONE_QUAD, DRONE_UAV]) {
   const r = damageBaseGameDrone(rec, 10);
   ok(!r.dead && rec.d.hp === BASE_GAME_DRONE_DEFS[DRONE_QUAD].hp - 10, 'partial damage takes hp');
   const dead = damageBaseGameDrone(rec, 100, { roll: 0.9 });
-  ok(dead.dead && !dead.deadstick && rec.done && rec.crash, 'a high roll breaks it up on the spot');
+  ok(dead.dead && dead.deadstick && !rec.done, 'a killed drone comes down instead of ending in the air');
+  const out = run(rec, 30);
+  ok(rec.done && rec.crash, 'and it reaches the ground');
+  ok(rec.crash[1] <= groundY(rec.crash[0], rec.crash[2]) + 1.6, `the blast is on the ground, not where it was hit (${rec.crash[1].toFixed(2)} m)`);
+  void out;
 }
 {
   const rec = createBaseGameDrone(DRONE_QUAD, { ownerId: 'p1', from: hand(), look, groundY: groundY(0, 0) });
@@ -159,6 +165,79 @@ for (const kind of [DRONE_QUAD, DRONE_UAV]) {
   ok(sendDroneTo(rec, [0, 0, 0]) === false && takeOverDrone(rec, world()) === false, 'a dead drone takes no orders');
   void out;
 }
+// ─── the hit volume ─────────────────────────────────────────────────────────
+// `bodyRadius` had been on every def since they were written and nothing read it, so a drone was
+// scenery you could shoot straight through.
+{
+  const rec = createBaseGameDrone(DRONE_QUAD, { ownerId: 'p1', from: hand(), look, groundY: groundY(0, 0) });
+  run(rec, 6);
+  const v = droneHitVolume(rec);
+  ok(!!v && v.r === BASE_GAME_DRONE_DEFS[DRONE_QUAD].bodyRadius, 'a live drone is a sphere of its body radius');
+  ok(v.h === 0, 'zero height, which is what combat.js treats as a sphere at the point');
+  ok(v.p[0] === rec.d.p[0] && v.p[1] === rec.d.p[1] && v.p[2] === rec.d.p[2], 'centred on the drone');
+
+  // A ray straight at it connects; one aimed past it does not.
+  const from = [rec.d.p[0], rec.d.p[1], rec.d.p[2] + 40];
+  ok(rayCapsuleHit(from, [0, 0, -1], 100, v).hit, 'a ray down its bearing hits');
+  ok(!rayCapsuleHit(from, [0, 1, 0], 100, v).hit, 'a ray past it misses');
+
+  const sent = spawnWorldDrone(DRONE_SENTINEL, { ownerId: 'p1', at: [0, 0, 0], alt: 150, radius: 400, groundAt: groundY });
+  const sv = droneHitVolume(sent);
+  ok(sv.r === 8, 'the 20 m Sentinel is a bigger target than the 0.6 m quad');
+  ok(sv.r > v.r, `${sv.r} vs ${v.r}`);
+
+  // Blast falloff measures from the SURFACE: a blast beside a wide craft has hit the craft.
+  ok(blastDamageOnDrone(sent, [sent.d.p[0] + 8, sent.d.p[1], sent.d.p[2]], 10, 100) > 99, 'a blast on the skin does full damage');
+  ok(blastDamageOnDrone(sent, [sent.d.p[0] + 13, sent.d.p[1], sent.d.p[2]], 10, 100) > 0, 'one just outside still bites');
+  ok(blastDamageOnDrone(sent, [sent.d.p[0] + 30, sent.d.p[1], sent.d.p[2]], 10, 100) === 0, 'and one well clear does nothing');
+
+  rec.done = true;
+  ok(droneHitVolume(rec) === null, 'a dead drone is not a target');
+  const list = droneHitVolumes([rec, sent]);
+  ok(list.length === 1 && list[0].id === sent.id, 'only the live one is listed');
+  ok(droneHitVolumes([sent], sent.id).length === 0, 'and an excluded id is left out');
+}
+
+// ─── nothing dead stays in the air ──────────────────────────────────────────
+// The complaint this answers: drones hovering above the ground instead of going off. Every way a
+// drone can die has to reach the ground, and be there in a time a player will wait through.
+{
+  for (const kind of [DRONE_QUAD, DRONE_UAV, DRONE_SENTINEL]) {
+    for (const roll of [0.0, 0.33, 0.9]) {
+      const rec = kind === DRONE_SENTINEL
+        ? spawnWorldDrone(kind, { ownerId: 'p1', at: [0, 0, 0], alt: 150, radius: 400, groundAt: groundY })
+        : createBaseGameDrone(kind, { ownerId: 'p1', from: hand(), look, groundY: groundY(0, 0) });
+      if (kind !== DRONE_SENTINEL) run(rec, 6);
+      damageBaseGameDrone(rec, 1e9, { roll });
+      let t = 0;
+      for (; t < 30 && !rec.done; t += 1 / 60) run(rec, 1 / 60);
+      ok(rec.done && !!rec.crash, `${kind} killed on roll ${roll} reaches the ground`, `${t.toFixed(1)} s`);
+      ok(rec.crash && rec.crash[1] <= groundY(rec.crash[0], rec.crash[2]) + 1.6, `${kind} on roll ${roll} goes off on the ground`, `y=${rec.crash ? rec.crash[1].toFixed(2) : '-'}`);
+      ok(t < 25, `${kind} on roll ${roll} does not hang there`, `${t.toFixed(1)} s`);
+    }
+  }
+}
+
+// A drone put down gently under the stick is still a drone in the ground. The flight model only
+// calls it a crash above 9 m/s down or 34 m/s forward, so before this a soft arrival skidded along
+// the surface for the better part of a minute with the engine running.
+{
+  const rec = spawnWorldDrone(DRONE_SENTINEL, { ownerId: 'p1', at: [0, 0, 0], alt: 3, radius: 400, groundAt: groundY });
+  takeOverDrone(rec, world());
+  let t = 0;
+  for (; t < 20 && !rec.done; t += 1 / 60) run(rec, 1 / 60);
+  ok(rec.done && rec.crash, 'a drone set down on the ground crashes', `${t.toFixed(2)} s`);
+  ok(t < 3, 'and quickly, rather than skidding', `${t.toFixed(2)} s`);
+}
+// But a low pass is not a crash.
+{
+  const rec = spawnWorldDrone(DRONE_SENTINEL, { ownerId: 'p1', at: [0, 0, 0], alt: 400, radius: 400, groundAt: groundY });
+  takeOverDrone(rec, world());
+  rec.input.throttle = 1;
+  run(rec, 15);
+  ok(!rec.done, 'a drone flown normally is left alone', `y=${rec.d.p[1].toFixed(0)}`);
+}
+
 // Owner death: the quad drops, the uav stays up.
 {
   const q = createBaseGameDrone(DRONE_QUAD, { ownerId: 'p1', from: hand(), look, groundY: groundY(0, 0) });
@@ -250,6 +329,11 @@ for (const kind of [DRONE_QUAD, DRONE_UAV]) {
   ok(Math.abs(span - 2.01) < 0.05, `uav is drawn at its authored 2 m span (${span.toFixed(2)} m)`);
   const spans = cam.position.distanceTo(view.drones.get('c').mesh.position) / span;
   ok(Math.abs(spans - simSpans) < 0.25, `chase sits the sim's distance in wingspans (${spans.toFixed(2)} vs the sim's ${simSpans.toFixed(2)})`);
+  // The player's shift-wheel boom, applied to the drone: the same multiple, in the craft's own spans.
+  const near = new THREE.PerspectiveCamera(58, 1.6, 0.1, 1e5);
+  for (let i = 0; i < 200; i++) view.placeCamera(near, 'c', 1 / 60, { zoom: 0.5 });
+  const halved = near.position.distanceTo(view.drones.get('c').mesh.position) / span;
+  ok(Math.abs(halved - spans * 0.5) < 0.12, `zoom 0.5 halves the chase distance (${halved.toFixed(2)} spans from ${spans.toFixed(2)})`);
 }
 
 // A loop: through inverted, the drawn attitude must track the flown one every frame (no roll-back).
@@ -287,6 +371,57 @@ for (const kind of [DRONE_QUAD, DRONE_UAV]) {
   const e = sent[0];
   ok(!!e && e.slot === 4 && e.aim === true && e.fire === true && e.throw === true, 'the predicted tick carries slot, aim, fire and throw');
   ok(!!e?.drone && e.drone.id === 'd1' && e.drone.mode === 1 && e.drone.pitch === 0.5, 'the predicted tick carries the drone stick');
+}
+
+// ─── the Sentinel: a world drone spawned into orbit, never thrown, never flown by hand ─────────
+for (const [preset, alt, radius] of [['low', 150, 400], ['high', 1500, 900]]) {
+  const look = [-Math.sin(owner.yaw), 0, -Math.cos(owner.yaw)];
+  const rec = spawnWorldDrone(DRONE_SENTINEL, { ownerId: 'p1', at: owner.pos, look, alt, radius, groundAt: groundY });
+  ok(rec.state === 'follow', `sentinel ${preset} appears already in follow (state ${rec.state})`);
+  ok(rec.def.world === true, `sentinel ${preset} is a world drone`);
+  const startAgl = agl(rec);
+  ok(Math.abs(startAgl - alt) < 1, `sentinel ${preset} appears ${alt} m over the ground (at ${startAgl.toFixed(1)} m)`);
+  const speed0 = Math.hypot(...rec.d.v);
+  ok(Math.abs(speed0 - rec.def.speed) < 1e-6, `sentinel ${preset} appears at circuit speed (${speed0.toFixed(1)} m/s)`);
+  let minAgl = Infinity, maxAgl = -Infinity, minR = Infinity, maxR = -Infinity;
+  for (let i = 0; i < 120 * 90; i++) {
+    stepBaseGameDrone(rec, DT, world());
+    if (i > 120 * 30) { const a = agl(rec); minAgl = Math.min(minAgl, a); maxAgl = Math.max(maxAgl, a); const r = Math.hypot(rec.d.p[0] - owner.pos[0], rec.d.p[2] - owner.pos[2]); minR = Math.min(minR, r); maxR = Math.max(maxR, r); }
+  }
+  ok(rec.state === 'follow', `sentinel ${preset} stays in follow`);
+  ok(minAgl > alt * 0.8 && maxAgl < alt * 1.2, `sentinel ${preset} holds its height (${minAgl.toFixed(0)}..${maxAgl.toFixed(0)} m for ${alt})`);
+  ok(minR > radius * 0.6 && maxR < radius * 1.5, `sentinel ${preset} holds its ring (${minR.toFixed(0)}..${maxR.toFixed(0)} m for ${radius})`);
+  ok(takeOverDrone(rec, { groundY }) && rec.mode === 'manual', `sentinel ${preset} gives its owner the stick`);
+  ok(releaseDrone(rec) && rec.mode === 'auto' && rec.state === 'follow', `sentinel ${preset} goes back to its orbit when released`);
+  const wire = sanitizeBaseGameDroneState(JSON.parse(JSON.stringify(droneWireState(rec))));
+  ok(!!wire && wire.kind === DRONE_SENTINEL && wire.state === 'follow', `sentinel ${preset} survives the wire`);
+}
+// A dead owner parks it in a hold where it is, as the UAV does; it never falls.
+{
+  const rec = spawnWorldDrone(DRONE_SENTINEL, { ownerId: 'p1', at: owner.pos, look: [0, 0, -1], alt: 150, radius: 400, groundAt: groundY });
+  run(rec, 5);
+  run(rec, 20, world({ ownerAlive: false, ownerPos: null }));
+  ok(rec.state === 'hold' && !rec.done, `sentinel holds after its owner dies (state ${rec.state})`);
+  ok(agl(rec) > 100, `and stays up (${agl(rec).toFixed(0)} m)`);
+}
+
+// The drawn craft banks INTO its turn. bot-drones' cosmetic bank is positive for a left turn and
+// quatFromHeading rolls positive right-wing-down, so the wire (droneWireState, Solo's ingestRecords)
+// carries the negated bank; this pins that seam.
+{
+  const rec = spawnWorldDrone(DRONE_SENTINEL, { ownerId: 'p1', at: [0, 0, 0], look: [0, 0, -1], alt: 150, radius: 400, groundAt: () => 0 });
+  const flat = { ownerPos: [0, 0, 0], ownerYaw: 0, ownerAlive: true, groundY: () => 0 };
+  const yaw0 = rec.d.yaw;
+  for (let i = 0; i < 600; i++) stepBaseGameDrone(rec, DT, flat);
+  let turned = rec.d.yaw - yaw0; while (turned > Math.PI) turned -= 2 * Math.PI; while (turned < -Math.PI) turned += 2 * Math.PI;
+  const wire = droneWireState(rec);
+  ok(wire.bank === -rec.d.bank, 'the wire bank is the record bank negated');
+  const q = quatFromHeading(new THREE.Quaternion(), wire.yaw, wire.pitch, wire.bank);   // as base-game-drone-view.js draws autonomy
+  const rightWingY = new THREE.Vector3(1, 0, 0).applyQuaternion(q).y;                        // craft right wing is local +X (nose -Z)
+  // Heading yaw increasing (toward +x while facing +z) is a LEFT turn; a left turn drops the left wing, so the right wing rises.
+  ok(Math.abs(turned) > 0.2, `the sentinel is turning (${turned.toFixed(2)} rad in 5 s)`);
+  ok(Math.abs(rec.d.bank) > 0.1, `it reports a bank (${rec.d.bank.toFixed(2)})`);
+  ok(Math.sign(rightWingY) === Math.sign(turned), `it banks into the turn (turn ${turned > 0 ? 'left' : 'right'}, right wing ${rightWingY > 0 ? 'up' : 'down'})`);
 }
 
 void analyticHeightAt;

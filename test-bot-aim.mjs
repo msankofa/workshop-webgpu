@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   AIM_DEFAULTS, reactionDelayMs, settleFactor01, spreadHalfAngleRad,
-  bloomAfterShot, decayBloomDeg, dispersedDirection,
+  bloomAfterShot, decayBloomDeg, dispersedDirection, aimSettingsForAccuracy,
 } from './bot-aim.js';
 
 let checks = 0;
@@ -37,6 +37,9 @@ check(Math.abs(settleFactor01(AIM_DEFAULTS.settleMs / 2) - 0.5) < 1e-9, 'penalty
 
 // --- spreadHalfAngleRad ---
 const settled = { moveSpeed01: 0, heldMs: Infinity, bloomDeg: 0 };
+check(aimSettingsForAccuracy(0.5).baseSpreadDeg === AIM_DEFAULTS.baseSpreadDeg, 'accuracy 0.5 preserves the donor spread');
+check(aimSettingsForAccuracy(0).baseSpreadDeg === AIM_DEFAULTS.baseSpreadDeg * 2, 'accuracy 0 doubles spread');
+check(aimSettingsForAccuracy(1).bloomMaxDeg === 0, 'accuracy 1 removes spread and bloom');
 check(spreadHalfAngleRad(settled) > 0, 'even a settled bot has some spread');
 check(Math.abs(spreadHalfAngleRad(settled) - AIM_DEFAULTS.baseSpreadDeg * Math.PI / 180) < 1e-9, 'settled spread is the base cone');
 check(spreadHalfAngleRad({ ...settled, moveSpeed01: 1 }) > spreadHalfAngleRad(settled), 'running widens the cone');

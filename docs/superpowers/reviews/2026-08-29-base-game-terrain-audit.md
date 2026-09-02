@@ -5,24 +5,24 @@ subsystem: terrain
 scope: The terrain runtime as Base Game drives it — base-game-terrain.js, the terrain-system.js streamer under it, the chunk batcher, the LOD coverage and field windows, and the base-game.html frame wiring. The terrain generator (authoring) and the environment-viewer path are out of scope.
 skill: improve-webgpu
 date: 2026-08-29
-baseline: 49 resident chunks at radius 3, 49 draws, 51,842 triangles; terrain.update p50 0.003 ms standing; 493 bytes/frame allocated on the quiet frame path (bench-base-game-terrain.mjs, 2026-08-29, CPU only)
+baseline: terrain subsystem and corrected page default are 49 resident chunks at radius 3, 49 near-terrain draws, 51,842 triangles; the audited page had overridden this with radius 6 / 169 chunks; terrain.update p50 0.003 ms standing; 493 bytes/frame allocated on the quiet frame path (bench-base-game-terrain.mjs, 2026-08-29, CPU only)
 measurements: bench-base-game-terrain.mjs (new; CPU, headless, no GPU-side numbers in this audit)
 steps_complete: [1, 3, 5]
 steps_partial: [2, 6]
 steps_not_run: [4]
-findings: 21
+findings: 23
 severity_counts:
-  high: 6
+  high: 8
   medium: 8
   low: 6
   info: 1
 status_counts:
-  fixed: 10
+  fixed: 12
   deferred: 0
   open: 9
   unverified: 2
 kind_counts:
-  defect: 16
+  defect: 18
   gap: 2
   regression: 1
   test-gap: 1
@@ -1085,8 +1085,11 @@ mutation_tested: false
 
 ### Cause
 
-Everything here ran in Node. The terrain's raster cost exists only as 49 draws and 51,842 triangles
-at the default radius, plus whatever the far LOD adds.
+Everything here ran in Node. ~~The terrain's raster cost exists only as 49 draws and 51,842
+triangles at the default radius, plus whatever the far LOD adds.~~ That was the subsystem and bench
+default, not the page configuration audited here: `base-game.html` overrode it with radius 6, or
+169 near chunks, and planar water reflection submitted that terrain again every other frame. F-22
+and F-23 correct the record and the page defaults.
 
 ### Effect
 
@@ -1152,6 +1155,102 @@ Fixed and mutation-tested. Worth generalising past the trees audit's version of 
 assertion has to fail for the reason it names, and picking a fixture that fails for *some* reason is
 how that goes wrong.
 
+## F-22 — The page silently overrode the audited 49-draw terrain default with 169 chunks
+
+```yaml
+id: F-22
+title: The page silently overrode the audited 49-draw terrain default with 169 chunks
+severity: high
+status: fixed
+kind: defect
+introduced_by: pre-existing
+runs: per-frame
+locations:
+  - file: base-game.html
+    symbol: DEFAULT_SETTINGS.terrainDrawRadius
+    role: page-level radius 6 overrode the subsystem radius 3
+  - file: base-game-terrain.js
+    symbol: BASE_GAME_TERRAIN_DEFAULTS.renderRadius
+    role: subsystem and benchmark default is radius 3
+measured:
+  before: radius 6 = 169 resident near chunks and approximately 169 WebGPU drawIndexed submissions
+  after: radius 3 = 49 resident near chunks and approximately 49 WebGPU drawIndexed submissions
+verified_by: test-base-game-water.mjs — the page uses BASE_GAME_TERRAIN_DEFAULTS.renderRadius
+mutation_tested: false
+```
+
+### Cause
+
+The terrain subsystem defaulted to radius 3, and the headless audit benchmark used that default.
+The page independently set `terrainDrawRadius: 6` and applied it every frame. Because a radius is a
+square window, doubling the number did not double the work: it grew the near window from 7×7 to
+13×13 chunks. `BatchedMesh` reduces scene objects but Three's WebGPU backend still emits one indexed
+draw for each visible batch geometry.
+
+### Effect
+
+The audit called 49 terrain draws the default while the shipped page asked for as many as 169. That
+is 120 additional near-terrain submissions in the ordinary render, plus extra resident geometry,
+streaming work, and frustum tests. It also multiplied F-23's optional mirror pass.
+
+### Solution
+
+Use `BASE_GAME_TERRAIN_DEFAULTS.renderRadius` in the page settings instead of duplicating a larger
+literal. Keep the panel range so a user can explicitly trade submissions for reach.
+
+### Result
+
+Fixed. The page and subsystem now share radius 3, reducing the default near-terrain window and its
+potential draw submissions by 71%. A source-level assertion pins the page to the exported default.
+
+## F-23 — Planar water reflection duplicated terrain rendering on alternating default frames
+
+```yaml
+id: F-23
+title: Planar water reflection duplicated terrain rendering on alternating default frames
+severity: high
+status: fixed
+kind: defect
+introduced_by: pre-existing
+runs: per-frame
+locations:
+  - file: base-game.html
+    symbol: DEFAULT_SETTINGS.waterReflection
+    role: opted every fresh page into the planar mirror
+  - file: base-game-water.js
+    symbol: mirrorBase.updateBefore
+    role: renders the reflected scene every reflectRate frames
+measured:
+  before: one extra reflected-scene render every 2nd frame; terrain was not excluded
+  after: sky reflection by default; no reflected-scene render on the default path
+verified_by: test-base-game-water.mjs — the page does not opt into a second scene render by default
+mutation_tested: false
+```
+
+### Cause
+
+The page defaulted reflection to `planar`. The reflector is intentionally rate-limited to every
+second application frame and renders at half resolution, but it is still a second traversal and
+render of the reflected scene. Forest and grass were excluded; terrain was not. With F-22's old
+page radius this meant roughly 169 terrain submissions could recur inside the mirror pass.
+
+### Effect
+
+Default frame cost oscillated between plain and mirror frames. This directly matches fluctuating
+draw counts and millisecond spikes, and it gets more visible while moving because terrain streaming
+and vegetation reculling add work to some of the same frames.
+
+### Solution
+
+Default to the sky reflection path, which shades the water from the sky function without another
+scene render. Keep planar and screen-space modes in the panel as explicit quality choices, and label
+planar as an extra scene render instead of presenting its half-resolution/rate limits as free.
+
+### Result
+
+Fixed for the default configuration. Planar remains intentionally expensive when selected; a
+browser GPU capture is still required to quantify its device-specific cost.
+
 # Solution plan
 
 Ordered by how much uncertainty each step removes, not by how easy it is. The frame-path allocation
@@ -1165,6 +1264,8 @@ Implementation progress as of 2026-08-29:
 - [x] Carry the new sea level into the cover derivation on a source swap (`F-08`).
 - [x] Diagnose and fix the red handoff test; the terrain suite is green (`F-09`).
 - [x] Pin the no-allocation invariants with assertions that observe the cost (`F-02`, `F-04`, `F-05`).
+- [x] Reconcile the page with the radius-3 terrain budget and make planar reflection opt-in
+      (`F-22`, `F-23`).
 - [ ] Run the P0 browser capture; no GPU acceptance gate is claimed yet.
 - [ ] Resolve the stale-retention contract one way or the other (`F-10`, `F-11`).
 - [ ] Cut the volumetric collider pass's per-frame allocation (`F-12`).

@@ -13,7 +13,10 @@ function percentile(sorted, fraction) {
 // Passes that run on only some frames by design. Averaging in the frames where they did not run
 // would report half of what they actually cost when they do, so these are summarised over their
 // non-zero samples only; `frames` says how many that was.
-export const SPARSE_PASSES = new Set(['passReflectMs', 'passPostMirrorMs', 'passPostPlainMs']);
+// The post* buckets are the same encode counted twice over: exactly one of each pair is marked per
+// frame, so averaging a bucket over every frame would report half of what that kind of frame costs.
+export const SPARSE_PASSES = new Set(['passReflectMs', 'passPostMirrorMs', 'passPostPlainMs',
+  'passPostShadowMs', 'passPostNoShadowMs', 'passPostChainMs', 'passPostDirectMs']);
 
 // Every pass key seen across the window. Missing samples count as 0 for ordinary passes, so a pass
 // that ran rarely reports an honest per-frame average; see SPARSE_PASSES for the exceptions.
@@ -87,6 +90,12 @@ export function buildPerformanceMeasurement(samples, {
     frameMs: summarizePerformanceSeries(frameMs),
     drawCalls: summarizePerformanceSeries(usable.map(sample => sample.drawCalls), { integer: true }),
     triangles: summarizePerformanceSeries(usable.map(sample => sample.triangles), { integer: true }),
+    // Whole scene renders per frame: above 1 means a shadow map or a planar mirror redrew inside
+    // the same render call. Zeros on captures taken before the caller sampled it.
+    renderCalls: summarizePerformanceSeries(usable.map(sample => sample.renderCalls), { integer: true }),
+    // WebGPU pipelines three had to build mid-frame. A non-zero max is a warmup that is missing;
+    // passPipelineMs.frames says how many frames of the window paid for one.
+    pipelinesBuilt: summarizePerformanceSeries(usable.map(sample => sample.pipelinesBuilt), { integer: true }),
     // Per-pass CPU time, when the caller sampled it. A frame total says nothing about which pass
     // owns it; this is what turns "high ms" into a name.
     passes: summarizePasses(usable),

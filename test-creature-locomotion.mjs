@@ -36,6 +36,7 @@ const { KinematicChain, rotateXZ, averageVec, orientFromUpForward, createLegSolv
 function makeLeg({ index = 0, row = 0, side = 1, restLocal = [0.8, 0, 0.6] } = {}) {
   return {
     index, row, side,
+    phase: (row + (side > 0 ? 1 : 0)) % 2,
     restLocal: new THREE.Vector3(...restLocal),
     end: new THREE.Vector3(), target: new THREE.Vector3(),
     stepStart: new THREE.Vector3(), stepEnd: new THREE.Vector3(),
@@ -46,6 +47,55 @@ function makeLeg({ index = 0, row = 0, side = 1, restLocal = [0.8, 0, 0.6] } = {
     canMove: false, primary: false, wants: false, uncomfortable: false,
     restX: 0, restY: 0, restZ: 0,
   };
+}
+
+{
+  // A gallop row has a fixed lead side, but either foot may be the one that first needs a step. The
+  // whole row must still get a turn, and a row that just landed inside the restep epsilon must yield.
+  const gait = cloneGait(GAITS.gallop);
+  gait.restepEpsilon = 0.1;
+  const legs = makeLegs(2);
+  for (const leg of legs) {
+    leg.target.set(leg.restLocal.x, 0, leg.restLocal.z + 0.8);
+    leg.wants = leg.row === 0 && leg.phase !== 0; // only the non-lead front foot asks
+  }
+  const starts = new Set();
+  for (let frame = 0; frame < 160; frame++) {
+    for (const leg of legs) {
+      leg.timeSinceBeginMove += 1 / 60;
+      leg.timeSinceStopMove += 1 / 60;
+    }
+    scheduleSteps(legs, gait);
+    for (const leg of legs) {
+      if (!leg.stepping) continue;
+      starts.add(leg.index);
+      leg.t += (1 / 60) / gait.stepDuration;
+      if (leg.t >= 1) {
+        leg.stepping = false;
+        leg.end.copy(leg.target);
+        leg.timeSinceStopMove = 0;
+        // Deliberately leave wants true: sub-epsilon target noise must not let this row monopolise turns.
+      }
+    }
+    // Once the front row has landed, the other row genuinely needs its turn.
+    if (legs.filter(l => l.row === 0).every(l => starts.has(l.index) && !l.stepping)) {
+      for (const leg of legs.filter(l => l.row === 1)) leg.wants = true;
+    }
+  }
+  ok(legs.every(l => starts.has(l.index)), 'gallop lets both complete rows lift',
+    `started legs ${[...starts].join(', ')}`);
+}
+
+{
+  const gait = cloneGait(GAITS.gallop);
+  const legs = makeLegs(2);
+  const lead = legs.find(l => l.row === 0 && l.phase === 0);
+  const mate = lead.rowMateCached;
+  lead.wants = true;
+  lead.target.set(0, 0, 1);
+  mate.stepping = true;
+  mate.timeSinceBeginMove = gait.samePairCooldown + 0.01;
+  ok(!canGallopLegMove(lead, gait, legs), 'a gallop lead waits for its delayed row mate to land');
 }
 
 // n pairs, front row first, laid out like finalizePlan's output.

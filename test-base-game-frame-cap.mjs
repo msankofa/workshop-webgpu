@@ -15,15 +15,16 @@ ok(!!source, 'the frame cap block was found in the page');
 
 // One instance per test, so a grid left over from one case cannot pace the next.
 function makeCap() {
-  const settings = { frameCap: 'unlimited' };
+  const settings = { frameCap: 'unlimited', frameCapSnap: false };
   const holds = new Function('settings', `${source}\nreturn frameCapHolds;`)(settings);
   return { settings, holds };
 }
 
 // Drive `seconds` of a display running at `refreshHz`, returning the times frames actually ran.
-function run({ frameCap, refreshHz, seconds, jitterMs = 0, startAt = 0 }) {
+function run({ frameCap, refreshHz, seconds, jitterMs = 0, startAt = 0, snap = false }) {
   const { settings, holds } = makeCap();
   settings.frameCap = frameCap;
+  settings.frameCapSnap = snap;
   const step = 1000 / refreshHz;
   const ran = [];
   let jitter = 0;
@@ -105,7 +106,34 @@ for (const [cap, want] of [['60', 60], ['45', 45], ['30', 30]]) {
   ok(Math.abs(capped - 60) <= 1, `and re-capping starts a fresh grid rather than the stale one (${capped} in a second)`);
 }
 
-// ---- 7. the page wires it where it belongs -------------------------------------------------------
+// ---- 7. a cap that does not divide the display rate, with and without snapping ------------------
+// The 2026-08-30 captures: a 45 cap on the 75 Hz display averaged 45-49 fps with a frame-time p50
+// of 26.6 ms, because the grid can only alternate one refresh (13.3 ms) and two (26.7 ms). Snapping
+// trades the number for a steady one: 37.5, the nearest exact division.
+{
+  const gaps = (ran) => ran.slice(1).map((t, i) => t - ran[i]);
+  const plain = run({ frameCap: '45', refreshHz: 75, seconds: 4 });
+  const plainGaps = gaps(plain);
+  ok(Math.abs(rate(plain, 4) - 45) <= 1.5, `unsnapped, a 45 cap on a 75 Hz display averages 45 (${rate(plain, 4).toFixed(1)})`);
+  ok(Math.max(...plainGaps) / Math.min(...plainGaps) > 1.8,
+    `but it alternates one and two refreshes (${Math.min(...plainGaps).toFixed(1)} and ${Math.max(...plainGaps).toFixed(1)} ms): the judder the captures showed`);
+  // The display-rate estimate is a slow EMA seeded at 60 Hz (it takes ~40 frames to settle, and a
+  // page has run for minutes before anyone toggles this), so the snapped cases measure the last
+  // four seconds of six.
+  const settled = (frameCap, refreshHz) => run({ frameCap, refreshHz, seconds: 6, snap: true }).filter(t => t >= 2000);
+  const snapped = settled('45', 75);
+  const snappedGaps = gaps(snapped);
+  ok(Math.abs(rate(snapped, 4) - 37.5) <= 0.5, `snapped, the same cap runs at 37.5 (${rate(snapped, 4).toFixed(1)}), the nearest division of 75`);
+  ok(Math.max(...snappedGaps) - Math.min(...snappedGaps) < 0.5,
+    `and every gap is the same (${Math.min(...snappedGaps).toFixed(1)}..${Math.max(...snappedGaps).toFixed(1)} ms): no alternation`);
+  const sixty = settled('60', 75);
+  ok(rate(sixty, 4) > 74, `a snapped 60 cap on 75 Hz goes to the display rate, the nearest division (${rate(sixty, 4).toFixed(1)})`);
+  const thirty = settled('30', 144);
+  ok(Math.abs(rate(thirty, 4) - 28.8) <= 0.5, `and on 144 Hz a snapped 30 becomes 28.8, one frame in five (${rate(thirty, 4).toFixed(1)})`);
+  ok(/frameCapSnap: false,/.test(html) && /addToggle\(captureSec, 'frameCapSnap'/.test(html), 'the snap is a toggle in Performance Capture, off by default: the plain cap stays available');
+}
+
+// ---- 8. the page wires it where it belongs -------------------------------------------------------
 {
   ok(/frameCap: 'unlimited',/.test(html), 'the page ships uncapped: a cap is something you ask for');
   ok(/frameCap: \['unlimited', '60', '45', '30'\],/.test(html), 'and the four values are validated on load like every other string setting');

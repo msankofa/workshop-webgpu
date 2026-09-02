@@ -9,7 +9,7 @@ import {
   pickBaseGameSharedWorld,
   sanitizeBaseGamePlayerState,
   sanitizeBaseGameTickInput,
-  sanitizeBaseGameWorldPatch, sanitizeBaseGameNpcRequest,
+  sanitizeBaseGameWorldPatch, sanitizeBaseGameNpcRequest, sanitizeBaseGameVehicleRequest, sanitizeBaseGameDroneRequest,
   terrainConfigNeedsProject,
   terrainConfigProjectHash,
   withTerrainProject,
@@ -174,6 +174,22 @@ export function connectBaseGameSession({
       const clean = sanitizeBaseGameNpcRequest(request);
       if (!clean) return false;
       ws.send(JSON.stringify({ type: 'base:npc', protocol: BASE_GAME_PROTOCOL_VERSION, ...clean }));
+      return true;
+    },
+    // Owner-only dev-gun placement/removal of world vehicles.
+    sendVehicle(request) {
+      if (!owner || ws?.readyState !== WebSocketImpl.OPEN) return false;
+      const clean = sanitizeBaseGameVehicleRequest(request);
+      if (!clean) return false;
+      ws.send(JSON.stringify({ type: 'base:vehicle', protocol: BASE_GAME_PROTOCOL_VERSION, ...clean }));
+      return true;
+    },
+    // Owner-only dev-gun spawn/clear of world drones (the Sentinel).
+    sendDrone(request) {
+      if (!owner || ws?.readyState !== WebSocketImpl.OPEN) return false;
+      const clean = sanitizeBaseGameDroneRequest(request);
+      if (!clean) return false;
+      ws.send(JSON.stringify({ type: 'base:drone', protocol: BASE_GAME_PROTOCOL_VERSION, ...clean }));
       return true;
     },
     // Queues one simulation tick for delivery. Returns false for a malformed or non-consecutive tick.

@@ -42,6 +42,10 @@ inferred or eyeballed.
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | shipped |
 | `test-pokemon-lab-runtime.mjs` | 10 checks: the import path end to end, in Node. | shipped |
+| `pokemon-phenomena.js` | ROM texture swaps and persistent model-bound effects. | shipped |
+| `scripts/extract-stadium-phenomena.mjs` | Generates the sidecar from a verified US Stadium ROM. | shipped |
+| `models/stadium/phenomena.json` | Generated auxiliary texture streams and effect attachments. | shipped |
+| `test-pokemon-phenomena.mjs` | 18 checks over parsing, timing, routing, teardown and real sidecar records. | shipped |
 
 `ragdoll.js` is reused, and its 31 tests still pass untouched. Its cone solver gained an optional `min` and
 an optional per-cone `stiffness` for the bend limit below; both default to the old behaviour, so the bot
@@ -1168,6 +1172,38 @@ One of its checks is there because the selection box shipped invisible. Assignin
 though it works — right for `#stageMsg`, whose stylesheet value is `flex`, and wrong for the four ids
 hidden by default. The check reads the stylesheet for those ids and forbids showing them with `''`.
 
+## Texture phenomena and persistent effects
+
+The Stadium GLBs contain more embedded textures than their static materials reference. Those are not
+duplicates: the ROM's auxiliary-animation records swap them into texture channels for blinks, mouth
+changes and other face states. `scripts/extract-stadium-phenomena.mjs` reads the `pokemon_models` archive
+at ROM offset `0x920000`, unwraps `PERS-SZP`/Yay0, decodes each relocatable `FRAGMENT`, and writes the
+per-channel frame streams to `models/stadium/phenomena.json`. The generated file covers 142 species with
+916 auxiliary records; 127 species have a conservative ambient sequence whose resting texture maps back
+to a rendered GLB material.
+
+`pokemon-phenomena.js` asks `GLTFLoader` for those otherwise-unused embedded texture dependencies only
+when a species is selected. It swaps `material.map` without rebuilding a shader, runs the selected ROM
+sequence as an occasional one-shot (a blink stays open between performances), and restores every original
+map when the species leaves. A slower species load cannot install its controller over a later click.
+
+Tail fire is deliberately not represented as a texture animation. Stadium emits it through the battle
+effect system at a model attachment point; the GLB exporter preserved neither the effect nor attachment
+command. Charmander, Charmeleon and Charizard therefore have explicit `tail-flame` effect records. Their
+exported 8-vertex flame sheets are useful attachment metadata even though they are poor final rendering:
+the generator records each sheet's centroid, extent, tail node and BLEND material. At runtime that material
+is hidden and replaced by a flickering five-lobe additive flame parented to the same node. Inverse-scale
+compensation for the rig's internal scale leaves keeps it stable through clips, scrubbing and movement
+clones. Extracted ROM facts and this authored interpretation remain separate fields in the sidecar.
+
+Regenerate from a legally supplied matching ROM:
+
+```powershell
+node scripts/extract-stadium-phenomena.mjs --rom "path\to\Pokemon Stadium (USA).z64" --out models/stadium/phenomena.json
+```
+
+The ROM itself and the decomp checkout are not runtime dependencies and are not committed.
+
 ## The panel
 
 The Lab dresses its panel with **`workshop-panel-theme.js`**, the same module the bot viewer, base game,
@@ -1182,7 +1218,7 @@ Layout is the established one: a fixed right-edge `#ctrl` with a `.panel-head` (
 tabs nobody is looking at. Collapsing the panel is the theme's own `.collapsed`, which shrinks the dock to
 its header bar and frees the whole viewport.
 
-Seven tabs: Dex, Species, Annotate, Pose, Animation, Audio, Map.
+Eight tabs: Dex, Species, Annotate, Pose, Movement, Animation, Audio, Map.
 
 ### The markup stays flat; the panel is assembled at boot
 
@@ -1239,9 +1275,9 @@ click costs nothing.
 `pokemon-park-old/`, so they are drawn inside the archive. Grouping by location keeps the toggles
 predictable — turning off `old` empties that cluster and nothing else.
 
-`models/stadium` collapses to one node. Expanded it is 151 model files against twenty code files and would
-be the whole picture. Its label counts extensions rather than assuming, because the directory holds 151
-models **and** the manifest, and "152 models" would be wrong in a way nobody would check.
+`models/stadium` collapses to one node. Expanded it is 151 model files against the Lab code and would be
+the whole picture. Its label counts extensions rather than assuming, because the directory holds 151
+models, the manifest **and** the phenomena sidecar; calling all 153 files models would be wrong.
 
 Measured: 9,915 entries in the repo scan, 100 after scoping, across ten directories.
 

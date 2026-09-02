@@ -429,18 +429,33 @@ export function unaddressed(a, rig, { minMassFraction = 0 } = {}) {
     .sort((x, y) => y.mass - x.mass);
 }
 
-/** Which contacts sit on a given appendage — derived, so a contact is never stored twice. */
-export function contactsOf(a, appendageId) {
+/**
+ * Which contacts belong to a given appendage — derived, so a contact is never stored twice.
+ *
+ * With a rig, a marked contact may sit below the authored limb chain. This is the normal case for a
+ * branching foot: the leg names the driven joints and Mark feet names the sole/toe bones separately.
+ * Without a rig this preserves the older exact-membership query used by lightweight callers.
+ */
+export function contactsOf(a, appendageId, rig = null) {
   const ap = (a?.parts?.appendages || []).find(x => x.id === appendageId);
   if (!ap) return [];
   const chain = new Set(ap.chain || []);
-  return (a?.parts?.contacts || []).filter(b => chain.has(b));
+  return (a?.parts?.contacts || []).filter(contact => {
+    let bone = contact;
+    while (bone) {
+      if (chain.has(bone)) return true;
+      if (!rig) return false;
+      bone = rig.byKey.get(bone)?.parent ?? null;
+    }
+    return false;
+  });
 }
 
 /** Contacts belonging to no appendage — a Caterpie's belly, a Voltorb's underside. */
-export function bodyContacts(a) {
-  const inLimb = new Set((a?.parts?.appendages || []).flatMap(ap => ap.chain || []));
-  return (a?.parts?.contacts || []).filter(b => !inLimb.has(b));
+export function bodyContacts(a, rig = null) {
+  const limbContacts = new Set((a?.parts?.appendages || [])
+    .flatMap(ap => contactsOf(a, ap.id, rig)));
+  return (a?.parts?.contacts || []).filter(b => !limbContacts.has(b));
 }
 
 export function appendagesOfType(a, type) {
@@ -666,7 +681,7 @@ export function resolveAnnotation(a, rig) {
     appendages: (p.appendages || []).map(ap => ({
       id: ap.id, type: ap.type, side: ap.side, row: ap.row, mirror: ap.mirror,
       chain: list(ap.chain),
-      contacts: list(contactsOf(a, ap.id)),
+      contacts: list(contactsOf(a, ap.id, rig)),
     })),
     neutral: {
       ground: groundingOf(a),

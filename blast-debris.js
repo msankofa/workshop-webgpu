@@ -41,6 +41,7 @@ export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTe
     mesh.frustumCulled = false;
     mesh.count = 0;
     mesh.renderOrder = order;
+    mesh.name = 'debris-instanced';
     scene.add(mesh);
     return mesh;
   }
@@ -88,6 +89,7 @@ export function createDebrisRenderer({ THREE, scene, sim, lightCount = 8, softTe
     mat.opacityNode = attribute('instAlpha', 'float').mul(texture(tex).a);
     tag(mat, 'smoke');   // after colorNode: a tagger that wraps the existing graph needs to see it
     const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'debris-smoke';
     mesh.frustumCulled = false; mesh.matrixAutoUpdate = false; mesh.updateMatrix(); mesh.renderOrder = 12;
     scene.add(mesh);
     return { geo, mat, mesh, pos, col, size, alpha };

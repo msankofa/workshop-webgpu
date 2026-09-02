@@ -1,0 +1,5884 @@
+{
+  "targetName": "RQ-170 Sentinel",
+  "targetId": "rq-170-sentinel",
+  "schemaVersion": "2.1",
+  "terminologyProfile": {
+    "domain": "real-time procedural Three.js asset",
+    "geometryTerms": [
+      "silhouette",
+      "topology",
+      "primitive",
+      "bevel",
+      "chamfer",
+      "taper",
+      "bend",
+      "boolean cut",
+      "edge loop",
+      "surface normal",
+      "displacement"
+    ],
+    "materialTerms": [
+      "albedo",
+      "baseColor",
+      "roughness",
+      "metalness",
+      "normal map",
+      "bump map",
+      "ambient occlusion",
+      "cavity dirt",
+      "edge wear",
+      "clearcoat"
+    ],
+    "lightingTerms": [
+      "key light",
+      "fill light",
+      "rim light",
+      "HDRI/environment reflection",
+      "contact shadow"
+    ],
+    "descriptionRule": "Use measurable 3D graphics terms. Avoid vague words unless they are paired with concrete geometry/material/shader parameters."
+  },
+  "sourceImage": "ref/three-view.png",
+  "referenceCamera": {
+    "solved": false,
+    "fovDegrees": 40.0,
+    "aspect": 1.0,
+    "orientation": {
+      "yaw": 0.0,
+      "pitch": 0.0,
+      "roll": 0.0
+    },
+    "positionHint": [
+      0.0,
+      0.0,
+      3.0
+    ],
+    "note": "For likeness work, solve the reference camera (forge/stage1_intake/solve_camera_pose.py) so the review render aligns with the photo and the reference can be projected. Confirm by overlay review."
+  },
+  "suitability": "conditional",
+  "scores": {
+    "object_isolation": 0,
+    "silhouette_readability": 0,
+    "depth_inference": 0,
+    "primitive_decomposition": 0,
+    "material_procedurality": 0,
+    "occlusion_risk": 0,
+    "interaction_fit": 0
+  },
+  "preSpecAssessment": {
+    "objectClass": {
+      "primaryType": "aircraft",
+      "primaryDomain": "object",
+      "formLanguage": [
+        "blended flying wing",
+        "low-observable faceted planform",
+        "smooth blended dorsal volumes"
+      ],
+      "structureKind": [
+        "single continuous lifting body",
+        "retractable tricycle gear"
+      ],
+      "motionPotential": [
+        "whole-body flight",
+        "gear retraction",
+        "elevon deflection"
+      ],
+      "materialFamilies": [
+        "composite skin (matte grey)",
+        "rubber tyres",
+        "painted alloy gear"
+      ],
+      "notes": "Fill from direct visual inspection before writing the final spec. Do not use fixed domain profiles. Set primaryDomain to object, character, or hybrid."
+    },
+    "complexity": {
+      "tier": "complex",
+      "scores": {
+        "silhouetteComplexity": 0,
+        "componentCount": 0,
+        "hierarchyDepth": 0,
+        "repetitionDensity": 0,
+        "materialLayerCount": 0,
+        "localDetailDensity": 0,
+        "occlusionRisk": 0,
+        "actionReadinessNeed": 0
+      },
+      "estimatedCounts": {
+        "macroComponents": 1,
+        "mesoComponents": 0,
+        "microFeatureGroups": 0,
+        "materialLayers": 1,
+        "repetitionSystems": 0
+      },
+      "reasoning": [
+        "Assess 'RQ-170 Sentinel' from the image before finalizing componentTree/materials."
+      ]
+    },
+    "specDepthDecision": {
+      "requiredDepth": "complex",
+      "minimumComponentLevels": [
+        "macro",
+        "meso",
+        "micro"
+      ],
+      "needsRepetitionSystems": true,
+      "needsMaterialLocalOverrides": true,
+      "needsMultipleReviewViews": true,
+      "needsActionReadyHierarchy": true,
+      "rationale": "Choose simple/moderate/complex/ultra-complex from observed structure, not from a hardcoded domain."
+    },
+    "unknownsToResolveBeforeImplementation": [],
+    "detailInventory": {
+      "targetMinDetails": 12,
+      "details": [
+        {
+          "id": "d-intake",
+          "kind": "hole",
+          "description": "dark oval mouth carved into the hump front face",
+          "zone": "top-centre",
+          "mapsTo": {
+            "ref": "intake-mouth"
+          }
+        },
+        {
+          "id": "d-exhaust",
+          "kind": "decal",
+          "description": "rectangular exhaust slot at the centre trailing edge",
+          "zone": "top-centre",
+          "mapsTo": {
+            "ref": "exhaust-inset"
+          }
+        },
+        {
+          "id": "d-hump",
+          "kind": "contour",
+          "description": "dorsal hump silhouette",
+          "zone": "side",
+          "mapsTo": {
+            "ref": "hump-contour"
+          }
+        },
+        {
+          "id": "d-bay",
+          "kind": "linework",
+          "description": "dotted bay outline on the belly",
+          "zone": "render-top",
+          "mapsTo": {
+            "ref": "bay-door-outline"
+          }
+        },
+        {
+          "id": "d-elevon-stbd",
+          "kind": "linework",
+          "description": "elevon panel lines, starboard",
+          "zone": "top-outer",
+          "mapsTo": {
+            "ref": "elevon-lines-stbd"
+          }
+        },
+        {
+          "id": "d-elevon-port",
+          "kind": "linework",
+          "description": "elevon panel lines, port",
+          "zone": "top-outer",
+          "mapsTo": {
+            "ref": "elevon-lines-port"
+          }
+        },
+        {
+          "id": "d-seam-stbd",
+          "kind": "seam",
+          "description": "wing-root seam, starboard",
+          "zone": "top-centre",
+          "mapsTo": {
+            "ref": "root-seam-stbd"
+          }
+        },
+        {
+          "id": "d-seam-port",
+          "kind": "seam",
+          "description": "wing-root seam, port",
+          "zone": "top-centre",
+          "mapsTo": {
+            "ref": "root-seam-port"
+          }
+        },
+        {
+          "id": "d-roundel-stbd",
+          "kind": "decal",
+          "description": "roundel, starboard",
+          "zone": "render-top",
+          "mapsTo": {
+            "ref": "roundel-decal-stbd"
+          }
+        },
+        {
+          "id": "d-roundel-port",
+          "kind": "decal",
+          "description": "roundel, port",
+          "zone": "render-top",
+          "mapsTo": {
+            "ref": "roundel-decal-port"
+          }
+        },
+        {
+          "id": "d-vent-stbd",
+          "kind": "groove",
+          "description": "vent slot, starboard",
+          "zone": "top-outer",
+          "mapsTo": {
+            "ref": "vent-groove-stbd"
+          }
+        },
+        {
+          "id": "d-vent-port",
+          "kind": "groove",
+          "description": "vent slot, port",
+          "zone": "top-outer",
+          "mapsTo": {
+            "ref": "vent-groove-port"
+          }
+        }
+      ]
+    },
+    "anatomy": {
+      "applies": false,
+      "styleHeads": 0.0,
+      "proportions": {
+        "headUnit": 0.0,
+        "torso": 0.0,
+        "legs": 0.0,
+        "shoulderWidth": 0.0,
+        "hipWidth": 0.0
+      },
+      "pose": {
+        "type": "unassessed",
+        "jointAngles": {}
+      },
+      "faceLandmarks": {
+        "eyeLine": 0.0,
+        "eyeSpacing": 0.0,
+        "noseBase": 0.0,
+        "mouthLine": 0.0,
+        "hairline": 0.0
+      },
+      "features": [],
+      "confidence": 0.0,
+      "note": "Only meaningful when objectClass.primaryDomain is character or hybrid. Set applies=true and fill from forge/stage1_intake/extract_landmarks.py. See grimoire/character/reconstruction.md and grimoire/character/likeness_maximization.md."
+    },
+    "sourceImage": "ref/three-view.png"
+  },
+  "qualityContract": {
+    "qualityBar": "complex",
+    "definitionOfDone": [
+      "The rendered model matches the reference silhouette, primary proportions, visible component hierarchy, material response, and most recognizable local features for the selected fidelity tier."
+    ],
+    "minimumSpecDepth": {
+      "macroComponents": 3,
+      "mesoComponents": 8,
+      "microFeatureGroups": 5,
+      "materialLayers": 3,
+      "repetitionSystems": 1,
+      "reviewViewpoints": 4
+    },
+    "featureGroups": [
+      {
+        "id": "overall-silhouette",
+        "name": "Overall silhouette and proportions",
+        "required": true,
+        "qualityCriteria": [
+          "Bounding shape, dominant curves, negative spaces, and scale relationships are explicitly described."
+        ],
+        "evidenceRefs": [
+          "full-object"
+        ],
+        "failureModes": [
+          "model reads as a generic placeholder instead of the reference object",
+          "major proportions are guessed without evidence"
+        ]
+      },
+      {
+        "id": "primary-structure",
+        "name": "Primary structure and hierarchy",
+        "required": true,
+        "qualityCriteria": [
+          "Major parts, joints, seams, contact points, and parent-child relationships are named before code generation."
+        ],
+        "evidenceRefs": [
+          "full-object"
+        ],
+        "failureModes": [
+          "large visible parts are merged into one mesh",
+          "component hierarchy is too shallow for the observed complexity"
+        ]
+      },
+      {
+        "id": "attachment-joint-correctness",
+        "name": "Attachment and joint correctness",
+        "required": true,
+        "qualityCriteria": [
+          "Every visible child appendage, branch, limb, handle, connector, tube, cable, horn, wing, leg, or hinged part has an attachment contract with parent socket, localStart/localEnd, contact type, embed/overlap, and gap tolerance."
+        ],
+        "evidenceRefs": [
+          "full-object"
+        ],
+        "failureModes": [
+          "child part root floats away from the parent",
+          "branch/limb/tube is centered in space instead of pivoting from its root",
+          "parent-child transform mixes world and local coordinates"
+        ]
+      },
+      {
+        "id": "surface-material-response",
+        "name": "Surface material response",
+        "required": true,
+        "qualityCriteria": [
+          "Albedo zones, roughness, normal/bump/displacement intent, cavity dirt, edge wear, and local overrides are specified where visible.",
+          "Important materials define independent albedo, roughness, height/normal, and AO responses instead of reusing one texture for unrelated PBR channels.",
+          "Surface response is decomposed into macro, meso, and micro frequency bands with scale and amplitude tied to object scale."
+        ],
+        "evidenceRefs": [
+          "full-object"
+        ],
+        "failureModes": [
+          "surface looks like flat plastic",
+          "local material variation is missing or not tied to image evidence"
+        ]
+      },
+      {
+        "id": "reference-lookdev",
+        "name": "Reference color, material, and lighting response",
+        "required": true,
+        "qualityCriteria": [
+          "Material-pass names the reference-derived albedo palette, roughness variation, tactile normal/bump/displacement response, and local masks.",
+          "When a source image is available, run reference PBR extraction and require confidence >= 0.7 before treating maps as implementation-ready.",
+          "Lighting-pass names key/fill/rim or environment light, exposure, tone mapping, background, and contact shadow behavior.",
+          "Neutral, grazing-angle, and reference-matched renders prove that surface relief survives relighting and is not painted into albedo."
+        ],
+        "evidenceRefs": [
+          "full-object"
+        ],
+        "failureModes": [
+          "model has acceptable shape but reads as flat shaded or plastic",
+          "colors are a generic average instead of reference-observed local color zones",
+          "lighting is evenly ambient and cannot reproduce the source value range"
+        ]
+      }
+    ],
+    "visualDeltaChecks": [
+      "silhouette and negative-space delta",
+      "component hierarchy depth delta",
+      "repetition density and distribution delta",
+      "material albedo/roughness/normal response delta",
+      "local feature placement and scale delta"
+    ],
+    "antiShallowSpecRules": [
+      "Do not proceed to code if qualityContract.qualityBar is unassessed.",
+      "Do not proceed to code if the spec only contains a root component for a moderate or complex object.",
+      "Do not proceed to code if required featureGroups are not represented by componentTree, materials, or repetitionSystems.",
+      "Do not proceed to code if visible local features are described only in prose and not attached to components/materials/evidenceRefs.",
+      "Do not proceed past structural-pass if attached child parts lack attachment.parentSocket, localStart, localEnd, embedDepth/overlap, and gapTolerance.",
+      "Do not pass material look-dev when albedo is reused as roughness, height, normal, or AO.",
+      "Do not pass material look-dev without macro, meso, and micro surface frequency bands for close-up materials.",
+      "Do not pass reference-fidelity material look-dev from a source image without usable referencePbr maps or an explicit documented limitation.",
+      "Do not patch a spec with extracted PBR maps when extraction confidence is below the target threshold unless the user explicitly accepts lower fidelity.",
+      "Do not place adjacent separate-geometry parts below 0.02 world-unit seam overlap (source: grimoire/build/geometry_patterns.md).",
+      "Do not satisfy raised or recessed relief, fasteners, or grip structure with a map alone when the feature affects form; use geometry or displacement (source: grimoire/build/geometry_patterns.md).",
+      "Adjacent components must overlap by at least 0.02 world units at shared seams (source: grimoire/build/geometry_patterns.md).",
+      "Raised or recessed relief and fasteners must be geometry, instanced micro-parts, or displacement; a map alone is an approximation (source: grimoire/build/geometry_patterns.md)."
+    ],
+    "mustNotDo": [
+      "Do not proceed to code if qualityContract.qualityBar is unassessed.",
+      "Do not proceed to code if the spec only contains a root component for a moderate or complex object.",
+      "Do not proceed to code if required featureGroups are not represented by componentTree, materials, or repetitionSystems.",
+      "Do not proceed to code if visible local features are described only in prose and not attached to components/materials/evidenceRefs.",
+      "Do not proceed past structural-pass if attached child parts lack attachment.parentSocket, localStart, localEnd, embedDepth/overlap, and gapTolerance.",
+      "Do not pass material look-dev when albedo is reused as roughness, height, normal, or AO.",
+      "Do not pass material look-dev without macro, meso, and micro surface frequency bands for close-up materials.",
+      "Do not pass reference-fidelity material look-dev from a source image without usable referencePbr maps or an explicit documented limitation.",
+      "Do not patch a spec with extracted PBR maps when extraction confidence is below the target threshold unless the user explicitly accepts lower fidelity.",
+      "Do not place adjacent separate-geometry parts below 0.02 world-unit seam overlap (source: grimoire/build/geometry_patterns.md).",
+      "Do not satisfy raised or recessed relief, fasteners, or grip structure with a map alone when the feature affects form; use geometry or displacement (source: grimoire/build/geometry_patterns.md).",
+      "Adjacent components must overlap by at least 0.02 world units at shared seams (source: grimoire/build/geometry_patterns.md).",
+      "Raised or recessed relief and fasteners must be geometry, instanced micro-parts, or displacement; a map alone is an approximation (source: grimoire/build/geometry_patterns.md)."
+    ]
+  },
+  "qualityTargets": {
+    "targetFidelity": 0.7,
+    "mustMatch": [
+      "macro silhouette and proportions",
+      "primary material albedo/roughness response",
+      "reference-derived PBR material response at or above 0.7 confidence when source pixels are usable",
+      "most recognizable local features"
+    ],
+    "niceToHave": [
+      "micro scratches, stains, chips, and dirt masks",
+      "secondary lighting match"
+    ],
+    "fpsTarget": 60,
+    "reviewViewpoints": [
+      "front",
+      "three-quarter",
+      "side",
+      "thickness-axis",
+      "long-axis"
+    ]
+  },
+  "selfCorrectLoop": {
+    "enabled": true,
+    "visualAcceptance": {
+      "reviewer": "ai-vision",
+      "threshold": 0.7,
+      "comparisonArtifactRequired": true,
+      "layerScoresRequired": true,
+      "codePixelDiffIsAcceptanceAuthority": false,
+      "scoringRule": "AI vision must inspect a side-by-side reference/render sheet and score the current pass from 0 to 1. Pixel-diff code may assist diagnostics but cannot approve a pass.",
+      "requiredLayerScores": [
+        "silhouetteProportion",
+        "componentStructure",
+        "formDetail",
+        "materialSurface",
+        "lightingCamera"
+      ],
+      "featureReviewPolicy": {
+        "enabled": true,
+        "reviewUnit": "semantic-subsystem",
+        "maxCriticalFeaturesPerPass": 5,
+        "maxImportantFeaturesPerPass": 3,
+        "criticalDefaultThreshold": 0.8,
+        "importantAverageThreshold": 0.65,
+        "adaptiveEscalation": true,
+        "singleImagePairOnly": true,
+        "selectionRule": "Choose only the most visually salient, identity-defining, user-prioritized, or high-risk semantic systems. Group repeated parts instead of reviewing every mesh. AI vision scores every selected feature from the same full reference/render pair."
+      }
+    },
+    "reviewAfterPasses": [
+      "blockout",
+      "structural-pass",
+      "form-refinement",
+      "material-pass",
+      "surface-pass",
+      "lighting-pass",
+      "interaction-pass",
+      "optimization-pass"
+    ],
+    "allowedActions": [
+      "continue",
+      "refine-spec",
+      "refine-code",
+      "request-input",
+      "stop"
+    ],
+    "specRefineTriggers": [
+      "missing component",
+      "wrong primitive family",
+      "wrong proportions",
+      "material layer under-specified",
+      "local feature not traceable to viewEvidence",
+      "reference ambiguity discovered during implementation"
+    ],
+    "codeRefineTriggers": [
+      "spec is adequate but generated geometry/material does not match",
+      "browser render differs from reference",
+      "performance budget exceeded",
+      "lighting hides geometry or material response"
+    ],
+    "stopCriteria": [
+      "target fidelity reached or user accepts current approximation",
+      "remaining gaps require new reference images or manual art"
+    ],
+    "screenshotPolicy": {
+      "requiredForPasses": [
+        "blockout",
+        "structural-pass",
+        "form-refinement",
+        "material-pass",
+        "surface-pass",
+        "lighting-pass",
+        "interaction-pass"
+      ],
+      "preferredCapture": "in-app-browser-screenshot",
+      "fallbackCapture": "user-supplied-screenshot-path",
+      "minimumEvidence": "Each visual pass needs a reference image, rendered screenshot, side-by-side comparison sheet, AI vision score, layer scores, and critique before choosing continue.",
+      "reviewPairRule": "Compare the same camera/viewpoint whenever possible; do not judge a front reference against a random render angle.",
+      "acceptanceAuthority": "AI vision review of the comparison sheet. Code-generated pixel similarity is not sufficient evidence."
+    }
+  },
+  "featureReviewTargets": [
+    {
+      "id": "planform",
+      "name": "Planform: 32.5-degree leading edge, kinked trailing edge, pointed raked tips",
+      "tier": "critical",
+      "passIds": [
+        "blockout"
+      ],
+      "minimumScore": 0.8,
+      "mustPass": true,
+      "componentRefs": [
+        "wing-stbd",
+        "wing-port"
+      ],
+      "evidenceRefs": [
+        "top-view"
+      ]
+    },
+    {
+      "id": "hump",
+      "name": "Dorsal hump: steep front with intake, long tail to the exhaust",
+      "tier": "critical",
+      "passIds": [
+        "blockout",
+        "structural-pass"
+      ],
+      "minimumScore": 0.8,
+      "mustPass": true,
+      "componentRefs": [
+        "root"
+      ],
+      "evidenceRefs": [
+        "top-view",
+        "side-view"
+      ]
+    },
+    {
+      "id": "blisters",
+      "name": "Twin sensor blisters at 1.67 m",
+      "tier": "critical",
+      "passIds": [
+        "structural-pass"
+      ],
+      "minimumScore": 0.75,
+      "mustPass": true,
+      "componentRefs": [
+        "blister-stbd",
+        "blister-port"
+      ],
+      "evidenceRefs": [
+        "top-view",
+        "front-view"
+      ]
+    },
+    {
+      "id": "gear",
+      "name": "Tricycle gear: nose leg and tandem mains with doors",
+      "tier": "important",
+      "passIds": [
+        "structural-pass"
+      ],
+      "minimumScore": 0.7,
+      "mustPass": false,
+      "componentRefs": [
+        "nose-strut",
+        "main-strut-stbd",
+        "main-strut-port"
+      ],
+      "evidenceRefs": [
+        "front-view",
+        "side-view"
+      ]
+    },
+    {
+      "id": "thickness",
+      "name": "Section depth: 0.2 m tips to 1.0 m belly",
+      "tier": "important",
+      "passIds": [
+        "blockout"
+      ],
+      "minimumScore": 0.7,
+      "mustPass": false,
+      "componentRefs": [
+        "wing-stbd",
+        "root"
+      ],
+      "evidenceRefs": [
+        "front-view"
+      ]
+    }
+  ],
+  "sculptPipeline": {
+    "passGateMode": "locked-sequential",
+    "passOrder": [
+      "blockout",
+      "structural-pass",
+      "form-refinement",
+      "material-pass",
+      "surface-pass",
+      "lighting-pass",
+      "interaction-pass",
+      "optimization-pass"
+    ],
+    "currentPass": "blockout",
+    "completedPasses": [],
+    "lastCompletedPass": "",
+    "blockedReason": "blockout requires a browser screenshot and self-correction review before structural-pass unlocks",
+    "nextRequiredEvidence": [
+      "blockout browser render screenshot from your agent's browser/screenshot tool",
+      "side-by-side reference/render comparison sheet",
+      "AI vision score >= 0.7 with layer scores and mismatch critique",
+      "critical semantic feature scores from the same image pair meeting their individual thresholds",
+      "reviewHistory entry for blockout with action=continue"
+    ]
+  },
+  "lookDevTargets": {
+    "qualityPriority": "reference-fidelity",
+    "materialPass": {
+      "albedoPaletteRequired": true,
+      "roughnessVariationRequired": true,
+      "normalOrBumpRequired": true,
+      "localOverridesRequired": true,
+      "minimumTextureResolution": 1024,
+      "preferredTextureResolution": 2048,
+      "independentMapChannels": [
+        "albedo",
+        "roughness",
+        "height",
+        "normal",
+        "ambient-occlusion"
+      ],
+      "requiredSurfaceFrequencyBands": [
+        "macro",
+        "meso",
+        "micro"
+      ],
+      "geometryReliefRequiredWhenSilhouetteAffected": true,
+      "referencePbrExtraction": {
+        "requiredWhenSourceImagePresent": true,
+        "targetThreshold": 0.7,
+        "stopOnLowConfidence": true,
+        "script": "forge/stage1_intake/extract_pbr_evidence.py",
+        "acceptedLimitation": "single-image extraction is reference-derived inference, not exact photogrammetry"
+      },
+      "mustAvoid": [
+        "single flat albedo per material",
+        "uniform roughness",
+        "albedo texture reused as roughness/height/normal/AO",
+        "single-frequency random noise",
+        "plastic-looking smooth bark, stone, cloth, foliage, or aged material",
+        "local color/detail described only in prose without material masks",
+        "claiming exact PBR recovery when confidence is below the target threshold"
+      ]
+    },
+    "lightingPass": {
+      "requiredTerms": [
+        "key light",
+        "fill light",
+        "rim or environment light",
+        "exposure",
+        "tone mapping",
+        "background",
+        "contact shadow"
+      ],
+      "mustAvoid": [
+        "ambient-only lighting",
+        "flat value range",
+        "missing contact shadow",
+        "reference lighting copied without separating material readability"
+      ]
+    },
+    "screenshotReview": [
+      "Compare albedo palette and local color zones.",
+      "Compare roughness/normal/bump response under light.",
+      "Compare cavity dirt, edge wear, stains, moss, scratches, or other local masks.",
+      "Compare key/fill/rim structure, exposure, tone mapping, background, and contact shadows.",
+      "Capture a neutral-light render to verify material readability without reference lighting.",
+      "Capture a grazing-light close-up to expose flat normals, uniform roughness, tiling, and plastic highlights.",
+      "Capture a reference-matched render from the same camera framing as the source."
+    ]
+  },
+  "actionReadiness": {
+    "contract": "Every macro/meso component should be generated as a stable named Object3D pivot node with a mesh child, action metadata, optional sockets, collider proxy, and destruction metadata.",
+    "defaultRigType": "action-ready-static-rig",
+    "rootMotionNode": "root",
+    "requiredComponentFields": [
+      "id",
+      "parent",
+      "transform",
+      "attachment for child appendages, connectors, limbs, tubes, handles, legs, horns, wings, branches, or cables",
+      "actionProfile.animationRole",
+      "actionProfile.pivot",
+      "actionProfile.collider",
+      "actionProfile.destruction"
+    ],
+    "transformChannels": [
+      "translate",
+      "rotate",
+      "scale",
+      "bend",
+      "twist",
+      "detach",
+      "visibility",
+      "material-state"
+    ],
+    "authoringRules": [
+      "Do not collapse independently movable parts into one mesh.",
+      "Put transforms on component pivot groups, not only on raw meshes.",
+      "For attached child parts, put the pivot at the semantic root/socket and build visible geometry from localStart to localEnd.",
+      "Represent hinge, socket, detachable, and breakable intent even when no animation is implemented yet.",
+      "Use simplified collider proxies for runtime physics instead of visual mesh colliders by default."
+    ],
+    "destructionPolicy": {
+      "defaultBreakable": false,
+      "fractureGroupNaming": "Use stable semantic names such as body-shell, left-hinge, glass-panel, branch-segment.",
+      "debrisStrategy": "Prefer detachable component groups and a small number of procedural fragments over random mesh explosion."
+    }
+  },
+  "assumptions": [
+    "Wingspan set to 20 m; the drawing gives proportions only, so every absolute size scales with it.",
+    "The three-view drawing is the geometry source; the render sheet only settles what the drawing hides (gear layout, blister taper direction).",
+    "Nose points -Z. In the top view the planform apex is the nose and the dark oval behind it is the dorsal intake.",
+    "Upper wing surface is flat at y=0; all thickness growth toward the root is on the underside, as the front view draws it.",
+    "Landing gear is modelled extended, on the ground line of the front view (wheels 1.86 m below the wing upper surface).",
+    "Nose gear placed 2.0 m aft of the nose from the render sheet; the drawing's side view puts it under the nose apex, which is not believed.",
+    "Sensor blisters taper aft (fat end forward) as in the drawing; the render sheet is ambiguous about this.",
+    "Main gear has tandem twin wheels per leg, from the render sheet's side view.",
+    "Hump peak 2.3 m aft of the nose from the side view; the side view's own length disagrees with the top view by 15 %, so it is used for ratios only."
+  ],
+  "coordinateFrame": {
+    "front": "-Z (nose)",
+    "up": "+Y",
+    "scaleReference": "20 m span assumed; proportions measured, absolute scale is not",
+    "units": "meters"
+  },
+  "silhouette": {
+    "boundingShape": "",
+    "aspectRatios": [],
+    "symmetry": "",
+    "dominantCurves": [],
+    "negativeSpaces": [],
+    "landmarks": []
+  },
+  "viewEvidence": [
+    {
+      "id": "top-view",
+      "source": "ref/three-view.png",
+      "viewpoint": "top",
+      "region": [
+        0.03,
+        0.05,
+        0.97,
+        0.72
+      ]
+    },
+    {
+      "id": "side-view",
+      "source": "ref/three-view.png",
+      "viewpoint": "side",
+      "region": [
+        0.68,
+        0.48,
+        0.98,
+        0.72
+      ]
+    },
+    {
+      "id": "front-view",
+      "source": "ref/three-view.png",
+      "viewpoint": "front",
+      "region": [
+        0.03,
+        0.73,
+        0.97,
+        0.94
+      ]
+    },
+    {
+      "id": "render-top",
+      "source": "ref/render-sheet.png",
+      "viewpoint": "three-quarter-top",
+      "region": [
+        0.3,
+        0.2,
+        0.96,
+        0.7
+      ]
+    }
+  ],
+  "componentTree": [
+    {
+      "id": "root",
+      "name": "Centre body (hull, dorsal hump, carved intake, blunt tail)",
+      "level": "macro",
+      "role": "body",
+      "importance": 1.0,
+      "confidence": 0.8,
+      "primitive": "ellipsoid",
+      "topologyClass": "implicit",
+      "topologyRationale": "A blended lens with a dorsal hump and a blunt tail; only a smooth-union field gives the hump-to-hull fillet the render shows.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry",
+        "sdf": {
+          "primitives": [
+            {
+              "id": "hull",
+              "type": "ellipsoid",
+              "center": [
+                0,
+                -0.59,
+                -0.7
+              ],
+              "radii": [
+                1.75,
+                0.44,
+                2.7
+              ]
+            },
+            {
+              "id": "tail",
+              "type": "box",
+              "center": [
+                0,
+                -0.28,
+                1.85
+              ],
+              "size": [
+                1.3,
+                0.5,
+                1.3
+              ]
+            },
+            {
+              "id": "hump-head",
+              "type": "ellipsoid",
+              "center": [
+                0,
+                -0.12,
+                -1.4
+              ],
+              "radii": [
+                0.9,
+                0.62,
+                1.5
+              ]
+            },
+            {
+              "id": "hump-tail",
+              "type": "ellipsoid",
+              "center": [
+                0,
+                -0.15,
+                0.5
+              ],
+              "radii": [
+                0.62,
+                0.45,
+                1.9
+              ]
+            },
+            {
+              "id": "intake",
+              "type": "box",
+              "center": [
+                0,
+                0.2,
+                -2.5
+              ],
+              "size": [
+                0.7,
+                0.16,
+                0.4
+              ]
+            }
+          ],
+          "operations": [
+            {
+              "type": "smooth-union",
+              "left": "hull",
+              "right": "tail",
+              "radius": 0.45,
+              "output": "u0"
+            },
+            {
+              "type": "smooth-union",
+              "left": "u0",
+              "right": "hump-head",
+              "radius": 0.35,
+              "output": "u1"
+            },
+            {
+              "type": "smooth-union",
+              "left": "u1",
+              "right": "hump-tail",
+              "radius": 0.35,
+              "output": "u2"
+            },
+            {
+              "type": "subtract",
+              "left": "u2",
+              "right": "intake",
+              "output": "body"
+            }
+          ],
+          "resolution": 64,
+          "bounds": {
+            "min": [
+              -2.0,
+              -1.2,
+              -3.5
+            ],
+            "max": [
+              2.0,
+              0.7,
+              2.8
+            ]
+          }
+        }
+      },
+      "parent": null,
+      "attachment": null,
+      "dimensions": {
+        "width": 4.0,
+        "height": 1.6,
+        "depth": 6.6,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "root",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "airframe",
+      "materialLayers": [
+        "airframe"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [
+        {
+          "id": "intake-mouth",
+          "name": "Dorsal intake mouth",
+          "kind": "hole",
+          "description": "dark opening carved into the front face of the hump, 1.1 m aft of the nose"
+        },
+        {
+          "id": "hump-contour",
+          "name": "Dorsal hump",
+          "kind": "contour",
+          "description": "steep front, long tail fairing to the trailing edge, peak 0.5 m above the wing at 2.3 m aft"
+        },
+        {
+          "id": "bay-door-outline",
+          "name": "Bay dotted outline",
+          "kind": "linework",
+          "description": "dotted rectangular panel line on the belly aft of the nose gear"
+        }
+      ],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view",
+        "front-view",
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(189, 185, 178, 1.0)",
+        "secondaryAlbedo": "rgba(160, 156, 150, 1.0)",
+        "materialClass": "plastic",
+        "materialClassConfidence": 0.7,
+        "evidence": "composite skin reads as matte light grey in both references"
+      }
+    },
+    {
+      "id": "wing-stbd",
+      "name": "Wing (starboard)",
+      "level": "macro",
+      "role": "wing",
+      "importance": 1.0,
+      "confidence": 0.85,
+      "primitive": "tapered-sweep",
+      "topologyClass": "continuous-sculpt",
+      "topologyRationale": "One continuous lifting surface from centreline to a pointed tip; chord and thickness both taper, which no constant-section primitive can express.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry",
+        "taperedSweep": {
+          "stations": [
+            {
+              "position": [
+                0.0,
+                -0.475,
+                -0.57
+              ],
+              "rx": 3.13,
+              "rz": 0.475,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                0.35,
+                -0.465,
+                -0.57
+              ],
+              "rx": 2.4534,
+              "rz": 0.465,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                1.0,
+                -0.4464,
+                -0.0063
+              ],
+              "rx": 2.6592,
+              "rz": 0.4464,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                1.75,
+                -0.425,
+                -0.1008
+              ],
+              "rx": 2.3292,
+              "rz": 0.425,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                2.5,
+                -0.3694,
+                0.1589
+              ],
+              "rx": 2.0038,
+              "rz": 0.3694,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                3.3,
+                -0.31,
+                0.3109
+              ],
+              "rx": 1.6667,
+              "rz": 0.31,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                4.5,
+                -0.2656,
+                0.7732
+              ],
+              "rx": 1.3657,
+              "rz": 0.2656,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                6.0,
+                -0.21,
+                1.515
+              ],
+              "rx": 1.1765,
+              "rz": 0.21,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                7.5,
+                -0.18,
+                2.2501
+              ],
+              "rx": 0.9885,
+              "rz": 0.18,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                9.0,
+                -0.15,
+                2.9824
+              ],
+              "rx": 0.8011,
+              "rz": 0.15,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                9.6,
+                -0.12,
+                3.197
+              ],
+              "rx": 0.4463,
+              "rz": 0.12,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                10.0,
+                -0.0,
+                3.35
+              ],
+              "rx": 0.0,
+              "rz": 0.0,
+              "twist": 0.0
+            }
+          ],
+          "radialSegments": 24,
+          "capEnds": true
+        }
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "wing-stbd-mount",
+        "localStart": [
+          0,
+          0,
+          0
+        ],
+        "localEnd": [
+          0,
+          0,
+          0
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 10.0,
+        "height": 0.95,
+        "depth": 7.5,
+        "units": "meters",
+        "confidence": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "airframe",
+      "materialLayers": [
+        "airframe"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [
+        {
+          "id": "elevon-lines-stbd",
+          "name": "Outboard elevon panel lines",
+          "kind": "linework",
+          "description": "two chordwise lines at 60 % and 88 % span bounding the elevon"
+        },
+        {
+          "id": "root-seam-stbd",
+          "name": "Wing-root panel seam",
+          "kind": "seam",
+          "description": "chordwise seam where the wing skin meets the body fairing at 1.75 m"
+        }
+      ],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view",
+        "front-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(189, 185, 178, 1.0)",
+        "secondaryAlbedo": "rgba(160, 156, 150, 1.0)",
+        "materialClass": "plastic",
+        "materialClassConfidence": 0.7,
+        "evidence": "composite skin reads as matte light grey in both references"
+      }
+    },
+    {
+      "id": "wing-port",
+      "name": "Wing (port)",
+      "level": "macro",
+      "role": "wing",
+      "importance": 1.0,
+      "confidence": 0.85,
+      "primitive": "tapered-sweep",
+      "topologyClass": "continuous-sculpt",
+      "topologyRationale": "One continuous lifting surface from centreline to a pointed tip; chord and thickness both taper, which no constant-section primitive can express.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry",
+        "taperedSweep": {
+          "stations": [
+            {
+              "position": [
+                -0.0,
+                -0.475,
+                -0.57
+              ],
+              "rx": 3.13,
+              "rz": 0.475,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -0.35,
+                -0.465,
+                -0.57
+              ],
+              "rx": 2.4534,
+              "rz": 0.465,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -1.0,
+                -0.4464,
+                -0.0063
+              ],
+              "rx": 2.6592,
+              "rz": 0.4464,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -1.75,
+                -0.425,
+                -0.1008
+              ],
+              "rx": 2.3292,
+              "rz": 0.425,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -2.5,
+                -0.3694,
+                0.1589
+              ],
+              "rx": 2.0038,
+              "rz": 0.3694,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -3.3,
+                -0.31,
+                0.3109
+              ],
+              "rx": 1.6667,
+              "rz": 0.31,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -4.5,
+                -0.2656,
+                0.7732
+              ],
+              "rx": 1.3657,
+              "rz": 0.2656,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -6.0,
+                -0.21,
+                1.515
+              ],
+              "rx": 1.1765,
+              "rz": 0.21,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -7.5,
+                -0.18,
+                2.2501
+              ],
+              "rx": 0.9885,
+              "rz": 0.18,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -9.0,
+                -0.15,
+                2.9824
+              ],
+              "rx": 0.8011,
+              "rz": 0.15,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -9.6,
+                -0.12,
+                3.197
+              ],
+              "rx": 0.4463,
+              "rz": 0.12,
+              "twist": 0.0
+            },
+            {
+              "position": [
+                -10.0,
+                -0.0,
+                3.35
+              ],
+              "rx": 0.0,
+              "rz": 0.0,
+              "twist": 0.0
+            }
+          ],
+          "radialSegments": 24,
+          "capEnds": true
+        }
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "wing-port-mount",
+        "localStart": [
+          0,
+          0,
+          0
+        ],
+        "localEnd": [
+          0,
+          0,
+          0
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 10.0,
+        "height": 0.95,
+        "depth": 7.5,
+        "units": "meters",
+        "confidence": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "airframe",
+      "materialLayers": [
+        "airframe"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [
+        {
+          "id": "elevon-lines-port",
+          "name": "Outboard elevon panel lines",
+          "kind": "linework",
+          "description": "two chordwise lines at 60 % and 88 % span bounding the elevon"
+        },
+        {
+          "id": "root-seam-port",
+          "name": "Wing-root panel seam",
+          "kind": "seam",
+          "description": "chordwise seam where the wing skin meets the body fairing at 1.75 m"
+        }
+      ],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view",
+        "front-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(189, 185, 178, 1.0)",
+        "secondaryAlbedo": "rgba(160, 156, 150, 1.0)",
+        "materialClass": "plastic",
+        "materialClassConfidence": 0.7,
+        "evidence": "composite skin reads as matte light grey in both references"
+      }
+    },
+    {
+      "id": "exhaust",
+      "name": "Trailing-edge exhaust",
+      "level": "meso",
+      "role": "nozzle",
+      "importance": 0.7,
+      "confidence": 0.8,
+      "primitive": "box",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "A dark box sunk into the blunt tail end, flush with the trailing-edge face.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "exhaust-mount",
+        "localStart": [
+          0,
+          -0.08,
+          2.3
+        ],
+        "localEnd": [
+          0,
+          -0.08,
+          2.3
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.95,
+        "height": 0.26,
+        "depth": 0.4,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          0,
+          -0.08,
+          2.3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [
+        {
+          "id": "exhaust-inset",
+          "name": "Trailing-edge exhaust slot",
+          "kind": "decal",
+          "description": "rectangular dark slot at the centre trailing edge"
+        }
+      ],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view",
+        "render-top"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    },
+    {
+      "id": "blister-stbd",
+      "name": "Sensor fairing (stbd)",
+      "level": "meso",
+      "role": "fairing",
+      "importance": 0.8,
+      "confidence": 0.8,
+      "primitive": "ellipsoid",
+      "topologyClass": "implicit",
+      "topologyRationale": "A teardrop that fairs into the skin: rounded front, tapered tail, blended base.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry",
+        "sdf": {
+          "primitives": [
+            {
+              "id": "head",
+              "type": "ellipsoid",
+              "center": [
+                0,
+                0,
+                -0.7
+              ],
+              "radii": [
+                0.5,
+                0.42,
+                0.65
+              ]
+            },
+            {
+              "id": "tail",
+              "type": "ellipsoid",
+              "center": [
+                0,
+                -0.08,
+                0.3
+              ],
+              "radii": [
+                0.34,
+                0.28,
+                1.0
+              ]
+            }
+          ],
+          "operations": [
+            {
+              "type": "smooth-union",
+              "left": "head",
+              "right": "tail",
+              "radius": 0.3,
+              "output": "blister"
+            }
+          ],
+          "resolution": 40,
+          "bounds": {
+            "min": [
+              -0.6,
+              -0.5,
+              -1.45
+            ],
+            "max": [
+              0.6,
+              0.5,
+              1.4
+            ]
+          }
+        }
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "blister-stbd-mount",
+        "localStart": [
+          1.67,
+          -0.02,
+          -0.45
+        ],
+        "localEnd": [
+          1.67,
+          -0.02,
+          -0.45
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 1.0,
+        "height": 0.45,
+        "depth": 2.4,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          1.67,
+          -0.02,
+          -0.45
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "airframe",
+      "materialLayers": [
+        "airframe"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view",
+        "front-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(189, 185, 178, 1.0)",
+        "secondaryAlbedo": "rgba(160, 156, 150, 1.0)",
+        "materialClass": "plastic",
+        "materialClassConfidence": 0.7,
+        "evidence": "composite skin reads as matte light grey in both references"
+      }
+    },
+    {
+      "id": "blister-port",
+      "name": "Sensor fairing (port)",
+      "level": "meso",
+      "role": "fairing",
+      "importance": 0.8,
+      "confidence": 0.8,
+      "primitive": "ellipsoid",
+      "topologyClass": "implicit",
+      "topologyRationale": "A teardrop that fairs into the skin: rounded front, tapered tail, blended base.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry",
+        "sdf": {
+          "primitives": [
+            {
+              "id": "head",
+              "type": "ellipsoid",
+              "center": [
+                0,
+                0,
+                -0.7
+              ],
+              "radii": [
+                0.5,
+                0.42,
+                0.65
+              ]
+            },
+            {
+              "id": "tail",
+              "type": "ellipsoid",
+              "center": [
+                0,
+                -0.08,
+                0.3
+              ],
+              "radii": [
+                0.34,
+                0.28,
+                1.0
+              ]
+            }
+          ],
+          "operations": [
+            {
+              "type": "smooth-union",
+              "left": "head",
+              "right": "tail",
+              "radius": 0.3,
+              "output": "blister"
+            }
+          ],
+          "resolution": 40,
+          "bounds": {
+            "min": [
+              -0.6,
+              -0.5,
+              -1.45
+            ],
+            "max": [
+              0.6,
+              0.5,
+              1.4
+            ]
+          }
+        }
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "blister-port-mount",
+        "localStart": [
+          -1.67,
+          -0.02,
+          -0.45
+        ],
+        "localEnd": [
+          -1.67,
+          -0.02,
+          -0.45
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 1.0,
+        "height": 0.45,
+        "depth": 2.4,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.67,
+          -0.02,
+          -0.45
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "airframe",
+      "materialLayers": [
+        "airframe"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view",
+        "front-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(189, 185, 178, 1.0)",
+        "secondaryAlbedo": "rgba(160, 156, 150, 1.0)",
+        "materialClass": "plastic",
+        "materialClassConfidence": 0.7,
+        "evidence": "composite skin reads as matte light grey in both references"
+      }
+    },
+    {
+      "id": "nose-strut",
+      "name": "Nose gear strut",
+      "level": "meso",
+      "role": "gear",
+      "importance": 0.5,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "Machined oleo leg.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "nose-strut-mount",
+        "localStart": [
+          0,
+          -1.2,
+          -1.7
+        ],
+        "localEnd": [
+          0,
+          -1.2,
+          -1.7
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.12,
+        "height": 0.7,
+        "depth": 0.12,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          0,
+          -1.2,
+          -1.7
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "gear-metal",
+      "materialLayers": [
+        "gear-metal"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "front-view",
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(214, 214, 211, 1.0)",
+        "secondaryAlbedo": "rgba(150, 150, 148, 1.0)",
+        "materialClass": "metal",
+        "materialClassConfidence": 0.7,
+        "evidence": "gear struts in the render sheet"
+      }
+    },
+    {
+      "id": "nose-wheel",
+      "name": "Nose wheel",
+      "level": "meso",
+      "role": "wheel",
+      "importance": 0.5,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "A tyre is a short cylinder on a lateral axle.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "nose-wheel-mount",
+        "localStart": [
+          0,
+          -1.6,
+          -1.7
+        ],
+        "localEnd": [
+          0,
+          -1.6,
+          -1.7
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.52,
+        "height": 0.18,
+        "depth": 0.52,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          0,
+          -1.6,
+          -1.7
+        ],
+        "rotation": [
+          0,
+          0,
+          1.5707963267948966
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "front-view",
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    },
+    {
+      "id": "nose-door",
+      "name": "Nose gear door",
+      "level": "meso",
+      "role": "door",
+      "importance": 0.4,
+      "confidence": 0.8,
+      "primitive": "box",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "Thin hinged panel hanging beside the leg.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "nose-door-mount",
+        "localStart": [
+          0.32,
+          -1.35,
+          -1.7
+        ],
+        "localEnd": [
+          0.32,
+          -1.35,
+          -1.7
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.04,
+        "height": 0.75,
+        "depth": 0.95,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          0.32,
+          -1.35,
+          -1.7
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "airframe",
+      "materialLayers": [
+        "airframe"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(189, 185, 178, 1.0)",
+        "secondaryAlbedo": "rgba(160, 156, 150, 1.0)",
+        "materialClass": "plastic",
+        "materialClassConfidence": 0.7,
+        "evidence": "composite skin reads as matte light grey in both references"
+      }
+    },
+    {
+      "id": "main-strut-stbd",
+      "name": "Main gear strut (stbd)",
+      "level": "meso",
+      "role": "gear",
+      "importance": 0.5,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "Machined oleo leg.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-strut-stbd-mount",
+        "localStart": [
+          1.85,
+          -1.15,
+          0.5
+        ],
+        "localEnd": [
+          1.85,
+          -1.15,
+          0.5
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.14,
+        "height": 0.6,
+        "depth": 0.14,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          1.85,
+          -1.15,
+          0.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "gear-metal",
+      "materialLayers": [
+        "gear-metal"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "front-view",
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(214, 214, 211, 1.0)",
+        "secondaryAlbedo": "rgba(150, 150, 148, 1.0)",
+        "materialClass": "metal",
+        "materialClassConfidence": 0.7,
+        "evidence": "gear struts in the render sheet"
+      }
+    },
+    {
+      "id": "main-bogie-stbd",
+      "name": "Main gear bogie beam (stbd)",
+      "level": "meso",
+      "role": "gear",
+      "importance": 0.3,
+      "confidence": 0.8,
+      "primitive": "box",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "Beam carrying the tandem wheels.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-bogie-stbd-mount",
+        "localStart": [
+          1.85,
+          -1.45,
+          0.5
+        ],
+        "localEnd": [
+          1.85,
+          -1.45,
+          0.5
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.1,
+        "height": 0.1,
+        "depth": 1.0,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          1.85,
+          -1.45,
+          0.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "gear-metal",
+      "materialLayers": [
+        "gear-metal"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(214, 214, 211, 1.0)",
+        "secondaryAlbedo": "rgba(150, 150, 148, 1.0)",
+        "materialClass": "metal",
+        "materialClassConfidence": 0.7,
+        "evidence": "gear struts in the render sheet"
+      }
+    },
+    {
+      "id": "main-wheel-stbd-fwd",
+      "name": "Main wheel (stbd, fwd)",
+      "level": "meso",
+      "role": "wheel",
+      "importance": 0.5,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "A tyre is a short cylinder on a lateral axle.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-wheel-stbd-fwd-mount",
+        "localStart": [
+          1.85,
+          -1.56,
+          0.08
+        ],
+        "localEnd": [
+          1.85,
+          -1.56,
+          0.08
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.6,
+        "height": 0.24,
+        "depth": 0.6,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          1.85,
+          -1.56,
+          0.08
+        ],
+        "rotation": [
+          0,
+          0,
+          1.5707963267948966
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "front-view",
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    },
+    {
+      "id": "main-wheel-stbd-aft",
+      "name": "Main wheel (stbd, aft)",
+      "level": "meso",
+      "role": "wheel",
+      "importance": 0.5,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "A tyre is a short cylinder on a lateral axle.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-wheel-stbd-aft-mount",
+        "localStart": [
+          1.85,
+          -1.56,
+          0.92
+        ],
+        "localEnd": [
+          1.85,
+          -1.56,
+          0.92
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.6,
+        "height": 0.24,
+        "depth": 0.6,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          1.85,
+          -1.56,
+          0.92
+        ],
+        "rotation": [
+          0,
+          0,
+          1.5707963267948966
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "front-view",
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    },
+    {
+      "id": "main-door-stbd",
+      "name": "Main gear bay door (stbd)",
+      "level": "meso",
+      "role": "door",
+      "importance": 0.4,
+      "confidence": 0.8,
+      "primitive": "box",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "Large flat panel hanging outboard of the leg.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-door-stbd-mount",
+        "localStart": [
+          2.35,
+          -1.3,
+          0.5
+        ],
+        "localEnd": [
+          2.35,
+          -1.3,
+          0.5
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.04,
+        "height": 0.7,
+        "depth": 1.3,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          2.35,
+          -1.3,
+          0.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "airframe",
+      "materialLayers": [
+        "airframe"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(189, 185, 178, 1.0)",
+        "secondaryAlbedo": "rgba(160, 156, 150, 1.0)",
+        "materialClass": "plastic",
+        "materialClassConfidence": 0.7,
+        "evidence": "composite skin reads as matte light grey in both references"
+      }
+    },
+    {
+      "id": "main-strut-port",
+      "name": "Main gear strut (port)",
+      "level": "meso",
+      "role": "gear",
+      "importance": 0.5,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "Machined oleo leg.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-strut-port-mount",
+        "localStart": [
+          -1.85,
+          -1.15,
+          0.5
+        ],
+        "localEnd": [
+          -1.85,
+          -1.15,
+          0.5
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.14,
+        "height": 0.6,
+        "depth": 0.14,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.85,
+          -1.15,
+          0.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "gear-metal",
+      "materialLayers": [
+        "gear-metal"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "front-view",
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(214, 214, 211, 1.0)",
+        "secondaryAlbedo": "rgba(150, 150, 148, 1.0)",
+        "materialClass": "metal",
+        "materialClassConfidence": 0.7,
+        "evidence": "gear struts in the render sheet"
+      }
+    },
+    {
+      "id": "main-bogie-port",
+      "name": "Main gear bogie beam (port)",
+      "level": "meso",
+      "role": "gear",
+      "importance": 0.3,
+      "confidence": 0.8,
+      "primitive": "box",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "Beam carrying the tandem wheels.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-bogie-port-mount",
+        "localStart": [
+          -1.85,
+          -1.45,
+          0.5
+        ],
+        "localEnd": [
+          -1.85,
+          -1.45,
+          0.5
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.1,
+        "height": 0.1,
+        "depth": 1.0,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.85,
+          -1.45,
+          0.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "gear-metal",
+      "materialLayers": [
+        "gear-metal"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(214, 214, 211, 1.0)",
+        "secondaryAlbedo": "rgba(150, 150, 148, 1.0)",
+        "materialClass": "metal",
+        "materialClassConfidence": 0.7,
+        "evidence": "gear struts in the render sheet"
+      }
+    },
+    {
+      "id": "main-wheel-port-fwd",
+      "name": "Main wheel (port, fwd)",
+      "level": "meso",
+      "role": "wheel",
+      "importance": 0.5,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "A tyre is a short cylinder on a lateral axle.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-wheel-port-fwd-mount",
+        "localStart": [
+          -1.85,
+          -1.56,
+          0.08
+        ],
+        "localEnd": [
+          -1.85,
+          -1.56,
+          0.08
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.6,
+        "height": 0.24,
+        "depth": 0.6,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.85,
+          -1.56,
+          0.08
+        ],
+        "rotation": [
+          0,
+          0,
+          1.5707963267948966
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "front-view",
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    },
+    {
+      "id": "main-wheel-port-aft",
+      "name": "Main wheel (port, aft)",
+      "level": "meso",
+      "role": "wheel",
+      "importance": 0.5,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "A tyre is a short cylinder on a lateral axle.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-wheel-port-aft-mount",
+        "localStart": [
+          -1.85,
+          -1.56,
+          0.92
+        ],
+        "localEnd": [
+          -1.85,
+          -1.56,
+          0.92
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.6,
+        "height": 0.24,
+        "depth": 0.6,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.85,
+          -1.56,
+          0.92
+        ],
+        "rotation": [
+          0,
+          0,
+          1.5707963267948966
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "front-view",
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    },
+    {
+      "id": "main-door-port",
+      "name": "Main gear bay door (port)",
+      "level": "meso",
+      "role": "door",
+      "importance": 0.4,
+      "confidence": 0.8,
+      "primitive": "box",
+      "topologyClass": "assembled-solid",
+      "topologyRationale": "Large flat panel hanging outboard of the leg.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "root",
+      "attachment": {
+        "parentId": "root",
+        "parentSocket": "main-door-port-mount",
+        "localStart": [
+          -2.35,
+          -1.3,
+          0.5
+        ],
+        "localEnd": [
+          -2.35,
+          -1.3,
+          0.5
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.04,
+        "height": 0.7,
+        "depth": 1.3,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          -2.35,
+          -1.3,
+          0.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "airframe",
+      "materialLayers": [
+        "airframe"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "side-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(189, 185, 178, 1.0)",
+        "secondaryAlbedo": "rgba(160, 156, 150, 1.0)",
+        "materialClass": "plastic",
+        "materialClassConfidence": 0.7,
+        "evidence": "composite skin reads as matte light grey in both references"
+      }
+    },
+    {
+      "id": "roundel-stbd",
+      "name": "National roundel (stbd)",
+      "level": "micro",
+      "role": "marking",
+      "importance": 0.4,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "surface-relief",
+      "topologyRationale": "A flat disc a few millimetres proud of the skin stands in for the decal until the material pass.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "wing-stbd",
+      "attachment": {
+        "parentId": "wing-stbd",
+        "parentSocket": "roundel-stbd-mount",
+        "localStart": [
+          5.0,
+          0.004,
+          0.9443
+        ],
+        "localEnd": [
+          5.0,
+          0.004,
+          0.9443
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.8,
+        "height": 0.008,
+        "depth": 0.8,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          5.0,
+          0.004,
+          0.9443
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [
+        {
+          "id": "roundel-decal-stbd",
+          "name": "Star-and-bars roundel",
+          "kind": "decal",
+          "description": "US national insignia at 50 % span, mid-chord"
+        }
+      ],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    },
+    {
+      "id": "vent-stbd",
+      "name": "Wing vent slot (stbd)",
+      "level": "micro",
+      "role": "vent",
+      "importance": 0.2,
+      "confidence": 0.8,
+      "primitive": "box",
+      "topologyClass": "surface-relief",
+      "topologyRationale": "A shallow dark slot in the skin.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "wing-stbd",
+      "attachment": {
+        "parentId": "wing-stbd",
+        "parentSocket": "vent-stbd-mount",
+        "localStart": [
+          4.55,
+          0.005,
+          0.1029
+        ],
+        "localEnd": [
+          4.55,
+          0.005,
+          0.1029
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.14,
+        "height": 0.01,
+        "depth": 0.06,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          4.55,
+          0.005,
+          0.1029
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [
+        {
+          "id": "vent-groove-stbd",
+          "name": "Vent slot",
+          "kind": "groove",
+          "description": "small rectangular slot inboard of the roundel"
+        }
+      ],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    },
+    {
+      "id": "roundel-port",
+      "name": "National roundel (port)",
+      "level": "micro",
+      "role": "marking",
+      "importance": 0.4,
+      "confidence": 0.8,
+      "primitive": "cylinder",
+      "topologyClass": "surface-relief",
+      "topologyRationale": "A flat disc a few millimetres proud of the skin stands in for the decal until the material pass.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "wing-port",
+      "attachment": {
+        "parentId": "wing-port",
+        "parentSocket": "roundel-port-mount",
+        "localStart": [
+          -5.0,
+          0.004,
+          0.9443
+        ],
+        "localEnd": [
+          -5.0,
+          0.004,
+          0.9443
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.8,
+        "height": 0.008,
+        "depth": 0.8,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          -5.0,
+          0.004,
+          0.9443
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [
+        {
+          "id": "roundel-decal-port",
+          "name": "Star-and-bars roundel",
+          "kind": "decal",
+          "description": "US national insignia at 50 % span, mid-chord"
+        }
+      ],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    },
+    {
+      "id": "vent-port",
+      "name": "Wing vent slot (port)",
+      "level": "micro",
+      "role": "vent",
+      "importance": 0.2,
+      "confidence": 0.8,
+      "primitive": "box",
+      "topologyClass": "surface-relief",
+      "topologyRationale": "A shallow dark slot in the skin.",
+      "geometryDescriptor": {
+        "topologyIntent": "low-poly blockout with bevel-ready edges",
+        "edgeTreatment": {
+          "type": "none",
+          "bevelRadius": 0.0,
+          "segments": 1
+        },
+        "deformationStack": [],
+        "uvStrategy": "generated procedural coordinates",
+        "normalStrategy": "vertex normals from generated geometry"
+      },
+      "parent": "wing-port",
+      "attachment": {
+        "parentId": "wing-port",
+        "parentSocket": "vent-port-mount",
+        "localStart": [
+          -4.55,
+          0.005,
+          0.1029
+        ],
+        "localEnd": [
+          -4.55,
+          0.005,
+          0.1029
+        ],
+        "contactType": "flush",
+        "embedDepth": 0.05,
+        "gapTolerance": 0.01
+      },
+      "dimensions": {
+        "width": 0.14,
+        "height": 0.01,
+        "depth": 0.06,
+        "units": "meters",
+        "confidence": 0.8
+      },
+      "transform": {
+        "position": [
+          -4.55,
+          0.005,
+          0.1029
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ]
+      },
+      "actionProfile": {
+        "animationRole": "child",
+        "pivot": {
+          "mode": "center",
+          "localPosition": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            1,
+            0
+          ],
+          "confidence": 0.5
+        },
+        "transformChannels": {
+          "translate": true,
+          "rotate": true,
+          "scale": true,
+          "bend": false,
+          "twist": false,
+          "detach": false,
+          "visibility": true,
+          "materialState": true
+        },
+        "sockets": [],
+        "collider": {
+          "type": "box",
+          "offset": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "isTrigger": false,
+          "notes": "Replace with sphere/capsule/compound proxy when the object shape demands it."
+        },
+        "constraints": [],
+        "destruction": {
+          "breakable": false,
+          "fractureGroup": "root",
+          "seamRefs": [],
+          "detachableFragments": [],
+          "breakImpulse": 0.0,
+          "debrisMaterial": "base"
+        }
+      },
+      "material": "dark-polymer",
+      "materialLayers": [
+        "dark-polymer"
+      ],
+      "deformations": [],
+      "joints": [],
+      "seams": [],
+      "localFeatures": [
+        {
+          "id": "vent-groove-port",
+          "name": "Vent slot",
+          "kind": "groove",
+          "description": "small rectangular slot inboard of the roundel"
+        }
+      ],
+      "surfaceDetail": {
+        "macroRoughness": 0.0,
+        "microRoughness": 0.0,
+        "bumpAmplitude": 0.0,
+        "normalPattern": "",
+        "displacementPattern": "",
+        "occlusionPattern": "",
+        "edgeWearPattern": "",
+        "notes": ""
+      },
+      "evidenceRefs": [
+        "top-view"
+      ],
+      "details": [],
+      "fidelityTier": "blockout",
+      "colorMaterialRecipe": {
+        "dominantAlbedo": "rgba(43, 44, 46, 1.0)",
+        "secondaryAlbedo": "rgba(70, 70, 72, 1.0)",
+        "materialClass": "rubber",
+        "materialClassConfidence": 0.75,
+        "evidence": "tyres and duct interiors"
+      }
+    }
+  ],
+  "materials": [
+    {
+      "id": "airframe",
+      "name": "Low-observable composite skin",
+      "type": "standard",
+      "shaderModel": "MeshStandardMaterial / PBR approximation",
+      "baseColor": "#BDB9B2",
+      "color": "#BDB9B2",
+      "albedo": {
+        "dominant": "#BDB9B2",
+        "secondary": [
+          "#F5F5F5",
+          "#FAFAF9",
+          "#E1E1E0"
+        ],
+        "samplingNotes": "Reference-derived from foreground pixels; de-lit to reduce baked shadows/highlights.",
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_albedo.png",
+          "url": "pbr/airframe/airframe_albedo.png",
+          "channel": "albedo",
+          "source": "reference-pixel-extraction"
+        }
+      },
+      "colorVariation": {
+        "palette": [
+          "#F7F7F7",
+          "#F5F5F5",
+          "#FAFAF9",
+          "#E1E1E0",
+          "#EFEFEE"
+        ],
+        "pattern": "reference-derived pixel palette",
+        "amplitude": 0.0,
+        "heightCorrelation": 0.42
+      },
+      "textureResolution": 1024,
+      "textureProjection": {
+        "mode": "uv",
+        "repeat": [
+          1.0,
+          1.0
+        ],
+        "anisotropy": 8,
+        "texelDensityIntent": "Preserve stable world/object-scale detail; do not stretch micro detail with component scale."
+      },
+      "surfaceFrequencyBands": [
+        {
+          "id": "macro",
+          "frequency": 2.0,
+          "amplitude": 0.315,
+          "role": "reference-derived broad albedo and height breakup"
+        },
+        {
+          "id": "meso",
+          "frequency": 14.0,
+          "amplitude": 0.218,
+          "role": "reference-derived cracks, ridges, pores, grain, or leaf clusters"
+        },
+        {
+          "id": "micro",
+          "frequency": 72.0,
+          "amplitude": 0.094,
+          "role": "reference-derived micro highlight breakup under grazing light"
+        }
+      ],
+      "roughness": {
+        "base": 0.68,
+        "variation": 0.05,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_roughness.png",
+          "url": "pbr/airframe/airframe_roughness.png",
+          "channel": "roughness",
+          "source": "reference-pixel-extraction"
+        },
+        "localResponse": "reference-derived roughness estimate; cavities and textured zones trend rougher, bright highlights trend smoother"
+      },
+      "metalness": {
+        "base": 0.0,
+        "variation": 0.0
+      },
+      "normal": {
+        "pattern": "reference-derived height-gradient normal map",
+        "strength": 0.175,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_normal.png",
+          "url": "pbr/airframe/airframe_normal.png",
+          "channel": "normal",
+          "source": "reference-pixel-extraction"
+        },
+        "heightSource": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_height.png",
+          "url": "pbr/airframe/airframe_height.png",
+          "channel": "height",
+          "source": "reference-pixel-extraction"
+        },
+        "space": "tangent"
+      },
+      "bump": {
+        "pattern": "reference-derived height field",
+        "amplitude": 0.01,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_height.png",
+          "url": "pbr/airframe/airframe_height.png",
+          "channel": "height",
+          "source": "reference-pixel-extraction"
+        }
+      },
+      "displacement": {
+        "pattern": "none",
+        "amplitude": 0.0,
+        "scale": 1.0,
+        "silhouetteAffects": false
+      },
+      "ambientOcclusion": {
+        "cavityStrength": 0.38,
+        "contactShadowBias": 0.35,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_ao.png",
+          "url": "pbr/airframe/airframe_ao.png",
+          "channel": "ao",
+          "source": "reference-pixel-extraction"
+        },
+        "notes": "Reference-derived cavity estimate from local height minima; verify against grazing-light screenshot."
+      },
+      "wear": {
+        "edgeWear": 0.0,
+        "scratches": [],
+        "chips": []
+      },
+      "dirt": {
+        "amount": 0.0,
+        "cavityBias": 0.0,
+        "color": "#2F2A22"
+      },
+      "localOverrides": [
+        {
+          "id": "roundel-stbd",
+          "name": "Roundel starboard",
+          "region": "roundel-stbd",
+          "albedo": "#2B2C2E",
+          "roughness": 0.6,
+          "note": "decal, albedo only"
+        },
+        {
+          "id": "roundel-port",
+          "name": "Roundel port",
+          "region": "roundel-port",
+          "albedo": "#2B2C2E",
+          "roughness": 0.6,
+          "note": "decal, albedo only"
+        },
+        {
+          "id": "reference-pbr-pixel-evidence",
+          "type": "material-map-evidence",
+          "evidenceRefs": [
+            "full-object"
+          ],
+          "channels": [
+            "albedo",
+            "roughness",
+            "height",
+            "normal",
+            "ambient-occlusion"
+          ],
+          "notes": "Use generated maps as material evidence, then refine after browser screenshot comparison."
+        }
+      ],
+      "shaderNotes": [
+        "Prefer MeshPhysicalMaterial when clearcoat, sheen, transmission, or thin-surface response is observed; otherwise use MeshStandardMaterial-compatible PBR channels.",
+        "Generate albedo, roughness, height/normal, and AO independently; never alias albedo into roughness.",
+        "Use normal/bump/displacement only when they map to observed surface relief.",
+        "Use displacement geometry when the observed relief changes the close-up silhouette; texture-only relief is insufficient there.",
+        "Reference-derived maps are estimates from image pixels; verify with neutral, grazing, and reference-matched renders.",
+        "Do not treat baked image shadows as final albedo; rerun extraction with a tighter material crop if highlights/shadows pollute the maps."
+      ],
+      "notes": "Replace with image-derived color, roughness, noise, and edge-wear notes.",
+      "referencePbr": {
+        "version": "1.0",
+        "sourceImage": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\matcrops\\airframe.png",
+        "extractor": "stage1_intake/extract_pbr_evidence.py",
+        "method": "single-image pixel evidence with de-lighting estimate; not photogrammetry",
+        "usable": true,
+        "verdict": "pass",
+        "confidence": 0.743,
+        "estimatedFidelity": 0.743,
+        "targetThreshold": 0.6,
+        "hardLimit": "A single image cannot uniquely recover true albedo/roughness/normal/AO; maps are reference-derived estimates.",
+        "maps": {
+          "albedo": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_albedo.png",
+            "url": "pbr/airframe/airframe_albedo.png",
+            "channel": "albedo",
+            "source": "reference-pixel-extraction"
+          },
+          "roughness": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_roughness.png",
+            "url": "pbr/airframe/airframe_roughness.png",
+            "channel": "roughness",
+            "source": "reference-pixel-extraction"
+          },
+          "height": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_height.png",
+            "url": "pbr/airframe/airframe_height.png",
+            "channel": "height",
+            "source": "reference-pixel-extraction"
+          },
+          "normal": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_normal.png",
+            "url": "pbr/airframe/airframe_normal.png",
+            "channel": "normal",
+            "source": "reference-pixel-extraction"
+          },
+          "ao": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_ao.png",
+            "url": "pbr/airframe/airframe_ao.png",
+            "channel": "ao",
+            "source": "reference-pixel-extraction"
+          }
+        },
+        "diagnostics": {
+          "sourceWidth": 100,
+          "sourceHeight": 60,
+          "mapSize": 1024,
+          "cropBBoxPixels": {
+            "x": 0,
+            "y": 51,
+            "width": 61,
+            "height": 9
+          },
+          "mask": {
+            "backgroundColor": "#C0C0BE",
+            "backgroundNoise": 17.321,
+            "transparentPixelFraction": 0.0,
+            "foregroundCoverage": 0.0362
+          },
+          "mapStats": {
+            "valueRange": 0.0986,
+            "heightP90Gradient": 0.01623,
+            "roughnessBase": 0.68,
+            "roughnessVariation": 0.05,
+            "normalStrength": 0.175,
+            "blurRadius": 21
+          },
+          "palette": [
+            "#F7F7F7",
+            "#F5F5F5",
+            "#FAFAF9",
+            "#E1E1E0",
+            "#EFEFEE"
+          ]
+        },
+        "warnings": [
+          "foreground mask is very small",
+          "single-image inverse rendering cannot prove true physical PBR; confidence is capped",
+          "low value range weakens height/roughness inference"
+        ]
+      }
+    },
+    {
+      "id": "dark-polymer",
+      "name": "Tyres, duct interiors, markings",
+      "type": "standard",
+      "shaderModel": "MeshStandardMaterial / PBR approximation",
+      "baseColor": "#2B2C2E",
+      "color": "#2B2C2E",
+      "albedo": {
+        "dominant": "#2B2C2E",
+        "secondary": [
+          "#777776",
+          "#ABABAB",
+          "#333332"
+        ],
+        "samplingNotes": "Reference-derived from foreground pixels; de-lit to reduce baked shadows/highlights.",
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_albedo.png",
+          "url": "pbr/dark-polymer/dark-polymer_albedo.png",
+          "channel": "albedo",
+          "source": "reference-pixel-extraction"
+        }
+      },
+      "colorVariation": {
+        "palette": [
+          "#919190",
+          "#777776",
+          "#ABABAB",
+          "#333332",
+          "#E6E6E6"
+        ],
+        "pattern": "reference-derived pixel palette",
+        "amplitude": 0.0,
+        "heightCorrelation": 0.42
+      },
+      "textureResolution": 1024,
+      "textureProjection": {
+        "mode": "uv",
+        "repeat": [
+          1.0,
+          1.0
+        ],
+        "anisotropy": 8,
+        "texelDensityIntent": "Preserve stable world/object-scale detail; do not stretch micro detail with component scale."
+      },
+      "surfaceFrequencyBands": [
+        {
+          "id": "macro",
+          "frequency": 2.0,
+          "amplitude": 0.52,
+          "role": "reference-derived broad albedo and height breakup"
+        },
+        {
+          "id": "meso",
+          "frequency": 14.0,
+          "amplitude": 0.309,
+          "role": "reference-derived cracks, ridges, pores, grain, or leaf clusters"
+        },
+        {
+          "id": "micro",
+          "frequency": 72.0,
+          "amplitude": 0.14,
+          "role": "reference-derived micro highlight breakup under grazing light"
+        }
+      ],
+      "roughness": {
+        "base": 0.701,
+        "variation": 0.067,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_roughness.png",
+          "url": "pbr/dark-polymer/dark-polymer_roughness.png",
+          "channel": "roughness",
+          "source": "reference-pixel-extraction"
+        },
+        "localResponse": "reference-derived roughness estimate; cavities and textured zones trend rougher, bright highlights trend smoother"
+      },
+      "metalness": {
+        "base": 0.0,
+        "variation": 0.0
+      },
+      "normal": {
+        "pattern": "reference-derived height-gradient normal map",
+        "strength": 0.201,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_normal.png",
+          "url": "pbr/dark-polymer/dark-polymer_normal.png",
+          "channel": "normal",
+          "source": "reference-pixel-extraction"
+        },
+        "heightSource": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_height.png",
+          "url": "pbr/dark-polymer/dark-polymer_height.png",
+          "channel": "height",
+          "source": "reference-pixel-extraction"
+        },
+        "space": "tangent"
+      },
+      "bump": {
+        "pattern": "reference-derived height field",
+        "amplitude": 0.017,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_height.png",
+          "url": "pbr/dark-polymer/dark-polymer_height.png",
+          "channel": "height",
+          "source": "reference-pixel-extraction"
+        }
+      },
+      "displacement": {
+        "pattern": "none",
+        "amplitude": 0.0,
+        "scale": 1.0,
+        "silhouetteAffects": false
+      },
+      "ambientOcclusion": {
+        "cavityStrength": 0.38,
+        "contactShadowBias": 0.35,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_ao.png",
+          "url": "pbr/dark-polymer/dark-polymer_ao.png",
+          "channel": "ao",
+          "source": "reference-pixel-extraction"
+        },
+        "notes": "Reference-derived cavity estimate from local height minima; verify against grazing-light screenshot."
+      },
+      "wear": {
+        "edgeWear": 0.0,
+        "scratches": [],
+        "chips": []
+      },
+      "dirt": {
+        "amount": 0.0,
+        "cavityBias": 0.0,
+        "color": "#2F2A22"
+      },
+      "localOverrides": [
+        {
+          "id": "reference-pbr-pixel-evidence",
+          "type": "material-map-evidence",
+          "evidenceRefs": [
+            "full-object"
+          ],
+          "channels": [
+            "albedo",
+            "roughness",
+            "height",
+            "normal",
+            "ambient-occlusion"
+          ],
+          "notes": "Use generated maps as material evidence, then refine after browser screenshot comparison."
+        }
+      ],
+      "shaderNotes": [
+        "Prefer MeshPhysicalMaterial when clearcoat, sheen, transmission, or thin-surface response is observed; otherwise use MeshStandardMaterial-compatible PBR channels.",
+        "Generate albedo, roughness, height/normal, and AO independently; never alias albedo into roughness.",
+        "Use normal/bump/displacement only when they map to observed surface relief.",
+        "Use displacement geometry when the observed relief changes the close-up silhouette; texture-only relief is insufficient there.",
+        "Reference-derived maps are estimates from image pixels; verify with neutral, grazing, and reference-matched renders.",
+        "Do not treat baked image shadows as final albedo; rerun extraction with a tighter material crop if highlights/shadows pollute the maps."
+      ],
+      "notes": "Replace with image-derived color, roughness, noise, and edge-wear notes.",
+      "referencePbr": {
+        "version": "1.0",
+        "sourceImage": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\matcrops\\dark-polymer.png",
+        "extractor": "stage1_intake/extract_pbr_evidence.py",
+        "method": "single-image pixel evidence with de-lighting estimate; not photogrammetry",
+        "usable": true,
+        "verdict": "pass",
+        "confidence": 0.794,
+        "estimatedFidelity": 0.794,
+        "targetThreshold": 0.7,
+        "hardLimit": "A single image cannot uniquely recover true albedo/roughness/normal/AO; maps are reference-derived estimates.",
+        "maps": {
+          "albedo": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_albedo.png",
+            "url": "pbr/dark-polymer/dark-polymer_albedo.png",
+            "channel": "albedo",
+            "source": "reference-pixel-extraction"
+          },
+          "roughness": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_roughness.png",
+            "url": "pbr/dark-polymer/dark-polymer_roughness.png",
+            "channel": "roughness",
+            "source": "reference-pixel-extraction"
+          },
+          "height": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_height.png",
+            "url": "pbr/dark-polymer/dark-polymer_height.png",
+            "channel": "height",
+            "source": "reference-pixel-extraction"
+          },
+          "normal": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_normal.png",
+            "url": "pbr/dark-polymer/dark-polymer_normal.png",
+            "channel": "normal",
+            "source": "reference-pixel-extraction"
+          },
+          "ao": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_ao.png",
+            "url": "pbr/dark-polymer/dark-polymer_ao.png",
+            "channel": "ao",
+            "source": "reference-pixel-extraction"
+          }
+        },
+        "diagnostics": {
+          "sourceWidth": 30,
+          "sourceHeight": 30,
+          "mapSize": 1024,
+          "cropBBoxPixels": {
+            "x": 0,
+            "y": 0,
+            "width": 30,
+            "height": 30
+          },
+          "mask": {
+            "backgroundColor": "#3A3A3A",
+            "backgroundNoise": 193.99,
+            "transparentPixelFraction": 0.0,
+            "foregroundCoverage": 1.0
+          },
+          "mapStats": {
+            "valueRange": 0.6863,
+            "heightP90Gradient": 0.03778,
+            "roughnessBase": 0.701,
+            "roughnessVariation": 0.067,
+            "normalStrength": 0.201,
+            "blurRadius": 21
+          },
+          "palette": [
+            "#919190",
+            "#777776",
+            "#ABABAB",
+            "#333332",
+            "#E6E6E6"
+          ]
+        },
+        "warnings": [
+          "foreground mask is tiny; material extraction is likely unreliable",
+          "image is not clearly isolated from background; using most pixels as material evidence",
+          "object/background separation is weak",
+          "single-image inverse rendering cannot prove true physical PBR; confidence is capped"
+        ]
+      }
+    },
+    {
+      "id": "gear-metal",
+      "name": "Gear struts and bogies",
+      "type": "standard",
+      "shaderModel": "MeshStandardMaterial / PBR approximation",
+      "baseColor": "#D6D6D3",
+      "color": "#D6D6D3",
+      "albedo": {
+        "dominant": "#D6D6D3",
+        "secondary": [
+          "#90908E",
+          "#9E9E9C",
+          "#898987"
+        ],
+        "samplingNotes": "Reference-derived from foreground pixels; de-lit to reduce baked shadows/highlights.",
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_albedo.png",
+          "url": "pbr/gear-metal/gear-metal_albedo.png",
+          "channel": "albedo",
+          "source": "reference-pixel-extraction"
+        }
+      },
+      "colorVariation": {
+        "palette": [
+          "#838381",
+          "#90908E",
+          "#9E9E9C",
+          "#898987",
+          "#797977"
+        ],
+        "pattern": "reference-derived pixel palette",
+        "amplitude": 0.0,
+        "heightCorrelation": 0.42
+      },
+      "textureResolution": 1024,
+      "textureProjection": {
+        "mode": "uv",
+        "repeat": [
+          1.0,
+          1.0
+        ],
+        "anisotropy": 8,
+        "texelDensityIntent": "Preserve stable world/object-scale detail; do not stretch micro detail with component scale."
+      },
+      "surfaceFrequencyBands": [
+        {
+          "id": "macro",
+          "frequency": 2.0,
+          "amplitude": 0.336,
+          "role": "reference-derived broad albedo and height breakup"
+        },
+        {
+          "id": "meso",
+          "frequency": 14.0,
+          "amplitude": 0.234,
+          "role": "reference-derived cracks, ridges, pores, grain, or leaf clusters"
+        },
+        {
+          "id": "micro",
+          "frequency": 72.0,
+          "amplitude": 0.103,
+          "role": "reference-derived micro highlight breakup under grazing light"
+        }
+      ],
+      "roughness": {
+        "base": 0.68,
+        "variation": 0.05,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_roughness.png",
+          "url": "pbr/gear-metal/gear-metal_roughness.png",
+          "channel": "roughness",
+          "source": "reference-pixel-extraction"
+        },
+        "localResponse": "reference-derived roughness estimate; cavities and textured zones trend rougher, bright highlights trend smoother"
+      },
+      "metalness": {
+        "base": 0.6,
+        "variation": 0.0
+      },
+      "normal": {
+        "pattern": "reference-derived height-gradient normal map",
+        "strength": 0.18,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_normal.png",
+          "url": "pbr/gear-metal/gear-metal_normal.png",
+          "channel": "normal",
+          "source": "reference-pixel-extraction"
+        },
+        "heightSource": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_height.png",
+          "url": "pbr/gear-metal/gear-metal_height.png",
+          "channel": "height",
+          "source": "reference-pixel-extraction"
+        },
+        "space": "tangent"
+      },
+      "bump": {
+        "pattern": "reference-derived height field",
+        "amplitude": 0.01,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_height.png",
+          "url": "pbr/gear-metal/gear-metal_height.png",
+          "channel": "height",
+          "source": "reference-pixel-extraction"
+        }
+      },
+      "displacement": {
+        "pattern": "none",
+        "amplitude": 0.0,
+        "scale": 1.0,
+        "silhouetteAffects": false
+      },
+      "ambientOcclusion": {
+        "cavityStrength": 0.38,
+        "contactShadowBias": 0.35,
+        "map": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_ao.png",
+          "url": "pbr/gear-metal/gear-metal_ao.png",
+          "channel": "ao",
+          "source": "reference-pixel-extraction"
+        },
+        "notes": "Reference-derived cavity estimate from local height minima; verify against grazing-light screenshot."
+      },
+      "wear": {
+        "edgeWear": 0.0,
+        "scratches": [],
+        "chips": []
+      },
+      "dirt": {
+        "amount": 0.0,
+        "cavityBias": 0.0,
+        "color": "#2F2A22"
+      },
+      "localOverrides": [
+        {
+          "id": "reference-pbr-pixel-evidence",
+          "type": "material-map-evidence",
+          "evidenceRefs": [
+            "full-object"
+          ],
+          "channels": [
+            "albedo",
+            "roughness",
+            "height",
+            "normal",
+            "ambient-occlusion"
+          ],
+          "notes": "Use generated maps as material evidence, then refine after browser screenshot comparison."
+        }
+      ],
+      "shaderNotes": [
+        "Prefer MeshPhysicalMaterial when clearcoat, sheen, transmission, or thin-surface response is observed; otherwise use MeshStandardMaterial-compatible PBR channels.",
+        "Generate albedo, roughness, height/normal, and AO independently; never alias albedo into roughness.",
+        "Use normal/bump/displacement only when they map to observed surface relief.",
+        "Use displacement geometry when the observed relief changes the close-up silhouette; texture-only relief is insufficient there.",
+        "Reference-derived maps are estimates from image pixels; verify with neutral, grazing, and reference-matched renders.",
+        "Do not treat baked image shadows as final albedo; rerun extraction with a tighter material crop if highlights/shadows pollute the maps."
+      ],
+      "notes": "Replace with image-derived color, roughness, noise, and edge-wear notes.",
+      "referencePbr": {
+        "version": "1.0",
+        "sourceImage": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\matcrops\\gear-metal.png",
+        "extractor": "stage1_intake/extract_pbr_evidence.py",
+        "method": "single-image pixel evidence with de-lighting estimate; not photogrammetry",
+        "usable": true,
+        "verdict": "pass",
+        "confidence": 0.831,
+        "estimatedFidelity": 0.831,
+        "targetThreshold": 0.7,
+        "hardLimit": "A single image cannot uniquely recover true albedo/roughness/normal/AO; maps are reference-derived estimates.",
+        "maps": {
+          "albedo": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_albedo.png",
+            "url": "pbr/gear-metal/gear-metal_albedo.png",
+            "channel": "albedo",
+            "source": "reference-pixel-extraction"
+          },
+          "roughness": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_roughness.png",
+            "url": "pbr/gear-metal/gear-metal_roughness.png",
+            "channel": "roughness",
+            "source": "reference-pixel-extraction"
+          },
+          "height": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_height.png",
+            "url": "pbr/gear-metal/gear-metal_height.png",
+            "channel": "height",
+            "source": "reference-pixel-extraction"
+          },
+          "normal": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_normal.png",
+            "url": "pbr/gear-metal/gear-metal_normal.png",
+            "channel": "normal",
+            "source": "reference-pixel-extraction"
+          },
+          "ao": {
+            "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_ao.png",
+            "url": "pbr/gear-metal/gear-metal_ao.png",
+            "channel": "ao",
+            "source": "reference-pixel-extraction"
+          }
+        },
+        "diagnostics": {
+          "sourceWidth": 15,
+          "sourceHeight": 40,
+          "mapSize": 1024,
+          "cropBBoxPixels": {
+            "x": 0,
+            "y": 0,
+            "width": 15,
+            "height": 40
+          },
+          "mask": {
+            "backgroundColor": "#4D4D4B",
+            "backgroundNoise": 29.445,
+            "transparentPixelFraction": 0.0,
+            "foregroundCoverage": 0.1833
+          },
+          "mapStats": {
+            "valueRange": 0.1608,
+            "heightP90Gradient": 0.02007,
+            "roughnessBase": 0.68,
+            "roughnessVariation": 0.05,
+            "normalStrength": 0.18,
+            "blurRadius": 21
+          },
+          "palette": [
+            "#838381",
+            "#90908E",
+            "#9E9E9C",
+            "#898987",
+            "#797977"
+          ]
+        },
+        "warnings": [
+          "single-image inverse rendering cannot prove true physical PBR; confidence is capped",
+          "low value range weakens height/roughness inference"
+        ]
+      }
+    }
+  ],
+  "repetitionSystems": [
+    {
+      "id": "wheels",
+      "name": "Landing-gear wheels",
+      "kind": "instanced-parts",
+      "count": 5,
+      "buildsGeometry": true,
+      "instances": [
+        "nose-wheel",
+        "main-wheel-stbd-fwd",
+        "main-wheel-stbd-aft",
+        "main-wheel-port-fwd",
+        "main-wheel-port-aft"
+      ],
+      "geometry": "cylinder tyre on a lateral axle, two sizes",
+      "notes": "nose wheel 0.52 m, main wheels 0.60 m"
+    }
+  ],
+  "buildPasses": [
+    {
+      "id": "blockout",
+      "goal": "Match macro silhouette and proportions.",
+      "componentRefs": [
+        "root",
+        "wing-stbd",
+        "wing-port"
+      ],
+      "acceptance": [
+        "Silhouette reads correctly without materials.",
+        "Quality contract has named all required macro feature groups before code generation.",
+        "AI vision comparison score meets selfCorrectLoop.visualAcceptance.threshold."
+      ]
+    },
+    {
+      "id": "structural-pass",
+      "goal": "Build the component hierarchy implied by the pre-spec complexity assessment.",
+      "componentRefs": [
+        "root",
+        "wing-stbd",
+        "wing-port",
+        "exhaust",
+        "blister-stbd",
+        "blister-port",
+        "nose-strut",
+        "nose-wheel",
+        "nose-door",
+        "main-strut-stbd",
+        "main-bogie-stbd",
+        "main-wheel-stbd-fwd",
+        "main-wheel-stbd-aft",
+        "main-door-stbd",
+        "main-strut-port",
+        "main-bogie-port",
+        "main-wheel-port-fwd",
+        "main-wheel-port-aft",
+        "main-door-port",
+        "roundel-stbd",
+        "vent-stbd",
+        "roundel-port",
+        "vent-port"
+      ],
+      "acceptance": [
+        "Macro, meso, and repeated structures meet qualityContract.minimumSpecDepth.",
+        "Parent-child relations, joints, seams, sockets, and contact points are explicit.",
+        "Every attached child appendage/connector has parentSocket, localStart/localEnd, contactType, embedDepth or overlap, and gapTolerance.",
+        "AI vision comparison score meets selfCorrectLoop.visualAcceptance.threshold."
+      ]
+    },
+    {
+      "id": "form-refinement",
+      "goal": "Refine shape, deformation, bevels, tapers, curves, asymmetry, and visible local geometry.",
+      "componentRefs": [
+        "root",
+        "wing-stbd",
+        "wing-port",
+        "exhaust",
+        "blister-stbd",
+        "blister-port",
+        "nose-strut",
+        "nose-wheel",
+        "nose-door",
+        "main-strut-stbd",
+        "main-bogie-stbd",
+        "main-wheel-stbd-fwd",
+        "main-wheel-stbd-aft",
+        "main-door-stbd",
+        "main-strut-port",
+        "main-bogie-port",
+        "main-wheel-port-fwd",
+        "main-wheel-port-aft",
+        "main-door-port",
+        "roundel-stbd",
+        "vent-stbd",
+        "roundel-port",
+        "vent-port"
+      ],
+      "acceptance": [
+        "Important visible forms are represented in component geometryDescriptor, deformations, localFeatures, or repetitionSystems.",
+        "Endpoint-based child parts are rooted at their attachment sockets and do not visibly float away from parents.",
+        "AI vision comparison score meets selfCorrectLoop.visualAcceptance.threshold."
+      ]
+    },
+    {
+      "id": "material-pass",
+      "goal": "Match material color, roughness, bump, and local variation.",
+      "componentRefs": [
+        "root",
+        "wing-stbd",
+        "wing-port",
+        "exhaust",
+        "blister-stbd",
+        "blister-port",
+        "nose-strut",
+        "nose-wheel",
+        "nose-door",
+        "main-strut-stbd",
+        "main-bogie-stbd",
+        "main-wheel-stbd-fwd",
+        "main-wheel-stbd-aft",
+        "main-door-stbd",
+        "main-strut-port",
+        "main-bogie-port",
+        "main-wheel-port-fwd",
+        "main-wheel-port-aft",
+        "main-door-port",
+        "roundel-stbd",
+        "vent-stbd",
+        "roundel-port",
+        "vent-port"
+      ],
+      "acceptance": [
+        "Reference-derived albedo palette records dominant, secondary, and accent colors per visible material.",
+        "Each important material defines roughness variation and at least one normal/bump/displacement response.",
+        "Local material overrides, dirt/wear/stains/moss/chips/scratches or equivalent masks are tied to evidenceRefs.",
+        "Thin, transparent, reflective, wet, or fibrous materials document alpha/transmission/clearcoat/metalness/fiber response when relevant.",
+        "Generated preview uses procedural albedo/roughness/bump texture or vertex color variation instead of one flat color.",
+        "Generated preview uses independent PBR maps at 1024px or higher for the quality-first tier.",
+        "If source pixels are available, referencePbr extraction passed at confidence >= 0.7 or the pass is stopped/requesting better references.",
+        "Macro, meso, and micro surface frequency bands are visible at the intended review distance without obvious tiling.",
+        "AI vision comparison score meets selfCorrectLoop.visualAcceptance.threshold."
+      ]
+    },
+    {
+      "id": "surface-pass",
+      "goal": "Add procedural surface locality such as normal/bump/displacement, AO, dirt, stains, chips, grain, moss, scratches, and wear.",
+      "componentRefs": [
+        "root",
+        "wing-stbd",
+        "wing-port",
+        "exhaust",
+        "blister-stbd",
+        "blister-port",
+        "nose-strut",
+        "nose-wheel",
+        "nose-door",
+        "main-strut-stbd",
+        "main-bogie-stbd",
+        "main-wheel-stbd-fwd",
+        "main-wheel-stbd-aft",
+        "main-door-stbd",
+        "main-strut-port",
+        "main-bogie-port",
+        "main-wheel-port-fwd",
+        "main-wheel-port-aft",
+        "main-door-port",
+        "roundel-stbd",
+        "vent-stbd",
+        "roundel-port",
+        "vent-port"
+      ],
+      "acceptance": [
+        "Every required material feature group has local overrides or surfaceDetail tied to evidenceRefs.",
+        "A grazing-angle close-up proves that normal/height detail breaks highlights naturally and does not read as smooth plastic.",
+        "AI vision comparison score meets selfCorrectLoop.visualAcceptance.threshold."
+      ]
+    },
+    {
+      "id": "lighting-pass",
+      "goal": "Make material and form readable under neutral turntable lighting plus optional reference lighting.",
+      "componentRefs": [
+        "root",
+        "wing-stbd",
+        "wing-port",
+        "exhaust",
+        "blister-stbd",
+        "blister-port",
+        "nose-strut",
+        "nose-wheel",
+        "nose-door",
+        "main-strut-stbd",
+        "main-bogie-stbd",
+        "main-wheel-stbd-fwd",
+        "main-wheel-stbd-aft",
+        "main-door-stbd",
+        "main-strut-port",
+        "main-bogie-port",
+        "main-wheel-port-fwd",
+        "main-wheel-port-aft",
+        "main-door-port",
+        "roundel-stbd",
+        "vent-stbd",
+        "roundel-port",
+        "vent-port"
+      ],
+      "acceptance": [
+        "lightingFromPhoto identifies key light direction/color/intensity, fill light, rim or environment light, and ambient color.",
+        "Exposure, tone mapping, background color/gradient, shadow softness, and contact shadow behavior are specified.",
+        "Lighting does not hide geometry/material gaps and screenshots can be compared fairly to the reference.",
+        "Neutral, grazing, and reference-matched lighting checks distinguish material errors from lighting errors.",
+        "AI vision comparison score meets selfCorrectLoop.visualAcceptance.threshold."
+      ]
+    },
+    {
+      "id": "interaction-pass",
+      "goal": "Make the model ready for future animation, transformation, physics, or destruction.",
+      "componentRefs": [
+        "root",
+        "wing-stbd",
+        "wing-port",
+        "exhaust",
+        "blister-stbd",
+        "blister-port",
+        "nose-strut",
+        "nose-wheel",
+        "nose-door",
+        "main-strut-stbd",
+        "main-bogie-stbd",
+        "main-wheel-stbd-fwd",
+        "main-wheel-stbd-aft",
+        "main-door-stbd",
+        "main-strut-port",
+        "main-bogie-port",
+        "main-wheel-port-fwd",
+        "main-wheel-port-aft",
+        "main-door-port",
+        "roundel-stbd",
+        "vent-stbd",
+        "roundel-port",
+        "vent-port"
+      ],
+      "acceptance": [
+        "Macro and movable meso components have stable pivot nodes.",
+        "Sockets, collider proxies, and destruction metadata are present for future runtime actions.",
+        "AI vision comparison score meets selfCorrectLoop.visualAcceptance.threshold."
+      ]
+    },
+    {
+      "id": "optimization-pass",
+      "goal": "Protect runtime performance after visual fidelity is accepted.",
+      "componentRefs": [
+        "root",
+        "wing-stbd",
+        "wing-port",
+        "exhaust",
+        "blister-stbd",
+        "blister-port",
+        "nose-strut",
+        "nose-wheel",
+        "nose-door",
+        "main-strut-stbd",
+        "main-bogie-stbd",
+        "main-wheel-stbd-fwd",
+        "main-wheel-stbd-aft",
+        "main-door-stbd",
+        "main-strut-port",
+        "main-bogie-port",
+        "main-wheel-port-fwd",
+        "main-wheel-port-aft",
+        "main-door-port",
+        "roundel-stbd",
+        "vent-stbd",
+        "roundel-port",
+        "vent-port"
+      ],
+      "acceptance": [
+        "Triangle count, draw calls, instancing, LOD strategy, and FPS target are documented or verified.",
+        "Repeated detail is instanced or simplified where possible without breaking silhouette/material believability."
+      ]
+    }
+  ],
+  "visualEvidence": [],
+  "reviewHistory": [],
+  "lodPlan": [
+    {
+      "tier": "near",
+      "distance": 0,
+      "strategy": "full component tree and material layers"
+    },
+    {
+      "tier": "far",
+      "distance": 30,
+      "strategy": "merge static components and reduce local feature geometry"
+    }
+  ],
+  "performanceBudget": {
+    "qualityPriority": "reference-fidelity",
+    "targetTriangles": 60000,
+    "maxDrawCalls": 160,
+    "textureSize": 2048,
+    "fpsTarget": 30,
+    "optimizationPolicy": "Reach accepted visual fidelity first, then optimize without removing reference-critical geometry or surface layers."
+  },
+  "lightingFromPhoto": [
+    {
+      "id": "key",
+      "type": "directional",
+      "role": "key",
+      "direction": [
+        -0.4,
+        -1.0,
+        -0.3
+      ],
+      "color": "#FFF6E8",
+      "intensity": 2.2,
+      "evidence": "shadows under the wings fall down-left in the render sheet"
+    },
+    {
+      "id": "fill",
+      "type": "hemisphere",
+      "role": "fill",
+      "skyColor": "#DCE4EE",
+      "groundColor": "#8C8478",
+      "intensity": 0.8,
+      "evidence": "soft studio fill; no hard secondary shadow"
+    },
+    {
+      "id": "rim",
+      "type": "directional",
+      "role": "rim",
+      "direction": [
+        0.6,
+        -0.3,
+        0.8
+      ],
+      "color": "#FFFFFF",
+      "intensity": 0.6,
+      "evidence": "edge highlight along the leading edges"
+    },
+    {
+      "id": "exposure",
+      "type": "exposure",
+      "toneMapping": "ACESFilmic",
+      "exposure": 1.0,
+      "note": "neutral studio exposure; the reference is a product render"
+    },
+    {
+      "id": "ground-shadow",
+      "type": "contact-shadow",
+      "note": "soft ground shadow under the airframe and wheels, as in the render sheet"
+    }
+  ],
+  "proceduralStrategy": [
+    "Block out macro silhouette first.",
+    "Add component hierarchy and joints.",
+    "Create stable pivot groups, sockets, collider proxies, and destruction metadata before visual polish.",
+    "Refine forms with bevels, tapers, bends, and procedural noise.",
+    "Run reference PBR extraction for important source-image materials and stop when confidence is below the target threshold.",
+    "Add material variation before adding expensive micro-geometry."
+  ],
+  "animationAnchors": [
+    "root pivot node supports whole-object translation, rotation, scale, and visibility changes",
+    "component pivot groups support later local transforms without rebuilding geometry"
+  ],
+  "destructionAnchors": [
+    "actionProfile.destruction.fractureGroup marks detachable or breakable component sets",
+    "component seams and sockets define plausible break points instead of random explosions"
+  ],
+  "risks": [
+    "The tapered-sweep ribs are tilted with the sweep; the planform is solved for the rib ends only, so the outline between stations is an approximation.",
+    "The implicit hull is polygonised on a 96 grid; the fillet between hump and hull may show grid facets at close range.",
+    "The wing's elliptical section rounds the leading edge more than the reference's sharp edge."
+  ],
+  "localSpecSearch": {
+    "collection": "core_3d",
+    "query": "RQ-170 Sentinel",
+    "index": {
+      "status": "rebuilt",
+      "reason": "missing",
+      "fingerprint": "ac4f0bc9028e34083dbb5d5531ae3df7699c8e7641d5f8e6d42e7492ea1be1d0"
+    },
+    "matches": [
+      {
+        "record_id": "core.description-honest-uncertainty-single-image-limits-convention",
+        "file_path": "docs/raw/img2threejs-skill-dataset.json",
+        "heading": null,
+        "key_path": "categories.description_conventions[6]",
+        "score": 2.686508158627,
+        "snippets": [
+          "... gi\u00e1 tr\u1ecb \u0111o\u00e1n m\u00f2; \u0110\u00e2y l\u00e0 r\u00e0ng bu\u1ed9c c\u1ee9ng ch\u1ed1ng l\u1ea1i vi\u1ec7c b\u1ecba chi ti\u1ebft h\u00ecnh h\u1ecdc/v\u1eadt li\u1ec7u \u0111\u01b0a v\u00e0o t\u00e1i t\u1ea1o Three.js target: Sentinel value \"undetermined\" (or null + a needsAnotherView:true flag) written into any metadata field the agent cannot ..."
+        ],
+        "source_refs": [
+          {
+            "path": "docs/raw/img2threejs-skill-dataset.json",
+            "heading": null,
+            "key_path": "categories.description_conventions[6]"
+          }
+        ],
+        "evidence_refs": [
+          {
+            "kind": "source",
+            "ref": "docs/raw/img2threejs-skill-dataset.json",
+            "note": "img2threejs NotebookLM research distillation"
+          }
+        ]
+      }
+    ]
+  },
+  "pbrExtractionHistory": [
+    {
+      "materialId": "airframe",
+      "confidence": 0.743,
+      "verdict": "pass",
+      "usable": true,
+      "maps": {
+        "albedo": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_albedo.png",
+          "url": "pbr/airframe/airframe_albedo.png",
+          "channel": "albedo",
+          "source": "reference-pixel-extraction"
+        },
+        "roughness": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_roughness.png",
+          "url": "pbr/airframe/airframe_roughness.png",
+          "channel": "roughness",
+          "source": "reference-pixel-extraction"
+        },
+        "height": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_height.png",
+          "url": "pbr/airframe/airframe_height.png",
+          "channel": "height",
+          "source": "reference-pixel-extraction"
+        },
+        "normal": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_normal.png",
+          "url": "pbr/airframe/airframe_normal.png",
+          "channel": "normal",
+          "source": "reference-pixel-extraction"
+        },
+        "ao": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\airframe\\airframe_ao.png",
+          "url": "pbr/airframe/airframe_ao.png",
+          "channel": "ao",
+          "source": "reference-pixel-extraction"
+        }
+      }
+    },
+    {
+      "materialId": "dark-polymer",
+      "confidence": 0.794,
+      "verdict": "pass",
+      "usable": true,
+      "maps": {
+        "albedo": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_albedo.png",
+          "url": "pbr/dark-polymer/dark-polymer_albedo.png",
+          "channel": "albedo",
+          "source": "reference-pixel-extraction"
+        },
+        "roughness": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_roughness.png",
+          "url": "pbr/dark-polymer/dark-polymer_roughness.png",
+          "channel": "roughness",
+          "source": "reference-pixel-extraction"
+        },
+        "height": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_height.png",
+          "url": "pbr/dark-polymer/dark-polymer_height.png",
+          "channel": "height",
+          "source": "reference-pixel-extraction"
+        },
+        "normal": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_normal.png",
+          "url": "pbr/dark-polymer/dark-polymer_normal.png",
+          "channel": "normal",
+          "source": "reference-pixel-extraction"
+        },
+        "ao": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\dark-polymer\\dark-polymer_ao.png",
+          "url": "pbr/dark-polymer/dark-polymer_ao.png",
+          "channel": "ao",
+          "source": "reference-pixel-extraction"
+        }
+      }
+    },
+    {
+      "materialId": "gear-metal",
+      "confidence": 0.831,
+      "verdict": "pass",
+      "usable": true,
+      "maps": {
+        "albedo": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_albedo.png",
+          "url": "pbr/gear-metal/gear-metal_albedo.png",
+          "channel": "albedo",
+          "source": "reference-pixel-extraction"
+        },
+        "roughness": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_roughness.png",
+          "url": "pbr/gear-metal/gear-metal_roughness.png",
+          "channel": "roughness",
+          "source": "reference-pixel-extraction"
+        },
+        "height": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_height.png",
+          "url": "pbr/gear-metal/gear-metal_height.png",
+          "channel": "height",
+          "source": "reference-pixel-extraction"
+        },
+        "normal": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_normal.png",
+          "url": "pbr/gear-metal/gear-metal_normal.png",
+          "channel": "normal",
+          "source": "reference-pixel-extraction"
+        },
+        "ao": {
+          "path": "G:\\My Drive\\Scripts\\procedural-creature\\workshop-webgpu\\scratchpads\\rq170-sentinel\\pbr\\gear-metal\\gear-metal_ao.png",
+          "url": "pbr/gear-metal/gear-metal_ao.png",
+          "channel": "ao",
+          "source": "reference-pixel-extraction"
+        }
+      }
+    }
+  ]
+}
