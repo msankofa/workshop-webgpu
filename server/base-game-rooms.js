@@ -1229,6 +1229,7 @@ export function createBaseGameRoomService({
     const alive = !!owner?.controller && room.combat.getSnapshot(owner.id).alive;
     _vehicleWorld.ownerPos = ownerPos ?? (alive ? owner.controller.getPosition() : null);
     _vehicleWorld.ownerYaw = alive ? owner.lastInput.yaw : 0;
+    _vehicleWorld.ownerVel = alive ? owner.controller.getVelocity() : null;
     _vehicleWorld.ownerAlive = alive;
     _vehicleWorld.groundY = roomGroundY(room);
     _vehicleWorld.seaLevel = room.water?.enabled ? room.water.level : -Infinity;

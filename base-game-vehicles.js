@@ -94,7 +94,7 @@ export function createBaseGameVehicle(kind, { ownerId = null, team = 0, from = [
     input: { ...ZERO_INPUT }, hp: def.hp, done: false, crash: null,
     stepAcc: 0, age: 0, probeT: idPhase(vehicleId), probeYaw: body.yaw,
     stuckT: 0, stuckFrom: null, lastRecoveryAt: -Infinity, secondStuck: false,
-    turretYaw: 0, turretPitch: 0, aim: null, turretOnTarget: false, firing: false,
+    turretYaw: 0, turretPitch: 0, aim: null, turretOnTarget: false, firing: false, followYaw: null,
     mount: def.turret ? { cool: 0, ammo: def.turret.ammo } : null,
   };
 }
@@ -103,8 +103,16 @@ function enter(rec, state) {
   if (rec.state !== state) { rec.state = state; rec.stateT = 0; }
 }
 
+// Station is held behind where the owner is GOING, not behind what they are LOOKING at. Tracking
+// the eyeline made it drive a circle round anyone who turned their head on the spot. Below a
+// walking pace the heading is simply held, so standing still and looking about does not move it.
+const FOLLOW_MIN_SPEED = 0.6;
 function shadowPoint(rec, world) {
-  const yaw = Number(world.ownerYaw) || 0;
+  const v = world.ownerVel;
+  const speed = v ? Math.hypot(v[0], v[2]) : 0;
+  if (speed >= FOLLOW_MIN_SPEED) rec.followYaw = Math.atan2(v[0], v[2]);
+  else if (rec.followYaw === null) rec.followYaw = Number(world.ownerYaw) || 0;   // first placement only
+  const yaw = rec.followYaw;
   return [world.ownerPos[0] - Math.sin(yaw) * rec.def.shadowOffset, world.ownerPos[2] - Math.cos(yaw) * rec.def.shadowOffset];
 }
 

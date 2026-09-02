@@ -1698,6 +1698,7 @@ function stepSoloDrones(dt, canControl, di) {
     if (r.done) { if (r.crash && r.def.crashBlast) presentExplosion(r.crash, r.def.crashBlast.radius, { contact: true, weaponId: `${r.kind}_crash` }); soloDrones.delete(r.id); }
   }
   _soloVehicleWorld.ownerPos = playerController.getPosition(); _soloVehicleWorld.ownerYaw = playerView.yaw;
+  _soloVehicleWorld.ownerVel = playerController.getVelocity();
   _soloVehicleWorld.ownerAlive = !combatState.dead; _soloVehicleWorld.seaLevel = waterSim.enabled ? waterSim.level : -Infinity;
   for (const r of localVehicles.values()) {
     if (!r.driver) stepBaseGameVehicle(r, Math.min(dt, 0.05), _soloVehicleWorld);

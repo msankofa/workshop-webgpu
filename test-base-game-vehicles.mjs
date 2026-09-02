@@ -417,4 +417,30 @@ function wrapPiTest(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
   }
 }
 
+// ─── follow behaviour (2026-09-02) ──────────────────────────────────────────
+// The station is held behind the owner's TRAVEL. Tracking the eyeline made it orbit anyone who
+// stood still and turned their head, which is neither realistic nor useful.
+{
+  const groundY = () => 0;
+  const rec = createBaseGameVehicle('ugv', { ownerId: 'o', from: [0, 0, 6], yaw: 0, groundY });
+  const world = { groundY, ownerPos: [0, 0, 0], ownerYaw: 0, ownerVel: [0, 0, 0], ownerAlive: true, seaLevel: -Infinity };
+  const settle = (n = 900) => { for (let i = 0; i < n; i++) stepBaseGameVehicle(rec, 1 / 120, world); };
+
+  // Walk north, let it take station, then stand still and spin on the spot.
+  world.ownerVel = [0, 0, 3];
+  settle();
+  const parked = [rec.body.x, rec.body.z];
+  world.ownerVel = [0, 0, 0];
+  for (let turn = 0; turn < 8; turn++) { world.ownerYaw = turn * Math.PI / 4; settle(120); }
+  const drift = Math.hypot(rec.body.x - parked[0], rec.body.z - parked[1]);
+  ok(drift < 0.6, `a full turn on the spot does not walk the UGV round the owner (${drift.toFixed(2)} m)`);
+
+  // Change travel direction and it re-stations behind the new heading.
+  world.ownerYaw = 0;
+  world.ownerVel = [3, 0, 0];
+  settle();
+  ok(rec.body.x < -1 && Math.abs(rec.body.z) < 1.5,
+    `walking east puts it behind the owner to the west (${rec.body.x.toFixed(2)}, ${rec.body.z.toFixed(2)})`);
+}
+
 console.log('base-game-vehicles: all assertions passed');
