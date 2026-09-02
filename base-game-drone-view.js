@@ -70,7 +70,11 @@ export function createBaseGameDroneView({ scene, worldCoordinates, tintFor = () 
       seen.add(s.id);
       let rec = drones.get(s.id);
       if (!rec) {
-        rec = { id: s.id, kind: s.kind, owner: s.owner, mesh: buildMesh(s.kind, tintFor(s.owner)), track: createRemoteTrack(), bank: 0, latest: null };
+        // A vehicle wears its own colour: an aircraft's pale sky skin reads as white plastic on a
+        // hull in a forest. The owner tint still applies to anything without one, so team colours
+        // can land later without moving this.
+        const tint = CRAFT_DEFS[s.kind]?.tint ?? tintFor(s.owner);
+        rec = { id: s.id, kind: s.kind, owner: s.owner, mesh: buildMesh(s.kind, tint), track: createRemoteTrack(), bank: 0, latest: null };
         drones.set(s.id, rec);
       }
       rec.latest = s; rec.state = s.state; rec.mode = s.mode; rec.target = s.target; rec.hp = s.hp;

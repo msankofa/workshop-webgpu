@@ -23,6 +23,7 @@ export const BASE_GAME_VEHICLE_DEFS = Object.freeze({
   [VEHICLE_UGV]: Object.freeze({
     ...DEFAULT_ROAD_VEHICLE,
     kind: VEHICLE_UGV, label: 'UGV', mesh: 'ugv', autonomy: true, seat: 'remote', gadget: true,
+    tint: 0x5c6b3c,   // the reference's olive; craft otherwise share the flight sim's pale sky skin
     mass: 180, wheelbase: 1.1, track: 0.8, clearance: 0.25, cgHeight: 0.22, yawInertia: 72,
     engineForce: 1700, powerLimit: 9000, reverseForce: 1200, brakeForce: 2600, handbrakeForce: 2200,
     rollingResistance: 0.022, cdA: 0.34, cornerStiffnessFront: 15000, cornerStiffnessRear: 14000,
@@ -42,6 +43,7 @@ export const BASE_GAME_VEHICLE_DEFS = Object.freeze({
   [VEHICLE_BUGGY]: Object.freeze({
     ...DEFAULT_ROAD_VEHICLE,
     kind: VEHICLE_BUGGY, label: 'Buggy', mesh: 'buggy', autonomy: false, seat: 'onboard', gadget: false,
+    tint: 0xb8a074,   // desert tan, the light-strike-vehicle reference
     mass: 900, wheelbase: 2.4, track: 1.6, clearance: 0.4, cgHeight: 0.52, yawInertia: 1550,
     engineForce: 6800, powerLimit: 100000, reverseForce: 3400, brakeForce: 10500, handbrakeForce: 7600,
     maxSpeed: 24, hp: 120, bodyRadius: 1.5, meshScale: 1, crashBlast: { radius: 5, damage: 40 },
