@@ -80,7 +80,11 @@ const run = (rec, seconds, w = world(), input = null) => {
   stepBaseGameVehicle(rec, DT, world(ridge));
   sendVehicleTo(rec, [0, 0, 30]);
   run(rec, 0.2, world(ridge));
-  assert.ok(Math.abs(rec.probeYaw) > 0.4, 'grade probe turns away from an over-limit straight climb');
+  // Two stages since the steering was smoothed: the probe picks a side heading at 10 Hz, and the
+  // heading actually steered to eases toward that pick rather than snapping onto it.
+  assert.ok(Math.abs(rec.probeTarget) > 0.4, 'grade probe picks a heading away from an over-limit straight climb');
+  run(rec, 0.6, world(ridge));
+  assert.ok(Math.abs(rec.probeYaw) > 0.4, 'and the steered heading eases onto that pick');
 }
 
 // Orders, hold, recall and manual handoff preserve the drone-shaped state contract.

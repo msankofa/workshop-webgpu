@@ -14,6 +14,9 @@ export { BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_MODES, BASE_GAME_VEHICLE_STA
 const FIXED_STEP = 1 / 120;
 const PROBE_PERIOD = 0.1;
 const PROBE_ANGLE = 35 * Math.PI / 180;
+const PROBE_EASE = 6;          // how fast the eased heading chases the 10 Hz probe, per second
+const STEER_RATE = 2.5;        // full lock to full lock in 0.8 s, which is a real rack
+const STEER_FULL_LOCK = 0.9;   // heading error at which the wheels are on the stops (was 0.65)
 const ZERO_INPUT = Object.freeze({ throttle: 0, brake: 0, reverse: 0, steer: 0, handbrake: false });
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 const clamp1 = x => clamp(Number(x) || 0, -1, 1);
@@ -93,7 +96,7 @@ export function createBaseGameVehicle(kind, { ownerId = null, team = 0, from = [
     target: null, driver: null,
     input: { ...ZERO_INPUT }, hp: def.hp, done: false, crash: null,
     stepAcc: 0, age: 0, probeT: idPhase(vehicleId), probeYaw: body.yaw,
-    stuckT: 0, stuckFrom: null, lastRecoveryAt: -Infinity, secondStuck: false,
+    stuckT: 0, stuckFrom: null, lastRecoveryAt: -Infinity, secondStuck: false, probeTarget: 0, steerCmd: 0,
     turretYaw: 0, turretPitch: 0, aim: null, turretOnTarget: false, firing: false, followYaw: null,
     mount: def.turret ? { cool: 0, ammo: def.turret.ammo } : null,
   };
@@ -134,25 +137,38 @@ function chooseProbeHeading(rec, desired, groundY) {
   return chosen;
 }
 
+// The rack has a rate. Commanding the wheels straight from the heading error made them chatter
+// between locks; every branch below goes through here so none of them can snap.
+function slewSteer(rec, want) {
+  rec.steerCmd += clamp(want - rec.steerCmd, -STEER_RATE * FIXED_STEP, STEER_RATE * FIXED_STEP);
+  return rec.steerCmd;
+}
+
 function driveToward(rec, x, z, stopRadius, groundY) {
   const dx = x - rec.body.x, dz = z - rec.body.z;
   const distance = Math.hypot(dx, dz);
   const desired = Math.atan2(dx, dz);
   rec.probeT -= FIXED_STEP;
   if (rec.probeT <= 0) {
-    rec.probeYaw = chooseProbeHeading(rec, desired, groundY);
+    rec.probeTarget = chooseProbeHeading(rec, desired, groundY);
     rec.probeT += PROBE_PERIOD;
   }
+  // The probe re-picks at 10 Hz and only ever returns one of three headings, so its answer is eased
+  // rather than taken: snapping to it put a 35 degree step into the steering ten times a second.
+  rec.probeYaw = wrapPi(rec.probeYaw + wrapPi(rec.probeTarget - rec.probeYaw) * Math.min(1, FIXED_STEP * PROBE_EASE));
   const error = wrapPi(rec.probeYaw - rec.body.yaw);
   const headingScale = clamp(1 - Math.abs(error) / Math.PI, 0.12, 1);
   const distanceScale = clamp((distance - stopRadius) / 5, 0, 1);
-  if (distance <= stopRadius) return { distance, moving: false, input: { ...ZERO_INPUT, brake: 1, handbrake: true } };
+  if (distance <= stopRadius) {
+    rec.steerCmd = slewSteer(rec, 0);
+    return { distance, moving: false, input: { ...ZERO_INPUT, brake: 1, handbrake: true } };
+  }
   if (Math.abs(error) > Math.PI * 0.7) {
-    return { distance, moving: true, input: { ...ZERO_INPUT, reverse: 0.55, steer: error > 0 ? 1 : -1 } };
+    return { distance, moving: true, input: { ...ZERO_INPUT, reverse: 0.55, steer: slewSteer(rec, error > 0 ? 1 : -1) } };
   }
   return {
     distance, moving: true,
-    input: { ...ZERO_INPUT, throttle: headingScale * Math.max(0.25, distanceScale), steer: clamp(-error / 0.65, -1, 1) },
+    input: { ...ZERO_INPUT, throttle: headingScale * Math.max(0.25, distanceScale), steer: slewSteer(rec, clamp(-error / STEER_FULL_LOCK, -1, 1)) },
   };
 }
 
