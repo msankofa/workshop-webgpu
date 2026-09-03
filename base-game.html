@@ -4712,7 +4712,7 @@ function refreshGrassRuntimeLine() {
   grassProbeCpu.style.background = twinHex ?? 'transparent';
   const probeStands = p.delta == null ? '' : ` The cull put the blade under you ${p.delta >= 0 ? '+' : ''}${p.delta.toFixed(2)} m from the drawn ground.`;
   const ring = g.ringProbe
-    ? ` At ${g.ringProbe.radius} m around you the cull's height came back missing in ${g.ringProbe.missing} of ${g.ringProbe.of} probes, worst ${g.ringProbe.worst >= 0 ? '+' : ''}${g.ringProbe.worst.toFixed(2)} m from the ground.`
+    ? ` At ${g.ringProbe.radius} m around you, by direction (. = a blade would live, h = height missing, w = under water, d = density 0, c = outside the cone): ${g.ringProbe.compass}; worst height ${g.ringProbe.worst >= 0 ? '+' : ''}${g.ringProbe.worst.toFixed(2)} m from the ground.`
     : '';
   const holes = g.maskHoles ? ` Tiles not landed: contact ${g.maskHoles.contact ?? '?'}, placement ${g.maskHoles.placement ?? '?'}.` : '';
   const struct = g.structure

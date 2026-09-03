@@ -429,10 +429,14 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
           delta: Number.isFinite(ground) ? probe.y + oy - ground : null } : null;
         if (ring) {
           const g2 = terrain.groundHeight?.(rx + ox, rz + oz);
-          ringResults[k] = { missing: ring.y < -1e4, delta: Number.isFinite(g2) ? ring.y + oy - g2 : null };
+          // One letter per direction: what would kill a blade there. '.' = nothing, h = height
+          // missing, w = under the water line, d = density 0, c = outside the view cone.
+          const why = ring.y < -1e4 ? 'h' : !ring.aboveWater ? 'w' : ring.density <= 0 ? 'd' : !ring.inCone ? 'c' : '.';
+          ringResults[k] = { missing: ring.y < -1e4, why, delta: Number.isFinite(g2) ? ring.y + oy - g2 : null };
           const seen = ringResults.filter(Boolean);
           stats.ringProbe = { radius: RING_R, of: seen.length, missing: seen.filter(r => r.missing).length,
-            worst: seen.reduce((m, r) => (r.delta != null && Math.abs(r.delta) > Math.abs(m) ? r.delta : m), 0) };
+            worst: seen.reduce((m, r) => (r.delta != null && Math.abs(r.delta) > Math.abs(m) ? r.delta : m), 0),
+            compass: ['+x', '+x+z', '+z', '-x+z', '-x', '-x-z', '-z', '+x-z'].map((d, i) => `${d}:${ringResults[i]?.why ?? '?'}`).join(' ') };
         }
         stats.probeError = null;
       })

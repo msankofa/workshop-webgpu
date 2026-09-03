@@ -573,13 +573,20 @@ export function createComputeGrass(opts) {
 
   // Ground-colour probe: one thread runs the injected ground node at a point, exactly as the cull
   // packs it into a record, and writes rgb plus the height it stood on for a readback.
+  // Two records: (r, g, b, height) and (density, in-cone, keep-edge, water-ok), so a readout can
+  // say which test a blade at that point fails, not only what colour it would be.
   const uProbeXZ = uniform(new THREE.Vector2());
-  const probeAttr = injectedGround ? new StorageBufferAttribute(new Float32Array(4), 4) : null;
-  const probeBuf = probeAttr ? storage(probeAttr, 'vec4', 1) : null;
+  const probeAttr = injectedGround ? new StorageBufferAttribute(new Float32Array(8), 4) : null;
+  const probeBuf = probeAttr ? storage(probeAttr, 'vec4', 2) : null;
   const probe = probeAttr ? Fn(() => {
-    const wy = heightFn(uProbeXZ.x, uProbeXZ.y);
-    const g = injectedGround(uProbeXZ.x, uProbeXZ.y, wy);
+    const wx = uProbeXZ.x, wz = uProbeXZ.y;
+    const wy = heightFn(wx, wz);
+    const g = injectedGround(wx, wz, wy);
     probeBuf.element(0).assign(vec4(g.x, g.y, g.z, wy));
+    const dist = length(vec2(wx.sub(uCam.x), wz.sub(uCam.y)));
+    const cone = select(inConeFn(wx, wz, dist), float(1), float(0));
+    const water = select(wy.greaterThan(uWaterMin), float(1), float(0));
+    probeBuf.element(1).assign(vec4(densityFn(wx, wz), cone, fadeEdgeFn(dist), water));
   })().compute(1) : null;
 
   const finalize = Fn(() => {
@@ -978,7 +985,7 @@ export function createComputeGrass(opts) {
       uProbeXZ.value.set(x, z);
       await renderer.computeAsync(probe);
       const v = new Float32Array(await renderer.getArrayBufferAsync(probeAttr));
-      return { r: v[0], g: v[1], b: v[2], y: v[3] };
+      return { r: v[0], g: v[1], b: v[2], y: v[3], density: v[4], inCone: v[5] > 0.5, edge: v[6], aboveWater: v[7] > 0.5 };
     },
     get hasGroundProbe() { return !!probe; },
     getLook() { return look.get(); },
