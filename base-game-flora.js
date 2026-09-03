@@ -373,7 +373,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       nearKeep: cfg.grassNearKeep,
       shading: cfg.grassShading,
     });
-    builtWith = { bufferMB: cfg.grassBufferMB, kmax: cfg.grassKmax };
+    builtWith = { bufferMB: cfg.grassBufferMB, kmax: cfg.grassKmax, fields: terrain.fields, contact: terrain.contactField };
     grass.setLook?.({ faceNormalMix: cfg.grassFaceNormalMix });
     grass.setReceiveShadow?.(cfg.grassReceiveShadow);
     grass.setWorldOrigin?.(readOrigin()[0], readOrigin()[2]);
@@ -455,6 +455,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     } else {
       releaseFields?.(); releaseFields = null;
       releaseContact?.(); releaseContact = null;
+      // Releasing the last holder disposes the windows, so the graph goes with them.
+      rebuild();
     }
     if (grass) grass.mesh.visible = enabled;
     active = enabled;
@@ -514,6 +516,10 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       syncOrigin();
       // The near/far height handover is a ring around the camera, so the graph needs where it is.
       uCamXZ.value.set(camera.position.x, camera.position.z);
+      // The terrain re-keys its windows when the field set changes (a source swap into or out of
+      // volumetric mode) and the registry disposes the old ones, so a graph built on them reads
+      // dead textures and keeps nothing. New window objects mean a new graph.
+      if (built && builtWith && (terrain.fields !== builtWith.fields || terrain.contactField !== builtWith.contact)) rebuild();
       if (!built) { const ok = await build(); if (!ok) return false; }
       // The far rings can appear after the grass was built (far LOD is applied by a later
       // settings pass). Once, when they do and the drawn source is wanted, build again on them.

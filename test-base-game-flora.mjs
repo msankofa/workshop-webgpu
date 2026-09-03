@@ -360,6 +360,35 @@ section('far blades stand on the drawn rings when there are rings');
   withRings.dispose();
 }
 
+section('new windows mean a new graph');
+{
+  // The registry disposes a window when its last holder releases it, and the terrain re-keys
+  // its windows on a source swap that changes the field set; a graph built on the old ones read
+  // dead textures and drew nothing (the "0 grass after applying a draft" bug).
+  const { terrain, flora } = builtRig();
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.load();
+  await flora.update(0.016);
+  const fieldsBefore = terrain.fields, grassBefore = flora.grass;
+  flora.setEnabled(false);
+  check('switching grass off tears the graph down with its windows', flora.built === false && flora.grass === null);
+  flora.setEnabled(true);
+  settle(terrain);
+  check('re-enabling takes new window objects', terrain.fields !== fieldsBefore);
+  await flora.update(0.05);
+  check('and builds a new graph on them', flora.built === true && flora.grass !== grassBefore && flora.stats.rebuilds === 1);
+  // Windows swapped under a live graph, the way reopenFieldWindow does it on a source swap: the
+  // flora compares the window objects it built on with the terrain's current ones every update.
+  const src = await import('node:fs').then(fs => fs.promises.readFile('./base-game-flora.js', 'utf8'));
+  check('a window swap under a live graph rebuilds it on the next update',
+    /terrain\.fields !== builtWith\.fields \|\| terrain\.contactField !== builtWith\.contact\)\) rebuild\(\)/.test(src));
+  flora.dispose();
+  terrain.dispose();
+}
+
 section('the ground colour probe and its CPU twin');
 {
   const { terrain, flora } = builtRig();

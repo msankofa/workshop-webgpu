@@ -146,6 +146,14 @@ Two constraints worth knowing before changing this:
   but the maps are loaded regardless of the toggle and the toggle can be turned on later, and a
   graph built before they landed had no maps to sample for the session. `stats.waitingOnTextures`
   says it is holding; `stats.groundSamplesTextures` says which source it ended up on.
+- **New windows mean a new graph (2026-09-03).** The field-window registry disposes a window when
+  its last holder releases it, and the terrain re-keys its windows (`reopenFieldWindow`) on every
+  `setSource`, so a swap that changes the field set (analytic heightfield to a v5 draft that goes
+  volumetric) hands the flora NEW window objects and disposes the old ones. A graph built once on
+  the old textures then read nothing and kept no blade: that was "0 grass anywhere after applying
+  a draft", while loading the draft straight from the traversal lab built fresh and was fine.
+  `update()` now compares the window objects it built on with the terrain's current ones and
+  rebuilds on a change, and `setEnabled(false)` tears the graph down with the windows it releases.
 - **The mip slider forces a recull.** `grassGroundTintMip` is read in the cull, where the colour
   is packed into the record, so `apply()` marks the cull dirty when it changes; before 2026-09-03
   the slider did nothing until the next 2 m cell crossing.
