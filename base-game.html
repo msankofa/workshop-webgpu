@@ -143,6 +143,7 @@ import { migrateProjectToUnbounded } from './terrain-project-v5.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createWorldQueryService } from './world-query.js';
 import { createBaseGameTraversalLab } from './base-game-traversal-lab.js';
+import { createBaseGameSpawnBuilding } from './base-game-spawn-building.js';
 import { createBaseGamePlayerController } from './base-game-player-controller.js';
 import { createBaseGamePointerLook } from './base-game-pointer-look.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -748,7 +749,8 @@ function pickRoomTerrainConfig() {
   // Before the game exists (start menu) the only possible terrain is the analytic default.
   const descriptor = simulationReady ? activeTerrainDescriptor : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
   const volumetric = simulationReady && settings.terrainVolumetric && !!terrain.source?.densityAt;
-  return { kind: 'terrain', descriptor, volumetric };
+  // The spawn building rides on heightfield terrain only; volumetric rooms keep the bare spawn.
+  return { kind: 'terrain', descriptor, volumetric, spawnBuilding: !volumetric };
 }
 let roomTerrainConfig = null;   // the room's current terrain config while online (set on join and on owner changes)
 function connectOnlineSession({ mode, roomCode }) {
@@ -1223,6 +1225,22 @@ function syncDofParams() {
   depthOfField.setParams(dofApplied);
 }
 const traversalLab = createBaseGameTraversalLab({ scene, worldQuery });
+// The eco-brutalist spawn building (docs/subsystems/base-game.md, "Spawn building"): the same
+// collider the room server registers, seated on the same source, dressed in chunked concrete.
+// Online it exists only when the room's terrain config says so; Solo heightfield terrain always has it.
+const spawnBuilding = createBaseGameSpawnBuilding({
+  THREE, scene, worldQuery, heightAt: (x, z) => terrain.groundHeight(x, z), seaLevel: terrain.seaLevel,
+});
+function spawnBuildingWanted() {
+  if (settings.worldMode !== 'terrain') return false;
+  if (isOnline()) return roomTerrainConfig?.spawnBuilding === true;
+  return !(settings.terrainVolumetric && !!terrain.source?.densityAt);
+}
+// Reseats the building on the current source. Called after every setSource and from updateWorld.
+function syncSpawnBuilding() {
+  spawnBuilding.rebuild((x, z) => terrain.groundHeight(x, z), terrain.seaLevel);
+  spawnBuilding.setVisible(spawnBuildingWanted());
+}
 // Phase 4 slice: the analytic source is the only runtime source until terrain-source-v5.js lands.
 const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
 // ?chunkcull=0 turns BatchedMesh per-chunk frustum culling OFF. On by default: measured both ways
@@ -1276,7 +1294,7 @@ function adoptRoomTerrain(config) {
     if (check.error) throw new Error(`room terrain rejected locally: ${check.error}`);
     if (check.config.worldVersion !== config.worldVersion) throw new Error(`room terrain version mismatch: ${check.config.worldVersion} vs ${config.worldVersion}`);
     const same = activeTerrainDescriptor.key === check.config.descriptor.key && activeTerrainDescriptor.sourceVersion === check.config.descriptor.sourceVersion;
-    if (!same) terrain.setSource(check.config.descriptor);
+    if (!same) { terrain.setSource(check.config.descriptor); syncSpawnBuilding(); }
     else terrain.setSeaLevel(check.config.descriptor.seaLevel);
     activeTerrainDescriptor = check.config.descriptor;
     settings.worldMode = 'terrain';
@@ -1321,6 +1339,7 @@ async function applyTerrainProjectAtRuntime(project) {
   const ix = Math.floor(here[0] / chunkSize), iz = Math.floor(here[2] / chunkSize);
   candidate.buildTile({ ix, iz, xMin: ix * chunkSize, zMin: iz * chunkSize, size: chunkSize, intervals: 8, apron: 1, fields: settings.terrainVolumetric ? ['heights', 'volume'] : ['heights'] });
   terrain.setSource(descriptor);
+  syncSpawnBuilding();
   activeTerrainDescriptor = descriptor;
   settings.terrainSeaLevel = descriptor.seaLevel;
   if (settings.worldMode !== 'terrain') { settings.worldMode = 'terrain'; syncAllControls(); }
@@ -1345,7 +1364,11 @@ function reseatPlayerOnTerrain(tolerance = 1) {
   if (Math.abs(here[1] - ground) > tolerance) playerController.reset(terrain.spawnPosition(here[0], here[2]));
   playerController.interpolatedPosition(1, playerRenderPosition);
 }
-function worldSpawn() { return settings.worldMode === 'terrain' ? terrain.spawnPosition(0, 0) : traversalLab.layout.spawn; }
+function worldSpawn() {
+  if (settings.worldMode !== 'terrain') return traversalLab.layout.spawn;
+  if (spawnBuildingWanted()) { const s = spawnBuilding.spawn; return [s[0], s[1] + 1.5, s[2]]; }
+  return terrain.spawnPosition(0, 0);
+}
 function worldKillPlaneY(position) { return settings.worldMode === 'terrain' ? terrain.killPlaneYAt(position[0], position[2]) : traversalLab.layout.killPlaneY; }
 // The sea the capsule swims in: the same module the room server runs, on the same tick clock, so
 // prediction and the authoritative simulation agree. The rendered surface follows it (applyWaterSettings).
@@ -2956,6 +2979,7 @@ const stopRebasePresentation = worldCoordinates.onRebase(event => {
   rebaseShift.fromArray(event.delta);
   debrisSim.clear();   // pieces are render-local; the origin just moved under them
   traversalLab.root.position.add(rebaseShift);
+  spawnBuilding.root.position.add(rebaseShift);
   roads.group.position.add(rebaseShift);
   if (settings.playerControlMode === 'orbit') {
     camera.position.add(rebaseShift);
@@ -3346,6 +3370,9 @@ function labOccluderExtent() {
 terrain.setSplatRain(rain.groundShade);
 // The Traversal Lab has plain MeshStandardNodeMaterials, so it takes rain.js's own decorator
 // rather than the splat bundle. Puddles on the floors, run-off streaks down the walls.
+for (const material of spawnBuilding.materials) {
+  applyWetSurface(material, rain.uniforms, { baseColor: material.colorNode ? undefined : materialColor, rippleScale: 2.6, puddleScale: 0.12 });
+}
 for (const material of traversalLab.materials) {
   // baseColor is explicit: these carry a plain `color` and no colour graph, so without it they
   // would go glossy in the rain without ever going dark.
@@ -3540,6 +3567,7 @@ function updateWorld(dt) {
   terrain.setTileBounds(settings.terrainTileBounds);
   terrain.setCollisionDebug(settings.terrainCollisionDebug);
   traversalLab.setVisible(traversalLabVisible);
+  spawnBuilding.setVisible(spawnBuildingWanted());
   traversalLab.setCollisionDebug(traversalLabVisible && settings.labCollisionDebug);
   traversalLab.setOriginMarkerVisible(traversalLabVisible && settings.labOriginMarker);
   applyPlayerConfiguration();
@@ -4623,8 +4651,8 @@ function refreshGrassRuntimeLine() {
   const twinHex = g.groundTwin ? linearToHex(g.groundTwin) : null;
   grassProbeGpu.style.background = gpuHex;
   grassProbeCpu.style.background = twinHex ?? 'transparent';
-  const stands = p.delta == null ? '' : ` The cull put the blade under you ${p.delta >= 0 ? '+' : ''}${p.delta.toFixed(2)} m from the drawn ground.`;
-  setTextIfChanged(grassProbeText, `Ground under you: GPU sample ${gpuHex}, CPU twin ${twinHex ?? 'off the field'}.${stands}`);
+  const probeStands = p.delta == null ? '' : ` The cull put the blade under you ${p.delta >= 0 ? '+' : ''}${p.delta.toFixed(2)} m from the drawn ground.`;
+  setTextIfChanged(grassProbeText, `Ground under you: GPU sample ${gpuHex}, CPU twin ${twinHex ?? 'off the field'}.${probeStands}`);
 }
 
 // ---- Trees (tree plan T2) ----
