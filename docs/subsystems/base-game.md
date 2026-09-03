@@ -1478,6 +1478,15 @@ player state carries `gadgets` and `gadgetReady`; remotes play both motions from
 arms move on the press. Solo runs the same timers in `stepGadgetHands`/`stepSoloDrones`. The UAV
 flies as the plane but draws as the `recon` model at its authored size (2.01 m span), and the chase distance is **measured in wingspans off the drawn mesh**, not hand-authored: `CHASE[kind].spans` × the mesh's own bounding box, times `settings.droneCameraZoom`, with the sim's `up = 0.26` and `ahead = 1.6` fractions of that distance. The zoom is the player's own boom gesture — SHIFT and the wheel, 8% a notch, and the wheel alone at the stick since there is no weapon to change while flying — routed through the same `zoomCamera` and clamped to 0.35x–4x. It is a multiple of the craft's framing rather than metres, so one number reads the same on the 1.4 m quad and the 2 m wing. The UAV's 2.26 spans is the sim's own plane framing (`chaseDist` 26 m / 11.5 m span), so the wing fills the same share of the screen the sim's plane does. A hand-authored distance went stale the moment the UAV's `meshScale` changed and put the camera 43% too far back; measuring the mesh is what stops that recurring.
 
+**Boom smoothing (2026-09-03).** The sim's chase branch lerps the camera's *world* position toward
+its target at a fixed rate (6.5 /s), so in steady flight the camera trails the craft by speed / rate.
+On the sim's 26 m plane boom that is a tolerable stretch; on the UAV's 4.5 m boom at 120 m/s it was
+18 m of extra distance, four times the framing, and the aim lagged with it so the craft sat off
+centre. `placeCamera` now smooths the boom and the aim as offsets from the craft (`camOff`, `aimOff`)
+and adds them to the craft's position each frame: turns still swing the camera round smoothly, but
+speed no longer moves it back. The vehicle obstruction clamp still runs on the world point. The zoom
+default (1x) and its range are unchanged.
+
 **Proof the physics are the sim's** (`test-base-game-drones.mjs`, "bit for bit"): the sim's own
 `makeFlyer('plane')` and the base-game drone under the stick, fed one identical 60 s script (pull,
 roll, rudder, throttle, afterburner, a dive to the ground), must not differ by a single metre; they

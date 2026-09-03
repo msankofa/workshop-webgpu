@@ -42,6 +42,7 @@ export function createBaseGameDroneView({ scene, worldCoordinates, tintFor = () 
   const _sample = { position: [0, 0, 0], yaw: 0, pitch: 0 };
   const _vec = new THREE.Vector3(), _look = new THREE.Vector3();
   const camPos = new THREE.Vector3(), camAim = new THREE.Vector3();
+  const camOff = new THREE.Vector3(), aimOff = new THREE.Vector3();   // boom and aim, in the world frame but relative to the craft
   const _q = new THREE.Quaternion();
   const _lookQ = new THREE.Quaternion(), _right = new THREE.Vector3(), _upAxis = new THREE.Vector3();   // free-look scratch
   let camReady = false;
@@ -216,21 +217,26 @@ export function createBaseGameDroneView({ scene, worldCoordinates, tintFor = () 
       }
     }
     const back = dist * (1 + Math.min(0.5, speed / 400));
+    // The boom and the aim are smoothed as offsets from the craft, not as world points: a world-point
+    // lag trails the craft by speed / rate, which on a 4.5 m boom at 120 m/s was 18 m of extra distance.
     const desired = _look.copy(rec.mesh.position).addScaledVector(_vec, -back).addScaledVector(_camUp, dist * CHASE_UP);
     if (isVehicleKind(rec.kind) && cameraObstruction) {
       const clear = cameraObstruction(rec.mesh.position, desired, 0.25);
       const wanted = desired.distanceTo(rec.mesh.position);
       if (wanted > 1e-6 && clear < wanted) desired.lerpVectors(rec.mesh.position, desired, clear / wanted);
     }
-    if (!camReady) { camPos.copy(desired); camAim.copy(rec.mesh.position); camReady = true; }
+    desired.sub(rec.mesh.position);
+    if (!camReady) { camOff.copy(desired); aimOff.set(0, 0, 0); camReady = true; }
     const lag = 1 - Math.exp(-dt * 6.5);
-    camPos.lerp(desired, lag);
+    camOff.lerp(desired, lag);
+    camPos.copy(rec.mesh.position).add(camOff);
     if (isVehicleKind(rec.kind) && cameraObstruction) {
       const clear = cameraObstruction(rec.mesh.position, camPos, 0.25);
       const wanted = camPos.distanceTo(rec.mesh.position);
       if (wanted > 1e-6 && clear < wanted) camPos.lerpVectors(rec.mesh.position, camPos, clear / wanted);
     }
-    camAim.lerp(_look.copy(rec.mesh.position).addScaledVector(_vec, dist * CHASE_AHEAD), lag * 1.4);
+    aimOff.lerp(_look.copy(_vec).multiplyScalar(dist * CHASE_AHEAD), lag * 1.4);
+    camAim.copy(rec.mesh.position).add(aimOff);
     camera.position.copy(camPos);
     camera.up.copy(_camUp);
     camera.lookAt(camAim);
