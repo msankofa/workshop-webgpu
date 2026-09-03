@@ -203,7 +203,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   const uCamXZ = uniform(new injectedTHREE.Vector2());
   let uNearEnd = null, uFadeBand = null;
   const uHeightSource = uniform(0);      // 0 = placement field, 1 = the drawn rings
-  let drawnAvailable = false;
+  let drawnAvailable = false, drawnRetried = false;
   const HEIGHT_MISSING = -1e6;                 // sentinel: the window had nothing at this xz
   const originScratch = [0, 0, 0];        // getOrigin() allocates without one, and this runs per frame
   function readOrigin() {
@@ -242,6 +242,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     const roomForRings = sampledLimit === undefined || sampledLimit > 16;
     const drawn = roomForRings ? (terrain.drawnHeightNodeFor?.(cfg.grassMaxRadius) ?? terrain.drawnHeightNode ?? null) : null;
     drawnAvailable = !!drawn;
+    stats.sampledTextureLimit = sampledLimit ?? null;
+    stats.ringsWhy = drawn ? '' : !roomForRings ? `the device allows ${sampledLimit} sampled textures` : 'far LOD off or a volumetric world';
     uHeightSource.value = (cfg.grassHeightSource === 'drawn' && drawn) ? 1 : 0;
     // Contact posts are 1.25 m and reach ~70 m; the placement window is 8 m posts over 2 km. Blades
     // cross from one to the other over a band, by distance from the camera rather than by window
@@ -480,6 +482,14 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       // The near/far height handover is a ring around the camera, so the graph needs where it is.
       uCamXZ.value.set(camera.position.x, camera.position.z);
       if (!built) { const ok = await build(); if (!ok) return false; }
+      // The far rings can appear after the grass was built (far LOD is applied by a later
+      // settings pass). Once, when they do and the drawn source is wanted, build again on them.
+      if (!drawnAvailable && !drawnRetried && cfg.grassHeightSource === 'drawn' && terrain.drawnHeightNode) {
+        drawnRetried = true;
+        rebuild();
+        const ok = await build();
+        if (!ok) return false;
+      }
       // Sea level and the origin both move; the water gate is in render-local Y like the blades.
       grass.setWaterLevel(terrain.seaLevel - uRenderOrigin.value.y);
       if (occlusion && occlusion.state.enabled) occlusion.update();
@@ -515,6 +525,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       stats.fade = grass.fade ?? null;
       stats.handover = uNearEnd ? { distance: uNearEnd.value, band: uFadeBand.value } : null;
       stats.heightSource = uHeightSource.value > 0.5 ? 'drawn' : drawnAvailable ? 'field' : 'field (no rings)';
+      stats.lastRecull = grass.stats.lastRecull ?? '';
       return true;
     },
     // Every knob is a setter on the one instance. Radius is clamped to what the window can serve

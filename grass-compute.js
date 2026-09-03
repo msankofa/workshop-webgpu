@@ -379,10 +379,13 @@ export function createComputeGrass(opts) {
     skippedReculls: 0,
     lastCell: '',
     dirty: true,
+    dirtyReason: 'build',
+    lastRecull: '',       // what triggered the last recull: dirty:<reason>, cell, cone or occlusion
   };
-  const markDirty = () => {
+  const markDirty = (reason = 'set') => {
     dirty = true;
     stats.dirty = true;
+    stats.dirtyReason = reason;   // who asked, for the panel's recull readout
   };
   // Blades per cell actually used, per tier: what density asks for, thinned to fit the thread
   // budget from the outer tier inward. Slots are hashed independently, so thinning drops the high
@@ -420,7 +423,7 @@ export function createComputeGrass(opts) {
       density: t.perCell / (cellSize * cellSize), requested: asked[i].perCell / (cellSize * cellSize),
     }));
     if (uPerCell.value !== thinned[0].perCell) uPerCell.value = thinned[0].perCell;
-    if (changed) markDirty();
+    if (changed) markDirty('perCell');
   }
   syncPerCell();
 
@@ -766,7 +769,7 @@ export function createComputeGrass(opts) {
       if (uploaded) anchorAttr.needsUpdate = true;
     }
     if (countsChanged) slotCountAttr.needsUpdate = true;
-    if (changed) markDirty();
+    if (changed) markDirty('anchors');
     stats.residentChunks = resident.size;
   }
 
@@ -786,6 +789,7 @@ export function createComputeGrass(opts) {
       const coneChanged = cone.fx !== lastFx || cone.fz !== lastFz || cone.cos !== lastCos;
       // Occlusion depends on the exact camera, so any camera change re-culls while it is on.
       const occChanged = syncOcclusion();
+      stats.lastRecull = dirty ? 'dirty:' + stats.dirtyReason : cellChanged ? 'cell' : coneChanged ? 'cone' : occChanged ? 'occlusion' : 'frame';
       if (recullMode !== 'frame' && !dirty && !cellChanged && !coneChanged && !occChanged) {
         stats.skippedReculls++;
         return;
@@ -813,9 +817,9 @@ export function createComputeGrass(opts) {
       uWorldOrigin.value.set(x, z);
       uCellOriginX.value = Math.round(x / cellSize);
       uCellOriginZ.value = Math.round(z / cellSize);
-      markDirty();
+      markDirty('setWorldOrigin');
     },
-    forceRecull: markDirty,
+    forceRecull: () => markDirty('forced'),
     stats,
     setDensity(d) {
       if (anchorMode) {
@@ -823,7 +827,7 @@ export function createComputeGrass(opts) {
         const s = Math.max(0, Math.min(1, baseDensity > 0 ? d / baseDensity : 0));
         if (uDensityScale.value === s) return;
         uDensityScale.value = s;
-        markDirty();
+        markDirty('setDensity');
         return;
       }
       o.density = Math.max(0, Number(d) || 0);
@@ -845,7 +849,7 @@ export function createComputeGrass(opts) {
       if (o.cullStart === null) uCullStart.value = r * 0.8;
       syncFadeBands();
       syncPerCell();          // a wider window is more cells, so fewer blades each fit the budget
-      markDirty();
+      markDirty('setRadius');
     },
     setCullStart(wu) {
       const v = Math.max(0, Math.min(wu, uRadius.value));
@@ -853,7 +857,7 @@ export function createComputeGrass(opts) {
       o.cullStart = v;
       uCullStart.value = v;
       syncFadeBands();
-      markDirty();
+      markDirty('setCullStart');
     },
     // Where keep probability reaches 0; null follows the radius. Read in the cull, so a recull.
     setFadeEnd(wu) {
@@ -862,13 +866,13 @@ export function createComputeGrass(opts) {
       o.fadeEnd = v;
       const before = uFadeEnd.value;
       syncFadeBands();
-      if (uFadeEnd.value !== before) markDirty();
+      if (uFadeEnd.value !== before) markDirty('setFadeEnd');
     },
     setFadeCurve(p) {
       const v = Math.max(0.01, Number(p) || 1);
       if (uFadeCurve.value === v) return;
       uFadeCurve.value = v;
-      markDirty();
+      markDirty('setFadeCurve');
     },
     // Material-side tapers and ramps: live, no recull.
     setFadeHeight(v) { uFadeHeight.value = Math.max(0, Math.min(1, Number(v) || 0)); },
@@ -900,7 +904,7 @@ export function createComputeGrass(opts) {
       const v = Math.max(0, n) >>> 0;
       if (uMaxBlades.value === v) return;
       uMaxBlades.value = v;
-      markDirty();
+      markDirty('setMaxBlades');
     },
     setBladeHeight(v) {
       v = Math.max(0.05, Number(v) || 0.05);
@@ -947,7 +951,7 @@ export function createComputeGrass(opts) {
       const v = Math.max(0, Number(m) || 0);
       if (uNearKeep.value === v) return;
       uNearKeep.value = v;
-      markDirty();
+      markDirty('setNearKeep');
     },
     // 'palette' | 'ground' | 'proof'; unknown keys are ignored. Live, no recull.
     setColorMode(key) {
@@ -989,13 +993,13 @@ export function createComputeGrass(opts) {
       if (p.baseAmp !== undefined && uBaseAmp.value !== p.baseAmp) { uBaseAmp.value = p.baseAmp; changed = true; }
       if (p.lake !== undefined && uLake.value !== p.lake) { uLake.value = p.lake; changed = true; }
       if (p.lakeDepth !== undefined && uLakeDepth.value !== p.lakeDepth) { uLakeDepth.value = p.lakeDepth; changed = true; }
-      if (changed) markDirty();
+      if (changed) markDirty('setTerrain');
     },
     setWaterLevel(wl) {
       const waterMin = wl + o.shoreMargin;
       if (uWaterMin.value === waterMin) return;
       uWaterMin.value = waterMin;
-      markDirty();
+      markDirty('setWaterLevel');
     },
     // Storage attributes have no dispose event, and ComputeNode.dispose() frees pipelines and bind
     // groups but not the buffers. Renderer._attributes.delete is the same path the geometry teardown

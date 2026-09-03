@@ -4682,21 +4682,25 @@ function refreshGrassRuntimeLine() {
   const thinned = g.dispatchClamped
     ? ` Thread budget thinned it from ${g.requestedDensity.toFixed(1)}; raise the budget or drop the radius.`
     : '';
-  const over = g.truncating
-    ? ` Wants ~${(g.expected / 1e6).toFixed(1)}M blades but the buffer holds ${(g.capacity / 1e6).toFixed(1)}M, so the outer rings go without.`
-    : '';
+  // The GPU counter counts every survivor, past the cap too, so drawn >= capacity means blades were
+  // cut; the expected figure is an upper bound that ignores cover.
+  const cut = g.drawn != null && g.drawn >= g.capacity;
+  const over = cut
+    ? ` The cull kept ${(g.drawn / 1e6).toFixed(1)}M blades but the buffer holds ${(g.capacity / 1e6).toFixed(1)}M, so blocks of the field are cut: raise the instance buffer to ${Math.ceil(g.drawn * 32 / 1e6 / 8) * 8} MB, or lower density or radius.`
+    : g.truncating ? ` Could want ~${(g.expected / 1e6).toFixed(1)}M blades against a ${(g.capacity / 1e6).toFixed(1)}M buffer if cover were full.` : '';
   const tiers = g.tiers && g.tiers.length > 1
     ? ` Tiers: ${g.tiers.map(t => `${t.density.toFixed(1)}/m^2 to ${t.radius.toFixed(0)} m`).join(', ')}.`
     : '';
   const drawn = g.drawn != null
     ? `${(g.drawn / 1e3).toFixed(0)}k blades drawn of ~${(g.expected / 1e3).toFixed(0)}k expected`
     : `~${(g.expected / 1e3).toFixed(0)}k blades expected`;
-  const cover = g.coverHere != null ? `, cover here ${g.coverHere.toFixed(2)} so ${(g.density * g.coverHere).toFixed(1)}/m^2 of it` : '';
+  const coverKept = g.coverHere != null ? Math.max(g.coverHere, settings.grassCoverFloor || 0) : null;
+  const cover = coverKept != null ? `, cover here ${g.coverHere.toFixed(2)} so ${(g.density * coverKept).toFixed(1)}/m^2 of it` : '';
   const ground = !g.groundTint?.available ? 'no ground colour' : g.groundSamplesTextures ? 'ground colour from the textures' : 'ground colour from the tint';
-  const stands = g.heightSource === 'drawn' ? 'far blades on the drawn rings' : `far blades on the 8 m field${g.heightSource === 'field (no rings)' ? ' (no rings to stand on)' : ''}`;
+  const stands = g.heightSource === 'drawn' ? 'far blades on the drawn rings' : `far blades on the 8 m field${g.heightSource === 'field (no rings)' ? ` (no rings: ${g.ringsWhy || 'not at build time'})` : ''}`;
   const occ = flora.occlusion ? (flora.occlusion.enabled ? ', occlusion on' : ', occlusion off') : ', no occluders';
   setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity})${cover}: `
-    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s${occ}, ${ground}, ${stands}, `
+    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s (last: ${g.lastRecull || '?'})${occ}, ${ground}, ${stands}, `
     + `contact field ${(g.coverage * 100).toFixed(0)}% and placement field ${(g.placementCoverage * 100).toFixed(0)}% streamed.`
     + `${tiers}${thinned}${over}`);
   grassProbeLine.hidden = false;

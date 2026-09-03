@@ -188,9 +188,13 @@ Two constraints worth knowing before changing this:
 - **Cells are dispatched in rings from the camera outward (2026-09-03, grass plan phase 3).**
   The procedural cull numbers its cells in square rings (`grass-cells.ringCell`: ring k holds the
   8k cells at Chebyshev distance k, cell 0 is the camera cell) and the kernel inverts that
-  numbering from the thread index, so the atomic counter fills near-to-far and the buffer cap
-  truncates at the outer ring instead of along a row of the window. This assumes workgroups run
-  roughly in index order, which is how GPUs schedule but not a guarantee. On top of it sit up to
+  numbering from the thread index, which was meant to make the atomic counter fill near-to-far so
+  the buffer cap truncates at the outer ring. In the browser it does not: at 17M threads the
+  workgroups do not complete in index order, and an overfull buffer still cuts blocks out of the
+  field (2026-09-03, seen). The ordering stays because it costs nothing and does thin the far
+  rings first through the tiers, but the cap is a hard limit to size for, not a fade: the panel
+  reads the survivor counter (which counts past the cap) and, when it exceeds the capacity, says
+  how many MB the instance buffer needs. On top of the rings sit up to
   three DISTANCE TIERS (`setTiers([{ radius, density }])`, density a fraction of the base, the
   last tier open-ended; `grass-cells.tierLayout` is the cumulative cell and thread count at each
   tier's end, which the kernel reads from `uTierThreads0/1`, `uTierCells0/1` and
