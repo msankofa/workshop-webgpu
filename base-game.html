@@ -4484,22 +4484,57 @@ addRange(plantsSec, 'grassGroundTintMip', 'Ground texture detail (mip)', 0, 10, 
 // What the sliders actually bought. Both of them used to clamp in silence.
 const grassRuntimeLine = document.createElement('div');
 grassRuntimeLine.className = 'note';
-plantsSec.append(grassRuntimeLine);
+// The ground colour under you as the cull packs it into a blade, beside the CPU twin from the
+// layer averages, so a wrong sample is a number and a swatch rather than an opinion.
+const grassProbeLine = document.createElement('div');
+grassProbeLine.className = 'note';
+const makeSwatch = () => {
+  const s = document.createElement('span');
+  s.style.cssText = 'display:inline-block;width:12px;height:12px;margin:0 4px -2px 0;border:1px solid #888;';
+  return s;
+};
+const grassProbeGpu = makeSwatch(), grassProbeCpu = makeSwatch();
+const grassProbeText = document.createElement('span');
+grassProbeLine.append(grassProbeGpu, grassProbeCpu, grassProbeText);
+plantsSec.append(grassRuntimeLine, grassProbeLine);
+const linearToHex = (c) => '#' + [0, 1, 2].map(i => {
+  const v = Math.max(0, Math.min(1, c[i]));
+  const s = v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
+  return Math.round(s * 255).toString(16).padStart(2, '0');
+}).join('');
 function refreshGrassRuntimeLine() {
   const g = flora.stats;
-  if (!g.enabled) { setTextIfChanged(grassRuntimeLine, 'Grass off.'); return; }
-  if (!g.built) { setTextIfChanged(grassRuntimeLine, 'Grass waiting on the terrain field.'); return; }
+  if (!g.enabled) { setTextIfChanged(grassRuntimeLine, 'Grass off.'); grassProbeLine.hidden = true; return; }
+  if (!g.built) {
+    setTextIfChanged(grassRuntimeLine, g.waitingOnTextures ? 'Grass waiting on the ground textures.' : 'Grass waiting on the terrain field.');
+    grassProbeLine.hidden = true;
+    return;
+  }
   const clamped = g.requestedRadius > g.radius ? ` (asked ${g.requestedRadius.toFixed(0)})` : '';
   const thinned = g.dispatchClamped
     ? ` Thread budget thinned it from ${g.requestedDensity.toFixed(1)}; raise the budget or drop the radius.`
     : '';
   const over = g.truncating
-    ? ` Wants ~${(g.expected / 1e6).toFixed(1)}M blades but the buffer holds ${(g.capacity / 1e6).toFixed(1)}M, so the far edge truncates.`
+    ? ` Wants ~${(g.expected / 1e6).toFixed(1)}M blades but the buffer holds ${(g.capacity / 1e6).toFixed(1)}M, so the cull stops adding blades once it fills: a straight cut through the field wherever that falls, not the far edge.`
     : '';
-  setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity}): `
-    + `~${(g.expected / 1e3).toFixed(0)}k blades, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull, `
-    + `ground ${g.groundSamplesTextures ? 'textures' : 'tint'}, field ${(g.coverage * 100).toFixed(0)}% streamed.`
+  const drawn = g.drawn != null
+    ? `${(g.drawn / 1e3).toFixed(0)}k blades drawn of ~${(g.expected / 1e3).toFixed(0)}k expected`
+    : `~${(g.expected / 1e3).toFixed(0)}k blades expected`;
+  const cover = g.coverHere != null ? `, cover here ${g.coverHere.toFixed(2)} so ${(g.density * g.coverHere).toFixed(1)}/m^2 of it` : '';
+  const ground = !g.groundTint?.available ? 'no ground colour' : g.groundSamplesTextures ? 'ground colour from the textures' : 'ground colour from the tint';
+  setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity})${cover}: `
+    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull, ${ground}, `
+    + `contact field ${(g.coverage * 100).toFixed(0)}% and placement field ${(g.placementCoverage * 100).toFixed(0)}% streamed.`
     + `${thinned}${over}`);
+  grassProbeLine.hidden = false;
+  if (g.probeError) { setTextIfChanged(grassProbeText, `Ground probe failed: ${g.probeError}`); return; }
+  if (!g.probe) { setTextIfChanged(grassProbeText, 'Ground probe pending.'); return; }
+  const p = g.probe, gpuHex = linearToHex([p.r, p.g, p.b]);
+  const twinHex = g.groundTwin ? linearToHex(g.groundTwin) : null;
+  grassProbeGpu.style.background = gpuHex;
+  grassProbeCpu.style.background = twinHex ?? 'transparent';
+  const stands = p.delta == null ? '' : ` The cull put the blade under you ${p.delta >= 0 ? '+' : ''}${p.delta.toFixed(2)} m from the drawn ground.`;
+  setTextIfChanged(grassProbeText, `Ground under you: GPU sample ${gpuHex}, CPU twin ${twinHex ?? 'off the field'}.${stands}`);
 }
 
 // ---- Trees (tree plan T2) ----

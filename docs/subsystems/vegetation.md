@@ -26,7 +26,7 @@ buffers so the CPU never reads back GPU state.
 | `plants.js` | Parameterized procedural plant generator (`PLANT_DEFAULTS`/`PLANT_PRESETS`/`buildPlantGeometry`/`createPlantPalette`); 4 species: chickweed, cleavers, mint, jewelweed. See "Plants" below. |
 | `plants-placement.js` | Biome-gated, density-weighted plant placement (mirrors `forest-placement.js`, reuses its `rngFrom`/`hash2`). |
 | `grass.js` lighting option (2026-09-03) | `lighting: 'standard'` (default, `MeshStandardNodeMaterial`, the original) or `'lambert'` (`MeshLambertNodeMaterial`). Grass colour is computed flat in its own colour node, so the standard material's GGX specular per light per fragment bought nothing at roughness 1. Lambert keeps the light loop, the constant-up normal, the emissive translucency and the shadow term. Headless compile (`scratchpads/spawn-atrium/check-grass-lambert.mjs`): fragment 16.0k chars → 6.8k, specular gone, shadow kept. Every existing caller is unchanged; bot-flora passes the flora block's `grassLighting`. |
-| `grass-compute.js` additions (2026-09-03) | `setColors(base, tip)` and `setLight(ambient, key)` set the blade colour and flat light uniforms live (the CPU grass takes these as build options, and `bot-flora.js` needs to set them on either path); `readBladeCount()` (async) reads the survivor counter back through `renderer.getArrayBufferAsync` for a readout on a timer. Both cull kernels also apply the same horizontal view cone as `plants-gpu.js` (`frustumCull`, default on; `nearKeep` 6 m; the cone opens to everything when the camera pitches past its footprint or has no `fov`), and a camera rotation re-runs the cull in `cell` recull mode the way a cell change does. The cone's yaw and half-angle are quantised to 0.1 rad steps, under its 0.22 rad margin, so a turning camera re-culls every ~6 degrees rather than every frame: the base game (`base-game-flora.js`, cell mode, a large radius) inherited the cone on 2026-09-03 and a per-frame recull while turning would have been a regression there. Neither module occlusion-culls: a blade behind a wall inside the cone and radius is still generated and drawn, and its fragments are rejected by the depth test only. `bot-flora.js`'s compute path (`grassMode: 'compute'`) drives this module from density and height textures painted by `rasterizeGrowth`; see the eco-brutalism section of `bots.md`. |
+| `grass-compute.js` additions (2026-09-03) | `setColors(base, tip)` and `setLight(ambient, key)` set the blade colour and flat light uniforms live (the CPU grass takes these as build options, and `bot-flora.js` needs to set them on either path); `readBladeCount()` (async) reads the survivor counter back through `renderer.getArrayBufferAsync` for a readout on a timer; `readGroundProbe(x, z)` (async, only with an injected `groundColorNode`, `hasGroundProbe` says) runs a one-thread kernel that evaluates the ground node at a render-local point the way the cull packs it and returns `{ r, g, b, y }`. Both cull kernels also apply the same horizontal view cone as `plants-gpu.js` (`frustumCull`, default on; `nearKeep` 6 m; the cone opens to everything when the camera pitches past its footprint or has no `fov`), and a camera rotation re-runs the cull in `cell` recull mode the way a cell change does. The cone's yaw and half-angle are quantised to 0.1 rad steps, under its 0.22 rad margin, so a turning camera re-culls every ~6 degrees rather than every frame: the base game (`base-game-flora.js`, cell mode, a large radius) inherited the cone on 2026-09-03 and a per-frame recull while turning would have been a regression there. Neither module occlusion-culls: a blade behind a wall inside the cone and radius is still generated and drawn, and its fragments are rejected by the depth test only. `bot-flora.js`'s compute path (`grassMode: 'compute'`) drives this module from density and height textures painted by `rasterizeGrowth`; see the eco-brutalism section of `bots.md`. |
 | `flora-occlusion.js` (2026-09-03) | An occluder depth image for the GPU flora culls. Each frame it draws the meshes on `OCCLUDER_LAYER` (2) from the live camera into a 256² half-float target with an override material that writes linear view depth (`-positionView.z`), clearing to 60000 so uncovered pixels read as open; background and fog are nulled for the pass and restored. `markOccluders(root)` puts every opaque mesh under `root` on the layer (transparent water stays out); `state` is what the kernels take (`texture`, `viewProj`, `texel`, `bias`, `enabled`). Both `grass-compute.js` and `plants-gpu.js` accept `occlusion: state`: when given, the cull kernels project each candidate with `viewProj` to NDC and sample at `(x * 0.5 + 0.5, 0.5 - y * 0.5)`: WebGPU stores a render target with row 0 at the top and the WGSL node builder's `isFlipY()` is false (only the GLSL builder flips), so V runs down; the first cut sampled it upside down. The projection is also the visibility test (2026-09-03, second cut): a candidate survives only if its base or its top (`h` above: 1.2 blade heights, 1.4 m for a plant) lands inside the screen with a 15% NDC margin, or it is within 1.5 m of the camera. Off-screen and behind-camera candidates are not visible, which the first cut wrongly treated as "not occluded", so a corner with no grass on screen still counted the planters at the camera's feet. The occlusion test then runs at the top point: read the stored depth there and at its four neighbours (the max is the conservative side, so a candidate at a wall edge survives), and drop the candidate when its depth exceeds that by `bias` (0.12 m default) plus 1% of depth; the first bias of 0.45 m plus 2% let the strip of a bed planted against a wall through. Without the option the test is not compiled in and the XZ cone alone applies. A camera change re-culls while it is on, since the depth image is per frame. The mesh grass path has no per-blade cull and gets nothing from it. Browser-proven only; no headless path. |
 | `plants-gpu.js` | Single-LOD GPU-instanced plant rendering (mirrors `forest-gpu.js`'s reset→cull→finalize→indirect-draw spine, one distance-cull band instead of 4 LOD bands). Since 2026-09-03 the cull kernel also drops instances outside the camera's horizontal field of view on the ground plane (`frustumCull`, default on; `nearKeep` 8 m always survives; the cone is `-1`, keep everything, when the camera pitches past the point where its footprint is unbounded or has no `fov`). Camera rotation re-runs the cull the way translation always did. `readSurvivors()` (async) reads the survivor atomics back through `renderer.getArrayBufferAsync` and returns how many instances the last cull kept; a GPU round trip, meant for a readout on a timer. |
 | `forest-gpu.js` (693 lines) | `createForestGPU()`: GPU-instanced forest renderer. CPU placement fills a source storage buffer; a TSL compute pipeline (reset → cull → finalize) culls by camera distance into 4 LOD bands per variant and writes per-variant indirect draw buffers. Chunk mutations are debounced (rebuild once per frame at `update()`'s top) and zero-instance variants are hidden via `mesh.visible` — see "Zero-instance visibility gating & debounced rebuild" below. Milestones 1-4 (`trees-performance-design.md`) added frustum/cone rejection, a hard far draw-distance cutoff, threshold-gated reculls, and lazy CPU-estimate telemetry — see "Forest frustum/cone culling, far cutoff, and threshold reculls" below. Milestone 6 fixed billboard winding and set FrontSide as the default for L1/coarse-L2 leaves and billboards — see "Leaf/billboard side policy" below. |
@@ -124,10 +124,26 @@ Two constraints worth knowing before changing this:
   colour is already in the record.
 - **Grass waits for the ground textures before it builds.** They load in the background, the grass
   graph is built exactly once, and a graph built too early would tint from the fallback for the
-  whole session. `build()` holds while `terrain.groundColorReady` is false, bounded at 600 frames so
-  a failed texture load cannot stop grass forever -- and with textures off the vertex tint IS what
-  the ground shows, so `groundColorReady` is true immediately. `stats.groundSamplesTextures` says
-  which of the two it ended up on.
+  whole session. `build()` holds while `terrain.groundTexturesLoaded` is false, bounded at 600
+  frames so a failed texture load cannot stop grass forever. It used to wait on `groundColorReady`,
+  which is true immediately with textures OFF (the vertex tint is what the ground shows then) --
+  but the maps are loaded regardless of the toggle and the toggle can be turned on later, and a
+  graph built before they landed had no maps to sample for the session. `stats.waitingOnTextures`
+  says it is holding; `stats.groundSamplesTextures` says which source it ended up on.
+- **The mip slider forces a recull.** `grassGroundTintMip` is read in the cull, where the colour
+  is packed into the record, so `apply()` marks the cull dirty when it changes; before 2026-09-03
+  the slider did nothing until the next 2 m cell crossing.
+- **Readbacks on a timer (2026-09-03).** Once a second `base-game-flora.js` reads back the
+  survivor counter (`stats.drawn`, beside `stats.expected`) and runs grass-compute's ground probe:
+  a one-thread kernel (`readGroundProbe(x, z)`) that evaluates the injected ground node at the
+  camera exactly as the cull packs it, returning rgb and the render-local height it stood on.
+  `stats.probe` carries that in global y plus `delta`, its distance from `terrain.groundHeight`
+  there; `stats.groundTwin` is `terrain.groundColorAt(x, z)`, the CPU twin with the layers'
+  AVERAGE colours in place of sampled texels (what the sample should land near, not equal). The
+  Plants panel shows both as swatches with hex values, the blades drawn against expected, the grass
+  cover under the camera (`terrain.coverAt`) and what that makes of the density slider, and the
+  PLACEMENT window's streamed fraction beside the contact window's (the old single "field %"
+  read only the contact window, which can say 100 % while far blades are still missing).
 - **Nothing here jumps on a floating-origin rebase.** Placement hashes add `uCellOriginX/Z` so they
   key off a GLOBAL cell, and the material samples wind, cloud and coverage at `baseWorld` rather
   than the render-local base. Before this, crossing a rebase re-rolled every blade's jitter, yaw and
@@ -146,8 +162,11 @@ Two constraints worth knowing before changing this:
   multiply into the dispatch as `side^2 x perCell`, so radius 600 at 128 blades/m^2 is ~86M threads,
   which hangs rather than degrades. Over the thread budget the effective blades-per-cell is thinned
   (high slots drop, the rest stay where they are) and `stats.dispatchClamped` says so; over the
-  buffer, the field truncates at the far edge and `stats.truncating` says so. The Plants panel
-  prints both. Slider ranges are 5-600 m and 0-128 blades/m^2, and
+  buffer, the cull simply stops appending once the counter passes the cap, and `stats.truncating`
+  says so. Survivors are appended in DISPATCH order, a row-major sweep of the window, so the cut
+  is a straight line through the field wherever the buffer happened to fill, not the far edge
+  (the panel text said "far edge" until 2026-09-03; Phase 3 of the grass plan orders the dispatch
+  by ring so that it becomes true). The Plants panel prints both. Slider ranges are 5-600 m and 0-128 blades/m^2, and
   `test-grass-compute.mjs` asserts the implementation ceilings cover them -- the invariant that was
   broken when the panel offered 0-60 against a 16/m^2 ceiling.
 - **`expectedBlades(radius, density, cullStart)`** is the area integral of the edge fade, not
@@ -162,8 +181,8 @@ Two constraints worth knowing before changing this:
 - **The buffer is budgeted, not worst-cased.** `CAP` used to be `maxInstances(maxRadius, ...)` —
   every cell in the window full — which at radius 200 and 64 blades/m^2 is 331 MB for a field the
   cull gradient never fills. `opts.maxInstances` caps it instead (`grassBufferMB`, default 96 MB =
-  3M blades). Over budget the field truncates at the far edge rather than clamping the sliders, and
-  `stats.truncating` says so. This is only safe because the procedural write is bounds-checked
+  3M blades). Over budget the field truncates along a dispatch-order line rather than clamping the
+  sliders, and `stats.truncating` says so. This is only safe because the procedural write is bounds-checked
   against `uHardCap`; without that guard, under-sizing `CAP` would be an out-of-bounds write.
 - **`stats` reports what is in force.** `radius`/`density` are the clamped values actually
   running; `requestedRadius`/`requestedDensity` keep what the panel asked for, and `maxDensity`
@@ -172,7 +191,14 @@ Two constraints worth knowing before changing this:
   panel prints all of it in a runtime line, because both sliders used to clamp in silence.
 
 **TSL, checked against the shipped r184 build.** `grass-compute.js` is a storage-buffer material,
-so `tsl-build-check.mjs` cannot compile it — but every graph Base Game hands it can be compiled, and
+so `tsl-build-check.mjs` cannot compile it. `test-grass-wgsl-build.mjs` (2026-09-03) can: it builds
+the reset/cull/finalize kernels, the ground probe and the blade material to WGSL through
+`WebGPUBackend.prototype.createNodeBuilder` over a stub renderer, and asserts the cull samples the
+five splat maps with `textureSampleLevel` (placeholder maps must be linear-filtered and mipmapped or
+the builder takes the `textureLoad` path), the view cone is in the kernel, the occlusion branch is
+compiled out without an occluder image, and the fragment reads the record from a read-only storage
+buffer through a flat varying. Bind-time validation is the one thing it cannot exercise.
+Every graph Base Game hands it is compiled on its own too, and
 `test-flora-tsl-build.mjs` does: both field-window samplers (bilinear float, nearest id, u8 cover)
 and the render-local adapters, alone and combined. It asserts the emitted shader uses `texelFetch`
 rather than a uv sample, which is what makes the toroidal window correct, and that every field
@@ -184,7 +210,7 @@ carries no 256-byte alignment rule, so a 128-wide r8unorm contact window uploads
 compiles GLSL through `GLSLNodeBuilder`, so it proves graph validity and node arity, not WGSL
 emission.
 
-Tests: `test-flora-field.mjs`, `test-flora-chunks.mjs`, `test-base-game-flora.mjs`, `test-flora-tsl-build.mjs`. The blades
+Tests: `test-flora-field.mjs`, `test-flora-chunks.mjs`, `test-base-game-flora.mjs`, `test-flora-tsl-build.mjs`, `test-grass-wgsl-build.mjs`. The blades
 themselves need a GPU, so the last one covers the wiring — window references, the clamps, the
 render-origin boundary, and that the injected graphs build and are validated.
 

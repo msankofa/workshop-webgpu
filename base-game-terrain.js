@@ -766,6 +766,24 @@ export function createBaseGameTerrain({
     // True once the ground's real appearance is knowable: textures loaded, or textures off, in
     // which case the vertex tint IS what the ground shows.
     get groundColorReady() { return !!splatTextures || !splatEnabled; },
+    // The maps themselves have arrived. A graph built before this has no maps to sample even if
+    // the toggle is turned on later, so a consumer that bakes the ground colour waits on this.
+    get groundTexturesLoaded() { return !!splatTextures; },
+    // CPU twin of groundColorNode with the layers' AVERAGE colours where the GPU samples texels:
+    // what a sample should land near, not equal. Linear rgb, or null where the field has not streamed.
+    groundColorAt(x, z) {
+      const s = surfaceFieldAt(x, z);
+      if (!s) return null;
+      const tint = terrainTintAt(s.height - seaLevel, s.normalY);
+      if (!(splatEnabled && splatTextures)) return tint;
+      const out = [0, 0, 0];
+      ['sand', 'grass', 'dirt', 'rock', 'snow'].forEach((name, i) => {
+        const a = splatTextures.layers?.[name]?.average;
+        if (!a) return;
+        for (let k = 0; k < 3; k++) out[k] += a[k] * s.weights[i];
+      });
+      return out;
+    },
     get groundColorSamplesTextures() { return !!splatGround?.ready; },
     setGroundColorMip(v) { splatGround?.setMip(v); },
     syncGroundColor,

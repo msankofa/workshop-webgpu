@@ -1,9 +1,10 @@
 // test-flora-tsl-build.mjs — the flora TSL graphs, compiled headless.
 //
-// grass-compute.js is a storage-buffer material, so it cannot go through tsl-build-check itself.
-// What CAN be checked is every graph Base Game hands it: the field-window samplers and the
-// render-local adapters. If one of those does not compile, the browser shows an empty field with a
-// shader error in the console, which is exactly the failure this catches in Node instead.
+// grass-compute.js is a storage-buffer material, so it cannot go through tsl-build-check itself;
+// test-grass-wgsl-build.mjs builds it to WGSL through the WebGPU backend's own node builder.
+// What this file checks is every graph Base Game hands it, on its own: the field-window samplers
+// and the render-local adapters. If one of those does not compile, the browser shows an empty
+// field with a shader error in the console, which is exactly the failure this catches in Node.
 //
 // node test-flora-tsl-build.mjs
 

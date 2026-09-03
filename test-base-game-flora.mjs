@@ -173,5 +173,84 @@ section('grass-compute injection points');
   check('both are validated', /heightNode must be a TSL node function/.test(src) && /densityNode must be a TSL node function/.test(src));
 }
 
+// The blade atlas is drawn on a canvas at construction; a stub is enough for the graph to build.
+globalThis.document ??= { createElement: () => ({ width: 0, height: 0, getContext: () => ({
+  createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
+  putImageData: () => {} }) }) };
+const stubRenderer = { computeAsync: async () => {} };
+function builtRig() {
+  const scene = new THREE.Scene();
+  const worldQuery = createWorldQueryService();
+  const worldCoordinates = createWorldCoordinateSpace();
+  const terrain = createBaseGameTerrain({
+    scene, worldQuery, worldCoordinates,
+    source: analyticDescriptor({ key: 'flora-built', seaLevel: 0 }), useWorker: false,
+  });
+  terrain.setActive(true);
+  const camera = new THREE.PerspectiveCamera();
+  const flora = createBaseGameFlora({ scene, renderer: stubRenderer, camera, terrain, worldCoordinates });
+  return { terrain, flora, camera };
+}
+
+section('grass waits for the ground textures, whatever the toggle says');
+{
+  const { terrain, flora } = builtRig();
+  // Textures off at boot: the vertex tint is what the ground shows NOW, but the maps are still
+  // loading and the toggle can be turned on later, so a graph built here would never see them.
+  terrain.setSplatEnabled(false);
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.load();
+  check('the terrain says its appearance is knowable with textures off', terrain.groundColorReady === true);
+  check('but the maps have not arrived', terrain.groundTexturesLoaded === false);
+  check('so grass does not build yet', (await flora.update(0.016)) === false && flora.built === false);
+  check('and the stats say what it waits on', flora.stats.waitingOnTextures === true);
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  check('grass builds once they land', (await flora.update(0.032)) === true && flora.built === true);
+  check('and the wait is over', flora.stats.waitingOnTextures === false);
+  flora.dispose();
+  terrain.dispose();
+}
+
+section('the mip slider forces a recull');
+{
+  const { terrain, flora } = builtRig();
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.load();
+  check('grass is built', (await flora.update(0.016)) === true);
+  check('the build cleared the dirty flag', flora.grass.stats.dirty === false);
+  flora.apply({ grassGroundTintMip: BASE_GAME_FLORA_DEFAULTS.grassGroundTintMip });
+  check('applying the same mip does not recull', flora.grass.stats.dirty === false);
+  flora.apply({ grassGroundTintMip: BASE_GAME_FLORA_DEFAULTS.grassGroundTintMip + 2 });
+  check('a new mip marks the cull dirty, since the colour is read there', flora.grass.stats.dirty === true);
+  flora.dispose();
+  terrain.dispose();
+}
+
+section('the ground colour probe and its CPU twin');
+{
+  const { terrain, flora } = builtRig();
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.load();
+  await flora.update(0.016);
+  check('grass exposes a ground probe when the colour is injected', flora.grass.hasGroundProbe === true);
+  const twin = terrain.groundColorAt(10, 10);
+  check('the terrain has a CPU twin of the ground colour', Array.isArray(twin) && twin.length === 3 && twin.every(Number.isFinite));
+  terrain.setSplatEnabled(false);
+  const tint = terrain.groundColorAt(10, 10);
+  check('with textures off the twin is the vertex tint', Array.isArray(tint) && tint.some((v, i) => Math.abs(v - twin[i]) > 1e-6));
+  check('no readback runs without a renderer that can read buffers', flora.stats.drawn === null && flora.stats.probe === null);
+  check('the stats carry the placement window coverage', typeof flora.stats.placementCoverage === 'number');
+  flora.dispose();
+  terrain.dispose();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

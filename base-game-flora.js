@@ -12,8 +12,8 @@
 //   - Contact. Height comes from the lod-0 contact window — the exact field the visible chunks are
 //     built from — and blades sit a few centimetres low on purpose. A sunk blade is invisible; a
 //     floating one shows daylight underneath.
-//   - Lifetime. grass-compute.js's dispose() does not free its storage buffers, so grass is built
-//     ONCE at the widest supported radius and every slider maps to a setter.
+//   - Lifetime. The storage buffers are sized at construction, so grass is built ONCE at the widest
+//     supported radius and every slider maps to a setter; dispose() does free them.
 
 import * as THREE from 'three';
 import { Fn, float, vec2, uniform, select, mix, length } from 'three/tsl';
@@ -87,7 +87,10 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   let maxRadius = 0;
   const stats = { enabled: false, built: false, radius: 0, requestedRadius: 0, maxRadius: 0, density: 0,
     requestedDensity: 0, maxDensity: 0, capacity: 0, dispatch: 0, expected: 0, truncating: false, dispatchClamped: false,
-    reculls: 0, skippedReculls: 0, coverage: 0, lastError: null };
+    reculls: 0, skippedReculls: 0, coverage: 0, placementCoverage: 0, lastError: null,
+    // Readbacks on a timer: blades the last cull kept, the ground colour under the camera as the
+    // cull packs it (global y), and the CPU twin of that colour from the layer averages.
+    drawn: null, probe: null, groundTwin: null, probeError: null, coverHere: null, waitingOnTextures: false };
 
   // Global = render-local + origin. One vec3 uniform, mutated on rebase; the graph never rebuilds.
   const uRenderOrigin = uniform(new injectedTHREE.Vector3());
@@ -170,15 +173,21 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   // One construction, at the widest radius the sliders can reach: grass-compute cannot free its
   // storage buffers, so a live rebuild would leak them.
   // Ground textures load in the background and the grass graph is built once, so building before
-  // they land would leave blades tinted from the fallback for the session. Bounded, because a
-  // failed load must not stop grass forever.
+  // they land would leave blades tinted from the fallback for the session -- whatever the textures
+  // toggle says at boot, since it can be turned on later. Bounded, because a failed load must not
+  // stop grass forever.
   let groundWait = 0;
   const GROUND_WAIT_FRAMES = 600;
+  let appliedMip = null;
   async function build() {
     if (built || !grassModule) return false;
     const contact = terrain.contactField;
     if (!contact) return false;
-    if (terrain.groundColorReady === false && groundWait++ < GROUND_WAIT_FRAMES) return false;
+    const texturesIn = terrain.groundTexturesLoaded ?? (terrain.groundColorReady !== false);
+    stats.waitingOnTextures = !texturesIn;
+    if (!texturesIn && groundWait++ < GROUND_WAIT_FRAMES) return false;
+    stats.waitingOnTextures = false;
+    appliedMip = cfg.grassGroundTintMip;
     const samplers = buildSamplers();
     if (!samplers) return false;
     // The reach of the widest window that can supply a height, capped by the slider's own ceiling.
@@ -215,6 +224,30 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     stats.built = true;
     stats.maxRadius = maxRadius;
     return true;
+  }
+
+  // GPU readbacks for the panel, once a second: the blade count the last cull kept, and the ground
+  // colour under the camera as the cull packs it, beside its CPU twin from the layer averages.
+  let lastSample = -Infinity, sampling = false;
+  const SAMPLE_EVERY = 1;
+  function sampleReadbacks(seconds) {
+    if (sampling || seconds - lastSample < SAMPLE_EVERY) return;
+    if (typeof renderer?.getArrayBufferAsync !== 'function' || !grass?.readBladeCount) return;
+    sampling = true; lastSample = seconds;
+    const o = uRenderOrigin.value, ox = o.x, oy = o.y, oz = o.z;
+    const x = camera.position.x, z = camera.position.z;
+    stats.groundTwin = terrain.groundColorAt?.(x + ox, z + oz) ?? null;
+    Promise.all([grass.readBladeCount(), grass.readGroundProbe ? grass.readGroundProbe(x, z) : null])
+      .then(([drawn, probe]) => {
+        stats.drawn = drawn;
+        // probeDelta: how far the height the cull used sits from the drawn ground there.
+        const ground = terrain.groundHeight?.(x + ox, z + oz);
+        stats.probe = probe ? { r: probe.r, g: probe.g, b: probe.b, y: probe.y + oy,
+          delta: Number.isFinite(ground) ? probe.y + oy - ground : null } : null;
+        stats.probeError = null;
+      })
+      .catch(err => { stats.probeError = String(err?.message ?? err); })
+      .finally(() => { sampling = false; });
   }
 
   function setEnabled(value) {
@@ -267,6 +300,11 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       stats.reculls = grass.stats.reculls;
       stats.skippedReculls = grass.stats.skippedReculls;
       stats.coverage = terrain.contactField?.coverage ?? 0;
+      stats.placementCoverage = terrain.fields?.coverage ?? 0;
+      // Cover under the camera, so the panel can say what fraction of the density slider applies here.
+      const o = uRenderOrigin.value;
+      stats.coverHere = terrain.coverAt?.(camera.position.x + o.x, camera.position.z + o.z)?.grass ?? null;
+      sampleReadbacks(seconds);
       // Both sliders clamp; report the value in force and keep the request beside it.
       stats.radius = grass ? Math.min(cfg.grassRadius, maxRadius || cfg.grassRadius) : 0;
       stats.requestedRadius = cfg.grassRadius;
@@ -300,7 +338,12 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       grass.setWind(cfg.grassWind);
       grass.setBladeStyle?.(cfg.grassStyle);
       grass.setGroundTint?.(cfg.grassGroundTint, cfg.grassGroundTintFar, cfg.grassGroundTintReach);
-      terrain.setGroundColorMip?.(cfg.grassGroundTintMip);
+      // The mip is read in the cull, so without a recull the slider does nothing until the next cell.
+      if (cfg.grassGroundTintMip !== appliedMip) {
+        appliedMip = cfg.grassGroundTintMip;
+        terrain.setGroundColorMip?.(appliedMip);
+        grass.forceRecull();
+      }
       if (uCoverGate && uCoverGate.value !== cfg.grassCoverGate) {
         uCoverGate.value = cfg.grassCoverGate;
         grass.forceRecull();

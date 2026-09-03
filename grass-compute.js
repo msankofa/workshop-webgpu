@@ -467,6 +467,17 @@ export function createComputeGrass(opts) {
 
   const cull = anchorMode ? anchorCull : proceduralCull;
 
+  // Ground-colour probe: one thread runs the injected ground node at a point, exactly as the cull
+  // packs it into a record, and writes rgb plus the height it stood on for a readback.
+  const uProbeXZ = uniform(new THREE.Vector2());
+  const probeAttr = injectedGround ? new StorageBufferAttribute(new Float32Array(4), 4) : null;
+  const probeBuf = probeAttr ? storage(probeAttr, 'vec4', 1) : null;
+  const probe = probeAttr ? Fn(() => {
+    const wy = heightFn(uProbeXZ.x, uProbeXZ.y);
+    const g = injectedGround(uProbeXZ.x, uProbeXZ.y, wy);
+    probeBuf.element(0).assign(vec4(g.x, g.y, g.z, wy));
+  })().compute(1) : null;
+
   const finalize = Fn(() => {
     const c = atomicLoad(counter.element(0));
     indirect.element(1).assign(c);
@@ -752,6 +763,17 @@ export function createComputeGrass(opts) {
       const buf = await renderer.getArrayBufferAsync(counterAttr);
       return new Uint32Array(buf)[0];
     },
+    // The ground colour under a render-local (x, z) as the cull packs it, plus the render-local
+    // height it stood on: { r, g, b, y }, or null without an injected ground node. Two GPU round
+    // trips; for a readout on a timer.
+    async readGroundProbe(x, z) {
+      if (!probe) return null;
+      uProbeXZ.value.set(x, z);
+      await renderer.computeAsync(probe);
+      const v = new Float32Array(await renderer.getArrayBufferAsync(probeAttr));
+      return { r: v[0], g: v[1], b: v[2], y: v[3] };
+    },
+    get hasGroundProbe() { return !!probe; },
     getLook() { return look.get(); },
     setSunDir(v) { look.setSunDir(v); },
     setBladeStyle(key) {
@@ -776,10 +798,10 @@ export function createComputeGrass(opts) {
     // groups but not the buffers. Renderer._attributes.delete is the same path the geometry teardown
     // uses (Attributes.delete -> backend.destroyAttribute); private, so it is guarded and optional.
     dispose() {
-      for (const node of [reset, cull, finalize]) { try { node?.dispose?.(); } catch { /* already gone */ } }
+      for (const node of [reset, cull, finalize, probe]) { try { node?.dispose?.(); } catch { /* already gone */ } }
       const attrs = renderer?._attributes;
       if (attrs?.delete) {
-        for (const a of [instAttr, counterAttr, indirectAttr, anchorAttr, slotCountAttr]) {
+        for (const a of [instAttr, counterAttr, indirectAttr, anchorAttr, slotCountAttr, probeAttr]) {
           if (a) { try { attrs.delete(a); } catch { /* not uploaded, or a build without this internal */ } }
         }
       }
