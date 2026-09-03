@@ -4711,7 +4711,14 @@ function refreshGrassRuntimeLine() {
   grassProbeGpu.style.background = gpuHex;
   grassProbeCpu.style.background = twinHex ?? 'transparent';
   const probeStands = p.delta == null ? '' : ` The cull put the blade under you ${p.delta >= 0 ? '+' : ''}${p.delta.toFixed(2)} m from the drawn ground.`;
-  setTextIfChanged(grassProbeText, `Ground under you: GPU sample ${gpuHex}, CPU twin ${twinHex ?? 'off the field'}.${probeStands}`);
+  const ring = g.ringProbe
+    ? ` At ${g.ringProbe.radius} m around you the cull's height came back missing in ${g.ringProbe.missing} of ${g.ringProbe.of} probes, worst ${g.ringProbe.worst >= 0 ? '+' : ''}${g.ringProbe.worst.toFixed(2)} m from the ground.`
+    : '';
+  const holes = g.maskHoles ? ` Tiles not landed: contact ${g.maskHoles.contact ?? '?'}, placement ${g.maskHoles.placement ?? '?'}.` : '';
+  const struct = g.structure
+    ? ` Building footprint ${g.structure.w.toFixed(0)} x ${g.structure.d.toFixed(0)} m, ${g.structure.distance.toFixed(0)} m from you, you are ${g.structure.inside ? 'inside' : 'outside'} it; no terrain grass grows inside.`
+    : ' No building footprint.';
+  setTextIfChanged(grassProbeText, `Ground under you: GPU sample ${gpuHex}, CPU twin ${twinHex ?? 'off the field'}.${probeStands}${ring}${holes}${struct}`);
 }
 
 // ---- Trees (tree plan T2) ----

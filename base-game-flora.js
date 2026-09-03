@@ -386,7 +386,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
 
   // GPU readbacks for the panel, once a second: the blade count the last cull kept, and the ground
   // colour under the camera as the cull packs it, beside its CPU twin from the layer averages.
-  let lastSample = -Infinity, sampling = false, lastReculls = 0;
+  let lastSample = -Infinity, sampling = false, lastReculls = 0, ringStep = 0;
+  const ringResults = new Array(8).fill(null);
   const SAMPLE_EVERY = 1;
   function sampleReadbacks(seconds) {
     if (sampling || seconds - lastSample < SAMPLE_EVERY) return;
@@ -398,13 +399,36 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     const o = uRenderOrigin.value, ox = o.x, oy = o.y, oz = o.z;
     const x = camera.position.x, z = camera.position.z;
     stats.groundTwin = terrain.groundColorAt?.(x + ox, z + oz) ?? null;
-    Promise.all([grass.readBladeCount(), grass.readGroundProbe ? grass.readGroundProbe(x, z) : null])
-      .then(([drawn, probe]) => {
+    // Diagnostics the panel prints beside the readbacks: the structure rectangle (the spawn
+    // building's footprint, where the terrain samplers stop applying) and the residency masks.
+    stats.structure = structure ? {
+      w: structure.bounds.worldX, d: structure.bounds.worldZ,
+      distance: Math.hypot(x + ox - (structure.bounds.minX + structure.bounds.worldX / 2), z + oz - (structure.bounds.minZ + structure.bounds.worldZ / 2)),
+      inside: x + ox > structure.bounds.minX && x + ox < structure.bounds.minX + structure.bounds.worldX
+        && z + oz > structure.bounds.minZ && z + oz < structure.bounds.minZ + structure.bounds.worldZ,
+    } : null;
+    const holes = w => (w?.residency ? w.residency.reduce((n, v) => n + (v ? 0 : 1), 0) : null);
+    stats.maskHoles = { contact: holes(terrain.contactField), placement: holes(terrain.fields) };
+    // A second probe walks a ring around the camera, one step a second, so a hole in the far
+    // height (a tile the GPU reads as not landed, or anything else that sinks a blade) shows up
+    // as a count rather than as a missing block you have to spot.
+    const RING_R = 45, k = ringStep++ % 8, a = k * Math.PI / 4;
+    const rx = x + Math.cos(a) * RING_R, rz = z + Math.sin(a) * RING_R;
+    Promise.all([grass.readBladeCount(), grass.readGroundProbe ? grass.readGroundProbe(x, z) : null,
+      grass.readGroundProbe ? grass.readGroundProbe(rx, rz) : null])
+      .then(([drawn, probe, ring]) => {
         stats.drawn = drawn;
         // probeDelta: how far the height the cull used sits from the drawn ground there.
         const ground = terrain.groundHeight?.(x + ox, z + oz);
         stats.probe = probe ? { r: probe.r, g: probe.g, b: probe.b, y: probe.y + oy,
           delta: Number.isFinite(ground) ? probe.y + oy - ground : null } : null;
+        if (ring) {
+          const g2 = terrain.groundHeight?.(rx + ox, rz + oz);
+          ringResults[k] = { missing: ring.y < -1e4, delta: Number.isFinite(g2) ? ring.y + oy - g2 : null };
+          const seen = ringResults.filter(Boolean);
+          stats.ringProbe = { radius: RING_R, of: seen.length, missing: seen.filter(r => r.missing).length,
+            worst: seen.reduce((m, r) => (r.delta != null && Math.abs(r.delta) > Math.abs(m) ? r.delta : m), 0) };
+        }
         stats.probeError = null;
       })
       .catch(err => { stats.probeError = String(err?.message ?? err); })
