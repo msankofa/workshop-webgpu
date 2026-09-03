@@ -67,5 +67,10 @@ rep(`for (const material of traversalLab.materials) {`,
 }
 for (const material of traversalLab.materials) {`);
 
+// 8. render-origin rebase: the collider is global, the meshes are render-local like the lab's.
+rep(`  traversalLab.root.position.add(rebaseShift);`,
+    `  traversalLab.root.position.add(rebaseShift);
+  spawnBuilding.root.position.add(rebaseShift);`);
+
 fs.writeFileSync(file, s);
 console.log('base-game.html: spawn building wired');
