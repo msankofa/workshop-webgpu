@@ -1399,6 +1399,15 @@ function syncTerrainSourceFromStore() {
 // the new surface at the same X/Z when they are more than `tolerance` metres off it.
 function reseatPlayerOnTerrain(tolerance = 1) {
   const here = playerController.getPosition();
+  // Inside the spawn building the ground is its floor, not the terrain under the plinth: a
+  // terrain reseat there would put the player under the slabs, and from there the occlusion
+  // image is all near and every blade is culled.
+  if (spawnBuildingWanted() && spawnBuilding.footprintContains(here[0], here[2])) {
+    const floor = spawnBuilding.stats.baseY;
+    if (here[1] < floor - 0.5 || here[1] > floor + 20) playerController.reset(worldSpawn());
+    playerController.interpolatedPosition(1, playerRenderPosition);
+    return;
+  }
   const ground = terrain.groundHeight(here[0], here[2]);
   if (Math.abs(here[1] - ground) > tolerance) playerController.reset(terrain.spawnPosition(here[0], here[2]));
   playerController.interpolatedPosition(1, playerRenderPosition);
