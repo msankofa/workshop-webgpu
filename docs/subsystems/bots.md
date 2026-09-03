@@ -9078,7 +9078,12 @@ per field. A theme that omits a block gets zeroes and renders exactly as it did 
 JSON clone and `normalizeTheme` only ever *adds* missing keys, so both blocks survive a save/load slot
 round trip with no plumbing in the slot code at all.
 
-### Concrete (`concreteAlbedo` in `bot-viewer-visuals.js`)
+### Concrete (`concreteAlbedo`, now in `concrete-material.js`)
+
+Since 2026-09-03 the noise helpers, `makeConcreteUniforms`, `concreteAlbedo` and `applyConcrete`
+live in `concrete-material.js` and `bot-viewer-visuals.js` imports them; the Base Game spawn
+building builds the same surface without this look system through that module's
+`createConcreteMaterial`. Everything below still describes the graph.
 
 `wallMat.colorNode` and `coverMat.colorNode` were bare colour uniforms; they are now a node graph
 over that colour. Walls and cover own **separate uniform sets**, so cover can weather harder — it sits

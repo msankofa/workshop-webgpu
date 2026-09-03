@@ -103,9 +103,19 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
     }
     const provider = createHeightfieldWorldQueryProvider(source, { id: 'terrain' });
     worldQuery.registerProvider(provider);
+    // The spawn building: the same generator, site and collider the page builds, seated on the
+    // same pure source, so a player standing on its floor is standing on it here too.
+    let building = null;
+    if (config.spawnBuilding) {
+      const { createSpawnBuildingWorldQuery } = await import('../base-game-spawn-collider.js');
+      building = createSpawnBuildingWorldQuery(worldQuery, (x, z) => source.heightAt(x, z), { seaLevel });
+    }
     return {
       worldQuery,
-      spawn: [0, Math.max(source.heightAt(0, 0), seaLevel) + 1.5, 0],
+      spawn: building
+        ? [building.spawn[0], building.spawn[1] + 1.5, building.spawn[2]]
+        : [0, Math.max(source.heightAt(0, 0), seaLevel) + 1.5, 0],
+      building,
       seaLevel,
       killPlaneYAt: (x, z) => source.heightAt(x, z) - killBelow,
       heightAt: (x, z) => source.heightAt(x, z),

@@ -334,5 +334,46 @@ console.log('\n[8] asset keys: projects travel once; rooms and packets carry the
   ownerSession.close?.(); guestSession.close?.();
 }
 
+console.log('\n[9] spawn building room: the server seats the building and a predicted client with the same collider agrees');
+{
+  const { createSpawnBuildingModel, createSpawnBuildingWorldQuery, SPAWN_BUILDING_PROVIDER_ID } = await import('./base-game-spawn-collider.js');
+  const descriptor = v5Descriptor(v5Project(31));
+  const bare = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: JSON.parse(JSON.stringify(descriptor)) }).config;
+  const withBuilding = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: JSON.parse(JSON.stringify(descriptor)), spawnBuilding: true }).config;
+  ok(withBuilding.spawnBuilding === true && bare.spawnBuilding === false, 'spawnBuilding is an explicit opt-in');
+  ok(withBuilding.worldVersion !== bare.worldVersion && withBuilding.worldVersion.endsWith(':spawnbld1'), 'the building is part of the world identity');
+  ok(describeBaseGameTerrainConfig(withBuilding).spawnBuilding === true, 'the description carries it');
+  let clock = 1000;
+  const service = createBaseGameRoomService({ now: () => clock });
+  const ws = new FakeSocket();
+  service.handle(ws, { type: 'base:create', protocol: P, room: 'BLDG', world: { waterEnabled: false }, terrain: { kind: 'terrain', descriptor, spawnBuilding: true } });
+  await service.ensureWorld();
+  const room = service.rooms.get('BLDG');
+  const src = createSource(descriptor);
+  const model = createSpawnBuildingModel((x, z) => src.heightAt(x, z), { seaLevel: descriptor.seaLevel ?? 0 });
+  ok(Math.abs(room.sim.spawn[1] - (model.spawn[1] + 1.5)) < 1e-6 && room.sim.spawn[0] === model.spawn[0] && room.sim.spawn[2] === model.spawn[2], 'the room spawns on the lobby plaza, 1.5 m up');
+  const hit = room.sim.worldQuery.raycast({ origin: [model.spawn[0], model.spawn[1] + 3, model.spawn[2]], direction: [0, -1, 0], maxDistance: 20 });
+  ok(hit && hit.providerId === SPAWN_BUILDING_PROVIDER_ID && Math.abs(hit.point[1] - model.spawn[1]) < 0.02, 'a ray down at the spawn lands on the building floor, not the terrain');
+  // The client predicts with terrain plus the same building; walking south leaves through the pavilion door.
+  const client = room.clients.values().next().value;
+  const local = createWorldQueryService();
+  local.registerProvider(createHeightfieldWorldQueryProvider(createSource(descriptor), { id: 'terrain' }));
+  createSpawnBuildingWorldQuery(local, (x, z) => src.heightAt(x, z), { seaLevel: descriptor.seaLevel ?? 0 });
+  const predicted = createBaseGamePlayerController({ worldQuery: local, spawn: room.sim.spawn, config: { fixedHz: 120 } });
+  const inputs = [];
+  for (let k = 1; k <= 480; k++) inputs.push({ tick: k, moveX: 0, moveZ: -1, yaw: 0, pitch: 0, sprint: true, jump: false });   // forward is -z; -1 walks south
+  for (const inp of inputs) predicted.stepOnce({ moveX: inp.moveX, moveZ: inp.moveZ, yaw: inp.yaw, sprint: inp.sprint }, inp.jump);
+  for (let i = 0; i < inputs.length; i += 32) {
+    clock += 40;
+    service.handle(ws, { type: 'base:input', protocol: P, clientTime: clock, ticks: inputs.slice(i, i + 32) });
+    for (let k = 0; k < 32; k++) { clock += 1000 / 120; service.step(clock); }
+  }
+  const sp = client.controller.getPosition(), cp = predicted.getPosition();
+  const dist = Math.hypot(sp[0] - cp[0], sp[1] - cp[1], sp[2] - cp[2]);
+  ok(client.lastConsumedTick === 480, `server consumed all ${client.lastConsumedTick} ticks`);
+  ok(sp[2] - room.sim.spawn[2] > 6, `walked ${(sp[2] - room.sim.spawn[2]).toFixed(1)} m south out of the plaza`);
+  ok(dist < 1e-6, `server and predicted client agree to ${dist.toExponential(2)} m with the building in both`);
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);
 process.exit(failures === 0 ? 0 : 1);

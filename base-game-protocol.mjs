@@ -292,6 +292,9 @@ export function sanitizeBaseGameTerrainConfig(input, { resolveProject = null } =
   if (input.kind === 'traversalLab') return { config: { kind: 'traversalLab', worldVersion: 'traversal-lab' }, error: null };
   if (input.kind !== 'terrain') return { config: null, error: `unknown terrain kind ${String(input.kind)}` };
   const volumetric = input.volumetric === true;
+  // The eco-brutalist spawn building at the origin (base-game-spawn-collider.js). Part of the
+  // world identity: a room with it and a room without it cannot share collision.
+  const spawnBuilding = input.spawnBuilding === true;
   let text;
   try { text = JSON.stringify(input.descriptor); } catch { return { config: null, error: 'terrain descriptor is not serializable' }; }
   if (!text || text.length > BASE_GAME_TERRAIN_CONFIG_MAX_BYTES) return { config: null, error: `terrain descriptor exceeds ${BASE_GAME_TERRAIN_CONFIG_MAX_BYTES} bytes` };
@@ -319,8 +322,9 @@ export function sanitizeBaseGameTerrainConfig(input, { resolveProject = null } =
   if (seaLevel !== descriptor.seaLevel) descriptor = normalizeDescriptor({ ...descriptor, seaLevel });
   // a v5 project's sea level is inside its hash already; the analytic source's is only here
   const seaTag = seaLevel !== 0 ? `:sea${seaLevel}` : '';
-  const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}${volumetric ? ':volume' : ''}${seaTag}`;
-  return { config: { kind: 'terrain', descriptor, projectHash, volumetric, worldVersion }, error: null };
+  const spawnTag = spawnBuilding ? ':spawnbld1' : '';
+  const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}${volumetric ? ':volume' : ''}${seaTag}${spawnTag}`;
+  return { config: { kind: 'terrain', descriptor, projectHash, volumetric, spawnBuilding, worldVersion }, error: null };
 }
 
 // The wire form of a room config: the v5 project body is replaced by its hash (the relay stores
@@ -347,7 +351,7 @@ export function withTerrainProject(config, project) {
 // What snapshots carry about the ground: identity only, never the project body.
 export function describeBaseGameTerrainConfig(config) {
   if (!config) return null;
-  return { kind: config.kind, worldVersion: config.worldVersion, projectHash: config.projectHash ?? null, sourceKey: config.descriptor?.key ?? null, sourceVersion: config.descriptor?.sourceVersion ?? null, volumetric: config.volumetric === true };
+  return { kind: config.kind, worldVersion: config.worldVersion, projectHash: config.projectHash ?? null, sourceKey: config.descriptor?.key ?? null, sourceVersion: config.descriptor?.sourceVersion ?? null, volumetric: config.volumetric === true, spawnBuilding: config.spawnBuilding === true };
 }
 
 export function advanceBaseGameWorld(world, elapsedMs) {

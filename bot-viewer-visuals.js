@@ -24,7 +24,6 @@ import {
   THEMES, THEME_KEYS, DEFAULT_THEME, getTheme, cloneTheme, togglesFor, randomTheme,
   normalizeTheme, flashCurve, pickLightSlotsInto, poolScaleForHeight, cycleHueHex, fitShadowBox,
   REACTIVE_TARGETS, REACTIVE_KEYS, defaultReactiveTargets, reactiveGain, advanceAudioMix,
-  concreteFor,
 } from './bot-viewer-visuals-style.js';
 // The one moss law in the repo: env-viewer's terrain, rocks and deadwood all read the same Fn,
 // so concrete that grows over follows the same rules those surfaces do.
@@ -54,142 +53,9 @@ const instanceTint = TSL.varyingProperty
 
 // ─── shared TSL noise ───────────────────────────────────────────────────────
 
-const hash13 = /*@__PURE__*/ Fn(([p]) => fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))).mul(43758.5453)));
-
-const noise3 = /*@__PURE__*/ Fn(([p]) => {
-  const i = floor(p), f = fract(p);
-  const u = f.mul(f).mul(float(3).sub(f.mul(2)));
-  const n000 = hash13(i.add(vec3(0, 0, 0))), n100 = hash13(i.add(vec3(1, 0, 0)));
-  const n010 = hash13(i.add(vec3(0, 1, 0))), n110 = hash13(i.add(vec3(1, 1, 0)));
-  const n001 = hash13(i.add(vec3(0, 0, 1))), n101 = hash13(i.add(vec3(1, 0, 1)));
-  const n011 = hash13(i.add(vec3(0, 1, 1))), n111 = hash13(i.add(vec3(1, 1, 1)));
-  const x00 = mix(n000, n100, u.x), x10 = mix(n010, n110, u.x);
-  const x01 = mix(n001, n101, u.x), x11 = mix(n011, n111, u.x);
-  return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
-});
-
-// Two octaves, not three: the dome covers every background pixel, so each extra octave is 8 more
-// hash evaluations across the whole screen. Two is enough for soft gas at this scale.
-const fbm2 = (p) => noise3(p).mul(0.66).add(noise3(p.mul(2.31)).mul(0.34));
-
-// ─── procedural cast concrete ───────────────────────────────────────────────
-// Turns a surface's flat themed colour into weathered concrete: a form-panel grid with recessed
-// joints and tie holes, horizontal board grain, exposed aggregate, rain streaking off the top
-// edge, and growth. Walls and cover each own a set of these, so the two weather independently.
-//
-// COST NOTE: this evaluates 3 value-noise taps per fragment on every theme, not just the ones
-// with concrete.gain > 0 -- `gain` is a uniform, so the graph can't be branched away, and the
-// alternative (a second material swapped in per theme) would mean a pipeline recompile on every
-// theme switch, which this file exists to avoid. If it ever shows up in a profile, the swap is
-// the fix, not a cheaper noise.
-function makeConcreteUniforms(THREE) {
-  const C = (hex) => new THREE.Color(hex);
-  return {
-    gain: uniform(0),
-    panel: uniform(new THREE.Vector2(2.4, 1.8)),
-    seamWidth: uniform(0.018), seamDark: uniform(0.4),
-    boardPitch: uniform(0.22), boardWidth: uniform(0.01),
-    boardGain: uniform(0), boardToneVar: uniform(0.06),
-    tieGain: uniform(0), tieRadius: uniform(0.032), tieSpacing: uniform(new THREE.Vector2(1.2, 0.9)),
-    grainGain: uniform(0), mottleGain: uniform(0),
-    stainColor: uniform(C(0)), stainGain: uniform(0), stainLength: uniform(0.5),
-    mossColor: uniform(C(0)), mossGain: uniform(0),
-    algaeGain: uniform(0), algaeHeight: uniform(0.28),
-  };
-}
-
-function concreteAlbedo(c, baseColor) {
-  // Every box in the map is axis-aligned (unit BoxGeometry, scale-and-translate instance
-  // transforms only), so the local normal names a world axis directly -- no tangent frame, and
-  // world XZ/Y can be used as the surface's own coordinates.
-  const nx = abs(normalLocal.x), ny = abs(normalLocal.y), nz = abs(normalLocal.z);
-  const sideMask = step(ny, 0.5);                      // the four vertical faces
-  const capMask = smoothstep(0.3, 0.75, normalLocal.y); // the up-facing cap, generously
-  const isCap = step(0.5, ny);
-  // Horizontal run across whichever vertical face this is; vertical is always world Y. On the
-  // caps there is no "up the wall", so the grid runs in XZ instead.
-  const h = mix(positionWorld.z, positionWorld.x, step(nx, nz));
-  const gh = mix(h, positionWorld.x, isCap);
-  const gv = mix(positionWorld.y, positionWorld.z, isCap);
-
-  // Form-panel grid: a thin recessed joint wherever two form panels met.
-  const dH = float(0.5).sub(abs(fract(gh.div(c.panel.x)).sub(0.5))).mul(c.panel.x);
-  const dV = float(0.5).sub(abs(fract(gv.div(c.panel.y)).sub(0.5))).mul(c.panel.y);
-  const seam = smoothstep(c.seamWidth, 0.0, min(dH, dV));
-
-  // Board-form grain: a line at each board edge, plus a per-board tone offset. The tone offset
-  // is what actually sells board forming -- every board pours a slightly different shade, and
-  // without it the lines alone read as a decal rather than as a construction method.
-  const bT = positionWorld.y.div(c.boardPitch.max(0.01));
-  const dB = float(0.5).sub(abs(fract(bT).sub(0.5))).mul(c.boardPitch);
-  const boardLine = smoothstep(c.boardWidth, 0.0, dB).mul(sideMask);
-  const boardTone = hash13(vec3(floor(bT), 3.7, 1.3)).sub(0.5).mul(c.boardToneVar).mul(sideMask);
-
-  // Form-tie holes on their own coarser grid.
-  const tf = vec2(
-    fract(gh.div(c.tieSpacing.x)).sub(0.5).mul(c.tieSpacing.x),
-    fract(gv.div(c.tieSpacing.y)).sub(0.5).mul(c.tieSpacing.y),
-  );
-  const tie = smoothstep(c.tieRadius, c.tieRadius.mul(0.45), length(tf)).mul(sideMask);
-
-  // Exposed aggregate over slow patina blotching. `patina` is deliberately shared with the moss
-  // break-up below rather than each taking its own fbm -- one fewer pair of noise taps, and the
-  // moss wanting to sit where the surface is already blotchy is if anything more correct.
-  // The speckle runs at ~42 cycles per metre, which is far finer than a pixel by the time a wall
-  // is across the arena. Procedural noise has no mip chain, so left alone it aliases into a
-  // crawling shimmer as the camera moves; fading it out with distance is the cheap fix (one
-  // length() shared with nothing else here) and it is detail you cannot resolve at range anyway.
-  const camD = length(positionWorld.sub(cameraPosition));
-  const speckle = smoothstep(0.55, 0.86, noise3(positionWorld.mul(42.0)))
-    .mul(smoothstep(18.0, 4.0, camD));
-  const patina = fbm2(positionWorld.mul(2.2));
-
-  // Rain streaks: noise that varies only along the wall run, so it reads as vertical columns
-  // rather than as blotches, faded downward from the top edge over a per-column length.
-  // uv().y is 0 at the bottom of each box's side faces and 1 at the top.
-  const colN = noise3(vec3(h.mul(5.5), 0.0, h.mul(1.9)));
-  const colLen = c.stainLength.mul(hash13(vec3(floor(h.mul(5.5)), 7.1, 2.4)).mul(0.7).add(0.5));
-  const streak = smoothstep(0.42, 0.92, colN)
-    .mul(smoothstep(colLen, 0.0, uv().y.oneMinus())).mul(sideMask);
-
-  let col = baseColor.mul(float(1).add(boardTone));
-  col = col.mul(float(1).sub(seam.mul(c.seamDark)));
-  col = col.mul(float(1).sub(boardLine.mul(c.boardGain).mul(0.5)));
-  col = col.mul(float(1).sub(tie.mul(c.tieGain)));
-  col = col.mul(float(1).sub(speckle.mul(c.grainGain)));
-  col = col.mul(float(1).add(patina.sub(0.5).mul(c.mottleGain)));
-  col = mix(col, c.stainColor, streak.mul(c.stainGain));
-
-  // Growth. mossWeight() hard-zeros below normalY 0.45 by design -- moss holds on tops, not on
-  // cliffs -- so it drives the CAPS only. The damp green creeping up the base of a vertical face
-  // in the references is a separate, simpler term, rather than a fake `upness` fed into a shared
-  // law to make it do something it says it doesn't.
-  const capMoss = mossWeight(float(0.85), clamp(normalWorld.y, 0, 1), seam.mul(0.6).add(0.4), patina)
-    .mul(c.mossGain).mul(capMask);
-  const algae = smoothstep(c.algaeHeight, 0.0, uv().y)
-    .mul(smoothstep(0.35, 0.75, patina)).mul(c.algaeGain).mul(sideMask);
-  col = mix(col, c.mossColor, clamp(capMoss.add(algae), 0, 1));
-
-  return mix(baseColor, col, c.gain);
-}
-
-// Writes a theme's optional `concrete` block into one uniform set. An absent block resolves to
-// CONCRETE_OFF, whose gain is 0 -- which is what keeps the six pre-concrete themes unchanged.
-function applyConcrete(c, matBlock, on) {
-  const k = concreteFor(matBlock);
-  c.gain.value = on ? k.gain : 0;
-  c.panel.value.set(Math.max(0.05, k.panelW), Math.max(0.05, k.panelH));
-  c.seamWidth.value = k.seamWidth; c.seamDark.value = k.seamDark;
-  c.boardPitch.value = k.boardPitch; c.boardWidth.value = k.boardWidth;
-  c.boardGain.value = k.boardGain; c.boardToneVar.value = k.boardToneVar;
-  c.tieGain.value = k.tieGain; c.tieRadius.value = k.tieRadius;
-  c.tieSpacing.value.set(Math.max(0.05, k.tieH), Math.max(0.05, k.tieV));
-  c.grainGain.value = k.grainGain; c.mottleGain.value = k.mottleGain;
-  c.stainColor.value.set(k.stainColor);
-  c.stainGain.value = k.stainGain; c.stainLength.value = k.stainLength;
-  c.mossColor.value.set(k.mossColor); c.mossGain.value = k.mossGain;
-  c.algaeGain.value = k.algaeGain; c.algaeHeight.value = k.algaeHeight;
-}
+// Shared TSL noise and the procedural cast-concrete graph live in concrete-material.js since
+// 2026-09-03, so Base Game can build the same surface without this look system.
+import { hash13, noise3, fbm2, makeConcreteUniforms, concreteAlbedo, applyConcrete } from './concrete-material.js';
 
 function dirFromAngles(THREE, azimuthDeg, elevationDeg) {
   const a = azimuthDeg * DEG, e = elevationDeg * DEG;

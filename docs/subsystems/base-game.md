@@ -3396,3 +3396,49 @@ ultimately expose at least:
 Performance records add terrain and hydrology generation times, worker queue depth, resident tile
 and region counts, cache hits/misses, water draw/triangle counts, and render-origin information. Each
 major phase stops for a controlled performance comparison before the next phase begins.
+
+## Spawn building (2026-09-03, port in progress)
+
+The area you spawn into in a terrain room is an eco-brutalist complex: an atrium to the north,
+a slot-garden hallway south into a lobby under a lattice roof, a second hallway east to a pergola
+court, and a pond pavilion off the lobby's open south side. It was designed and tuned in
+`scratchpads/spawn-atrium/` (references, intake notes, a viewer) and ported in phases.
+
+**Generator.** `base-game-spawn-layout.js` is pure: `generateEco(kind, params, seed, {x, z})`
+returns axis-aligned rects in metres (`walls`, `covers`, `bars`, `planters`, `water`) plus a
+spawn point, deterministic for a seed. Kinds: `complex` (the whole building), `spawn`, `atrium`,
+`lobby`, `pergola`, `slotgarden`, `pavilion`. `test-base-game-spawn-layout.mjs` walks a body
+through every doorway of the complex at knee, hip and head height and checks the floor level is
+one shared datum (0.45 m) at each.
+
+**Site and collider.** `base-game-spawn-collider.js` seats the layout on a concrete plinth:
+`spawnSite` samples the host's `heightAt` on a 4 m grid under the floor slabs (plus a 2 m
+margin) and puts the floor datum 5 cm above the highest sample or sea level, whichever is
+higher; the plinth runs 1.5 m below the lowest. Every rect is lifted by that datum, merged per
+bucket into geometry, baked into the `map-collision.js` BVH and adapted as a world-query
+provider (`spawn-building-static`, priority 100), the traversal-lab pattern. Water is not solid.
+Because the site is a pure function of `heightAt`, the room server (`source.heightAt`) and the
+page (the terrain's `groundHeight`, the same source) build bit-identical collision; there is no
+terrain edit and no protocol change beyond the flag below. `test-base-game-spawn-collider.mjs`
+casts rays at the plaza, the raised lobby floor, a hallway wall top and the plinth face.
+
+**Rooms.** `spawnBuilding: true` in a room's terrain config opts the room in
+(`sanitizeBaseGameTerrainConfig`; it is part of `worldVersion` as `:spawnbld1`, so a room with the
+building and one without never share a world). `defaultWorldFactory` registers the collider in
+heightfield terrain rooms and puts the spawn on the lobby plaza; bare rooms are unchanged, which
+is what keeps the earlier terrain-room checks valid. Volumetric rooms do not build it yet.
+`test-base-game-rooms-terrain.mjs` block 9 creates a building room, checks the spawn and a ray
+onto the floor, and walks a predicted client south out of the plaza while the server agrees to
+the metre.
+
+**Page.** `base-game-spawn-building.js` builds the same collider, registers it, and dresses it:
+one instanced mesh per material bucket per 32 m cell (`map-boxes.js`), so the renderer's
+per-object frustum test skips the rooms behind the camera in the main and shadow passes. Walls,
+plinth and covers are cast concrete from `concrete-material.js` (the graph that used to live
+inside `bot-viewer-visuals.js`; the bot viewer now imports it from there) with an occupied, not
+ruined, weathering block; lattice bars are light steel, soil dark, water a dark transparent
+sheet. `materials` is exposed for the page's rain decorator and the root is named
+`spawn-building` for the visor's heat sweep. Wiring into `base-game.html` (the terrain config
+flag, `worldSpawn`, visibility with the world mode, rain, and a rebuild when the terrain source
+changes) is the next phase, followed by the planter grass through `base-game-flora.js`'s
+samplers and the occluder pass for the compute grass. Nothing is browser-verified yet.
