@@ -38,6 +38,22 @@ ok(!castAtSpawn() && building.root.visible === false, 'hidden means no collision
 building.setVisible(true);
 ok(!!castAtSpawn(), 'visible again means collision again');
 
+// The planter biome: density 1 in a planter, 0 on the plaza, height the soil top in global metres.
+{
+  const fs = building.floraStructure;
+  ok(fs && fs.densityTex && fs.heightTex && fs.bounds.worldX > 70, 'flora structure carries two textures over the footprint');
+  const q = building.model.layout.planters[0];
+  const at = (x, z) => {
+    const i = Math.floor((x - fs.bounds.minX) / fs.bounds.worldX * fs.densityTex.image.width);
+    const j = Math.floor((z - fs.bounds.minZ) / fs.bounds.worldZ * fs.densityTex.image.height);
+    return j * fs.densityTex.image.width + i;
+  };
+  ok(fs.densityTex.image.data[at(q.x, q.z)] === 1, 'a planter centre grows');
+  ok(fs.densityTex.image.data[at(building.spawn[0], building.spawn[2])] === 0, 'the plaza does not');
+  ok(Math.abs(fs.heightTex.image.data[at(q.x, q.z)] - (q.y + q.depth + building.stats.baseY)) < 1e-4, 'planter height is the soil top at the datum');
+  ok(building.stats.planterArea > 100 && building.stats.planterArea < 2000, `planter area ${building.stats.planterArea.toFixed(0)} m² is plausible`);
+}
+
 building.rebuild(hills, 0);
 ok(building.stats.baseY > 2.05 + 1, `a rebuild on hills lifts the datum to ${building.stats.baseY.toFixed(2)}`);
 ok(!!castAtSpawn() && Math.abs(castAtSpawn().point[1] - building.stats.baseY) < 0.02, 'the rebuilt provider answers at the new datum');

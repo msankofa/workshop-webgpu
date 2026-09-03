@@ -1237,9 +1237,18 @@ function spawnBuildingWanted() {
   return !(settings.terrainVolumetric && !!terrain.source?.densityAt);
 }
 // Reseats the building on the current source. Called after every setSource and from updateWorld.
+let floraForBuilding = null;   // set once the flora exists (it is created after the terrain)
 function syncSpawnBuilding() {
   spawnBuilding.rebuild((x, z) => terrain.groundHeight(x, z), terrain.seaLevel);
   spawnBuilding.setVisible(spawnBuildingWanted());
+  syncSpawnBuildingFlora();
+}
+// The planters are a biome inside the building's rectangle, and the concrete occludes blades.
+function syncSpawnBuildingFlora() {
+  if (!floraForBuilding) return;
+  const wanted = spawnBuildingWanted();
+  floraForBuilding.setStructure(wanted ? spawnBuilding.floraStructure : null);
+  floraForBuilding.setOccluders(wanted ? spawnBuilding.root : null);
 }
 // Phase 4 slice: the analytic source is the only runtime source until terrain-source-v5.js lands.
 const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
@@ -3190,6 +3199,8 @@ terrain.setSplatWater(water.groundShade);
 // the lod-0 contact window for the height a blade sits at, and the 8 m placement field's scalar
 // grass cover for where blades belong at all. grass-compute.js is imported only if it is enabled.
 const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, settings });
+floraForBuilding = flora;
+syncSpawnBuildingFlora();
 flora.onMesh(mesh => { if (mesh && !reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh); });
 const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRadius', 'grassBladeHeight',
   'grassBladeWidth', 'grassWind', 'grassStyle', 'grassVerticalOffset', 'grassCoverGate',
@@ -3568,6 +3579,7 @@ function updateWorld(dt) {
   terrain.setCollisionDebug(settings.terrainCollisionDebug);
   traversalLab.setVisible(traversalLabVisible);
   spawnBuilding.setVisible(spawnBuildingWanted());
+  syncSpawnBuildingFlora();
   traversalLab.setCollisionDebug(traversalLabVisible && settings.labCollisionDebug);
   traversalLab.setOriginMarkerVisible(traversalLabVisible && settings.labOriginMarker);
   applyPlayerConfiguration();

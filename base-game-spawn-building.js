@@ -14,6 +14,30 @@ import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { instancedBoxes, clearBoxes } from './map-boxes.js';
 import { createConcreteMaterial } from './concrete-material.js';
 import { createSpawnBuildingCollider } from './base-game-spawn-collider.js';
+import { soilTopAt } from './base-game-spawn-layout.js';
+import { rasterizeGrowth } from './bot-flora-place.js';
+
+// The planters as a biome for the base game's compute grass: over the building's footprint,
+// density 1 inside a planter and 0 everywhere else (no grass through the floors), height the
+// soil top in global metres. Nearest-filtered so a rim is a hard edge and blades never climb it.
+function buildFloraStructure(THREE, model, texel = 0.25) {
+  const fp = model.site.footprint, baseY = model.site.baseY;
+  const planters = model.layout.planters;
+  const soil = (x, z) => { const t = soilTopAt(planters, x, z); return t == null ? null : t + baseY; };
+  const raster = rasterizeGrowth({
+    padded: fp, texel, index: null,
+    clearFn: (x, z) => soil(x, z) == null,
+    groundHeight: (x, z) => soil(x, z) ?? baseY,
+  });
+  const mk = (arr) => {
+    const t = new THREE.DataTexture(arr, raster.res, raster.res, THREE.RedFormat, THREE.FloatType);
+    t.minFilter = t.magFilter = THREE.NearestFilter;
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    t.needsUpdate = true;
+    return t;
+  };
+  return { bounds: raster.bounds, densityTex: mk(raster.density), heightTex: mk(raster.height), growArea: raster.growArea, dispose() { this.densityTex.dispose(); this.heightTex.dispose(); } };
+}
 
 export const SPAWN_BUILDING_CHUNK = 32;   // m per instanced-mesh cell
 
@@ -47,8 +71,8 @@ export function createBaseGameSpawnBuilding({ THREE, scene, worldQuery, heightAt
   const materials = [wallMat, coverMat, barMat, soilMat, waterMat];
   const BUCKET_MATERIAL = { walls: wallMat, plinth: wallMat, covers: coverMat, bars: barMat, soil: soilMat, water: waterMat };
 
-  let building = null, unregister = null, visible = true;
-  const stats = { chunks: 0, boxes: 0, collisionTriangles: 0, baseY: 0 };
+  let building = null, unregister = null, visible = true, floraStructure = null;
+  const stats = { chunks: 0, boxes: 0, collisionTriangles: 0, baseY: 0, planterArea: 0 };
 
   const toBox = (r) => ({ x: r.x, y: r.y + r.h / 2, z: r.z, w: r.w, h: r.h, d: r.d });
   function emit(mat, boxes) {
@@ -72,11 +96,14 @@ export function createBaseGameSpawnBuilding({ THREE, scene, worldQuery, heightAt
     stats.boxes = building.stats.boxes;
     stats.collisionTriangles = building.stats.collisionTriangles;
     stats.baseY = building.model.site.baseY;
+    floraStructure = buildFloraStructure(THREE, building.model);
+    stats.planterArea = floraStructure.growArea;
     root.visible = visible;
   }
   function teardown() {
     if (unregister) { unregister(); unregister = null; }
     if (building) { building.dispose(); building = null; }
+    if (floraStructure) { floraStructure.dispose(); floraStructure = null; }
     clearBoxes(root);
   }
 
@@ -88,6 +115,8 @@ export function createBaseGameSpawnBuilding({ THREE, scene, worldQuery, heightAt
     get model() { return building?.model ?? null; },
     get spawn() { return building ? building.spawn : [0, 0, 0]; },
     get provider() { return building?.provider ?? null; },
+    // For base-game-flora.js's setStructure: the planters as painted density and height textures.
+    get floraStructure() { return floraStructure; },
     stats,
     rebuild(heightFn, sea = seaLevel) { seaLevel = sea; build(heightFn, sea); },
     setVisible(on) {

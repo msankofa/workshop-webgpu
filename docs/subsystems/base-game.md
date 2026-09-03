@@ -3443,7 +3443,27 @@ plinth and covers are cast concrete from `concrete-material.js` (the graph that 
 inside `bot-viewer-visuals.js`; the bot viewer now imports it from there) with an occupied, not
 ruined, weathering block; lattice bars are light steel, soil dark, water a dark transparent
 sheet. `materials` is exposed for the page's rain decorator and the root is named
-`spawn-building` for the visor's heat sweep. Wiring into `base-game.html` (the terrain config
-flag, `worldSpawn`, visibility with the world mode, rain, and a rebuild when the terrain source
-changes) is the next phase, followed by the planter grass through `base-game-flora.js`'s
-samplers and the occluder pass for the compute grass. Nothing is browser-verified yet.
+`spawn-building` for the visor's heat sweep.
+
+**Page wiring** (phase 3). `base-game.html` builds it right after the traversal lab on the
+terrain's `groundHeight` and `seaLevel`, reseats it with `syncSpawnBuilding()` after every
+`terrain.setSource` (an online join, a runtime project apply), spawns on the plaza 1.5 m up like
+the server (`worldSpawn`), shows it only on heightfield terrain (`spawnBuildingWanted()`: online it
+follows the room's `spawnBuilding` flag, Solo it is on unless the terrain is volumetric), rains on
+its concrete through `applyWetSurface` (the concrete has a colour graph to darken; the plain
+materials take the lab's route), moves its root with the render-origin rebase like the lab's
+(the collider stays global), and asks for it in the rooms it creates (`pickRoomTerrainConfig`).
+
+**Planter grass and occlusion** (phase 4). The building's planters become a biome inside its
+rectangle for the base game's compute grass: `base-game-spawn-building.js` paints two
+nearest-filtered float textures over the footprint through `rasterizeGrowth` (density 1 in a
+planter, 0 elsewhere, so no blade grows through a floor; height the soil top in global metres),
+and `base-game-flora.js`'s new `setStructure({ bounds, densityTex, heightTex })` wraps its
+terrain samplers so that inside the rectangle the textures answer and outside the terrain does.
+The wrap is live: uniforms and texture-node values swap, no graph rebuild. `setOccluders(root)`
+builds a `flora-occlusion.js` pass over the building's chunked meshes and hands its state to
+`createComputeGrass`, whose cull kernel then drops blades behind the concrete; the first call
+before the grass exists is free, a later first call rebuilds the field once. The page calls both
+from `syncSpawnBuildingFlora()` whenever the building is reseated or the world mode changes.
+Grass, building meshes and the depth image all live in the render-local frame, so the kernel
+projection stays consistent across a rebase. Nothing is browser-verified yet.
