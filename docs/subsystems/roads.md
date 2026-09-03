@@ -175,12 +175,11 @@ too steep. Chaikin smoothing validates every generated point against walkability
 
 `base-game-trails.js` owns the deterministic world planner. It creates one placeholder site per
 resident site tile where possible, builds a relative-neighbourhood graph over settled 3x3 tile
-blocks, canonically orders the resulting legs, and routes at most one leg per update. A leg waits
-for lower-keyed intersecting legs and only those lower routes contribute its corridor discount, so
-approach direction cannot change the geometry. Eviction drops legs that touch the departed site
-tile and any owner whose 3x3 context became incomplete; rare out-of-order returns rebuild topology
-from the stored canonical paths without rerouting them. This keeps the graph bounded and makes
-prune-and-return deterministic. `test-trail-router.mjs` and
+blocks, canonically orders the resulting legs, and routes one nearby leg at a throttled interval.
+Pending boxes are indexed by site tile so vegetation readiness never scans the growing world graph.
+Eviction drops legs that touch the departed site tile and rebuilds retained topology from stored
+paths without rerouting them. This keeps the graph bounded and makes prune-and-return deterministic.
+`test-trail-router.mjs` and
 `test-base-game-trails.mjs` cover the router, corridor cost, water/slope safety and deterministic
 sampled polylines.
 
@@ -188,14 +187,21 @@ sampled polylines.
 node meshes; a queue builds one edge ribbon or node patch per `update()`. `setResidency(x,z,radius)`
 queries the road spatial index only after a movement stride and keeps meshes for nearby edges while
 the complete topology remains available for planning and vegetation. A world-space distance fade
-softens the residency edge. Base Game uses a 70 m radius inside the 1.25 m contact window and a
-`readyAt` hook, so no mesh is built until its exact ground samples are resident. The group follows
-render-origin rebases. `test-road-system-incremental.mjs` covers incremental builds, no-op rebuilds,
-residency and disposal.
+softens the residency edge. The group follows render-origin rebases.
 
-`groundFromHeightFn(fn, {cell})` can now build a max-near envelope by scanning the supplied cell
-spacing. Base Game passes `terrain.contactHeightAt`, never volumetric `groundHeight`, avoiding the
-otherwise multiplicative surface-bisection cost per road vertex.
+Base Game batches only resident edge lattices into `road-projection-worker.js`. Transferred position
+buffers are projected in place through the active terrain source's `surfaceYAt`; volumetric normals
+come from the same density gradient as the terrain mesh, and the buffers return zero-copy for THREE
+geometry installation. Edge identity, revision, residency and terrain epoch are checked again on
+return, so late work cannot install after pruning, travel or a source swap. Projection uses a 1 cm
+normal offset instead of the generic max-near envelope. Other road hosts, junction patches and the
+editor preview retain the synchronous ground adapter. `test-road-projection.mjs`,
+`test-road-projection-worker-queue.mjs` and `test-road-system-incremental.mjs` cover projection,
+resident-only batching, stale-result rejection and the fallback path.
+
+`groundFromHeightFn(fn, {cell})` remains the generic synchronous adapter and is used for the small
+junction/preview path or when module workers are unavailable. Base Game's resident ribbons do their
+expensive volumetric surface scans only in the dedicated projection worker.
 
 **Vegetation clearance.** `bot-flora.js` gained an optional `clearFn(x, z)` — "true where nothing may
 grow" — checked by both the grass `acceptFn` and the plant-placement filter. Default is `null`, so

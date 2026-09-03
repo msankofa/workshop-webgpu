@@ -1229,6 +1229,10 @@ const trailHeightAt = (x, z) => {
 const trailGround = groundFromHeightFn(trailHeightAt, { cell: trailSurfaceCell });
 const roads = createRoadSystem({ parent: scene, network: trails.network, ground: trailGround, options: {
   width: settings.trailWidth, surfaceCell: trailSurfaceCell, residencyRadius: 70,
+  // Resident ribbons are projected off-thread against this exact source identity. Epoch and edge
+  // revision checks discard any answer that returns after a world swap or network rebuild.
+  terrainDescriptor: () => terrain.source.descriptor,
+  terrainEpoch: () => terrain.system.epoch,
 } });
 roads.group.name = 'base-game-trails';
 const trailOrigin = worldCoordinates.getOrigin();

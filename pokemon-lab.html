@@ -789,7 +789,7 @@ import { createEnvironmentAudio } from './environment-audio.js';
 import { rigFor, applyNeutral } from './pokemon-lab-runtime.js';
 import { mapLabRigForGroundMovement } from './pokemon-lab-ground-map.js';
 import { createPokemonMovement, movementLabel } from './pokemon-movement.js';
-import { createPokemonPhenomena } from './pokemon-phenomena.js';
+import { createPokemonPhenomena } from './pokemon-stadium-phenomena.js';
 import { mapStadiumRigFromGLB } from './stadium-rig-map.js';
 import { GAITS } from './creature-locomotion.js';
 import { createGaitMonitor } from './gait-diagnostics.js';
@@ -1011,6 +1011,11 @@ const manifest = await loadManifest();
 const dex = dexEntries(manifest);
 const tiles = new Map();
 const phenomenaLibrary = await loadPhenomena();
+console.info('[Pokemon phenomena] sidecar loaded', {
+  version: phenomenaLibrary.version,
+  speciesRecords: Object.keys(phenomenaLibrary.species || {}).length,
+  hasCharmander: !!phenomenaLibrary.species?.['004'],
+});
 
 // --- the scene ------------------------------------------------------------------------------------
 const stage = $('stage');
@@ -1200,15 +1205,33 @@ async function selectSpecies(species) {
   const reusingCurrentAsset = assets === current;
   if (reusingCurrentAsset) { currentPhenomena?.dispose(); currentPhenomena = null; }
   let phenomena;
+  const phenomenaSpec = phenomenaLibrary.species?.[String(species).padStart(3, '0')];
+  console.info('[Pokemon phenomena] selection handoff', {
+    species,
+    name: entry.name,
+    hasSpec: !!phenomenaSpec,
+    selector: phenomenaSpec?.ambientTextureAnimationSelector,
+    ambientAnimation: phenomenaSpec?.ambientTextureAnimation,
+    effects: phenomenaSpec?.effects,
+  });
   try {
     phenomena = await createPokemonPhenomena({
       THREE,
       gltf: assets.gltf,
-      spec: phenomenaLibrary.species?.[String(species).padStart(3, '0')],
+      spec: phenomenaSpec,
+      species,
+      name: entry.name,
     });
   } catch (error) {
     console.warn(`[lab] ${entry.name} texture phenomena did not start:`, error);
-    phenomena = await createPokemonPhenomena({ THREE, gltf: assets.gltf, spec: null });
+    phenomena = await createPokemonPhenomena({
+      THREE,
+      gltf: assets.gltf,
+      spec: null,
+      species,
+      name: entry.name,
+      startupError: error,
+    });
   }
   if (token !== loadToken) { phenomena.dispose(); return; }
 

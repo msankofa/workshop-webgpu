@@ -42,7 +42,7 @@ inferred or eyeballed.
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | shipped |
 | `test-pokemon-lab-runtime.mjs` | 10 checks: the import path end to end, in Node. | shipped |
-| `pokemon-phenomena.js` | ROM texture swaps and persistent model-bound effects. | shipped |
+| `pokemon-stadium-phenomena.js` | ROM-selected texture swaps and embedded flame-frame playback. | shipped |
 | `scripts/extract-stadium-phenomena.mjs` | Generates the sidecar from a verified US Stadium ROM. | shipped |
 | `models/stadium/phenomena.json` | Generated auxiliary texture streams and effect attachments. | shipped |
 | `test-pokemon-phenomena.mjs` | 18 checks over parsing, timing, routing, teardown and real sidecar records. | shipped |
@@ -1178,23 +1178,26 @@ The Stadium GLBs contain more embedded textures than their static materials refe
 duplicates: the ROM's auxiliary-animation records swap them into texture channels for blinks, mouth
 changes and other face states. `scripts/extract-stadium-phenomena.mjs` reads the `pokemon_models` archive
 at ROM offset `0x920000`, unwraps `PERS-SZP`/Yay0, decodes each relocatable `FRAGMENT`, and writes the
-per-channel frame streams to `models/stadium/phenomena.json`. The generated file covers 142 species with
-916 auxiliary records; 127 species have a conservative ambient sequence whose resting texture maps back
-to a rendered GLB material.
+per-channel frame streams to `models/stadium/phenomena.json`. The ambient animation is not guessed:
+the extractor reads the species resource selector at
+`0x70D3A0 + (dex - 1) * 0xB90 + 0xA51`, matching the standalone Stadium viewer. That viewer starts the
+selected auxiliary animation every 60 render frames; the lab mirrors that schedule at 30 fps and restores
+the resting material between performances.
 
-`pokemon-phenomena.js` asks `GLTFLoader` for those otherwise-unused embedded texture dependencies only
-when a species is selected. It swaps `material.map` without rebuilding a shader, runs the selected ROM
-sequence as an occasional one-shot (a blink stays open between performances), and restores every original
-map when the species leaves. A slower species load cannot install its controller over a later click.
+`pokemon-stadium-phenomena.js` asks `GLTFLoader` for otherwise-unused embedded texture dependencies only
+when a species is selected. It binds the material instances on the rendered meshes and swaps preconfigured
+material variants, which makes the changed texture graph explicit to WebGPU. A slower species load cannot
+install its controller over a later click, and leaving a species restores its original materials.
 
-Tail fire is deliberately not represented as a texture animation. Stadium emits it through the battle
-effect system at a model attachment point; the GLB exporter preserved neither the effect nor attachment
-command. Charmander, Charmeleon and Charizard therefore have explicit `tail-flame` effect records. Their
-exported 8-vertex flame sheets are useful attachment metadata even though they are poor final rendering:
-the generator records each sheet's centroid, extent, tail node and BLEND material. At runtime that material
-is hidden and replaced by a flickering five-lobe additive flame parented to the same node. Inverse-scale
-compensation for the rig's internal scale leaves keeps it stable through clips, scrubbing and movement
-clones. Extracted ROM facts and this authored interpretation remain separate fields in the sidecar.
+Charmander, Charmeleon and Charizard's GLBs already contain the original flame plane and eight consecutive
+32x64 flame textures. The extractor records that BLEND material and its texture range. The lab keeps the
+authored plane visible and cycles those eight embedded frames at Stadium's 30 Hz render cadence, matching
+`func_81000420`; it does not hide the plane or synthesize replacement sprites.
+
+The lab exposes live diagnostics in a bottom-left overlay and under the console prefix
+`[Pokemon phenomena]`. It reports the ROM selector, selected animation, rendered material-slot counts,
+current Stadium frame, blink state and texture, and each effect frame/texture. Zero bindings and a missing
+sidecar record are shown in red and logged as warnings.
 
 Regenerate from a legally supplied matching ROM:
 

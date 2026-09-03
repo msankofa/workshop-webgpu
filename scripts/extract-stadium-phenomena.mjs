@@ -3,13 +3,15 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Matrix4, Vector3 } from 'three';
 import { readRig } from '../pokemon-rig.js';
 
 const MODEL_ARCHIVE_START = 0x920000;
 const FRAGMENT_VADDR_MIN = 0x81000000;
 const FRAGMENT_VADDR_MAX = 0x90000000;
 const FRAME_RATE = 30;
+const SPECIES_RESOURCE_START = 0x70D3A0;
+const SPECIES_RESOURCE_STRIDE = 0xB90;
+const AMBIENT_TEXTURE_SELECTOR_OFFSET = 0xA51;
 
 function u16(data, offset) {
   return data.readUInt16BE(offset);
@@ -202,47 +204,30 @@ function textureMaterials(json, textures) {
   return (exactMatches.length ? exactMatches : candidates).map(candidate => candidate.index);
 }
 
-function ambientScore(animation) {
-  if (!animation.channels.length || animation.channels.some(channel => !channel.valid || !channel.materials.length)) return -Infinity;
-  const distinct = new Set(animation.channels.flatMap(channel => channel.textures)).size;
-  if (distinct < 2 || distinct > 8 || animation.frameCount > 90) return -Infinity;
-  const returnsHome = animation.channels.every(channel => channel.textures.at(-1) === channel.textures[0]);
-  return (returnsHome ? 1000 : 0) - animation.frameCount - distinct * 2;
-}
-
-function inferTailFlame(json, bin, rig) {
-  const tail = rig.chains
-    .filter(chain => rig.geometry.get(chain.tip)?.count)
-    .sort((a, b) => rig.geometry.get(a.tip).centroid.z - rig.geometry.get(b.tip).centroid.z)[0];
-  if (!tail) return null;
-  const boneKey = tail.tip;
-  const bone = rig.byKey.get(boneKey);
-  const geometry = rig.geometry.get(boneKey);
-  if (!geometry || !bone) return null;
-  // The exporter kept Stadium's billboard as an 8-vertex BLEND primitive on the final tail bone. It is
-  // useful as attachment metadata even though the runtime replaces its visible sheet: its centroid is
-  // the original flame centre and its bounds carry the artist-authored effect scale.
-  const point = new Vector3(geometry.centroid.x, geometry.centroid.y, geometry.centroid.z);
-  point.applyMatrix4(new Matrix4().fromArray(bone.restWorld).invert());
-  const extent = Math.max(
-    geometry.max.x - geometry.min.x,
-    geometry.max.y - geometry.min.y,
-    geometry.max.z - geometry.min.z,
-  );
-  const replacesMaterials = (json.materials || [])
-    .map((material, index) => ({ material, index }))
-    .filter(({ material }) => material.alphaMode === 'BLEND' && material.doubleSided)
-    .map(({ index }) => index);
+function inferTailFlame(json) {
+  const material = (json.materials || []).findIndex(candidate =>
+    candidate.alphaMode === 'BLEND' && candidate.doubleSided);
+  if (material < 0) return null;
+  const firstTexture = json.materials[material]?.pbrMetallicRoughness?.baseColorTexture?.index;
+  if (!Number.isInteger(firstTexture) || firstTexture + 7 >= (json.textures?.length || 0)) return null;
+  let primitive = null;
+  for (let mesh = 0; mesh < (json.meshes?.length || 0) && !primitive; mesh += 1) {
+    const index = json.meshes[mesh].primitives?.findIndex(candidate => candidate.material === material);
+    if (index >= 0) primitive = { mesh, primitive: index };
+  }
   return {
-    type: 'tail-flame',
-    anchor: { bone: boneKey, node: bone.node, offset: point.toArray(), source: 'exported-flame-quad-centroid' },
-    scale: Number((extent * 0.72).toFixed(5)),
-    replacesMaterials,
-    source: 'authored-effect-from-rom-attachment-phenomenon',
+    type: 'material-texture-cycle',
+    role: 'tail-flame',
+    material,
+    materialName: json.materials[material].name || `material-${material}`,
+    primitive,
+    textures: Array.from({ length: 8 }, (_, index) => firstTexture + index),
+    frameRate: FRAME_RATE,
+    source: 'func_81000420-render-frame-modulo-8',
   };
 }
 
-export function extractSpeciesPhenomena(model, glbBytes, dex) {
+export function extractSpeciesPhenomena(model, glbBytes, dex, rom = null) {
   const { json, bin } = parseGLB(glbBytes);
   const animations = [];
   for (let index = 0; index < model.auxiliaryPointers.length; index += 1) {
@@ -256,15 +241,18 @@ export function extractSpeciesPhenomena(model, glbBytes, dex) {
     }));
     animations.push({ index, flags: parsed.flags, start: parsed.start, loop: parsed.loop, frameCount: parsed.frameCount, channels });
   }
-  const eligible = animations.map((animation, index) => ({ index, score: ambientScore(animation) }))
-    .filter(candidate => Number.isFinite(candidate.score))
-    .sort((a, b) => b.score - a.score || a.index - b.index);
   const rig = readRig(json, bin);
-  const effects = [4, 5, 6].includes(dex) ? [inferTailFlame(json, bin, rig)].filter(Boolean) : [];
+  const selectorOffset = SPECIES_RESOURCE_START
+    + (dex - 1) * SPECIES_RESOURCE_STRIDE
+    + AMBIENT_TEXTURE_SELECTOR_OFFSET;
+  const selector = rom && selectorOffset < rom.length ? rom[selectorOffset] : 0xff;
+  const effects = [4, 5, 6].includes(dex) ? [inferTailFlame(json)].filter(Boolean) : [];
   return {
     rigHash: rig.hash,
     textureAnimations: animations,
-    ambientTextureAnimation: eligible[0]?.index ?? null,
+    ambientTextureAnimation: selector !== 0xff && animations[selector] ? selector : null,
+    ambientTextureAnimationSelector: selector,
+    ambientTriggerFrames: 60,
     effects,
   };
 }
@@ -306,7 +294,7 @@ async function main() {
     if (!entry) continue;
     const model = inspectModelFragment(archive.files[dex - 1].data, dex);
     const glb = await readFile(resolve('models/stadium', entry.file));
-    const phenomena = extractSpeciesPhenomena(model, glb, dex);
+    const phenomena = extractSpeciesPhenomena(model, glb, dex, rom);
     if (phenomena.textureAnimations.length || phenomena.effects.length) {
       output.species[String(dex).padStart(3, '0')] = phenomena;
     }
