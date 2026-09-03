@@ -1,5 +1,5 @@
 // node scratchpads/spawn-atrium/count-growth.mjs -- headless count of what the viewer's flora rules build.
-import { generateEco, soilTopAt } from './eco-gen.js';
+import { generateEco, soilTopAt } from '../../base-game-spawn-layout.js';
 import { blockerRects, buildBlockerIndex, isBlocked, vineAnchors, bladeBudget } from '../../bot-flora-place.js';
 
 const kind = process.argv[2] || 'complex';

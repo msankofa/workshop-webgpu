@@ -15,17 +15,17 @@ var<private> instanceIndex : u32;
 // uniforms
 @binding( 1 ) @group( 0 ) var nodeUniform11 : texture_2d<f32>;
 @binding( 2 ) @group( 0 ) var nodeUniform15 : texture_2d<f32>;
-@binding( 3 ) @group( 0 ) var nodeUniform27 : texture_2d<f32>;
-@binding( 6 ) @group( 0 ) var nodeUniform40_sampler : sampler;
-@binding( 7 ) @group( 0 ) var nodeUniform40 : texture_2d<f32>;
-@binding( 8 ) @group( 0 ) var nodeUniform43_sampler : sampler;
-@binding( 9 ) @group( 0 ) var nodeUniform43 : texture_2d<f32>;
-@binding( 10 ) @group( 0 ) var nodeUniform44_sampler : sampler;
-@binding( 11 ) @group( 0 ) var nodeUniform44 : texture_2d<f32>;
-@binding( 12 ) @group( 0 ) var nodeUniform45_sampler : sampler;
-@binding( 13 ) @group( 0 ) var nodeUniform45 : texture_2d<f32>;
-@binding( 14 ) @group( 0 ) var nodeUniform46_sampler : sampler;
-@binding( 15 ) @group( 0 ) var nodeUniform46 : texture_2d<f32>;
+@binding( 3 ) @group( 0 ) var nodeUniform30 : texture_2d<f32>;
+@binding( 6 ) @group( 0 ) var nodeUniform43_sampler : sampler;
+@binding( 7 ) @group( 0 ) var nodeUniform43 : texture_2d<f32>;
+@binding( 8 ) @group( 0 ) var nodeUniform46_sampler : sampler;
+@binding( 9 ) @group( 0 ) var nodeUniform46 : texture_2d<f32>;
+@binding( 10 ) @group( 0 ) var nodeUniform47_sampler : sampler;
+@binding( 11 ) @group( 0 ) var nodeUniform47 : texture_2d<f32>;
+@binding( 12 ) @group( 0 ) var nodeUniform48_sampler : sampler;
+@binding( 13 ) @group( 0 ) var nodeUniform48 : texture_2d<f32>;
+@binding( 14 ) @group( 0 ) var nodeUniform49_sampler : sampler;
+@binding( 15 ) @group( 0 ) var nodeUniform49 : texture_2d<f32>;
 
 struct NodeBuffer_1081Struct {
 	value : array< atomic<u32> >
@@ -64,21 +64,24 @@ struct objectStruct {
 	nodeUniform23 : f32,
 	nodeUniform24 : f32,
 	nodeUniform25 : f32,
-	nodeUniform26 : f32,
-	nodeUniform29 : u32,
-	nodeUniform30 : u32,
-	nodeUniform32 : f32,
-	nodeUniform33 : f32,
-	nodeUniform34 : f32,
+	nodeUniform26 : vec2<f32>,
+	nodeUniform27 : f32,
+	nodeUniform28 : f32,
+	nodeUniform29 : f32,
+	nodeUniform32 : u32,
+	nodeUniform33 : u32,
 	nodeUniform35 : f32,
 	nodeUniform36 : f32,
 	nodeUniform37 : f32,
 	nodeUniform38 : f32,
 	nodeUniform39 : f32,
+	nodeUniform40 : f32,
 	nodeUniform41 : f32,
 	nodeUniform42 : f32,
-	nodeUniform47 : f32,
-	nodeUniform48 : u32
+	nodeUniform44 : f32,
+	nodeUniform45 : f32,
+	nodeUniform50 : f32,
+	nodeUniform51 : u32
 };
 @binding( 0 ) @group( 0 )
 var<uniform> object : objectStruct;
@@ -245,7 +248,7 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 	// flow
 	// code
 
-	if ( instanceIndex >= object.nodeUniform48 ) { return; }
+	if ( instanceIndex >= object.nodeUniform51 ) { return; }
 
 	nodeVar0 = max( i32( object.nodeUniform0 ), 1 );
 	nodeVar1 = ( i32( instanceIndex ) / nodeVar0 );
@@ -375,12 +378,12 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 		if ( ( ( ( ( nodeVar61.x >= 0.0 ) && ( nodeVar61.y >= 0.0 ) ) && ( nodeVar61.x < ( object.nodeUniform14 - 1.0 ) ) ) && ( nodeVar61.y < ( object.nodeUniform14 - 1.0 ) ) ) ) {
 
 			nodeVar62 = ( nodeVar61 + object.nodeUniform13 );
-			nodeVar63 = textureLoad( nodeUniform27, vec2<i32>( vec2<i32>( ( nodeVar62 - ( floor( ( nodeVar62 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).x, vec2<i32>( ( nodeVar62 - ( floor( ( nodeVar62 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).y ), u32( 0u ) );
+			nodeVar63 = textureLoad( nodeUniform30, vec2<i32>( vec2<i32>( ( nodeVar62 - ( floor( ( nodeVar62 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).x, vec2<i32>( ( nodeVar62 - ( floor( ( nodeVar62 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).y ), u32( 0u ) );
 			nodeVar64 = ( nodeVar62 + vec2<f32>( 1.0 ) );
-			nodeVar65 = textureLoad( nodeUniform27, vec2<i32>( vec2<i32>( ( nodeVar64 - ( floor( ( nodeVar64 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).x, vec2<i32>( ( nodeVar62 - ( floor( ( nodeVar62 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).y ), u32( 0u ) );
+			nodeVar65 = textureLoad( nodeUniform30, vec2<i32>( vec2<i32>( ( nodeVar64 - ( floor( ( nodeVar64 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).x, vec2<i32>( ( nodeVar62 - ( floor( ( nodeVar62 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).y ), u32( 0u ) );
 			nodeVar66 = fract( nodeVar60 );
-			nodeVar67 = textureLoad( nodeUniform27, vec2<i32>( vec2<i32>( ( nodeVar62 - ( floor( ( nodeVar62 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).x, vec2<i32>( ( nodeVar64 - ( floor( ( nodeVar64 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).y ), u32( 0u ) );
-			nodeVar68 = textureLoad( nodeUniform27, vec2<i32>( vec2<i32>( ( nodeVar64 - ( floor( ( nodeVar64 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).x, vec2<i32>( ( nodeVar64 - ( floor( ( nodeVar64 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).y ), u32( 0u ) );
+			nodeVar67 = textureLoad( nodeUniform30, vec2<i32>( vec2<i32>( ( nodeVar62 - ( floor( ( nodeVar62 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).x, vec2<i32>( ( nodeVar64 - ( floor( ( nodeVar64 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).y ), u32( 0u ) );
+			nodeVar68 = textureLoad( nodeUniform30, vec2<i32>( vec2<i32>( ( nodeVar64 - ( floor( ( nodeVar64 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).x, vec2<i32>( ( nodeVar64 - ( floor( ( nodeVar64 / vec2<f32>( object.nodeUniform14 ) ) ) * vec2<f32>( object.nodeUniform14 ) ) ) ).y ), u32( 0u ) );
 			nodeVar59 = mix( mix( ( nodeVar63.x * 255.0 ), ( nodeVar65.x * 255.0 ), nodeVar66.x ), mix( ( nodeVar67.x * 255.0 ), ( nodeVar68.x * 255.0 ), nodeVar66.x ), nodeVar66.y );
 
 		} else {
@@ -390,11 +393,11 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 		}
 
 
-		if ( ( ( ( ( ( ( ( ( nodeVar51 > object.nodeUniform19 ) && ( nodeVar13 >= object.nodeUniform20 ) ) && ( nodeVar13 <= object.nodeUniform21 ) ) && ( nodeVar17 >= object.nodeUniform22 ) ) && ( nodeVar17 <= object.nodeUniform23 ) ) && ( nodeVar52 < object.nodeUniform24 ) ) && ( ( f32( ( nodeVar55 ^ ( nodeVar55 >> 16u ) ) ) / 4294967296.0 ) > clamp( ( ( nodeVar52 - object.nodeUniform25 ) / max( ( object.nodeUniform24 - object.nodeUniform25 ), 0.001 ) ), 0.0, 1.0 ) ) ) && ( ( f32( ( nodeVar58 ^ ( nodeVar58 >> 16u ) ) ) / 4294967296.0 ) < clamp( ( ( 1.0 - object.nodeUniform26 ) + ( clamp( ( nodeVar59 / 255.0 ), 0.0, 1.0 ) * object.nodeUniform26 ) ), 0.0, 1.0 ) ) ) ) {
+		if ( ( ( ( ( ( ( ( ( ( ( nodeVar51 > object.nodeUniform19 ) && ( nodeVar13 >= object.nodeUniform20 ) ) && ( nodeVar13 <= object.nodeUniform21 ) ) && ( nodeVar17 >= object.nodeUniform22 ) ) && ( nodeVar17 <= object.nodeUniform23 ) ) && ( nodeVar52 < object.nodeUniform24 ) ) && ( ( nodeVar52 < object.nodeUniform25 ) || ( dot( ( vec2<f32>( ( nodeVar13 - object.nodeUniform2.x ), ( nodeVar17 - object.nodeUniform2.y ) ) / vec2<f32>( max( nodeVar52, 0.001 ) ) ), object.nodeUniform26 ) > object.nodeUniform27 ) ) ) && ( 1.0 > 0.0 ) ) && ( ( f32( ( nodeVar55 ^ ( nodeVar55 >> 16u ) ) ) / 4294967296.0 ) > clamp( ( ( nodeVar52 - object.nodeUniform28 ) / max( ( object.nodeUniform24 - object.nodeUniform28 ), 0.001 ) ), 0.0, 1.0 ) ) ) && ( ( f32( ( nodeVar58 ^ ( nodeVar58 >> 16u ) ) ) / 4294967296.0 ) < clamp( ( ( 1.0 - object.nodeUniform29 ) + ( clamp( ( nodeVar59 / 255.0 ), 0.0, 1.0 ) * object.nodeUniform29 ) ), 0.0, 1.0 ) ) ) ) {
 
 			let nodeConst0 = atomicAdd( &NodeBuffer_1081.value[ 0u ], 1u );
 
-			if ( ( ( nodeConst0 < object.nodeUniform29 ) && ( ( object.nodeUniform30 == 0u ) || ( nodeConst0 < object.nodeUniform30 ) ) ) ) {
+			if ( ( ( nodeConst0 < object.nodeUniform32 ) && ( ( object.nodeUniform33 == 0u ) || ( nodeConst0 < object.nodeUniform33 ) ) ) ) {
 
 				nodeVar69 = ( nodeConst0 * 2u );
 				nodeVar70 = ( ( bitcast<u32>( nodeVar6 ) * 1597334677u ) ^ ( bitcast<u32>( nodeVar8 ) * 3812015801u ) );
@@ -405,7 +408,7 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 				nodeVar74 = ( ( ( ( nodeVar73 ^ ( nodeVar73 >> 15u ) ) * 2246822519u ) ^ ( ( bitcast<u32>( nodeVar10 ) + 1u ) * 2654435761u ) ) ^ ( bitcast<u32>( 3 ) * 2246822519u ) );
 				nodeVar75 = ( ( nodeVar74 ^ ( nodeVar74 >> 13u ) ) * 3266489917u );
 				nodeVar77 = ( nodeVar51 + object.nodeUniform7.y );
-				nodeVar78 = ( nodeVar77 - object.nodeUniform32 );
+				nodeVar78 = ( nodeVar77 - object.nodeUniform35 );
 
 				if ( ( nodeVar78 < 0.0 ) ) {
 
@@ -523,20 +526,20 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 				nodeVar123 = ( ( nodeVar103 - nodeVar113 ) / ( 8.0 * 2.0 ) );
 				nodeVar124 = ( 1.0 / sqrt( ( ( ( nodeVar102 * nodeVar102 ) + ( nodeVar123 * nodeVar123 ) ) + 1.0 ) ) );
-				nodeVar125 = ( 1.0 - smoothstep( ( object.nodeUniform33 - 1.5 ), ( object.nodeUniform33 + 1.5 ), nodeVar77 ) );
-				nodeVar126 = ( 1.0 - smoothstep( object.nodeUniform34, object.nodeUniform35, nodeVar124 ) );
+				nodeVar125 = ( 1.0 - smoothstep( ( object.nodeUniform36 - 1.5 ), ( object.nodeUniform36 + 1.5 ), nodeVar77 ) );
+				nodeVar126 = ( 1.0 - smoothstep( object.nodeUniform37, object.nodeUniform38, nodeVar124 ) );
 				nodeVar127 = ( 1.0 - nodeVar126 );
 				nodeVar128 = ( 1.0 - nodeVar125 );
-				nodeVar129 = smoothstep( object.nodeUniform36, object.nodeUniform37, nodeVar77 );
-				nodeVar130 = smoothstep( object.nodeUniform38, object.nodeUniform39, nodeVar77 );
+				nodeVar129 = smoothstep( object.nodeUniform39, object.nodeUniform40, nodeVar77 );
+				nodeVar130 = smoothstep( object.nodeUniform41, object.nodeUniform42, nodeVar77 );
 				nodeVar131 = vec4<f32>( ( nodeVar125 * nodeVar127 ), ( ( ( nodeVar128 * ( 1.0 - nodeVar129 ) ) * ( 1.0 - nodeVar130 ) ) * nodeVar127 ), ( ( ( nodeVar128 * nodeVar129 ) * ( 1.0 - nodeVar130 ) ) * nodeVar127 ), nodeVar126 );
-				nodeVar132 = ( vec2<f32>( nodeVar82.x, nodeVar82.y ) * vec2<f32>( object.nodeUniform41 ) );
-				nodeVar133 = textureSampleLevel( nodeUniform40, nodeUniform40_sampler, nodeVar132, object.nodeUniform42 );
-				nodeVar134 = textureSampleLevel( nodeUniform43, nodeUniform43_sampler, nodeVar132, object.nodeUniform42 );
-				nodeVar135 = textureSampleLevel( nodeUniform44, nodeUniform44_sampler, nodeVar132, object.nodeUniform42 );
-				nodeVar136 = textureSampleLevel( nodeUniform45, nodeUniform45_sampler, nodeVar132, object.nodeUniform42 );
-				nodeVar137 = textureSampleLevel( nodeUniform46, nodeUniform46_sampler, nodeVar132, object.nodeUniform42 );
-				nodeVar138 = mix( mix( nodeVar76, vec3<f32>( 0.42, 0.4, 0.38 ), clamp( ( ( 0.82 - nodeVar124 ) / 0.25 ), 0.0, 1.0 ) ), ( ( ( ( ( nodeVar133.xyz * vec3<f32>( nodeVar131.x ) ) + ( nodeVar134.xyz * vec3<f32>( nodeVar131.y ) ) ) + ( nodeVar135.xyz * vec3<f32>( nodeVar131.z ) ) ) + ( nodeVar136.xyz * vec3<f32>( nodeVar131.w ) ) ) + ( nodeVar137.xyz * vec3<f32>( max( ( 1.0 - ( ( ( nodeVar131.x + nodeVar131.y ) + nodeVar131.z ) + nodeVar131.w ) ), 0.0 ) ) ) ), object.nodeUniform47 );
+				nodeVar132 = ( vec2<f32>( nodeVar82.x, nodeVar82.y ) * vec2<f32>( object.nodeUniform44 ) );
+				nodeVar133 = textureSampleLevel( nodeUniform43, nodeUniform43_sampler, nodeVar132, object.nodeUniform45 );
+				nodeVar134 = textureSampleLevel( nodeUniform46, nodeUniform46_sampler, nodeVar132, object.nodeUniform45 );
+				nodeVar135 = textureSampleLevel( nodeUniform47, nodeUniform47_sampler, nodeVar132, object.nodeUniform45 );
+				nodeVar136 = textureSampleLevel( nodeUniform48, nodeUniform48_sampler, nodeVar132, object.nodeUniform45 );
+				nodeVar137 = textureSampleLevel( nodeUniform49, nodeUniform49_sampler, nodeVar132, object.nodeUniform45 );
+				nodeVar138 = mix( mix( nodeVar76, vec3<f32>( 0.42, 0.4, 0.38 ), clamp( ( ( 0.82 - nodeVar124 ) / 0.25 ), 0.0, 1.0 ) ), ( ( ( ( ( nodeVar133.xyz * vec3<f32>( nodeVar131.x ) ) + ( nodeVar134.xyz * vec3<f32>( nodeVar131.y ) ) ) + ( nodeVar135.xyz * vec3<f32>( nodeVar131.z ) ) ) + ( nodeVar136.xyz * vec3<f32>( nodeVar131.w ) ) ) + ( nodeVar137.xyz * vec3<f32>( max( ( 1.0 - ( ( ( nodeVar131.x + nodeVar131.y ) + nodeVar131.z ) + nodeVar131.w ) ), 0.0 ) ) ) ), object.nodeUniform50 );
 				NodeBuffer_1080.value[ ( nodeVar69 + 1u ) ] = vec4<f32>( ( ( f32( ( nodeVar75 ^ ( nodeVar75 >> 16u ) ) ) / 4294967296.0 ) * 6.2831853 ), nodeVar138.x, nodeVar138.y, nodeVar138.z );
 				
 

@@ -1,5 +1,5 @@
 // node scratchpads/spawn-atrium/test-eco-gen.mjs -- every kind builds, is finite, and keeps its rooms.
-import { ECO_KINDS, ECO_DEFAULTS, generateEco, soilTopAt } from '../../base-game-spawn-layout.js';
+import { ECO_KINDS, ECO_DEFAULTS, generateEco, soilTopAt } from './base-game-spawn-layout.js';
 
 let checks = 0, failed = 0;
 function ok(cond, msg) { checks++; if (!cond) { failed++; console.log('FAIL', msg); } }
