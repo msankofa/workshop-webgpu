@@ -50,6 +50,9 @@ ok(!!castAtSpawn(), 'visible again means collision again');
   };
   ok(fs.densityTex.image.data[at(q.x, q.z)] === 1, 'a planter centre grows');
   ok(fs.densityTex.image.data[at(building.spawn[0], building.spawn[2])] === 0, 'the plaza does not');
+  // A corner of the bounding box that no floor slab covers hands the ground back to the terrain.
+  const corner = at(fs.bounds.minX + 1, fs.bounds.minZ + fs.bounds.worldZ - 1);
+  ok(fs.densityTex.image.data[corner] < 0 && fs.heightTex.image.data[corner] < 0, 'open ground between the wings is marked as terrain, not concrete');
   ok(Math.abs(fs.heightTex.image.data[at(q.x, q.z)] - (q.y + q.depth + building.stats.baseY)) < 1e-4, 'planter height is the soil top at the datum');
   ok(building.stats.planterArea > 100 && building.stats.planterArea < 2000, `planter area ${building.stats.planterArea.toFixed(0)} m² is plausible`);
 }

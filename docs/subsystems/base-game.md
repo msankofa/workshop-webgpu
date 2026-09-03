@@ -3472,8 +3472,13 @@ materials take the lab's route), moves its root with the render-origin rebase li
 
 **Planter grass and occlusion** (phase 4). The building's planters become a biome inside its
 rectangle for the base game's compute grass: `base-game-spawn-building.js` paints two
-nearest-filtered float textures over the footprint through `rasterizeGrowth` (density 1 in a
-planter, 0 elsewhere, so no blade grows through a floor; height the soil top in global metres),
+nearest-filtered float textures over the footprint (density 1 in a planter with the soil top as
+height; 0 and the datum over a floor slab, so no blade grows through a floor; and
+`STRUCTURE_TERRAIN`, -1, wherever no slab covers the texel, which tells the flora wrap to use its
+terrain samplers there). The third state matters because the building is an L with courts and
+hallways: its bounding box is far bigger than its floors, and the first cut, which was 0
+everywhere off a planter, bared a 80 by 100 m rectangle of ground around the building. For the
+same reason the collider puts one plinth under each floor slab rather than one under the box,
 and `base-game-flora.js`'s new `setStructure({ bounds, densityTex, heightTex })` wraps its
 terrain samplers so that inside the rectangle the textures answer and outside the terrain does.
 The wrap is live: uniforms and texture-node values swap, no graph rebuild. `setOccluders(root)`

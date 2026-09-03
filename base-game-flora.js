@@ -176,14 +176,19 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
         .and(t.x.greaterThan(0)).and(t.x.lessThan(1)).and(t.y.greaterThan(0)).and(t.y.lessThan(1));
     };
     const uvOf = (g) => clamp(g.sub(uStructMin).div(uStructSize), 0, 1);
+    // A texel below zero means "not the structure's ground": the courts between a building's
+    // wings sit inside its rectangle but are terrain, so the terrain samplers answer there.
     const terrainDensity = samplers.densityNode || Fn(() => float(1));
     const densityNode = Fn(([x, z]) => {
       const g = vec2(x, z).add(originXZ);
-      return select(inside(g), structDensityNode.sample(uvOf(g)).r, terrainDensity(x, z));
+      const d = structDensityNode.sample(uvOf(g)).r;
+      return select(inside(g).and(d.greaterThanEqual(0)), d, terrainDensity(x, z));
     });
     const heightNode = Fn(([x, z]) => {
       const g = vec2(x, z).add(originXZ);
-      return select(inside(g), structHeightNode.sample(uvOf(g)).r.sub(uRenderOrigin.y), samplers.heightNode(x, z));
+      const h = structHeightNode.sample(uvOf(g)).r;
+      const d = structDensityNode.sample(uvOf(g)).r;
+      return select(inside(g).and(d.greaterThanEqual(0)), h.sub(uRenderOrigin.y), samplers.heightNode(x, z));
     });
     return { ...samplers, densityNode, heightNode };
   }

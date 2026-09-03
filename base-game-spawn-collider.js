@@ -65,17 +65,20 @@ export function createSpawnBuildingModel(heightAt, options = {}) {
   const site = spawnSite(layout, heightAt, { seaLevel: O.seaLevel ?? 0, ...O });
   const lift = (r) => ({ ...r, y: r.y + site.baseY });
   const fp = site.footprint;
-  const plinth = {
-    x: (fp.minX + fp.maxX) / 2, z: (fp.minZ + fp.maxZ) / 2, w: fp.maxX - fp.minX, d: fp.maxZ - fp.minZ,
-    y: site.plinthBottom, h: site.baseY - 0.3 - site.plinthBottom,   // meets the underside of the floor slabs
-  };
+  // One plinth under each floor slab, down to the lowest sampled ground: the building is an L
+  // with courts between its wings, and a single plinth under its bounding box would bury the
+  // terrain (and its grass) between them under concrete.
+  const plinthH = site.baseY - 0.3 - site.plinthBottom;   // meets the underside of the floor slabs
+  const plinths = plinthH > 1e-6
+    ? layout.walls.filter((r) => r.y < 0).map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d, y: site.plinthBottom, h: plinthH }))
+    : [];
   const boxes = {
     walls: layout.walls.map(lift),
     covers: layout.covers.map(lift),
     bars: layout.bars.map(lift),
     soil: layout.planters.map((q) => ({ x: q.x, z: q.z, w: q.w - 0.08, d: q.d - 0.08, y: q.y + site.baseY, h: q.depth })),
     water: layout.water.map((q) => ({ x: q.x, z: q.z, w: q.w, d: q.d, y: q.y + site.baseY, h: 0.04 })),
-    plinth: plinth.h > 1e-6 ? [plinth] : [],
+    plinth: plinths,
     // Flat worlds only: a concrete ground slab under everything, its top at the plinth bottom.
     ground: O.ground ? [{ x: O.x, z: O.z, w: O.ground.size, d: O.ground.size, y: site.plinthBottom - O.ground.thickness, h: O.ground.thickness }] : [],
   };

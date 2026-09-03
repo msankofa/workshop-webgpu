@@ -15,28 +15,40 @@ import { instancedBoxes, clearBoxes } from './map-boxes.js';
 import { createConcreteMaterial } from './concrete-material.js';
 import { createSpawnBuildingCollider } from './base-game-spawn-collider.js';
 import { soilTopAt } from './base-game-spawn-layout.js';
-import { rasterizeGrowth } from './bot-flora-place.js';
 
 // The planters as a biome for the base game's compute grass: over the building's footprint,
 // density 1 inside a planter and 0 everywhere else (no grass through the floors), height the
 // soil top in global metres. Nearest-filtered so a rim is a hard edge and blades never climb it.
+// Three states per texel: a planter (density 1, soil top), concrete (a floor slab: density 0,
+// datum), and open ground between the wings (STRUCTURE_TERRAIN, which tells the flora module to
+// use its terrain samplers there). The building's bounding box is far bigger than its floors.
+export const STRUCTURE_TERRAIN = -1;
 function buildFloraStructure(THREE, model, texel = 0.25) {
   const fp = model.site.footprint, baseY = model.site.baseY;
   const planters = model.layout.planters;
-  const soil = (x, z) => { const t = soilTopAt(planters, x, z); return t == null ? null : t + baseY; };
-  const raster = rasterizeGrowth({
-    padded: fp, texel, index: null,
-    clearFn: (x, z) => soil(x, z) == null,
-    groundHeight: (x, z) => soil(x, z) ?? baseY,
-  });
+  const slabs = model.layout.walls.filter((r) => r.y < 0);
+  const onSlab = (x, z) => slabs.some((r) => Math.abs(x - r.x) <= r.w / 2 && Math.abs(z - r.z) <= r.d / 2);
+  const worldX = fp.maxX - fp.minX, worldZ = fp.maxZ - fp.minZ;
+  const res = Math.max(2, Math.min(2048, Math.ceil(Math.max(worldX, worldZ) / texel)));
+  const density = new Float32Array(res * res), height = new Float32Array(res * res);
+  let planterTexels = 0;
+  for (let j = 0; j < res; j++) for (let i = 0; i < res; i++) {
+    const x = fp.minX + ((i + 0.5) / res) * worldX, z = fp.minZ + ((j + 0.5) / res) * worldZ;
+    const k = j * res + i;
+    const soil = soilTopAt(planters, x, z);
+    if (soil != null) { density[k] = 1; height[k] = soil + baseY; planterTexels++; }
+    else if (onSlab(x, z)) { density[k] = 0; height[k] = baseY; }
+    else { density[k] = STRUCTURE_TERRAIN; height[k] = STRUCTURE_TERRAIN; }
+  }
   const mk = (arr) => {
-    const t = new THREE.DataTexture(arr, raster.res, raster.res, THREE.RedFormat, THREE.FloatType);
+    const t = new THREE.DataTexture(arr, res, res, THREE.RedFormat, THREE.FloatType);
     t.minFilter = t.magFilter = THREE.NearestFilter;
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     t.needsUpdate = true;
     return t;
   };
-  return { bounds: raster.bounds, densityTex: mk(raster.density), heightTex: mk(raster.height), growArea: raster.growArea, dispose() { this.densityTex.dispose(); this.heightTex.dispose(); } };
+  const bounds = { minX: fp.minX, minZ: fp.minZ, worldX, worldZ };
+  return { bounds, densityTex: mk(density), heightTex: mk(height), growArea: planterTexels * (worldX / res) * (worldZ / res), dispose() { this.densityTex.dispose(); this.heightTex.dispose(); } };
 }
 
 export const SPAWN_BUILDING_CHUNK = 32;   // m per instanced-mesh cell
@@ -125,10 +137,11 @@ export function createBaseGameSpawnBuilding({ THREE, scene, worldQuery, heightAt
       root.visible = visible;
       if (building) building.provider.enabled = visible;
     },
-    // Ground under (x, z) inside the footprint: the plinth top or the floor datum, else null.
+    // True over a floor slab, where the building's floor is the ground; the courts between the
+    // wings are terrain even though they sit inside the bounding box.
     footprintContains(x, z) {
-      const fp = building?.model.site.footprint;
-      return !!fp && x >= fp.minX && x <= fp.maxX && z >= fp.minZ && z <= fp.maxZ;
+      const slabs = building?.model.layout.walls;
+      return !!slabs && slabs.some((r) => r.y < 0 && Math.abs(x - r.x) <= r.w / 2 && Math.abs(z - r.z) <= r.d / 2);
     },
     dispose() {
       teardown();

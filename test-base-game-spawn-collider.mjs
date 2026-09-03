@@ -49,8 +49,16 @@ ok(lobbyFloor && Math.abs(lobbyFloor.point[1] - (model.site.baseY + ECO_DEFAULTS
 const wallTop = model.boxes.walls.find((r) => r.h === ECO_DEFAULTS.slotWallH && Math.min(r.w, r.d) === 0.7);
 const onWall = cast(wallTop.x, wallTop.y + wallTop.h + 5, wallTop.z);
 ok(onWall && Math.abs(onWall.point[1] - (wallTop.y + wallTop.h)) < 0.02, 'a hallway wall top is where the layout says');
-const plinthSide = cast(fp.minX - 5, model.site.plinthBottom + 0.5, (fp.minZ + fp.maxZ) / 2, [1, 0, 0], 20);
-ok(plinthSide && Math.abs(plinthSide.point[0] - fp.minX) < 0.02, 'the plinth face is solid at the footprint edge');
+// Plinths follow the floor slabs, not the bounding box: the face a westward ray meets is the
+// west edge of whichever slab covers that z, and the courts between wings stay open.
+const zMid = (fp.minZ + fp.maxZ) / 2;
+const slabsHere = model.layout.walls.filter((r) => r.y < 0 && Math.abs(zMid - r.z) <= r.d / 2);
+const westEdge = Math.min(...slabsHere.map((r) => r.x - r.w / 2));
+const plinthSide = cast(fp.minX - 5, model.site.plinthBottom + 0.5, zMid, [1, 0, 0], 60);
+ok(plinthSide && Math.abs(plinthSide.point[0] - westEdge) < 0.02, `the plinth face is solid at the nearest slab edge (${plinthSide ? plinthSide.point[0].toFixed(1) : 'miss'} vs ${westEdge.toFixed(1)})`);
+ok(model.boxes.plinth.length === slabsHere.length + model.layout.walls.filter((r) => r.y < 0 && Math.abs(zMid - r.z) > r.d / 2).length, 'one plinth per floor slab');
+const court = cast(fp.minX + 1, 50, zMid);
+ok(!court || court.point[1] < model.site.plinthBottom + 1e-6, 'the bounding box corner outside every slab is not concrete');
 const outside = cast(fp.minX - 40, 50, fp.minZ - 40);
 ok(!outside, 'nothing outside the footprint belongs to the building');
 
