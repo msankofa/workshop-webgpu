@@ -69,7 +69,7 @@ export function createBaseGameSpawnBuilding({ THREE, scene, worldQuery, heightAt
   const soilMat = new MeshStandardNodeMaterial({ color: 0x2a2319, roughness: 1.0, metalness: 0.0 });
   const waterMat = new MeshStandardNodeMaterial({ color: 0x1b3a2e, roughness: 0.06, metalness: 0.6, transparent: true, opacity: 0.86 });
   const materials = [wallMat, coverMat, barMat, soilMat, waterMat];
-  const BUCKET_MATERIAL = { walls: wallMat, plinth: wallMat, covers: coverMat, bars: barMat, soil: soilMat, water: waterMat };
+  const BUCKET_MATERIAL = { walls: wallMat, plinth: wallMat, ground: wallMat, covers: coverMat, bars: barMat, soil: soilMat, water: waterMat };
 
   let building = null, unregister = null, visible = true, floraStructure = null;
   const stats = { chunks: 0, boxes: 0, collisionTriangles: 0, baseY: 0, planterArea: 0 };
@@ -118,7 +118,8 @@ export function createBaseGameSpawnBuilding({ THREE, scene, worldQuery, heightAt
     // For base-game-flora.js's setStructure: the planters as painted density and height textures.
     get floraStructure() { return floraStructure; },
     stats,
-    rebuild(heightFn, sea = seaLevel) { seaLevel = sea; build(heightFn, sea); },
+    // `nextOptions` replaces the model options (the flat spawn area passes its ground slab and datum).
+    rebuild(heightFn, sea = seaLevel, nextOptions = null) { if (nextOptions) options = nextOptions; seaLevel = sea; build(heightFn, sea); },
     setVisible(on) {
       visible = !!on;
       root.visible = visible;

@@ -61,5 +61,28 @@ ok(!!wq2.raycast({ origin: [svc.spawn[0], svc.spawn[1] + 3, svc.spawn[2]], direc
 svc.dispose();
 ok(!wq2.raycast({ origin: [svc.spawn[0], svc.spawn[1] + 3, svc.spawn[2]], direction: down, maxDistance: 20 }), 'dispose unregisters the provider');
 
+// The spawn-area world: building on a flat slab at the origin, the lab moved 200 m east.
+{
+  const { createSpawnAreaWorldQuery, shiftedLabLayout, SPAWN_AREA_LAB_OFFSET } = await import('./base-game-spawn-collider.js');
+  const { createTraversalLabLayout } = await import('./traversal-lab-layout.js');
+  const base = createTraversalLabLayout();
+  const moved = shiftedLabLayout(base, 200, 0);
+  ok(moved.primitives.length === base.primitives.length && moved.primitives.every((p, i) => p.cx === base.primitives[i].cx + 200 && p.cz === base.primitives[i].cz), 'the shifted lab keeps every primitive, 200 m east');
+  ok(moved.spawn[0] === base.spawn[0] + 200 && moved.version === base.version && moved.probes === base.probes, 'spawn moves with it; version and probes untouched');
+  const wq = createWorldQueryService();
+  const area = await createSpawnAreaWorldQuery(wq);
+  ok(Math.abs(area.spawn[1] - 1.5) < 1e-6 && area.spawn[0] === 0, `the spawn-area spawn is on the plaza at the slab datum plus 1.5 (${area.spawn[1].toFixed(2)})`);
+  const c = (x, y, z) => wq.raycast({ origin: [x, y, z], direction: [0, -1, 0], maxDistance: 50 });
+  const onSlab = c(-120, 10, 120);   // clear of the building (x -18..61, z -68..34) and the lab (x 200+)
+  ok(onSlab && Math.abs(onSlab.point[1] + 0.3) < 0.02, `open ground beside the building is the slab, 0.3 m under the datum (${onSlab ? onSlab.point[1].toFixed(2) + ' via ' + onSlab.providerId : 'miss'})`);
+  const onLab = c(SPAWN_AREA_LAB_OFFSET.x, 10, 0);
+  ok(onLab && onLab.providerId === 'traversal-lab-static' && Math.abs(onLab.point[1]) < 0.02, 'the lab floor answers at its offset');
+  const plaza = c(0, 5, 4.5);
+  ok(plaza && plaza.providerId === 'spawn-building-static', 'the building answers at the origin');
+  ok(/^traversal-lab-v\d+-spawn-area-v1-bld1$/.test(area.worldVersion), `world version keeps the lab prefix the room service keys on (${area.worldVersion})`);
+  area.dispose();
+  ok(!c(0, 5, 4.5) && !c(SPAWN_AREA_LAB_OFFSET.x, 10, 0), 'dispose unregisters both');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

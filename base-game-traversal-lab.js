@@ -2,13 +2,14 @@ import * as THREE from 'three';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { createTraversalLabCollider } from './traversal-lab-collider.js';
 
-export function createBaseGameTraversalLab({ scene, worldQuery }) {
+export function createBaseGameTraversalLab({ scene, worldQuery, layout: labLayout = undefined }) {
   if (!scene?.add) throw new TypeError('Traversal Lab requires a Three.js scene');
   if (!worldQuery?.registerProvider) throw new TypeError('Traversal Lab requires a world-query service');
 
   // Collision is baked by the shared renderer-free module; this file only dresses those same
   // meshes with materials and debug helpers, so display and server collision cannot diverge.
-  const lab = createTraversalLabCollider();
+  // `layout` lets the spawn area move the lab aside (base-game-spawn-collider.js shiftedLabLayout).
+  const lab = createTraversalLabCollider(labLayout ? { layout: labLayout } : {});
   const { layout, root, meshes, collider, provider } = lab;
   const materials = [];
   for (const mesh of meshes) {

@@ -123,14 +123,18 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
       terrain: config,
     };
   }
-  const { createTraversalLabWorldQuery } = await import('../traversal-lab-collider.js');
-  const lab = createTraversalLabWorldQuery(worldQuery);
+  // The spawn area: the eco-brutalist building on a flat slab at the origin, with the traversal
+  // lab's diagnostic geometry kept 200 m east in the same world (base-game-spawn-collider.js).
+  const { createSpawnAreaWorldQuery } = await import('../base-game-spawn-collider.js');
+  const area = await createSpawnAreaWorldQuery(worldQuery);
   return {
     worldQuery,
-    spawn: lab.layout.spawn,
-    killPlaneY: lab.layout.killPlaneY,
-    worldVersion: `traversal-lab-v${lab.layout.version}`,
+    spawn: area.spawn,
+    killPlaneY: area.killPlaneY,
+    worldVersion: area.worldVersion,
     terrain: config,
+    building: area.building,
+    lab: area.lab,
   };
 }
 

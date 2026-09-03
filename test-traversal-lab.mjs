@@ -66,7 +66,7 @@ ok(a.primitives.some(p => p.id === 'distant-rebase-platform' && Math.abs(p.cx) >
   ok(html.includes("worldMode: 'traversalLab'"), 'Base Game defaults to visible Traversal Lab world mode');
   ok(html.includes("addSelect(worldSec, 'worldMode'"), 'world mode is an in-game saved control');
   ok(html.includes("addToggle(worldSec, 'labCollisionDebug'"), 'collision debug is an in-game saved control');
-  ok(html.includes('createBaseGameTraversalLab({ scene, worldQuery })'), 'Base Game constructs the lab with the shared query service');
+  ok(html.includes('createBaseGameTraversalLab({ scene, worldQuery,') || html.includes('createBaseGameTraversalLab({ scene, worldQuery })'), 'Base Game constructs the lab with the shared query service');
 }
 
 {

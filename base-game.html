@@ -144,6 +144,8 @@ import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createWorldQueryService } from './world-query.js';
 import { createBaseGameTraversalLab } from './base-game-traversal-lab.js';
 import { createBaseGameSpawnBuilding } from './base-game-spawn-building.js';
+import { shiftedLabLayout, flatGround, SPAWN_AREA_BUILDING_OPTIONS, SPAWN_AREA_SEA_LEVEL } from './base-game-spawn-collider.js';
+import { createTraversalLabLayout } from './traversal-lab-layout.js';
 import { createBaseGamePlayerController } from './base-game-player-controller.js';
 import { createBaseGamePointerLook } from './base-game-pointer-look.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -1078,7 +1080,17 @@ window.gpuTime = (on = true) => {
   return `GPU timestamps ${on ? 'ON' : 'OFF'} on next reload (currently ${GPU_TIMESTAMPS ? 'ON' : 'OFF'})`;
 };
 // Reversed float depth, the flight sim's fix: near 0.1 against a 9 km far plane put the clipmap rings, the exact chunks and the water inside one depth step past ~600 m.
-const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, trackTimestamp: GPU_TIMESTAMPS });
+// The grass cull samples the splat maps, the field windows and their residency masks, the far rings
+// and the occluder image in ONE compute stage, past WebGPU's default 16 sampled textures per stage.
+// Ask the adapter for what it has (48 on the machine this was found on); a device request over the
+// adapter's limit fails outright, so the request is clamped to what it reports.
+const gpuAdapterLimits = await (async () => {
+  try { return (await navigator.gpu?.requestAdapter?.())?.limits ?? null; } catch { return null; }
+})();
+const requiredLimits = gpuAdapterLimits && gpuAdapterLimits.maxSampledTexturesPerShaderStage > 16
+  ? { maxSampledTexturesPerShaderStage: Math.min(32, gpuAdapterLimits.maxSampledTexturesPerShaderStage) }
+  : undefined;
+const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, trackTimestamp: GPU_TIMESTAMPS, requiredLimits });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -1224,20 +1236,33 @@ function syncDofParams() {
   dofApplied.farScale = settings.dofFarScale;
   depthOfField.setParams(dofApplied);
 }
-const traversalLab = createBaseGameTraversalLab({ scene, worldQuery });
+// The lab's diagnostic geometry lives 200 m east of the spawn area, the same place the server puts it.
+const traversalLab = createBaseGameTraversalLab({ scene, worldQuery, layout: shiftedLabLayout(createTraversalLabLayout()) });
 // The eco-brutalist spawn building (docs/subsystems/base-game.md, "Spawn building"): the same
 // collider the room server registers, seated on the same source, dressed in chunked concrete.
 // Online it exists only when the room's terrain config says so; Solo heightfield terrain always has it.
 // The instance is created below the terrain (it samples it); these functions are hoisted.
+// In the spawn-area world (the old traversal-lab mode) the building is the world; on terrain it
+// is opt-in per room, and volumetric rooms keep the bare spawn.
 function spawnBuildingWanted() {
+  if (settings.worldMode === 'traversalLab') return true;
   if (settings.worldMode !== 'terrain') return false;
   if (isOnline()) return roomTerrainConfig?.spawnBuilding === true;
   return !(settings.terrainVolumetric && !!terrain.source?.densityAt);
 }
+// The ground the building seats on: the flat slab in the spawn area, the terrain otherwise.
+function spawnBuildingGround() {
+  return settings.worldMode === 'terrain'
+    ? { heightAt: (x, z) => terrain.groundHeight(x, z), seaLevel: terrain.seaLevel, options: {} }
+    : { heightAt: flatGround, seaLevel: SPAWN_AREA_SEA_LEVEL, options: SPAWN_AREA_BUILDING_OPTIONS };
+}
+let spawnBuildingMode = null;   // the world mode the building was last seated for
 // Reseats the building on the current source. Called after every setSource and from updateWorld.
 let floraForBuilding = null;   // set once the flora exists (it is created after the terrain)
 function syncSpawnBuilding() {
-  spawnBuilding.rebuild((x, z) => terrain.groundHeight(x, z), terrain.seaLevel);
+  const g = spawnBuildingGround();
+  spawnBuilding.rebuild(g.heightAt, g.seaLevel, g.options);
+  spawnBuildingMode = settings.worldMode;
   spawnBuilding.setVisible(spawnBuildingWanted());
   syncSpawnBuildingFlora();
 }
@@ -1261,9 +1286,12 @@ const terrain = createBaseGameTerrain({
   scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR,
   params: { batchFrustumCulled: BATCH_FRUSTUM_CULLED },
 });
-const spawnBuilding = createBaseGameSpawnBuilding({
-  THREE, scene, worldQuery, heightAt: (x, z) => terrain.groundHeight(x, z), seaLevel: terrain.seaLevel,
-});
+const spawnBuilding = (() => {
+  const g = spawnBuildingGround();
+  const b = createBaseGameSpawnBuilding({ THREE, scene, worldQuery, heightAt: g.heightAt, seaLevel: g.seaLevel, options: g.options });
+  spawnBuildingMode = settings.worldMode;
+  return b;
+})();
 const trails = createBaseGameTrails({ terrain, options: {
   enabled: settings.trailsEnabled, seed: settings.trailSeed, spacing: settings.trailSpacing,
   width: settings.trailWidth, maxGrade: settings.trailMaxGrade,
@@ -1375,8 +1403,8 @@ function reseatPlayerOnTerrain(tolerance = 1) {
   playerController.interpolatedPosition(1, playerRenderPosition);
 }
 function worldSpawn() {
-  if (settings.worldMode !== 'terrain') return traversalLab.layout.spawn;
   if (spawnBuildingWanted()) { const s = spawnBuilding.spawn; return [s[0], s[1] + 1.5, s[2]]; }
+  if (settings.worldMode !== 'terrain') return traversalLab.layout.spawn;
   return terrain.spawnPosition(0, 0);
 }
 function worldKillPlaneY(position) { return settings.worldMode === 'terrain' ? terrain.killPlaneYAt(position[0], position[2]) : traversalLab.layout.killPlaneY; }
@@ -3579,8 +3607,9 @@ function updateWorld(dt) {
   terrain.setTileBounds(settings.terrainTileBounds);
   terrain.setCollisionDebug(settings.terrainCollisionDebug);
   traversalLab.setVisible(traversalLabVisible);
-  spawnBuilding.setVisible(spawnBuildingWanted());
-  syncSpawnBuildingFlora();
+  // A world-mode change moves the building between the slab and the terrain: a reseat, once.
+  if (spawnBuildingMode !== settings.worldMode) syncSpawnBuilding();
+  else { spawnBuilding.setVisible(spawnBuildingWanted()); syncSpawnBuildingFlora(); }
   traversalLab.setCollisionDebug(traversalLabVisible && settings.labCollisionDebug);
   traversalLab.setOriginMarkerVisible(traversalLabVisible && settings.labOriginMarker);
   applyPlayerConfiguration();

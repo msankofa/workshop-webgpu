@@ -543,6 +543,10 @@ shape/volume dispatch, and rejection of asynchronous frame-critical queries.
 
 ### Permanent 3D Traversal Lab
 
+Since 2026-09-03 this world kind spawns you in the eco-brutalist building on a flat slab, and
+the lab geometry described below stands 200 m east of it in the same world; see "Spawn building"
+at the end of this document. Everything else here still applies to that geometry.
+
 Before real terrain, Base Game provides a permanent geometric Traversal Lab. It is selected through
 an in-game world/debug menu rather than a URL or page reload. `Empty Space`, `Traversal Lab`, and
 later terrain sources are ordinary live world-mode choices covered by state save/load and
@@ -3444,6 +3448,18 @@ inside `bot-viewer-visuals.js`; the bot viewer now imports it from there) with a
 ruined, weathering block; lattice bars are light steel, soil dark, water a dark transparent
 sheet. `materials` is exposed for the page's rain decorator and the root is named
 `spawn-building` for the visor's heat sweep.
+
+**The spawn-area world** (phase 5, 2026-09-03). The world kind that used to be the bare
+traversal lab (`kind: 'traversalLab'`, the page's default `worldMode`) is now the building on a
+flat concrete slab at the origin, with the lab's diagnostic geometry kept in the same world 200 m
+east (`shiftedLabLayout`, probes untouched so `test-traversal-lab.mjs` still holds).
+`createSpawnAreaWorldQuery` in `base-game-spawn-collider.js` builds both for the room server;
+the page builds the same two through `createBaseGameTraversalLab({ layout })` and the building
+module with `SPAWN_AREA_BUILDING_OPTIONS` (ground slab 480 m, its top 0.3 m under the datum,
+datum 0, no plinth, no water lift). The world version keeps the `traversal-lab-v…` prefix the
+room service and its tests key the kind on. On terrain the building stays opt-in per room.
+`spawnBuildingGround()` in the page picks the slab or the terrain by world mode, and a mode
+change reseats the building once.
 
 **Page wiring** (phase 3). `base-game.html` builds it right after the traversal lab on the
 terrain's `groundHeight` and `seaLevel`, reseats it with `syncSpawnBuilding()` after every
