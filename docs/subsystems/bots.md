@@ -9170,6 +9170,68 @@ the first was a real bug:
 `nearestBlockerDist` reuses the blocker index, searching only the cells within the reach, so the mask
 costs the same whether the map has eight walls or nine hundred.
 
+**Grass tiles** (2026-09-03). `grass.js` builds one merged mesh with `frustumCulled = false`, so a
+camera standing inside a building still draws the whole lawn behind it. The flora block's
+`grassTile` (metres, default 0) cuts the field into square tiles, each its own `Grass` mesh with a
+computed bounding sphere padded for wind sway and `frustumCulled = true`; the blade budget is
+split evenly across tiles and empty tiles are disposed rather than kept. `stats.tiles` reports the
+count. At 0 the old single mesh is built, which is what every shipped theme gets. Wind, look,
+sun direction and fade are applied to every tile. Measured on the spawn-atrium scratchpad
+(`scratchpads/spawn-atrium/`), not yet in v3.
+
+**The budget is sized by growable ground** (2026-09-03). `bladeBudget` over the padded square
+was wrong once a host's `clearFn` or a big building removed most of it: on the spawn-atrium
+scratchpad 70% of the square could not grow, so a 48/m² ask built 23.6/m² and reported the cap.
+Each tile is now sampled on a 12 by 12 grid against the same three rejections a blade faces
+(outside the padded rect, `clearFn`, `isBlocked`); the ask is `grassDensity` times that growable
+area, scaled down only when it exceeds the cap. `stats.growArea` reports the area. A tile that
+cannot grow asks for nothing.
+
+**Two grass paths** (2026-09-03). The flora block's `grassMode` is `'mesh'` (default: `grass.js`,
+every blade built once into frustum-culled tiles) or `'compute'` (`grass-compute.js`, lazily
+imported like the plants). The compute path paints the growth rules into two square float
+textures through `bot-flora-place.js`'s `rasterizeGrowth` (`grassTexel` metres per texel,
+default 0.25, nearest-filtered so a planter rim stays a hard edge): density 1 where a blade may
+stand by the same three rejections the mesh path applies per blade, and the host's ground height
+under every texel. `grassRadius` (default 60 m) is a view radius around the camera, not the
+field: the compute grass culls by distance, so blades only exist within it, and it sizes the
+instance buffer (60 m at 1 m cells and 64/m² is 29 MB; the whole 224 m field asked for 252 MB and
+hit the 128 MB storage binding limit on first run). The per-frame cull is the only thing deciding
+which blades exist, so far ground costs nothing and the density can exceed the mesh cap (cell
+1 m, `Kmax` at least 64/m², `maxInstances` capped at 2M as a guard). Blade height
+is passed as `grassHeight / 0.8` because the compute grass takes a multiplier over its 0.8 m
+base. `stats.blades` on this path is the ask (density times grow area); `grassVisible()` reads
+back what the last cull drew. Wind, look, sun direction and fade reach both paths. Cannot go
+through `tsl-build-check.mjs` (storage buffers); the rasteriser is Node-tested.
+
+**Vine chunks** (2026-09-03). `vineChunk` (m, default 0 = one mesh as before) groups the vine
+anchors by cell and builds one mesh per cell, each with its bounding sphere padded by 1.5 strand
+lengths plus 0.5 m for the hang and the sway, and `frustumCulled` on. `stats.vineChunks` counts
+them and `cullStats` reports visible cells and strands. The spawn-atrium viewer chunks its
+concrete the same way host-side (one instanced mesh per material per cell), which is what makes
+the renderer's per-object frustum test skip the rooms behind the camera in the main and shadow
+passes; the vines only follow that pattern.
+
+**Occlusion** (2026-09-03). `createBotFlora({ occluders, occlusionSize })` builds a
+`flora-occlusion.js` pass over the given group and hands its state to the compute grass and the
+plants, whose cull kernels then drop candidates behind the concrete. `markOccluders(root)` must
+be called again after every layout rebuild (new meshes), `setOcclusionEnabled(on)` toggles it
+live, and `update()` renders the depth image before the culls only when a GPU path is active.
+Nothing is built without `occluders`, so v3 and the structure viewer are unchanged.
+
+**Culling readouts.** `cullStats(camera)` runs the renderer's own frustum test over the grass
+tiles and returns visible and total tiles and blades (plus vine and plant totals);
+`plantsVisible()` reads the plant cull's survivor atomics back from the GPU through
+`plants-gpu.js`'s new `readSurvivors()`. Both are for a HUD on a timer, not the frame loop.
+
+`grassLighting` (`'standard'` default, or `'lambert'`) picks `grass.js`'s lighting model; see
+`vegetation.md` for why lambert is the cheap one and what it keeps.
+
+Two more flora fields from the same pass: `plantCap` (pool slots per plant variant) and
+`plantCullRadius` (draw distance, m). Both default to 0, which means bot-flora's own 256 and 90.
+They key the plant host with the height map, so changing either rebuilds it. On the scratchpad the
+plants were half the flora cost; 160 and 70 plus `plants-gpu.js`'s new frustum cone is the cut.
+
 **Per-species controls** (2026-08-09). The Flora card carries a species dropdown plus a height and a
 density slider, writing into the theme's `speciesHeight` / `speciesDensity` maps (absent key = 1x).
 The two cost very different amounts: **height** is baked into the palette geometry, so

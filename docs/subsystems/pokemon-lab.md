@@ -1189,10 +1189,17 @@ when a species is selected. It binds the material instances on the rendered mesh
 material variants, which makes the changed texture graph explicit to WebGPU. A slower species load cannot
 install its controller over a later click, and leaving a species restores its original materials.
 
+ROM animation bytes are texture-descriptor states, not glTF texture indices. During export each animated
+material becomes a contiguous glTF bank: its resting texture followed by otherwise-unreferenced frames.
+The extractor routes channel order to those banks and translates first-seen ROM states across each bank;
+matching a material merely because its static texture index equalled a ROM state incorrectly animated feet
+and ears instead of eyes.
+
 Charmander, Charmeleon and Charizard's GLBs already contain the original flame plane and eight consecutive
 32x64 flame textures. The extractor records that BLEND material and its texture range. The lab keeps the
-authored plane visible and cycles those eight embedded frames at Stadium's 30 Hz render cadence, matching
-`func_81000420`; it does not hide the plane or synthesize replacement sprites.
+authored plane visible and cycles the seven visible animation frames at Stadium's 30 Hz render cadence,
+matching `func_81000420`; the exporter's opaque-black fallback frame is excluded. It does not hide the
+plane or synthesize replacement sprites.
 
 The lab exposes live diagnostics in a bottom-left overlay and under the console prefix
 `[Pokemon phenomena]`. It reports the ROM selector, selected animation, rendered material-slot counts,

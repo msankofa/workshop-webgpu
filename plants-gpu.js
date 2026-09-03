@@ -10,7 +10,7 @@ import {
 import {
   Fn, If, instanceIndex, storage, uniform, int, uint, float, vec2,
   vec3, cos, sin, modInt, positionLocal, normalLocal, clamp, length, floor, bitcast,
-  atomicAdd, atomicStore, atomicLoad, time, mix,
+  atomicAdd, atomicStore, atomicLoad, time, mix, dot, vec4, texture, max,
 } from 'three/tsl';
 
 // reinterpret an i32 node's bits as u32 (same trick grass-compute.js uses) so negative
@@ -88,7 +88,8 @@ export function createPlantsGPU(opts) {
   const draw = storage(drawAttr, 'vec4', V * CAP * 2);
   const countsAttr = new StorageBufferAttribute(new Uint32Array(V), 1);
   const srcCounts = storage(countsAttr, 'uint', V);
-  const survAtomics = storage(new StorageBufferAttribute(new Uint32Array(V), 1), 'uint', V).toAtomic();
+  const survAttr = new StorageBufferAttribute(new Uint32Array(V), 1);
+  const survAtomics = storage(survAttr, 'uint', V).toAtomic();
 
   // geo.index.count (indexCount) -- buildPlantGeometry always sets a trivial sequential
   // index, matching grass.js/forest-gpu.js's indexed-geometry convention here.
@@ -103,6 +104,62 @@ export function createPlantsGPU(opts) {
   // plants stop popping in/out at a fixed ring the way trees/plants used to and instead
   // thin out gradually, matching how grass approaches its own draw distance.
   const uCullStart = uniform(opts.cullStart ?? (opts.cullRadius ?? 45) * 0.7);
+  // Frustum cone in XZ: an instance survives if it is within nearKeep of the camera or inside
+  // the camera's horizontal field of view plus a margin. uCosHalf -1 keeps everything (looking
+  // straight down, or an orthographic camera). Rotation re-runs the cull like translation does.
+  const frustumCull = opts.frustumCull ?? true;
+  const uFwd = uniform(new THREE.Vector2(1, 0));
+  const uCosHalf = uniform(-1);
+  const uNearKeep = uniform(opts.nearKeep ?? 8);
+  // Occlusion against flora-occlusion.js's depth image: project the candidate with the same
+  // view-projection, read the stored view depth at the point and its four neighbours, and drop
+  // it when it is deeper than all of them by more than the bias. Without an occlusion option the
+  // test is not compiled in at all.
+  const occlusion = opts.occlusion || null;
+  const uOccOn = uniform(occlusion && occlusion.enabled ? 1 : 0);
+  const uOccVP = uniform(new THREE.Matrix4());
+  const uOccTexel = uniform(new THREE.Vector2(1 / 256, 1 / 256));
+  const uOccBias = uniform(occlusion ? occlusion.bias : 0.12);
+  // keepFn(wx, wy, wz, h, dist): the projection is the visibility test. A candidate survives when
+  // its base or its top (h above) projects inside the screen with a margin, or it is within
+  // 1.5 m; it is then occlusion-tested at its top, because walls hide things from the ground
+  // up. Behind the camera or off screen is simply not visible, never "not occluded".
+  const NDC_MARGIN = 1.06;
+  const project = (wx, wy, wz) => {
+    const clip = uOccVP.mul(vec4(wx, wy, wz, 1.0));
+    const w = clip.w;
+    const ndc = clip.xy.div(w.max(0.001));
+    const onScreen = w.greaterThan(0.05)
+      .and(ndc.x.greaterThan(-NDC_MARGIN)).and(ndc.x.lessThan(NDC_MARGIN))
+      .and(ndc.y.greaterThan(-NDC_MARGIN)).and(ndc.y.lessThan(NDC_MARGIN));
+    return { w, ndc, onScreen };
+  };
+  const keepFn = occlusion
+    ? (wx, wy, wz, h, dist) => {
+        const base = project(wx, wy, wz);
+        const top = project(wx, wy.add(h), wz);
+        const visible = base.onScreen.or(top.onScreen).or(dist.lessThan(1.5));
+        // WebGPU samples a render target with row 0 at the top and the WGSL builder adds no flip,
+        // so V runs down from clip-space +y.
+        const uv = vec2(clamp(top.ndc.x.mul(0.5).add(0.5), 0, 1), clamp(float(0.5).sub(top.ndc.y.mul(0.5)), 0, 1));
+        const tx = vec2(uOccTexel.x, 0), tz = vec2(0, uOccTexel.y);
+        const far = max(max(texture(occlusion.texture, uv).r, texture(occlusion.texture, uv.add(tx)).r),
+          max(texture(occlusion.texture, uv.sub(tx)).r, max(texture(occlusion.texture, uv.add(tz)).r, texture(occlusion.texture, uv.sub(tz)).r)));
+        const occluded = uOccOn.greaterThan(0.5).and(top.onScreen).and(top.w.greaterThan(far.add(uOccBias).add(top.w.mul(0.01))));
+        return visible.and(occluded.not());
+      }
+    : null;
+  function syncOcclusion() {
+    if (!occlusion) return false;
+    const on = occlusion.enabled ? 1 : 0;
+    const changed = uOccOn.value !== on || !uOccVP.value.equals(occlusion.viewProj);
+    uOccOn.value = on;
+    uOccVP.value.copy(occlusion.viewProj);
+    uOccTexel.value.copy(occlusion.texel);
+    uOccBias.value = occlusion.bias;
+    return changed;
+  }
+
   // Variation strength blends the per-instance tint from flat (0, all plants read the
   // species' baked vertex color unmodified) to full (1, the complete hue/dryness/age law) --
   // and wind strength/speed drive plantWindOffset's sway amplitude/tempo. All three are
@@ -121,11 +178,14 @@ export function createPlantsGPU(opts) {
     If(localSlot.lessThan(int(srcCounts.element(g))), () => {
       const rec0 = src.element(idx.mul(uint(2)));
       const rec1 = src.element(idx.mul(uint(2)).add(uint(1)));
-      const dist = length(vec2(rec0.x.sub(uCam.x), rec0.z.sub(uCam.y)));
+      const rel = vec2(rec0.x.sub(uCam.x), rec0.z.sub(uCam.y));
+      const dist = length(rel);
+      const inCone = dist.lessThan(uNearKeep).or(dot(rel.div(dist.max(0.001)), uFwd).greaterThan(uCosHalf));
       const gradRange = uCullRadius.sub(uCullStart).max(float(0.001));
       const edge = clamp(dist.sub(uCullStart).div(gradRange), 0, 1);
       const keepRand = posRandFn(rec0.x, rec0.z, int(7));
-      const live = dist.lessThan(uCullRadius).and(keepRand.greaterThan(edge));
+      const unoccluded = keepFn ? keepFn(rec0.x, rec0.y, rec0.z, float(1.4), dist) : float(1).greaterThan(0);
+      const live = dist.lessThan(uCullRadius).and(keepRand.greaterThan(edge)).and(inCone).and(unoccluded);
       If(live, () => {
         const s = atomicAdd(survAtomics.element(uint(g)), uint(1));
         const outBase = uint(g).mul(uint(CAP)).add(s).mul(uint(2));
@@ -188,7 +248,24 @@ export function createPlantsGPU(opts) {
   const srcArray = srcAttr.array;
   const countsArray = countsAttr.array;
   let cpuInstances = 0;
-  let dirty = true, lastCamX = NaN, lastCamZ = NaN;
+  let dirty = true, lastCamX = NaN, lastCamZ = NaN, lastFx = NaN, lastFz = NaN, lastCos = NaN;
+  const _dir = new THREE.Vector3();
+  // Half-angle of the frustum's footprint on the ground plane, widened as the camera pitches.
+  function coneFor() {
+    if (!frustumCull || !(camera.fov > 0)) return { fx: 1, fz: 0, cos: -1 };
+    camera.getWorldDirection(_dir);
+    const hl = Math.hypot(_dir.x, _dir.z);
+    if (hl < 0.35) return { fx: 1, fz: 0, cos: -1 };
+    const halfV = (camera.fov * Math.PI / 180) / 2, halfH = Math.atan(Math.tan(halfV) * (camera.aspect || 1));
+    const denom = hl - Math.tan(halfV) * Math.sqrt(Math.max(0, 1 - hl * hl));
+    if (denom < 0.2) return { fx: 1, fz: 0, cos: -1 };
+    // Quantised so a turning camera re-culls every ~6 degrees, not every frame: the 0.22 rad
+    // margin above is wider than one step, so the cone stays conservative between reculls.
+    const STEP = 0.1;
+    const half = Math.min(Math.PI, Math.ceil((Math.atan(Math.tan(halfH) / denom) + 0.22) / STEP) * STEP);
+    const yaw = Math.round(Math.atan2(_dir.z, _dir.x) / STEP) * STEP;
+    return { fx: Math.cos(yaw), fz: Math.sin(yaw), cos: Math.cos(half) };
+  }
   let needsRebuild = false;   // chunk mutations set this; rebuild() runs once at update() top
   let visibleVariants = 0;    // variants with >0 source records this rebuild
   let submittedDraws = 0;     // meshes actually left visible (== visibleVariants)
@@ -281,14 +358,26 @@ export function createPlantsGPU(opts) {
       // sets dirty, so the camera-unchanged skip below won't stale a fresh chunk batch.
       if (needsRebuild) { rebuild(); needsRebuild = false; }
       const camX = camera.position.x, camZ = camera.position.z;
-      if (!dirty && camX === lastCamX && camZ === lastCamZ) return;
+      const cone = coneFor();
+      const occChanged = syncOcclusion();
+      if (!dirty && !occChanged && camX === lastCamX && camZ === lastCamZ && cone.fx === lastFx && cone.fz === lastFz && cone.cos === lastCos) return;
       uCam.value.set(camX, camZ);
+      uFwd.value.set(cone.fx, cone.fz); uCosHalf.value = cone.cos;
+      lastFx = cone.fx; lastFz = cone.fz; lastCos = cone.cos;
       await renderer.computeAsync([reset, cull, ...finalizers]);
       lastCamX = camX; lastCamZ = camZ; dirty = false;
     },
     // draws is the number of meshes actually submitted (== visibleVariants), not the fixed V;
     // visibleVariants exposes how many of the V variants survived the zero-instance gate.
     get stats() { return { draws: submittedDraws, visibleVariants, instances: cpuInstances, variants: V }; },
+    // Instances the last cull kept, read back from the survivor atomics. A GPU round trip, so
+    // call it on a timer for a readout, never per frame.
+    async readSurvivors() {
+      const buf = await renderer.getArrayBufferAsync(survAttr);
+      let n = 0;
+      for (const v of new Uint32Array(buf)) n += v;
+      return n;
+    },
     dispose() {
       const mats = new Set();
       meshes.forEach(m => { m.geometry.dispose(); mats.add(m.material); });

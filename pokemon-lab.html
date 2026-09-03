@@ -1205,9 +1205,12 @@ async function selectSpecies(species) {
   const reusingCurrentAsset = assets === current;
   if (reusingCurrentAsset) { currentPhenomena?.dispose(); currentPhenomena = null; }
   let phenomena;
-  const phenomenaSpec = phenomenaLibrary.species?.[String(species).padStart(3, '0')];
+  const phenomenaKey = String(entry.dex).padStart(3, '0');
+  const phenomenaSpec = phenomenaLibrary.species?.[phenomenaKey];
   console.info('[Pokemon phenomena] selection handoff', {
-    species,
+    species: entry.dex,
+    model: species,
+    phenomenaKey,
     name: entry.name,
     hasSpec: !!phenomenaSpec,
     selector: phenomenaSpec?.ambientTextureAnimationSelector,
@@ -1219,7 +1222,7 @@ async function selectSpecies(species) {
       THREE,
       gltf: assets.gltf,
       spec: phenomenaSpec,
-      species,
+      species: entry.dex,
       name: entry.name,
     });
   } catch (error) {
@@ -1228,7 +1231,7 @@ async function selectSpecies(species) {
       THREE,
       gltf: assets.gltf,
       spec: null,
-      species,
+      species: entry.dex,
       name: entry.name,
       startupError: error,
     });

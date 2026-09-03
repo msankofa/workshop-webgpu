@@ -113,7 +113,17 @@ async function createMaterialSequence(gltf, materialIndex, textureIndices, getTe
     ?.pbrMetallicRoughness?.baseColorTexture?.index;
   const indices = [...new Set(textureIndices || [])];
   const textures = new Map();
-  for (const index of indices) textures.set(index, await getTexture(index));
+  const originalColorSpace = slots.find(slot => slot.original.map)?.original.map.colorSpace;
+  for (const index of indices) {
+    const texture = await getTexture(index);
+    // GLTFLoader assigns sRGB while attaching a texture to a base-color material. These animation frames
+    // are otherwise-unused dependencies, so loading them directly skips that semantic assignment.
+    if (originalColorSpace && texture.colorSpace !== originalColorSpace) {
+      texture.colorSpace = originalColorSpace;
+      texture.needsUpdate = true;
+    }
+    textures.set(index, texture);
+  }
 
   const variants = slots.map((slot) => {
     const byTexture = new Map();

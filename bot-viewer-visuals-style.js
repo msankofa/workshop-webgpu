@@ -126,21 +126,34 @@ export const FLORA_OFF = {
   grassHeight: 0.42, grassHeightVar: 0.34,
   grassBase: 0x24361a, grassTip: 0x6f9440,
   grassStyle: 'mottle',                     // one of grass-textures.js's STYLE_KEYS
+  grassLighting: 'standard',                // grass.js lighting model: 'standard' (PBR) or 'lambert' (cheaper, same shadows)
+  // 'mesh' builds every blade once (grass.js); 'compute' culls per frame from painted density and
+  // height textures (grass-compute.js), so only blades near the camera exist. grassTexel is the
+  // texture resolution in m for the compute path.
+  grassMode: 'mesh', grassTexel: 0.25,
+  // Compute path only: blades exist within this many m of the camera. It sizes the instance
+  // buffer, so it is a rebuild, not a live slider; 60 m at 64/m² is a 29 MB buffer.
+  grassRadius: 60,
   // Hard ceiling on the merged blade mesh. Measured on a 900-wall 200 m map: ~40 ms rebuild at
   // 240k, ~100 ms at 720k, ~170 ms at 1.2M, scaling linearly; buffers are ~176 bytes a blade.
   // Build time is the real constraint, not memory. Above this the field thins instead of growing.
   bladeCap: 720000,
+  // Tile side in m for the grass field; each tile is its own frustum-culled mesh. 0 = one mesh.
+  grassTile: 0,
   wind: 0.7,
   // Understory plants (plants-placement.js). plantDensity is the density AT A WALL, not the
   // average: plantReach/plantOpenFloor mask it down to plantOpenFloor out in the open, because
   // every reference photograph has the understory massed against the concrete.
   plantDensity: 0, plantReach: 1.8, plantOpenFloor: 0.25, plantClumpRadius: 1.2,
+  // Pool slots per plant variant and the draw distance in m; 0 = bot-flora's own defaults (256, 90).
+  plantCap: 0, plantCullRadius: 0,
   // Per-species multipliers, keyed by PLANT_PRESETS key. Absent = 1. Height rebakes the palette
   // geometry; density reweights species selection, so only height costs a rebuild.
   speciesHeight: {}, speciesDensity: {},
   vineDensity: 0, vineLength: 1.5,          // strands per metre of wall top edge
   vineClump: 0.35,                          // 0 = evenly spaced along an edge, 1 = tight bunches
   vineLeafiness: 1, vineBranch: 0.3,        // leaf cards per strand; chance a strand forks
+  vineChunk: 0,                             // m per vine mesh so cells are frustum-culled; 0 = one mesh
   clearance: 0.35,                          // m of bare ground kept around walls and cover
   grassLook: {},                            // grass-look.js overrides (windDir/curl/translucency/rootShade/coverage); absent = off
 };

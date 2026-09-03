@@ -22,8 +22,8 @@ import {
 } from 'three/webgpu';
 import {
   Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast, modInt,
-  vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld,
-  atomicAdd, atomicStore, atomicLoad, texture,
+  vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld, max,
+  atomicAdd, atomicStore, atomicLoad, texture, dot,
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
 import { createGrassLook } from './grass-look.js';
@@ -179,6 +179,82 @@ export function createComputeGrass(opts) {
 
   // ---- uniforms (live) ----
   const uCam      = uniform(new THREE.Vector2());
+  // View cone in XZ, same law as plants-gpu.js: a blade survives inside the camera's horizontal
+  // field of view plus a margin, or within nearKeep of it. uCosHalf -1 keeps everything (looking
+  // nearly straight down, or a camera without fov). Rotation re-runs the cull like a cell change.
+  const frustumCull = opts.frustumCull ?? true;
+  const uFwd = uniform(new THREE.Vector2(1, 0));
+  const uCosHalf = uniform(-1);
+  const uNearKeep = uniform(opts.nearKeep ?? 6);
+  const _dir = new THREE.Vector3();
+  let lastFx = NaN, lastFz = NaN, lastCos = NaN;
+  function coneFor() {
+    if (!frustumCull || !(camera.fov > 0)) return { fx: 1, fz: 0, cos: -1 };
+    camera.getWorldDirection(_dir);
+    const hl = Math.hypot(_dir.x, _dir.z);
+    if (hl < 0.35) return { fx: 1, fz: 0, cos: -1 };
+    const halfV = (camera.fov * Math.PI / 180) / 2, halfH = Math.atan(Math.tan(halfV) * (camera.aspect || 1));
+    const denom = hl - Math.tan(halfV) * Math.sqrt(Math.max(0, 1 - hl * hl));
+    if (denom < 0.2) return { fx: 1, fz: 0, cos: -1 };
+    // Quantised so a turning camera re-culls every ~6 degrees, not every frame: the 0.22 rad
+    // margin above is wider than one step, so the cone stays conservative between reculls.
+    const STEP = 0.1;
+    const half = Math.min(Math.PI, Math.ceil((Math.atan(Math.tan(halfH) / denom) + 0.22) / STEP) * STEP);
+    const yaw = Math.round(Math.atan2(_dir.z, _dir.x) / STEP) * STEP;
+    return { fx: Math.cos(yaw), fz: Math.sin(yaw), cos: Math.cos(half) };
+  }
+  // Occlusion against flora-occlusion.js's depth image: project the candidate with the same
+  // view-projection, read the stored view depth at the point and its four neighbours, and drop
+  // it when it is deeper than all of them by more than the bias. Without an occlusion option the
+  // test is not compiled in at all.
+  const occlusion = opts.occlusion || null;
+  const uOccOn = uniform(occlusion && occlusion.enabled ? 1 : 0);
+  const uOccVP = uniform(new THREE.Matrix4());
+  const uOccTexel = uniform(new THREE.Vector2(1 / 256, 1 / 256));
+  const uOccBias = uniform(occlusion ? occlusion.bias : 0.12);
+  // keepFn(wx, wy, wz, h, dist): the projection is the visibility test. A candidate survives when
+  // its base or its top (h above) projects inside the screen with a margin, or it is within
+  // 1.5 m; it is then occlusion-tested at its top, because walls hide things from the ground
+  // up. Behind the camera or off screen is simply not visible, never "not occluded".
+  const NDC_MARGIN = 1.06;
+  const project = (wx, wy, wz) => {
+    const clip = uOccVP.mul(vec4(wx, wy, wz, 1.0));
+    const w = clip.w;
+    const ndc = clip.xy.div(w.max(0.001));
+    const onScreen = w.greaterThan(0.05)
+      .and(ndc.x.greaterThan(-NDC_MARGIN)).and(ndc.x.lessThan(NDC_MARGIN))
+      .and(ndc.y.greaterThan(-NDC_MARGIN)).and(ndc.y.lessThan(NDC_MARGIN));
+    return { w, ndc, onScreen };
+  };
+  const keepFn = occlusion
+    ? (wx, wy, wz, h, dist) => {
+        const base = project(wx, wy, wz);
+        const top = project(wx, wy.add(h), wz);
+        const visible = base.onScreen.or(top.onScreen).or(dist.lessThan(1.5));
+        // WebGPU samples a render target with row 0 at the top and the WGSL builder adds no flip,
+        // so V runs down from clip-space +y.
+        const uv = vec2(clamp(top.ndc.x.mul(0.5).add(0.5), 0, 1), clamp(float(0.5).sub(top.ndc.y.mul(0.5)), 0, 1));
+        const tx = vec2(uOccTexel.x, 0), tz = vec2(0, uOccTexel.y);
+        const far = max(max(texture(occlusion.texture, uv).r, texture(occlusion.texture, uv.add(tx)).r),
+          max(texture(occlusion.texture, uv.sub(tx)).r, max(texture(occlusion.texture, uv.add(tz)).r, texture(occlusion.texture, uv.sub(tz)).r)));
+        const occluded = uOccOn.greaterThan(0.5).and(top.onScreen).and(top.w.greaterThan(far.add(uOccBias).add(top.w.mul(0.01))));
+        return visible.and(occluded.not());
+      }
+    : null;
+  function syncOcclusion() {
+    if (!occlusion) return false;
+    const on = occlusion.enabled ? 1 : 0;
+    const changed = uOccOn.value !== on || !uOccVP.value.equals(occlusion.viewProj);
+    uOccOn.value = on;
+    uOccVP.value.copy(occlusion.viewProj);
+    uOccTexel.value.copy(occlusion.texel);
+    uOccBias.value = occlusion.bias;
+    return changed;
+  }
+  const inConeFn = (wx, wz, dist) => {
+    const rel = vec2(wx.sub(uCam.x), wz.sub(uCam.y));
+    return dist.lessThan(uNearKeep).or(dot(rel.div(dist.max(0.001)), uFwd).greaterThan(uCosHalf));
+  };
   const uRadius   = uniform(o.radius);
   const uCullStart = uniform(o.cullStart !== null ? o.cullStart : o.radius * 0.8);
   const uMaxBlades = uniform(o.maxBlades, 'uint');
@@ -317,6 +393,8 @@ export function createComputeGrass(opts) {
         : wy.greaterThan(uWaterMin);
       const live = dry
         .and(dist.lessThan(uRadius))
+        .and(inConeFn(wx, wz, dist))
+        .and(keepFn ? keepFn(wx, wy, wz, uBladeHeight.mul(1.2), dist) : float(1).greaterThan(0))
         .and(keepRand.greaterThan(edge))
         .and(a.w.lessThan(biomeDensity));
       If(live, () => {
@@ -367,6 +445,8 @@ export function createComputeGrass(opts) {
         .and(wx.greaterThanEqual(uTerrainMinX)).and(wx.lessThanEqual(uTerrainMaxX))
         .and(wz.greaterThanEqual(uTerrainMinZ)).and(wz.lessThanEqual(uTerrainMaxZ))
         .and(dist.lessThan(uRadius))
+        .and(inConeFn(wx, wz, dist))
+        .and(keepFn ? keepFn(wx, wy, wz, uBladeHeight.mul(1.2), dist) : float(1).greaterThan(0))
         .and(keepRand.greaterThan(edge))
         .and(densityRand.lessThan(biomeDensity));
       If(live, () => {
@@ -558,7 +638,11 @@ export function createComputeGrass(opts) {
       const cellZ = Math.floor(camera.position.z / cellSize);
       const cellChanged = cellX !== lastCellX || cellZ !== lastCellZ;
       stats.lastCell = `${cellX}:${cellZ}`;
-      if (recullMode !== 'frame' && !dirty && !cellChanged) {
+      const cone = coneFor();
+      const coneChanged = cone.fx !== lastFx || cone.fz !== lastFz || cone.cos !== lastCos;
+      // Occlusion depends on the exact camera, so any camera change re-culls while it is on.
+      const occChanged = syncOcclusion();
+      if (recullMode !== 'frame' && !dirty && !cellChanged && !coneChanged && !occChanged) {
         stats.skippedReculls++;
         return;
       }
@@ -569,6 +653,8 @@ export function createComputeGrass(opts) {
         stats.dispatch = cull.count;
       }
       uCam.value.set(camera.position.x, camera.position.z);
+      uFwd.value.set(cone.fx, cone.fz); uCosHalf.value = cone.cos;
+      lastFx = cone.fx; lastFz = cone.fz; lastCos = cone.cos;
       await renderer.computeAsync([reset, cull, finalize]);
       lastCellX = cellX;
       lastCellZ = cellZ;
@@ -657,6 +743,15 @@ export function createComputeGrass(opts) {
     },
     // grass-look.js toggles/amounts; live, no recull. setSunDir takes the world direction TOWARD the sun.
     setLook(partial) { look.set(partial); },
+    // Blade colours and the flat light terms, live; the CPU grass takes these as build options.
+    setColors(base, tip) { uBaseColor.value.set(base); uTipColor.value.set(tip); },
+    setLight(ambient, key) { uAmbient.value = ambient; uKey.value = key; },
+    // Blades the last cull kept, read back from the survivor counter. A GPU round trip: for a
+    // readout on a timer, never per frame.
+    async readBladeCount() {
+      const buf = await renderer.getArrayBufferAsync(counterAttr);
+      return new Uint32Array(buf)[0];
+    },
     getLook() { return look.get(); },
     setSunDir(v) { look.setSunDir(v); },
     setBladeStyle(key) {

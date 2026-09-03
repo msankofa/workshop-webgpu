@@ -285,5 +285,23 @@ ok(concreteFor(round.mats.wall).gain === 1, 'a saved ecobrutal keeps its concret
 ok(floraFor(round).grassDensity > 0, 'a saved ecobrutal keeps its flora through normalizeTheme');
 ok(validateTheme(round).length === 0, 'the round-tripped theme is still valid');
 
+// rasterizeGrowth: the compute path's textures follow the same rules a blade faces.
+{
+  const { rasterizeGrowth, buildBlockerIndex, blockerRects } = await import('./bot-flora-place.js');
+  const padded = { minX: -8, maxX: 8, minZ: -8, maxZ: 8 };
+  const wall = { x: 0, y: 1.5, z: 4, w: 6, h: 3, d: 0.5 };
+  const index = buildBlockerIndex(blockerRects([wall], 0.3), padded, 2);
+  const r = rasterizeGrowth({ padded, texel: 0.5, index, clearFn: (x) => x < -4, groundHeight: (x, z) => (z < 0 ? 0.45 : -0.3) });
+  ok(r.res === 32, `rasterize: 16 m at 0.5 m is 32 texels (got ${r.res})`);
+  ok(r.bounds.minX === -8 && r.bounds.worldX === 16, 'rasterize: bounds carry the padded rect');
+  const at = (x, z) => { const i = Math.floor((x - padded.minX) / 16 * r.res), j = Math.floor((z - padded.minZ) / 16 * r.res); return j * r.res + i; };
+  ok(r.density[at(0, -6)] === 1, 'rasterize: open ground grows');
+  ok(r.density[at(-6, 0)] === 0, 'rasterize: clearFn ground does not');
+  ok(r.density[at(0, 4)] === 0, 'rasterize: blocked ground does not');
+  ok(Math.abs(r.height[at(0, -6)] - 0.45) < 1e-6 && Math.abs(r.height[at(0, 6)] + 0.3) < 1e-6, 'rasterize: height follows the callback per texel');
+  const open = 16 * 16 - 4 * 16;   // clearFn strips the x < -4 quarter
+  ok(r.growArea > open * 0.85 && r.growArea < open, `rasterize: growArea ${r.growArea.toFixed(1)} is the open ground less the wall`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

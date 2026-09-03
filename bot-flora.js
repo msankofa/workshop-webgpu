@@ -19,9 +19,10 @@ import {
 } from 'three/tsl';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { createGrass } from './grass.js';
+import { createFloraOcclusion } from './flora-occlusion.js';
 import {
   makeRng, blockerRects, padRects, buildBlockerIndex, isBlocked,
-  vineAnchors, floraChunk, bladeBudget, wallAffinityMask, inRect, BLADE_CAP,
+  vineAnchors, floraChunk, wallAffinityMask, inRect, BLADE_CAP, rasterizeGrowth,
 } from './bot-flora-place.js';
 
 // Ground extends a little past the layout bounds (the viewer pads its terrain sheet the same
@@ -36,7 +37,7 @@ const PLANT_CAP = 256;        // instance slots per variant
 // `clearFn(x, z)` returns true where nothing may grow. Roads use it to keep their surface bare;
 // the default lets everything grow, so a host that passes nothing behaves exactly as before.
 export function createBotFlora({
-  THREE, renderer, camera, parent, seed = 1, onStats = () => {}, clearFn = null,
+  THREE, renderer, camera, parent, seed = 1, onStats = () => {}, clearFn = null, occluders = null, occlusionSize = 256,
 }) {
   // Flora owns its own group rather than joining the viewer's mapRoot: applyLayout tears mapRoot
   // down by disposing every geometry it finds, which would destroy the plant palette's shared
@@ -44,9 +45,22 @@ export function createBotFlora({
   const root = new THREE.Group();
   parent.add(root);
 
-  let grass = null;
+  let grassTiles = [];   // one Grass mesh per tile; a single tile when flora.grassTile is 0
+  // The compute path: grass-compute.js culls per frame from two painted textures. Lazily imported
+  // like the plants, because it needs storage buffers the CPU path never touches.
+  let computeGrass = null, computeTex = null, computePending = null;
+  // Occluder depth for the GPU culls. Built only when the host names its occluders, because the
+  // kernels compile the test in at creation and the mesh grass path has no use for it.
+  const occlusion = occluders ? createFloraOcclusion({ renderer, scene: parent, camera, size: occlusionSize }) : null;
+  if (occlusion) occlusion.markOccluders(occluders);
+  function loadComputeGrass() {
+    if (!computePending) computePending = import('./grass-compute.js').then((m) => m.createComputeGrass);
+    return computePending;
+  }
+  const _frustum = new THREE.Frustum();
+  const _proj = new THREE.Matrix4();
   let sunDir = null;   // world direction toward the sun, kept across rebuilds for the translucency toggle
-  let vineMesh = null;
+  let vineMeshes = [];   // one per cell when flora.vineChunk > 0, else one for the map
   let plants = null;                 // the plants-gpu host, lazily imported on first use
   let plantsPending = null;          // in-flight import, so two fast rebuilds don't double-load
   let plantsKey = '';                // height-map signature the current palette was baked at
@@ -60,7 +74,7 @@ export function createBotFlora({
   let fadeEnd = 0;
   // askedDensity vs builtDensity diverge exactly when BLADE_CAP binds, which is the only way the
   // density slider can lie. The panel reports both.
-  const stats = { blades: 0, vines: 0, plants: 0, askedDensity: 0, builtDensity: 0, capped: false };
+  const stats = { blades: 0, vines: 0, plants: 0, tiles: 0, askedDensity: 0, builtDensity: 0, capped: false };
 
   // ── vines ────────────────────────────────────────────────────────────────
   // A strand is a tapering ribbon walking down a wall face with leaf cards along it. Wind rides
@@ -207,9 +221,9 @@ export function createBotFlora({
 
   // Per-species height is baked into the palette geometry, so a change means a whole new host.
   // Keyed on the height map so a rebuild that didn't touch it reuses what's already there.
-  async function ensurePlants(heightScale) {
+  async function ensurePlants(heightScale, cap = PLANT_CAP, cull = 90) {
     const mods = await loadPlantMods();
-    const key = JSON.stringify(heightScale || {});
+    const key = JSON.stringify([heightScale || {}, cap, cull]);
     if (plants && plantsKey === key) return plants;
     if (plants) {
       for (const m of plants.gpu.meshes) { m.parent?.remove(m); m.geometry.dispose(); m.material.dispose(); }
@@ -219,8 +233,8 @@ export function createBotFlora({
       variantsPerSpecies: PLANT_VARIANTS, masterSeed: seed, heightScale,
     });
     const gpu = mods.createPlantsGPU({
-      renderer, camera, palette, heightAt: (x, z) => groundAt(x, z),
-      cullRadius: 90, cullStart: 65, capPerVariant: PLANT_CAP,
+      renderer, camera, palette, heightAt: (x, z) => groundAt(x, z), occlusion: occlusion ? occlusion.state : null,
+      cullRadius: cull, cullStart: cull * 0.72, capPerVariant: cap,
       variationStrength: 1.0, windStrength: 0.35, windSpeed: 1.0,
     });
     plants = { gpu, palette, plantPlacementRecords: mods.plantPlacementRecords };
@@ -270,46 +284,107 @@ export function createBotFlora({
     const cx = (padded.minX + padded.maxX) / 2, cz = (padded.minZ + padded.maxZ) / 2;
     const extent = Math.max(padded.maxX - padded.minX, padded.maxZ - padded.minZ);
 
-    // grass: one merged field centred on the arena. createGrass scatters around the origin, so
-    // the mesh carries the arena offset rather than the generator, and both callbacks below take
-    // field-local coordinates back to world.
+    // grass: the field is cut into square tiles so the renderer can frustum-cull the ones the
+    // camera is not looking at; grassTile 0 keeps the old single mesh. createGrass scatters around
+    // the origin, so each tile carries its own offset and the callbacks map back to world.
     const cap = flora.bladeCap > 0 ? flora.bladeCap : BLADE_CAP;
-    const count = bladeBudget(padded, flora.grassDensity, cap);
     stats.askedDensity = flora.grassDensity;
-    stats.builtDensity = extent > 0 ? count / (extent * extent) : 0;
-    stats.capped = flora.grassDensity * extent * extent > cap;
-    if (count > 0) {
-      grass = createGrass({
-        seed, count, size: extent,
+    const mode = flora.grassMode === 'compute' ? 'compute' : 'mesh';
+    stats.grassMode = mode;
+    if (mode === 'compute') buildComputeGrass({ token, padded, index, groundHeight, flora, extent });
+    const tile = flora.grassTile > 0 ? Math.min(flora.grassTile, extent) : extent;
+    const nTiles = Math.max(1, Math.ceil(extent / tile));
+    // Budget by the ground that can actually grow, not the whole square: each tile is sampled on
+    // a coarse grid against the same rejections the blades face, so a tile under a building or
+    // outside the host's clearFn asks for nothing and the cap binds only on real lawn.
+    const grow = new Float32Array(nTiles * nTiles);
+    let growArea = 0;
+    const GRID = 12;
+    for (let tz = 0; tz < nTiles; tz++) for (let tx = 0; tx < nTiles; tx++) {
+      const tcx = cx - extent / 2 + (tx + 0.5) * tile, tcz = cz - extent / 2 + (tz + 0.5) * tile;
+      let hit = 0;
+      for (let j = 0; j < GRID; j++) for (let i = 0; i < GRID; i++) {
+        const wx = tcx + ((i + 0.5) / GRID - 0.5) * tile, wz = tcz + ((j + 0.5) / GRID - 0.5) * tile;
+        if (wx < padded.minX || wx > padded.maxX || wz < padded.minZ || wz > padded.maxZ) continue;
+        if (clearFn && clearFn(wx, wz)) continue;
+        if (!isBlocked(index, wx, wz)) hit++;
+      }
+      grow[tz * nTiles + tx] = hit / (GRID * GRID);
+      growArea += grow[tz * nTiles + tx] * tile * tile;
+    }
+    const wanted = flora.grassDensity * growArea;
+    const scale = wanted > cap ? cap / wanted : 1;
+    if (mode === 'mesh') stats.growArea = growArea;   // the compute path reports its own area and never caps
+    if (mode === 'mesh') stats.capped = wanted > cap;
+    if (mode === 'mesh') stats.builtDensity = flora.grassDensity * scale;
+    if (mode === 'mesh') stats.blades = 0;
+    if (mode === 'mesh' && wanted > 0) for (let tz = 0; tz < nTiles; tz++) for (let tx = 0; tx < nTiles; tx++) {
+      const tcx = cx - extent / 2 + (tx + 0.5) * tile, tcz = cz - extent / 2 + (tz + 0.5) * tile;
+      // Asked per tile over the tile's growable share; createGrass scatters the whole tile and
+      // the rejections thin it back to that share, so the request is inflated by 1 / fraction.
+      const f = grow[tz * nTiles + tx];
+      if (f <= 0) continue;
+      const tileCount = Math.round(flora.grassDensity * scale * tile * tile);
+      if (tileCount <= 0) continue;
+      const g = createGrass({
+        seed: seed + tx * 131 + tz * 7919, count: tileCount, size: tile,
         bladeHeight: flora.grassHeight, heightVariation: flora.grassHeightVar,
         baseColor: flora.grassBase, tipColor: flora.grassTip, bladeStyle: flora.grassStyle,
         look: flora.grassLook || null,
-        heightFn: (x, z) => groundHeight(x + cx, z + cz),
+        lighting: flora.grassLighting || 'standard',
+        heightFn: (x, z) => groundHeight(x + tcx, z + tcz),
         acceptFn: (x, z) => {
-          const wx = x + cx, wz = z + cz;
+          const wx = x + tcx, wz = z + tcz;
           // Outside the padded rectangle is the square's overspill, not ground (see bladeBudget).
           if (wx < padded.minX || wx > padded.maxX || wz < padded.minZ || wz > padded.maxZ) return false;
           if (clearFn && clearFn(wx, wz)) return false;
           return !isBlocked(index, wx, wz);
         },
       });
-      grass.position.set(cx, 0, cz);
-      if (fadeEnd > 0) grass.setFade(fadeEnd * 0.65, fadeEnd);
-      if (sunDir) grass.setSunDir(sunDir);
-      root.add(grass);
       // buildGeometry trims its arrays to the blades actually placed, so this is the count that
       // survived the blockers, not the count that was asked for.
-      stats.blades = grass.geometry.getAttribute('position').count / 5;
+      const placed = (g.geometry.getAttribute('position')?.count || 0) / 5;
+      if (placed === 0) { g.dispose(); continue; }
+      g.position.set(tcx, 0, tcz);
+      g.userData.blades = placed;
+      if (nTiles > 1) {
+        g.geometry.computeBoundingSphere();
+        g.geometry.boundingSphere.radius += flora.grassHeight * 2 + 0.5;   // wind sway headroom
+        g.frustumCulled = true;
+      }
+      if (fadeEnd > 0) g.setFade(fadeEnd * 0.65, fadeEnd);
+      if (sunDir) g.setSunDir(sunDir);
+      root.add(g);
+      grassTiles.push(g);
+      stats.blades += placed;
     }
+    stats.tiles = grassTiles.length;
 
     // vines off the wall tops
     // Slabs are vine hosts but not ground keep-outs, which is why they arrive as their own list.
     const anchors = vineAnchors([...wallBoxes, ...vineBoxes], {
       density: flora.vineDensity, length: flora.vineLength, clump: flora.vineClump, seed: seed + 7717,
     });
-    vineMesh = buildVines(anchors, { base: flora.grassBase, tip: flora.grassTip },
-      { leafiness: flora.vineLeafiness, branch: flora.vineBranch });
-    if (vineMesh) { root.add(vineMesh); stats.vines = anchors.length; }
+    // Chunked by anchor position so a cell of strands behind the camera is one skipped draw. The
+    // bounding sphere is padded by the strand length: a strand hangs below its anchor and sways.
+    const cell = flora.vineChunk > 0 ? flora.vineChunk : 0;
+    const groups = new Map();
+    for (const a of anchors) {
+      const key = cell ? `${Math.floor(a.x / cell)}:${Math.floor(a.z / cell)}` : 'all';
+      let g = groups.get(key); if (!g) groups.set(key, (g = [])); g.push(a);
+    }
+    for (const group of groups.values()) {
+      const m = buildVines(group, { base: flora.grassBase, tip: flora.grassTip },
+        { leafiness: flora.vineLeafiness, branch: flora.vineBranch });
+      if (!m) continue;
+      m.geometry.boundingSphere.radius += flora.vineLength * (1 + 0.5) + 0.5;
+      m.frustumCulled = cell > 0;
+      m.userData.strands = group.length;
+      root.add(m);
+      vineMeshes.push(m);
+    }
+    stats.vines = anchors.length;
+    stats.vineChunks = vineMeshes.length;
 
     // After the meshes exist, so the new grass field picks up the theme's wind rather than
     // grass.js's generator default.
@@ -317,7 +392,7 @@ export function createBotFlora({
 
     // understory plants
     if (flora.plantDensity > 0) {
-      ensurePlants(flora.speciesHeight).then((p) => {
+      ensurePlants(flora.speciesHeight, flora.plantCap > 0 ? flora.plantCap : PLANT_CAP, flora.plantCullRadius > 0 ? flora.plantCullRadius : 90).then((p) => {
         // A newer rebuild may have landed while the import was in flight; its own call will
         // place the records, so this one must not write a stale chunk over them.
         if (!enabled || rebuildToken !== token) return;
@@ -361,14 +436,65 @@ export function createBotFlora({
   // replaces the grass mesh, which resets its wind to the generator default.
   function setWind(strength) {
     const s = Math.max(0, strength) / 0.7;
-    if (grass) grass.setWind(strength);
+    for (const g of grassTiles) g.setWind(strength);
+    if (computeGrass) computeGrass.setWind(strength);
     uVineWind.value = 0.12 * s;
     if (plants) plants.gpu.setWindStrength(0.35 * s);
   }
 
+  // Density and height textures from the same rules the mesh path applies per blade, then a
+  // compute field over the whole padded rect: radius covers it all, so nothing streams, and the
+  // per-frame cull is the only thing deciding what exists.
+  function buildComputeGrass({ token, padded, index, groundHeight, flora, extent }) {
+    const raster = rasterizeGrowth({ padded, texel: flora.grassTexel > 0 ? flora.grassTexel : 0.25, clearFn, index, groundHeight });
+    stats.growArea = raster.growArea;
+    stats.capped = false;
+    stats.builtDensity = flora.grassDensity;
+    // Nearest filtering: a bilinear density texel would ramp blades across a planter rim, and a
+    // bilinear height would slope them up its wall.
+    const mk = (arr) => {
+      const t = new THREE.DataTexture(arr, raster.res, raster.res, THREE.RedFormat, THREE.FloatType);
+      t.minFilter = t.magFilter = THREE.NearestFilter;
+      t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+      t.needsUpdate = true;
+      return t;
+    };
+    const tex = { density: mk(raster.density), height: mk(raster.height) };
+    loadComputeGrass().then((createComputeGrass) => {
+      if (!enabled || rebuildToken !== token) { tex.density.dispose(); tex.height.dispose(); return; }
+      computeTex = tex;
+      // The radius is a view radius, not the field: the compute grass culls by distance, so a
+      // whole-field radius would keep every blade alive and size the buffer past the 128 MB
+      // storage binding limit (the field at 1 m cells and 64/m² asked for 252 MB).
+      const radius = Math.max(4, flora.grassRadius > 0 ? flora.grassRadius : 60);
+      computeGrass = createComputeGrass({
+        renderer, camera, occlusion: occlusion ? occlusion.state : null,
+        density: flora.grassDensity, radius, maxRadius: radius, maxInstances: 2_000_000,
+        cellSize: 1, Kmax: Math.max(64, Math.ceil(flora.grassDensity)),
+        cullStart: radius * 0.7,
+        bladeHeight: flora.grassHeight / 0.8, bladeStyle: flora.grassStyle, look: flora.grassLook || null,
+        heightTex: tex.height, heightTexBounds: raster.bounds,
+        densityTex: tex.density, densityTexBounds: raster.bounds,
+        waterLevel: -1e6,   // the arena has no water gate; the density texture is the only mask
+      });
+      computeGrass.setColors(flora.grassBase, flora.grassTip);
+      computeGrass.setWind(flora.wind);
+      if (sunDir) computeGrass.setSunDir(sunDir);
+      root.add(computeGrass.mesh);
+      stats.blades = Math.round(flora.grassDensity * raster.growArea);   // asked; readBladeCount() says drawn
+      onStats();
+    });
+  }
+
   function disposeGrowth() {
-    if (grass) { root.remove(grass); grass.dispose(); grass = null; }
-    if (vineMesh) { root.remove(vineMesh); vineMesh.geometry.dispose(); vineMesh = null; }
+    if (computeGrass) { root.remove(computeGrass.mesh); computeGrass.dispose(); computeGrass = null; }
+    if (computeTex) { computeTex.density.dispose(); computeTex.height.dispose(); computeTex = null; }
+    for (const g of grassTiles) { root.remove(g); g.dispose(); }
+    grassTiles = [];
+    stats.tiles = 0;
+    for (const m of vineMeshes) { root.remove(m); m.geometry.dispose(); }
+    vineMeshes = [];
+    stats.vineChunks = 0;
     clearPlants();
     stats.blades = 0; stats.vines = 0;
   }
@@ -378,25 +504,56 @@ export function createBotFlora({
     rebuild,
     setWind,
     // grass-look.js toggles (windDir/curl/translucency/rootShade/coverage); live, no rebuild.
-    setLook(partial) { if (grass) grass.setLook(partial); },
-    setSunDir(v) { sunDir = v; if (grass) grass.setSunDir(v); },
+    setLook(partial) { for (const g of grassTiles) g.setLook(partial); if (computeGrass) computeGrass.setLook(partial); },
+    setSunDir(v) { sunDir = v; for (const g of grassTiles) g.setSunDir(v); if (computeGrass) computeGrass.setSunDir(v); },
 
     setEnabled(on) {
       enabled = !!on;
       root.visible = enabled;
     },
 
+    // What the frustum leaves of the grass tiles right now, and what the last plant cull kept.
+    // The frustum test mirrors the renderer's own (bounding sphere against the camera planes).
+    cullStats(camera) {
+      _proj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      _frustum.setFromProjectionMatrix(_proj);
+      let tilesVisible = 0, bladesVisible = 0, bladesTotal = 0;
+      for (const g of grassTiles) {
+        const n = g.userData.blades || 0;
+        bladesTotal += n;
+        if (!g.frustumCulled || _frustum.intersectsObject(g)) { tilesVisible++; bladesVisible += n; }
+      }
+      let vineChunksVisible = 0, vinesVisible = 0;
+      for (const m of vineMeshes) {
+        if (!m.frustumCulled || _frustum.intersectsObject(m)) { vineChunksVisible++; vinesVisible += m.userData.strands || 0; }
+      }
+      return {
+        mode: stats.grassMode, tilesVisible, tilesTotal: grassTiles.length, bladesVisible, bladesTotal,
+        vines: stats.vines, vinesVisible, vineChunks: vineMeshes.length, vineChunksVisible, plantsTotal: stats.plants,
+      };
+    },
+    async plantsVisible() { return plants && stats.plants > 0 ? plants.gpu.readSurvivors() : 0; },
+    // Compute path only: blades the last cull kept. The mesh path answers through cullStats.
+    async grassVisible() { return computeGrass ? computeGrass.readBladeCount() : null; },
+    // Occlusion: re-mark after a layout rebuild (new meshes), toggle live, read whether it exists.
+    markOccluders(root) { return occlusion ? occlusion.markOccluders(root) : 0; },
+    setOcclusionEnabled(on) { if (occlusion) occlusion.setEnabled(on); },
+    get occlusion() { return occlusion ? occlusion.state : null; },
+
     // Live, no rebuild — the host calls this when the view-distance slider moves.
     setViewDistance(d) {
       fadeEnd = Math.max(0, d);
-      if (grass && fadeEnd > 0) grass.setFade(fadeEnd * 0.65, fadeEnd);
+      if (fadeEnd > 0) for (const g of grassTiles) g.setFade(fadeEnd * 0.65, fadeEnd);
+      // the compute path fades at 0.7 of its own radius; the view distance does not reach it
     },
 
     // Awaited by the caller: the plant cull is a compute pass whose results this frame's draw
     // reads, and an unawaited compute races the draw (env-viewer hit exactly this with terrain).
     async update(dt, seconds) {
       if (!enabled) return;
-      if (grass) grass.update(seconds);
+      if (occlusion && occlusion.state.enabled && (computeGrass || (plants && stats.plants > 0))) occlusion.update();
+      for (const g of grassTiles) g.update(seconds);
+      if (computeGrass) await computeGrass.update(seconds);
       if (plants && stats.plants > 0) await plants.gpu.update();
     },
 
@@ -404,6 +561,7 @@ export function createBotFlora({
       disposeGrowth();
       if (plants) { for (const m of plants.gpu.meshes) m.parent?.remove(m); plants = null; }
       vineMat.dispose();
+      if (occlusion) occlusion.dispose();
       parent.remove(root);
     },
   };

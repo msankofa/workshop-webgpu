@@ -20,7 +20,7 @@
 //   grass.setWind(1.5);                        // live wind strength multiplier
 
 import * as THREE from 'three';
-import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { MeshStandardNodeMaterial, MeshLambertNodeMaterial } from 'three/webgpu';
 import {
   uniform, attribute, positionLocal, positionWorld, cameraPosition, modelWorldMatrix,
   vec2, vec3, vec4, float,
@@ -58,6 +58,7 @@ const DEFAULTS = {
   bladeWidth: 0.1,         // width at the base
   bladeHeight: 0.8,        // base height before variation
   heightVariation: 0.6,    // random extra height added per blade (0..this)
+  lighting: 'standard',    // 'standard' (PBR, the original) or 'lambert' (diffuse only, same shadows, far cheaper per fragment)
   tipOffset: 0.1,          // how far the tip leans from the base centre
   baseColor: 0x16240e,     // dark green at the blade base (also reads as ambient occlusion)
   tipColor: 0x5a8a32,      // brighter green at the tip
@@ -497,11 +498,11 @@ function buildMaterial(o) {
   const colorNode  = grassColor.mul(uAmbient.add(uKey)).mul(cloud).mul(look.nodes.rootShade(aT));
 
   // ---- Assemble material ----
-  const mat = new MeshStandardNodeMaterial({
-    side:      THREE.DoubleSide,
-    roughness: 1.0,
-    metalness: 0.0,
-  });
+  // Lambert keeps the light loop and the shadow term but drops the GGX specular lobe, which at
+  // roughness 1 on a flat-coloured blade was all cost and no look.
+  const mat = o.lighting === 'lambert'
+    ? new MeshLambertNodeMaterial({ side: THREE.DoubleSide })
+    : new MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 1.0, metalness: 0.0 });
   mat.positionNode = posNode;
   mat.colorNode    = colorNode;
   // Grass has no per-vertex normals and is a double-sided quad; without this,

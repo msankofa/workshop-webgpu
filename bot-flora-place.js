@@ -232,3 +232,24 @@ export function bladeBudget(padded, density, cap = BLADE_CAP) {
   const extent = Math.max(w, d);
   return Math.min(cap, Math.max(0, Math.floor(extent * extent * Math.max(0, density))));
 }
+
+// Paints the growth rules into two square grids the compute grass samples as textures: density
+// 1 where a blade may stand (inside the padded rect, past clearFn, off the blockers) and 0
+// elsewhere, and the ground height under every texel. Texel (i, j) is the centre of the cell
+// at x = minX + (i + 0.5) * texel, z = minZ + (j + 0.5) * texel, row-major with i along x,
+// which is the layout a DataTexture reads with u along x and v along z.
+export function rasterizeGrowth({ padded, texel = 0.25, maxRes = 2048, clearFn = null, index = null, groundHeight = () => 0 }) {
+  const worldX = padded.maxX - padded.minX, worldZ = padded.maxZ - padded.minZ;
+  const res = Math.max(2, Math.min(maxRes, Math.ceil(Math.max(worldX, worldZ) / texel)));
+  const density = new Float32Array(res * res), height = new Float32Array(res * res);
+  let grown = 0;
+  for (let j = 0; j < res; j++) for (let i = 0; i < res; i++) {
+    const x = padded.minX + ((i + 0.5) / res) * worldX, z = padded.minZ + ((j + 0.5) / res) * worldZ;
+    const k = j * res + i;
+    height[k] = groundHeight(x, z);
+    const grow = !(clearFn && clearFn(x, z)) && !(index && isBlocked(index, x, z));
+    density[k] = grow ? 1 : 0;
+    if (grow) grown++;
+  }
+  return { density, height, res, bounds: { minX: padded.minX, minZ: padded.minZ, worldX, worldZ }, growArea: grown * (worldX / res) * (worldZ / res) };
+}

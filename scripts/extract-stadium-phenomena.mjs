@@ -192,16 +192,56 @@ export function parseGLB(bytes) {
   return { json, bin: bytes.subarray(binHeader + 8, binHeader + 8 + binLength) };
 }
 
-function textureMaterials(json, textures) {
-  const wanted = new Set(textures);
-  const exact = new Set([textures[0]]);
-  const candidates = [];
-  for (let index = 0; index < (json.materials?.length || 0); index += 1) {
-    const texture = json.materials[index]?.pbrMetallicRoughness?.baseColorTexture?.index;
-    if (wanted.has(texture)) candidates.push({ index, texture, exact: exact.has(texture) });
+function textureAnimationBanks(json) {
+  const referenced = (json.materials || [])
+    .map((material, index) => ({
+      material: index,
+      materialName: material.name || `material-${index}`,
+      texture: material.pbrMetallicRoughness?.baseColorTexture?.index,
+      alphaMode: material.alphaMode,
+    }))
+    .filter(entry => Number.isInteger(entry.texture))
+    .sort((a, b) => a.texture - b.texture || a.material - b.material);
+  const starts = [...new Set(referenced.map(entry => entry.texture))];
+  return referenced
+    .map((entry) => {
+      const next = starts.find(texture => texture > entry.texture) ?? (json.textures?.length || 0);
+      return { ...entry, length: next - entry.texture };
+    })
+    // Animated banks consist of the resting texture followed by frames which no static material references.
+    // BLEND banks are model-bound effects (for example the fire sheet), not face channels.
+    .filter(entry => entry.alphaMode !== 'BLEND' && entry.length > 1);
+}
+
+function resolveTextureChannel(channel, banks) {
+  const bank = banks[channel.channel] || null;
+  const romTextures = channel.textures;
+  const states = [...new Set(romTextures)];
+  if (!bank || states.length > bank.length) {
+    return {
+      ...channel,
+      romTextures,
+      textures: [],
+      materials: [],
+      valid: false,
+      routeSource: 'no-matching-glb-animation-bank',
+    };
   }
-  const exactMatches = candidates.filter(candidate => candidate.exact);
-  return (exactMatches.length ? exactMatches : candidates).map(candidate => candidate.index);
+  const textureByState = new Map(states.map((state, index) => [state, bank.texture + index]));
+  return {
+    ...channel,
+    romTextures,
+    textures: romTextures.map(state => textureByState.get(state)),
+    materials: [bank.material],
+    valid: true,
+    textureBank: {
+      material: bank.material,
+      materialName: bank.materialName,
+      firstTexture: bank.texture,
+      length: bank.length,
+    },
+    routeSource: 'ordered-rom-states-to-contiguous-glb-animation-bank',
+  };
 }
 
 function inferTailFlame(json) {
@@ -221,7 +261,8 @@ function inferTailFlame(json) {
     material,
     materialName: json.materials[material].name || `material-${material}`,
     primitive,
-    textures: Array.from({ length: 8 }, (_, index) => firstTexture + index),
+    // Frame zero is the exporter's static fallback sheet and has an opaque black field.
+    textures: Array.from({ length: 7 }, (_, index) => firstTexture + index + 1),
     frameRate: FRAME_RATE,
     source: 'func_81000420-render-frame-modulo-8',
   };
@@ -229,16 +270,12 @@ function inferTailFlame(json) {
 
 export function extractSpeciesPhenomena(model, glbBytes, dex, rom = null) {
   const { json, bin } = parseGLB(glbBytes);
+  const animationBanks = textureAnimationBanks(json);
   const animations = [];
   for (let index = 0; index < model.auxiliaryPointers.length; index += 1) {
     const parsed = parseAuxiliaryAnimation(model.data, model.auxiliaryPointers[index], json.textures?.length || 0);
     if (!parsed) continue;
-    const channels = parsed.channels.map(channel => ({
-      channel: channel.channel,
-      textures: channel.textures,
-      materials: textureMaterials(json, channel.textures),
-      valid: channel.valid,
-    }));
+    const channels = parsed.channels.map(channel => resolveTextureChannel(channel, animationBanks));
     animations.push({ index, flags: parsed.flags, start: parsed.start, loop: parsed.loop, frameCount: parsed.frameCount, channels });
   }
   const rig = readRig(json, bin);

@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eco-brutalist spawn area</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1014; color: #d8d6d0; font: 13px system-ui, sans-serif; }
+  body { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+  header { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: #1a1d22; flex-wrap: wrap; }
+  header button, header select, header input { background: #2c3037; color: inherit; border: 1px solid #4a4f57; border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit; }
+  header input { width: 70px; cursor: text; }
+  header button:hover { background: #3a3f47; }
+  #status { margin-left: auto; opacity: 0.75; }
+  main { display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+  main.norefs { grid-template-columns: 1fr; }
+  main.norefs #refs { display: none; }
+  #view { position: relative; min-height: 0; }
+  #view canvas { display: block; width: 100%; height: 100%; }
+  #hud { position: absolute; left: 12px; bottom: 12px; color: #9aa5b5; font: 11.5px/1.6 ui-monospace, Consolas, monospace;
+    pointer-events: none; background: rgba(14,16,20,.62); border: 1px solid #262d38; border-radius: 6px; padding: 8px 11px; }
+  #hud b { color: #dbe4f0; }
+  #err { position: absolute; left: 12px; top: 12px; max-width: 60%; color: #ffb3b3; font: 12px ui-monospace, Consolas, monospace; display: none; white-space: pre-wrap; }
+  #refs { overflow: auto; background: #101114; display: grid; align-content: start; gap: 6px; padding: 6px; }
+  #refs figure { margin: 0; }
+  #refs img { width: 100%; display: block; }
+  #refs figcaption { color: #8b93a0; padding: 2px 2px 6px; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Eco-brutalist spawn area</strong>
+  <select id="kind">
+    <option value="gallery">gallery: all seven</option>
+    <option value="complex" selected>complex: one building, slot-garden hallways</option>
+    <option value="spawn">spawn area (three rooms)</option>
+    <option value="atrium">atrium</option>
+    <option value="lobby">lobby</option>
+    <option value="pergola">pergola court</option>
+    <option value="slotgarden">slot garden</option>
+    <option value="pavilion">pond pavilion</option>
+  </select>
+  <label>seed <input id="seed" type="number" value="1"></label>
+  <select id="preset">
+    <option value="overview">overview</option>
+    <option value="eye">eye level at spawn</option>
+    <option value="low">low three-quarter</option>
+    <option value="top">top</option>
+  </select>
+  <button id="wire">wireframe</button>
+  <button id="flora">flora off</button>
+  <button id="grassBtn" data-key="grassDensity" title="A/B: rebuilds without grass">grass off</button>
+  <button id="plantsBtn" data-key="plantDensity" title="A/B: rebuilds without plants">plants off</button>
+  <button id="vinesBtn" data-key="vineDensity" title="A/B: rebuilds without vines">vines off</button>
+  <label title="blades per square metre; rebuilds on release">grass density <input id="grassDensity" type="range" min="0" max="200" step="1" style="width:120px;padding:0"> <span id="grassDensityVal"></span></label>
+  <select id="grassMode" title="mesh: every blade built once, culled per tile. compute: blades culled per frame from painted density and height textures">
+    <option value="mesh">grass: mesh</option>
+    <option value="compute">grass: compute</option>
+  </select>
+  <label title="compute grass only: blades exist within this many metres of the camera; rebuilds on release">grass radius <input id="grassRadius" type="range" min="4" max="400" step="1" style="width:100px;padding:0"> <span id="grassRadiusVal"></span></label>
+  <select id="grassLight" title="grass lighting model">
+    <option value="lambert">grass: lambert</option>
+    <option value="standard">grass: standard PBR</option>
+  </select>
+  <button id="grassShadowBtn" title="whether grass receives shadows">grass shadows off</button>
+  <button id="occlusionBtn" title="GPU culls test blades and plants against a depth image of the concrete">occlusion off</button>
+  <select id="chunk" title="concrete and vines split into cells of this size so the renderer frustum-culls per cell; rebuilds">
+    <option value="0">chunks: off</option>
+    <option value="16">chunks: 16 m</option>
+    <option value="32" selected>chunks: 32 m</option>
+    <option value="64">chunks: 64 m</option>
+  </select>
+  <select id="shadowSize" title="shadow map size">
+    <option value="1024">shadow 1024</option>
+    <option value="2048">shadow 2048</option>
+    <option value="4096">shadow 4096</option>
+  </select>
+  <select id="shadowFilter" title="shadow filter">
+    <option value="soft">pcf soft</option>
+    <option value="hard">pcf hard</option>
+  </select>
+  <button id="refsBtn">hide references</button>
+  <button id="shot">save screenshot</button>
+  <span id="status">starting…</span>
+</header>
+<main id="main">
+  <div id="view"><div id="err"></div><div id="hud">booting…</div></div>
+  <div id="refs">
+    <figure><img src="ref/01-atrium.png" alt="atrium"><figcaption>01 atrium: stacked slabs on columns under a space-frame roof, palms in planters</figcaption></figure>
+    <figure><img src="ref/02-lobby.png" alt="lobby"><figcaption>02 lobby: coffered ceiling, piers, mezzanine rails, stair wrapped in fern planters, sunken plaza</figcaption></figure>
+    <figure><img src="ref/03-pergola-court.png" alt="pergola court"><figcaption>03 pergola court: board-formed walls, slatted pergola, wide stair to a terrace, deep overhang, lawn and water</figcaption></figure>
+    <figure><img src="ref/05-slot-garden.png" alt="slot garden"><figcaption>05 slot garden: two tall walls, one walkway, pond left, ferns right</figcaption></figure>
+    <figure><img src="ref/06-pond-pavilion.png" alt="pond pavilion"><figcaption>06 pond pavilion: cantilevered roof over a deck, perforated screen, reflecting pond, slab bridge</figcaption></figure>
+  </div>
+</main>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+// Wiring copied from structure-viewer.html (theme, concrete, flora, instanced boxes) with the
+// reference strip and camera presets from scratchpads/rq170-sentinel/viewer.html.
+import * as THREE from 'three';
+import { WebGPURenderer, MeshStandardNodeMaterial } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createLightingRig } from '../../lights.js';
+import { createPostFX } from '../../post-fx.js';
+import { createVisualSystem } from '../../bot-viewer-visuals.js';
+import { floraFor, getTheme, cloneTheme } from '../../bot-viewer-visuals-style.js';
+import { createBotFlora } from '../../bot-flora.js';
+import { boxMesh, instancedBoxes as emitBoxes, clearBoxes } from '../../map-boxes.js';
+import { createFrameProfiler } from '../../frame-profiler.js';
+import { ECO_KINDS, generateEco, soilTopAt } from './eco-gen.js';
+
+const errEl = document.getElementById('err');
+const status = document.getElementById('status');
+function noteError(msg) { errEl.textContent = '⚠ ' + msg; errEl.style.display = 'block'; }
+addEventListener('error', (e) => noteError(e.message || 'script error'));
+addEventListener('unhandledrejection', (e) => noteError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== engine =====================
+const view = document.getElementById('view');
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+// Initial values only; the header controls change all four live.
+const query = new URLSearchParams(location.search);
+let SHADOW_SIZE = Math.max(256, parseInt(query.get('shadow'), 10) || 1024);
+let SHADOW_SOFT = query.get('pcf') !== 'hard';
+let GRASS_LIGHT = query.get('grassLight') === 'standard' ? 'standard' : 'lambert';
+let GRASS_SHADOW = query.get('grassShadow') !== '0';
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = SHADOW_SOFT ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+view.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 900);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.09;
+controls.minDistance = 1;
+controls.maxPolarAngle = Math.PI * 0.495;
+
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  if (!w || !h) return;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h, false);
+}
+new ResizeObserver(resize).observe(view);
+resize();
+
+// ===================== lighting / visuals =====================
+const rig = createLightingRig({ scene, ui: false, elevation: 60, azimuth: 20 });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(SHADOW_SIZE, SHADOW_SIZE);
+const overheadLight = new THREE.PointLight(0xffffff, 0, 26, 2);
+scene.add(overheadLight);
+// 'grade' skips the bloom mip chain; at strength 0.08 the bloom was paying six passes for a glow nobody could see.
+const postFX = createPostFX({ renderer, scene, camera, params: { mode: 'grade', tone: 'none' } });
+
+let flora = null;
+const visuals = createVisualSystem({ THREE, renderer, scene, camera, postFX, rig, overheadLight, onLookChange: () => rebuildFlora() });
+
+// The bot viewer's eco-brutalism is a ruin going back to the ground. These references are
+// occupied buildings, so the growth terms come down and the panel grid stays.
+function ecoTheme() {
+  const t = cloneTheme(getTheme('ecobrutal'));
+  Object.assign(t.mats.wall.concrete, { mossGain: 0.35, algaeGain: 0.3, algaeHeight: 0.18, stainGain: 0.3, mottleGain: 0.18, tieGain: 0.45 });
+  Object.assign(t.mats.cover.concrete, { mossGain: 0.7, algaeGain: 0.5, algaeHeight: 0.3, stainGain: 0.3 });
+  t.mats.wall.color = 0x9c9e9a;
+  t.mats.cover.color = 0x8f918c;
+  Object.assign(t.flora, {
+    grassDensity: 36, grassHeight: 0.32, plantDensity: 1.2, plantReach: 1.6, plantOpenFloor: 0.2,
+    plantCap: 160, plantCullRadius: 70,   // plants were the largest flora cost: 10 fps of the 20
+    grassLighting: GRASS_LIGHT,
+    plantClumpRadius: 1.0, vineDensity: 0.7, vineLength: 3.4, vineClump: 0.45, vineLeafiness: 1.3,
+    // 0.15 m bare ground at a wall or rim: the rims are 0.22 m thick, so a leaning blade cannot poke through.
+    clearance: 0.15,
+    grassTile: 24,   // frustum-culled 24 m tiles instead of one field-wide mesh
+    vineChunk: 32,   // one vine mesh per 32 m cell, frustum-culled like the concrete chunks
+  });
+  // Clear day: almost no fog, a neutral sky ambient instead of the ruin's green bounce, a stronger sun.
+  t.fog = { color: 0xc9d7e2, density: 0.0006 };
+  t.bg = 0xa9c6e2;
+  Object.assign(t.sky, { horizon: 0xdbe7f1, zenith: 0x5d95d3, sunGain: 2.2 });
+  Object.assign(t.lights.key, { intensity: 4.2, elevation: 52, azimuth: 55, color: 0xfff6e6 });
+  Object.assign(t.lights.ambient, { color: 0xc4ced8, intensity: 1.35 });
+  Object.assign(t.lights.rim, { intensity: 0.6 });
+  return t;
+}
+visuals.setTheme(ecoTheme());
+// The look system keeps four accent points and the arena overhead resident; at intensity 0 they
+// still cost a per-fragment light evaluation each. Hidden here, once, before the first pipeline.
+overheadLight.visible = false;
+scene.traverse((o) => { if (o.isLight && /AccentLight/.test(o.name)) o.visible = false; });
+// The look system's sky dome is a 150 m sphere drawn last with depth test on, so it paints over
+// anything farther than that. The dome only depends on view direction, so it is scaled here; the
+// reflection probe renders its own unscaled copy.
+const SKY_SCALE = 6;
+scene.traverse((o) => { if (o.isMesh && o.geometry?.type === 'SphereGeometry' && o.material?.side === THREE.BackSide) o.scale.setScalar(SKY_SCALE); });
+camera.far = 150 * SKY_SCALE * 1.5;
+camera.updateProjectionMatrix();
+
+const mapRoot = new THREE.Group();
+scene.add(mapRoot);
+const wallMat = visuals.materials.wall;
+const coverMat = visuals.materials.cover;
+const floorMat = visuals.materials.floor;
+const barMat = new MeshStandardNodeMaterial({ color: 0xd6d9dc, roughness: 0.45, metalness: 0.5 });
+const soilMat = new MeshStandardNodeMaterial({ color: 0x2a2319, roughness: 1.0, metalness: 0.0 });
+const waterMat = new MeshStandardNodeMaterial({ color: 0x1b3a2e, roughness: 0.06, metalness: 0.6, transparent: true, opacity: 0.86 });
+const box = (mat, x, y, z, w, h, d) => boxMesh(mapRoot, mat, x, y, z, w, h, d);
+const instancedBoxes = (mat, boxes) => emitBoxes(mapRoot, mat, boxes);
+const toBox = (r) => ({ x: r.x, y: r.y + r.h / 2, z: r.z, w: r.w, h: r.h, d: r.d });
+
+// ===================== flora =====================
+let planters = [], footprints = [];
+const GROUND_TOP = -0.3;   // the ground box outside the building sits under the floor slabs
+const OUTDOOR_BAND = 18;   // m of grass around the building; the bounds square beyond it stays bare
+const nearFootprint = (x, z, pad) => footprints.some((r) => Math.abs(x - r.x) <= r.w / 2 + pad && Math.abs(z - r.z) <= r.d / 2 + pad);
+const inFootprint = (x, z) => nearFootprint(x, z, 0.4);
+const groundHeight = (x, z) => soilTopAt(planters, x, z) ?? (inFootprint(x, z) ? 0 : GROUND_TOP);
+flora = createBotFlora({
+  THREE, renderer, camera, parent: scene, seed: 1,
+  occluders: mapRoot,   // the concrete: drawn into a depth image the GPU culls test against
+  // Growth lives in planters, and on the ground in a band around the building's floor slabs.
+  // The band is what keeps the field at 214k blades instead of 643k (count-growth.mjs).
+  clearFn: (x, z) => soilTopAt(planters, x, z) == null && (inFootprint(x, z) || !nearFootprint(x, z, OUTDOOR_BAND)),
+  onStats: () => updateHud(),
+});
+let activeBounds = { minX: -50, maxX: 50, minZ: -50, maxZ: 50 };
+let activeWalls = [], activeCovers = [], activeVineBoxes = [];
+function rebuildFlora() {
+  if (!flora) return;
+  const on = visuals.toggles.flora;
+  flora.setEnabled(on);
+  document.getElementById('flora').textContent = on ? 'flora off' : 'flora on';
+  if (!on) return;
+  flora.rebuild({
+    bounds: activeBounds, wallBoxes: activeWalls, coverBoxes: activeCovers, vineBoxes: activeVineBoxes,
+    pads: [], groundHeight, flora: floraFor(visuals.theme),
+  });
+  if (!GRASS_SHADOW) scene.traverse((o) => { if (o.isMesh && o.material?._uTime) o.receiveShadow = false; });
+  updateHud();
+}
+
+// ===================== the scene =====================
+const ui = { kind: 'complex', seed: 1, wire: false, chunk: 32 };
+let chunkCount = 0;
+let built = null, specimens = [];
+function rebuildScene({ frame = true } = {}) {
+  clearBoxes(mapRoot);
+  specimens = [];
+  if (ui.kind === 'gallery') {
+    // The complex is 190 m across and gets its own row to the north; the six rooms sit in a
+    // tight 3 by 2 grid south of it, so nothing is farther than a short walk from the next.
+    const cell = 90, cols = 3;
+    const rooms = ECO_KINDS.filter((k) => k !== 'complex');
+    specimens.push({ kind: 'complex', x: 0, z: -cell });
+    rooms.forEach((kind, i) => {
+      const c = i % cols, r = Math.floor(i / cols);
+      specimens.push({ kind, x: (c - (cols - 1) / 2) * cell, z: (r + 0.5) * cell });
+    });
+    activeBounds = { minX: -cell * cols / 2, maxX: cell * cols / 2, minZ: -cell * 2, maxZ: cell * 2 };
+  } else {
+    specimens.push({ kind: ui.kind, x: 0, z: 0 });
+  }
+  const outs = specimens.map((s) => Object.assign(s, { gen: generateEco(s.kind, {}, ui.seed, { x: s.x, z: s.z }) }));
+  if (ui.kind !== 'gallery') {
+    const r = outs[0].gen.radius + 14;
+    activeBounds = { minX: -r, maxX: r, minZ: -r, maxZ: r };
+  }
+  visuals.setBounds(activeBounds);
+  flora.setViewDistance(Math.max(activeBounds.maxX - activeBounds.minX, activeBounds.maxZ - activeBounds.minZ) * 0.9);
+
+  const walls = outs.flatMap((s) => s.gen.walls), covers = outs.flatMap((s) => s.gen.covers), bars = outs.flatMap((s) => s.gen.bars);
+  planters = outs.flatMap((s) => s.gen.planters);
+  const water = outs.flatMap((s) => s.gen.water);
+  footprints = [...walls.filter((r) => r.y < 0), ...water];
+  const w = activeBounds.maxX - activeBounds.minX, d = activeBounds.maxZ - activeBounds.minZ;
+  box(floorMat, (activeBounds.minX + activeBounds.maxX) / 2, -0.35, (activeBounds.minZ + activeBounds.maxZ) / 2, w + 40, 0.1, d + 40);
+  // One instanced mesh per material per cell: the mesh's bounding sphere covers only its cell, so
+  // the renderer's frustum test skips the rooms behind the camera in both the main and shadow pass.
+  chunkCount = 0;
+  const chunked = (mat, boxes) => {
+    if (!boxes.length) return;
+    if (!(ui.chunk > 0)) { instancedBoxes(mat, boxes); chunkCount++; return; }
+    const cells = new Map();
+    for (const b of boxes) {
+      const key = `${Math.floor(b.x / ui.chunk)}:${Math.floor(b.z / ui.chunk)}`;
+      let list = cells.get(key); if (!list) cells.set(key, (list = [])); list.push(b);
+    }
+    for (const list of cells.values()) { instancedBoxes(mat, list); chunkCount++; }
+  };
+  chunked(wallMat, walls.map(toBox));
+  chunked(coverMat, covers.map(toBox));
+  chunked(barMat, bars.map(toBox));
+  chunked(soilMat, planters.map((q) => ({ x: q.x, y: q.y + q.depth / 2, z: q.z, w: q.w - 0.08, h: q.depth, d: q.d - 0.08 })));
+  chunked(waterMat, water.map((q) => ({ x: q.x, y: q.y, z: q.z, w: q.w, h: 0.04, d: q.d })));
+
+  // Flora keep-outs: standing walls and covers; floor slabs sit below grade and are skipped.
+  activeWalls = walls.filter((r) => r.y >= -1e-6 && r.h >= 1.2).map(toBox);
+  activeCovers = covers.map(toBox);
+  activeVineBoxes = walls.filter((r) => r.y > 1.0 && r.h < 1.2 && r.w * r.d > 4).map(toBox);
+  built = { walls: walls.length, covers: covers.length, bars: bars.length, planters: planters.length, water: water.length, spawn: outs[0].gen.spawn };
+  flora.markOccluders(mapRoot);   // new meshes every rebuild
+  rebuildFlora();
+  applyWire();
+  if (frame) setPreset(document.getElementById('preset').value);
+  updateHud();
+}
+
+// ===================== camera presets =====================
+function setPreset(name) {
+  const cx = (activeBounds.minX + activeBounds.maxX) / 2, cz = (activeBounds.minZ + activeBounds.maxZ) / 2;
+  const span = Math.max(activeBounds.maxX - activeBounds.minX, activeBounds.maxZ - activeBounds.minZ);
+  const s = built?.spawn || [cx, 0, cz];
+  controls.maxDistance = span * 3;
+  if (name === 'eye') {
+    camera.position.set(s[0], s[1] + 1.7, s[2] + 0.01);
+    controls.target.set(s[0], s[1] + 1.6, s[2] - 6);
+  } else if (name === 'low') {
+    camera.position.set(s[0] + span * 0.28, s[1] + span * 0.12, s[2] + span * 0.3);
+    controls.target.set(s[0], s[1] + 2, s[2]);
+  } else if (name === 'top') {
+    camera.position.set(cx, span * 1.1, cz + 0.01);
+    controls.target.set(cx, 0, cz);
+  } else {
+    camera.position.set(cx + span * 0.5, span * 0.42, cz + span * 0.55);
+    controls.target.set(cx, 0, cz);
+  }
+  controls.update();
+}
+
+// ===================== readouts / controls =====================
+const hud = document.getElementById('hud');
+const frameProf = createFrameProfiler({ smoothing: 0.1 });
+const PROF_MAP = { visuals: 'vis', flora: 'flo', render: 'rnd' };
+let fpsAcc = 0, fpsN = 0, fps = 0;
+// One DOM write per half second: the profiler smooths, the eye cannot read faster anyway.
+function updateHud() {
+  if (!built) return;
+  const f = flora ? flora.stats : null;
+  const s = frameProf.snapshot(PROF_MAP, { smooth: true });
+  const info = renderer.info;
+  hud.innerHTML = [
+    `<b>${ui.kind}</b> · seed ${ui.seed}`,
+    `walls <b>${built.walls}</b> · covers <b>${built.covers}</b> · bars <b>${built.bars}</b> · planters <b>${built.planters}</b> · water <b>${built.water}</b>`,
+    f && visuals.toggles.flora ? `flora: ${f.blades.toLocaleString()} blades${f.capped ? ` (capped at ${f.builtDensity.toFixed(1)}/m² of ${f.askedDensity}/m² asked)` : ''} · ${f.plants} plants · ${f.vines} vines` : 'flora off',
+    `<b>${fps.toFixed(0)}</b> fps · cpu ms: visuals ${s.vis.toFixed(2)} · flora ${s.flo.toFixed(2)} · render ${s.rnd.toFixed(2)}`,
+    `draws <b>${info.render.drawCalls}</b> · tris ${info.render.triangles.toLocaleString()} · geometries ${info.memory.geometries} · textures ${info.memory.textures} · concrete chunks ${chunkCount}${ui.chunk > 0 ? ` (${ui.chunk} m)` : ''}`,
+    `shadow ${SHADOW_SIZE} ${SHADOW_SOFT ? 'soft' : 'hard'} · grass ${GRASS_LIGHT}, ${GRASS_SHADOW ? 'shadowed' : 'unshadowed'}, ${flora ? flora.stats.tiles ?? '?' : 0} tiles · occlusion ${OCCLUSION ? `on (${flora?.occlusion?.size ?? '?'}² depth, GPU paths only)` : 'off'}`,
+    cullLine,
+    `spawn at ${built.spawn.map((v) => v.toFixed(1)).join(', ')}`,
+  ].join('<br>');
+}
+// Culling readout: grass by frustum test on the tiles, plants by reading back the cull's
+// survivor counts (a GPU round trip, so on the half-second timer, never per frame). Vines are one
+// mesh whose bounds span the building, so nothing culls them.
+let cullLine = 'culling: …';
+const pct = (hidden, total) => (total > 0 ? `${(100 * hidden / total).toFixed(0)}% hidden` : 'none');
+async function updateCullLine() {
+  if (!flora || !visuals.toggles.flora) { cullLine = 'culling: flora off'; return; }
+  const c = flora.cullStats(camera);
+  const plantsVisible = await flora.plantsVisible();
+  let grassPart;
+  if (c.mode === 'compute') {
+    // The compute field has no total: blades only exist where the cull put them this frame.
+    const drawn = await flora.grassVisible();
+    const asked = flora.stats.blades;
+    grassPart = `grass ${drawn == null ? 'building' : `${drawn.toLocaleString()} drawn of ${asked.toLocaleString()} possible (${pct(asked - drawn, asked)})`}`;
+  } else {
+    grassPart = `grass ${pct(c.bladesTotal - c.bladesVisible, c.bladesTotal)} (${c.tilesVisible}/${c.tilesTotal} tiles)`;
+  }
+  cullLine = `culling: ${grassPart}`
+    + ` · plants ${pct(c.plantsTotal - plantsVisible, c.plantsTotal)} (${plantsVisible}/${c.plantsTotal})`
+    + (c.vineChunks > 1
+      ? ` · vines ${pct(c.vines - c.vinesVisible, c.vines)} (${c.vineChunksVisible}/${c.vineChunks} cells)`
+      : ` · vines 0% hidden (${c.vines}, one mesh)`);
+}
+setInterval(async () => { fps = fpsN ? fpsN / fpsAcc * 1000 : 0; fpsAcc = 0; fpsN = 0; await updateCullLine(); updateHud(); }, 500);
+function applyWire() { mapRoot.traverse((o) => { if (o.isMesh) o.material.wireframe = ui.wire; }); }
+
+document.getElementById('kind').addEventListener('change', (e) => { ui.kind = e.target.value; rebuildScene(); });
+document.getElementById('seed').addEventListener('change', (e) => { ui.seed = (parseInt(e.target.value, 10) || 1) >>> 0; rebuildScene({ frame: false }); });
+document.getElementById('preset').addEventListener('change', (e) => setPreset(e.target.value));
+document.getElementById('wire').addEventListener('click', () => { ui.wire = !ui.wire; applyWire(); });
+document.getElementById('flora').addEventListener('click', () => {
+  // Pinning a toggle re-applies the look, and that fires onLookChange, which rebuilds flora.
+  const look = visuals.getLookState();
+  look.pinnedToggles = { ...look.pinnedToggles, flora: !visuals.toggles.flora };
+  visuals.applyLookState(look);
+});
+document.getElementById('refsBtn').addEventListener('click', (e) => {
+  const main = document.getElementById('main');
+  main.classList.toggle('norefs');
+  e.target.textContent = main.classList.contains('norefs') ? 'show references' : 'hide references';
+  resize();
+});
+// A/B buttons: zero one density in the live flora block and rebuild, restore on the next click.
+const stashed = {};
+for (const btn of document.querySelectorAll('[data-key]')) {
+  btn.addEventListener('click', () => {
+    const f = visuals.theme.flora, key = btn.dataset.key, name = btn.id.replace('Btn', '');
+    if (key in stashed) { f[key] = stashed[key]; delete stashed[key]; btn.textContent = `${name} off`; }
+    else { stashed[key] = f[key]; f[key] = 0; btn.textContent = `${name} on`; }
+    rebuildFlora();
+  });
+}
+// Grass density: the readout follows the thumb, the rebuild waits for release.
+const grassDensityIn = document.getElementById('grassDensity');
+const grassDensityVal = document.getElementById('grassDensityVal');
+const syncGrassDensity = () => { grassDensityIn.value = String(visuals.theme.flora.grassDensity); grassDensityVal.textContent = grassDensityIn.value; };
+syncGrassDensity();
+grassDensityIn.addEventListener('input', () => { grassDensityVal.textContent = grassDensityIn.value; });
+grassDensityIn.addEventListener('change', () => {
+  delete stashed.grassDensity;
+  document.getElementById('grassBtn').textContent = 'grass off';
+  visuals.theme.flora.grassDensity = parseFloat(grassDensityIn.value);
+  rebuildFlora();
+});
+// Occlusion: live, the kernels read the flag on their next cull.
+let OCCLUSION = true;
+const occlusionBtn = document.getElementById('occlusionBtn');
+occlusionBtn.addEventListener('click', () => {
+  OCCLUSION = !OCCLUSION;
+  flora.setOcclusionEnabled(OCCLUSION);
+  occlusionBtn.textContent = OCCLUSION ? 'occlusion off' : 'occlusion on';
+});
+// Grass radius (compute path): sizes the instance buffer, so it commits on release with a rebuild.
+const grassRadiusIn = document.getElementById('grassRadius');
+const grassRadiusVal = document.getElementById('grassRadiusVal');
+grassRadiusIn.value = String(visuals.theme.flora.grassRadius || 60);
+grassRadiusVal.textContent = grassRadiusIn.value;
+grassRadiusIn.addEventListener('input', () => { grassRadiusVal.textContent = grassRadiusIn.value; });
+grassRadiusIn.addEventListener('change', () => { visuals.theme.flora.grassRadius = parseFloat(grassRadiusIn.value); if (visuals.theme.flora.grassMode === 'compute') rebuildFlora(); });
+// Chunk size: concrete cells here, vine cells through the flora block; both rebuild.
+const chunkSel = document.getElementById('chunk');
+chunkSel.value = String(ui.chunk);
+chunkSel.addEventListener('change', () => { ui.chunk = parseFloat(chunkSel.value); visuals.theme.flora.vineChunk = ui.chunk; rebuildScene({ frame: false }); });
+// Grass mode: mesh (built once, tiles culled) or compute (culled per frame from textures).
+const grassModeSel = document.getElementById('grassMode');
+grassModeSel.value = visuals.theme.flora.grassMode || 'mesh';
+grassModeSel.addEventListener('change', () => { visuals.theme.flora.grassMode = grassModeSel.value; rebuildFlora(); });
+// Grass lighting and grass shadows: per-material, so a flora rebuild applies them.
+const grassLightSel = document.getElementById('grassLight');
+grassLightSel.value = GRASS_LIGHT;
+grassLightSel.addEventListener('change', () => { GRASS_LIGHT = grassLightSel.value; visuals.theme.flora.grassLighting = GRASS_LIGHT; rebuildFlora(); });
+const grassShadowBtn = document.getElementById('grassShadowBtn');
+const syncGrassShadowBtn = () => { grassShadowBtn.textContent = GRASS_SHADOW ? 'grass shadows off' : 'grass shadows on'; };
+syncGrassShadowBtn();
+grassShadowBtn.addEventListener('click', () => { GRASS_SHADOW = !GRASS_SHADOW; syncGrassShadowBtn(); rebuildFlora(); });
+// Shadow filter: the shadow node resets itself when the renderer's type changes, and every
+// material's cache key carries the type, so one assignment rebuilds the pipelines.
+const shadowFilterSel = document.getElementById('shadowFilter');
+shadowFilterSel.value = SHADOW_SOFT ? 'soft' : 'hard';
+// The reset frees the old depth texture, and any material not drawn since then still binds it,
+// so every material is flagged for a rebuild with the type; otherwise the first object to come
+// back into view submits a destroyed texture.
+function rebuildAllMaterials() {
+  const seen = new Set();
+  scene.traverse((o) => { const m = o.material; if (!m || seen.has(m)) return; seen.add(m); m.needsUpdate = true; });
+}
+function setShadowType(type) { renderer.shadowMap.type = type; rebuildAllMaterials(); }
+function applyShadowType() { setShadowType(SHADOW_SOFT ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap); }
+shadowFilterSel.addEventListener('change', () => { SHADOW_SOFT = shadowFilterSel.value === 'soft'; applyShadowType(); });
+// Shadow map size: the map is only reallocated on that same reset, so flip the type for one
+// frame and flip it back; the new size is read when the map is recreated.
+const shadowSizeSel = document.getElementById('shadowSize');
+shadowSizeSel.value = String(SHADOW_SIZE);
+shadowSizeSel.addEventListener('change', () => {
+  SHADOW_SIZE = parseInt(shadowSizeSel.value, 10);
+  rig.dirLight.shadow.mapSize.set(SHADOW_SIZE, SHADOW_SIZE);
+  setShadowType(SHADOW_SOFT ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap);
+  requestAnimationFrame(() => requestAnimationFrame(applyShadowType));
+});
+let wantShot = false;
+document.getElementById('shot').addEventListener('click', () => { wantShot = true; });
+function saveShot() {
+  renderer.domElement.toBlob((blob) => {
+    if (!blob) { status.textContent = 'screenshot failed'; return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${ui.kind}-${document.getElementById('preset').value}-${Date.now()}.png`;
+    a.click();
+    status.textContent = 'screenshot saved to your downloads; move it into shots/';
+  });
+}
+addEventListener('keydown', (e) => {
+  if (e.target.matches('input, select')) return;
+  if (e.key === 'f' || e.key === 'F') setPreset(document.getElementById('preset').value);
+});
+
+// ===================== frame loop =====================
+let lastT = performance.now();
+renderer.setAnimationLoop(async () => {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
+  fpsAcc += dt * 1000; fpsN++;
+  frameProf.beginFrame();
+  controls.update();
+  frameProf.time('visuals', () => visuals.update(dt));
+  if (flora) await frameProf.timeAsync('flora', () => flora.update(dt, now / 1000));
+  await frameProf.timeAsync('render', () => postFX.renderAsync());
+  if (wantShot) { wantShot = false; saveShot(); }
+});
+
+rebuildScene();
+status.textContent = 'ready';
+</script>
+</body>
+</html>
