@@ -10,8 +10,10 @@ import {
   damageBaseGameVehicle, vehicleWireState, vehicleSeatState, restoreVehicleSeatState,
   sanitizeBaseGameVehicleState, sanitizeBaseGameVehicleSeatState,
   vehicleBasis, turretPivotWorld, aimVehicleTurret, turretDirWorld, fireVehicleTurret,
+  vehicleHitParts, vehicleHitVolumes, blastDamageOnVehicle, dueVehicleBlasts, vehicleWreckExpired, WRECK_SECONDS,
 } from './base-game-vehicles.js';
 import { createBaseGamePrediction } from './base-game-prediction.js';
+import { rayCapsuleHit } from './combat.js';
 import { getWeapon } from './weapons.js';
 import { BASE_GAME_WEAPON_IDS } from './base-game-protocol.mjs';
 
@@ -466,5 +468,125 @@ function wrapPiTest(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
   ok(moved < 0.6, `and stays put (${moved.toFixed(2)} m)`);
 }
 function wrapPiLocal(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
+
+// ─── the hit volume ──────────────────────────────────────────────────────────
+// Until this existed a vehicle was scenery you could shoot straight through, the same gap the
+// drones had. Two capsules, not one: a UGV is twice as long as it is wide.
+{
+  const groundY = () => 0;
+  const rec = createBaseGameVehicle('ugv', { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY });
+  const parts = vehicleHitParts(rec);
+  ok(parts.length === 2, `a UGV is two capsules (${parts.length})`);
+  ok(parts.every(p => p.id === rec.id), 'both carry the vehicle id, so a hit resolves to one record');
+
+  const def = BASE_GAME_VEHICLE_DEFS.ugv;
+  const half = def.wheelbase * 0.5;
+  const along = parts.map(p => p.p[2]).sort((a, b) => a - b);
+  ok(Math.abs(along[0] + half) < 1e-9 && Math.abs(along[1] - half) < 1e-9,
+    `they stand over the axles at +/-${half} m (${along.map(v => v.toFixed(3)).join(', ')})`);
+
+  // The extent must reach from the tyre contact to the top of the hull, or shots at the wheels miss.
+  const bottom = Math.min(...parts.map(p => p.p[1] - p.h * 0.5 - p.r));
+  const top = Math.max(...parts.map(p => p.p[1] + p.h * 0.5 + p.r));
+  ok(Math.abs(bottom - 0) < 1e-9, `the volume starts at the ground (${bottom.toFixed(3)} m)`);
+  ok(Math.abs(top - def.hitHeight) < 1e-9, `and reaches the hull top (${top.toFixed(3)} m)`);
+
+  // Yaw carries the capsules round with the hull.
+  rec.body.yaw = Math.PI / 2;
+  const turned = vehicleHitParts(rec);
+  ok(Math.abs(turned[0].p[0] - half) < 1e-9 && Math.abs(turned[0].p[2]) < 1e-9,
+    'turned 90 degrees, the front capsule is off the +X side');
+}
+
+// A round fired at the hull connects; one fired a clear metre past its flank does not. This is the
+// pair of failures a single sphere cannot avoid at once.
+{
+  const groundY = () => 0;
+  const rec = createBaseGameVehicle('ugv', { ownerId: 'o', from: [0, 0, 20], yaw: 0, groundY });
+  const vols = vehicleHitVolumes([rec]);
+  const shoot = (from, at) => {
+    const d = [at[0] - from[0], at[1] - from[1], at[2] - from[2]];
+    const len = Math.hypot(...d);
+    return vols.some(v => rayCapsuleHit(from, [d[0] / len, d[1] / len, d[2] / len], 100, v).hit);
+  };
+  const eye = [0, 1.6, 0];
+  ok(shoot(eye, [0, 0.8, 21.0]), 'a shot at the nose of the hull connects');
+  ok(shoot(eye, [0, 0.8, 19.0]), 'and one at the tail');
+  ok(shoot(eye, [0, 1.4, 20.0]), 'and one at the turret');
+  ok(!shoot(eye, [2.2, 0.8, 20.0]), 'a shot two metres off its flank misses');
+  ok(!shoot(eye, [0, 2.4, 20.0]), 'and one over the top');
+
+  // A wreck is drawn but is not a target.
+  damageBaseGameVehicle(rec, 999);
+  ok(vehicleHitVolumes([rec]).length === 0, 'a wreck offers nothing to hit');
+}
+
+// Blast falloff is measured off the capsule surface, so a shell beside the hull has hit the hull.
+{
+  const groundY = () => 0;
+  const rec = createBaseGameVehicle('buggy', { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY });
+  const onAxle = blastDamageOnVehicle(rec, [0, 0.95, BASE_GAME_VEHICLE_DEFS.buggy.wheelbase * 0.5], 6, 100);
+  const near = blastDamageOnVehicle(rec, [0, 0.9, 0], 6, 100);
+  const edge = blastDamageOnVehicle(rec, [0, 0.9, 6.9], 6, 100);
+  const far = blastDamageOnVehicle(rec, [0, 0.9, 40], 6, 100);
+  ok(onAxle === 100, `a blast on the hull does full damage (${onAxle})`);
+  ok(near > 95, `and one in the middle of the wheelbase nearly so (${near.toFixed(1)})`);
+  ok(edge > 0 && edge < 30, `one at the edge is heavily reduced (${edge.toFixed(1)})`);
+  ok(far === 0, 'and one forty metres away does nothing');
+}
+
+// ─── the wreck ───────────────────────────────────────────────────────────────
+// It used to be deleted on the tick it died, so the hull vanished inside its own explosion.
+{
+  const groundY = () => 0;
+  const rec = createBaseGameVehicle('ugv', { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY });
+  const w = { groundY, ownerPos: [0, 0, 0], ownerYaw: 0, ownerVel: [0, 0, 0], ownerAlive: true, seaLevel: -Infinity };
+  takeOverVehicle(rec, 'driver-1');
+  const res = damageBaseGameVehicle(rec, 999);
+  ok(res.dead && res.driver === 'driver-1',
+    'killing it hands back the driver it evicted, so the seat can be freed');
+  ok(rec.state === 'wreck' && rec.driver === null, 'it becomes a wreck with nobody aboard');
+
+  // The crash blast is due at once; nothing else, because a UGV is a battery not a fuel tank.
+  const first = dueVehicleBlasts(rec);
+  ok(first.length === 1, `the UGV owes one blast (${first.length})`);
+  ok(dueVehicleBlasts(rec).length === 0, 'and it is only paid once');
+
+  ok(!vehicleWreckExpired(rec), 'the wreck is still there the moment it dies');
+  for (let i = 0; i < Math.round((WRECK_SECONDS - 1) / DT); i++) stepBaseGameVehicle(rec, DT, w);
+  ok(!vehicleWreckExpired(rec), `and one second short of ${WRECK_SECONDS} s`);
+  for (let i = 0; i < Math.round(2 / DT); i++) stepBaseGameVehicle(rec, DT, w);
+  ok(vehicleWreckExpired(rec), 'then it has burned out and can be removed');
+}
+
+// A fuel vehicle comes apart in stages: the flight sim's depot, on the tick clock instead of a
+// timer, because a blast is authoritative damage.
+{
+  const groundY = () => 0;
+  const rec = createBaseGameVehicle('buggy', { ownerId: 'o', from: [10, 0, -4], yaw: 0.9, groundY });
+  const w = { groundY, ownerPos: [0, 0, 0], ownerYaw: 0, ownerVel: [0, 0, 0], ownerAlive: true, seaLevel: -Infinity };
+  damageBaseGameVehicle(rec, 999);
+  const def = BASE_GAME_VEHICLE_DEFS.buggy;
+
+  const opening = dueVehicleBlasts(rec);
+  ok(opening.length === 1, `only the crash blast goes off at once (${opening.length})`);
+  ok(opening[0].radius === def.crashBlast.radius, 'and it is the crash blast');
+
+  const seen = [];
+  for (let i = 0; i < Math.round(2 / DT); i++) {
+    stepBaseGameVehicle(rec, DT, w);
+    for (const b of dueVehicleBlasts(rec)) seen.push({ t: rec.wreckT, b });
+  }
+  ok(seen.length === def.secondaries.length,
+    `then all ${def.secondaries.length} secondaries follow (${seen.length})`);
+  for (let i = 0; i < seen.length; i++) {
+    const want = def.secondaries[i];
+    ok(Math.abs(seen[i].t - want.at) < 0.05, `secondary ${i + 1} fires at ${want.at} s (${seen[i].t.toFixed(2)})`);
+    ok(seen[i].b.radius === want.radius, `secondary ${i + 1} carries its own radius`);
+    const d = Math.hypot(seen[i].b.point[0] - rec.crash[0], seen[i].b.point[2] - rec.crash[2]);
+    ok(d > 0.3 && d < 2, `secondary ${i + 1} goes off beside the wreck, not on top of it (${d.toFixed(2)} m)`);
+  }
+  ok(vehicleWreckExpired(rec) === false, 'the hull is still burning after the last one');
+}
 
 console.log('base-game-vehicles: all assertions passed');

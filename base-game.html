@@ -193,7 +193,7 @@ import { createWheelMenu } from './wheel-menu.js';
 import { createWindowedBake } from './base-game-world-map.js';
 import { createWorldMapOverlay } from './world-map.js';
 import { BIOME_COLORS } from './biome-classifier-js.js';
-import { VEHICLE_UGV, VEHICLE_BUGGY, BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_DEFS, createBaseGameVehicle, createSeatedController, stepBaseGameVehicle, sendVehicleTo, recallVehicle, takeOverVehicle, releaseVehicle, vehicleSeatPoint, fireVehicleTurret } from './base-game-vehicles.js';
+import { VEHICLE_UGV, VEHICLE_BUGGY, BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_DEFS, createBaseGameVehicle, createSeatedController, stepBaseGameVehicle, sendVehicleTo, recallVehicle, takeOverVehicle, releaseVehicle, vehicleSeatPoint, fireVehicleTurret, vehicleHitVolumes, blastDamageOnVehicle, damageBaseGameVehicle, dueVehicleBlasts } from './base-game-vehicles.js';
 import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS, BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
 import { ARM_POSE_PRESETS, GAIT_MODELS } from './player-procedural-body.js';
 import {
@@ -1646,6 +1646,7 @@ function applySoloDroneAim(rec, di) {
 // Solo: the server's launchGadget / applyDroneInput / stepDrones, on this page's ground.
 const _soloWorld = { ownerPos: null, ownerYaw: 0, ownerAlive: true, groundY: soloGroundY, input: null };
 const _soloVehicleWorld = { ownerPos: null, ownerYaw: 0, ownerAlive: true, groundY: soloGroundY, seaLevel: -Infinity };
+const _soloDue = [];   // scratch for the blasts a wreck owes this frame
 function stepSoloDrones(dt, canControl, di) {
   // The throw was started by stepGadgetHands; the drone leaves the hands at the release point.
   if (gadgetLocal.spawnAt && performance.now() >= gadgetLocal.spawnAt) {
@@ -1700,13 +1701,22 @@ function stepSoloDrones(dt, canControl, di) {
   _soloVehicleWorld.ownerPos = playerController.getPosition(); _soloVehicleWorld.ownerYaw = playerView.yaw;
   _soloVehicleWorld.ownerVel = playerController.getVelocity();
   _soloVehicleWorld.ownerAlive = !combatState.dead; _soloVehicleWorld.seaLevel = waterSim.enabled ? waterSim.level : -Infinity;
-  for (const r of localVehicles.values()) {
-    if (!r.driver) stepBaseGameVehicle(r, Math.min(dt, 0.05), _soloVehicleWorld);
-    // Solo runs the same fire decision the server does and presents the round; there is nobody to
-    // damage here, so the effect is the whole of it, as with the solo projectiles.
+  for (const r of [...localVehicles.values()]) {
+    const res = r.driver ? null : stepBaseGameVehicle(r, Math.min(dt, 0.05), _soloVehicleWorld);
+    // Solo runs the same fire decision the server does, and its rounds hurt what the server's would.
     const shot = fireVehicleTurret(r);
     if (shot) presentTurretShot(shot);
-    if (r.done) { if (r.crash && r.def.crashBlast) presentExplosion(r.crash, r.def.crashBlast.radius, { contact: true, weaponId: `${r.kind}_crash` }); localVehicles.delete(r.id); }
+    if (!r.done) continue;
+    // The crash blast, then any secondaries as they come due, on the same clock the server uses.
+    // The hull stays as a wreck until it burns out rather than vanishing inside its own explosion.
+    _soloDue.length = 0;
+    for (const b of dueVehicleBlasts(r, _soloDue)) {
+      const weaponId = `${r.kind}_crash`;
+      blastSoloVehicles(b.point, b.radius, b.damage, weaponId);
+      blastSoloDrones(b.point, b.radius, b.damage, weaponId);
+      presentExplosion(b.point, b.radius, { contact: true, weaponId });
+    }
+    if (res?.expired) localVehicles.delete(r.id);
   }
   if (soloDrones.size || localVehicles.size || droneView.drones.size) droneView.ingestRecords([...soloDrones.values(), ...localVehicles.values()], performance.now());
 }
@@ -1717,11 +1727,27 @@ function presentTurretShot(shot) {
   const range = w?.range ?? 300;
   let hit = null;
   try { hit = worldQuery.raycast({ origin: shot.origin, direction: shot.dir, maxDistance: range }); } catch { hit = null; }
-  if (hit?.point) { _tsEnd[0] = hit.point[0]; _tsEnd[1] = hit.point[1]; _tsEnd[2] = hit.point[2]; }
-  else for (let i = 0; i < 3; i++) _tsEnd[i] = shot.origin[i] + shot.dir[i] * range;
+  let reach = range;
+  if (hit?.point) {
+    _tsEnd[0] = hit.point[0]; _tsEnd[1] = hit.point[1]; _tsEnd[2] = hit.point[2];
+    reach = Math.hypot(_tsEnd[0] - shot.origin[0], _tsEnd[1] - shot.origin[1], _tsEnd[2] - shot.origin[2]);
+  } else for (let i = 0; i < 3; i++) _tsEnd[i] = shot.origin[i] + shot.dir[i] * range;
+  // The station's rounds damage what they meet, as the server's do. Without this the UGV could
+  // destroy things online and nothing at all in solo, which is the asymmetry to avoid.
+  const droneHit = nearestSoloDroneHit(shot.origin, shot.dir, reach, shot.vehicleId ?? null);
+  const vehicleHit = nearestSoloVehicleHit(shot.origin, shot.dir, reach, shot.vehicleId ?? null);
+  const mob = !droneHit ? vehicleHit : !vehicleHit ? droneHit
+    : (vehicleHit.distance < droneHit.distance ? vehicleHit : droneHit);
+  let kind = hit?.point ? 'world' : 'miss';
+  if (mob) {
+    kind = 'mob';
+    for (let i = 0; i < 3; i++) _tsEnd[i] = mob.point[i];
+    const damage = w?.damage ?? 0;
+    if (mob === droneHit) hitSoloDrone(mob.id, damage); else hitSoloVehicle(mob.id, damage);
+  }
   spawnShotEffects({
     origin: shot.origin, end: [..._tsEnd], dir: shot.dir,
-    normal: hit?.normal ?? null, kind: hit?.point ? 'world' : 'miss', weaponId: shot.weaponId, mount: null,
+    normal: mob ? null : (hit?.normal ?? null), kind, weaponId: shot.weaponId, mount: null,
   });
 }
 
@@ -2332,9 +2358,18 @@ function spawnLocalShotEffects(weaponId, tick, trigger = localTrigger) {
   let end = [origin[0] + dir[0] * range, origin[1] + dir[1] * range, origin[2] + dir[2] * range], kind = 'none';
   let reach = range;
   try { const hit = worldQuery.raycast({ origin, direction: dir, maxDistance: range }); if (hit?.point) { end = hit.point; kind = 'world'; reach = Math.hypot(end[0] - origin[0], end[1] - origin[1], end[2] - origin[2]); } } catch { /* no provider yet */ }
-  // Drones, in front of whatever the world returned. Online the server owns this; solo it is ours.
+  // In front of whatever the world returned. Online the server owns this; solo it is ours.
+  // Drones and vehicles are both mobs, exactly as they are in the server's one capsule list, and
+  // only the nearest takes the round -- a UGV parked under a drone must not let one bullet hit both.
   const droneHit = nearestSoloDroneHit(origin, dir, reach);
-  if (droneHit) { end = droneHit.point; kind = 'mob'; hitSoloDrone(droneHit.id, weapon.damage); }
+  const vehicleHit = nearestSoloVehicleHit(origin, dir, reach);
+  const mob = !droneHit ? vehicleHit : !vehicleHit ? droneHit
+    : (vehicleHit.distance < droneHit.distance ? vehicleHit : droneHit);
+  if (mob) {
+    end = mob.point; kind = 'mob';
+    if (mob === droneHit) hitSoloDrone(mob.id, weapon.damage);
+    else hitSoloVehicle(mob.id, weapon.damage);
+  }
   spawnShotEffects({ origin, end, dir, normal: null, kind, weaponId, mount: playerBodies.localMount, local: true });
 }
 
@@ -2355,6 +2390,36 @@ function hitSoloDrone(id, damage) {
   const rec = soloDrones.get(id);
   if (!rec || rec.done) return;
   damageBaseGameDrone(rec, damage, { roll: Math.random() });   // spawnShotEffects draws the impact
+}
+
+// The nearest live local vehicle a ray meets, through the same two capsules the server tests, so a
+// shot that connects in solo connects online. The one you are driving is excluded: the gunner sits
+// inside his own hull.
+function nearestSoloVehicleHit(origin, dir, range, exclude) {
+  let best = null;
+  const inside = exclude !== undefined ? exclude
+    : (playerController.controlledVehicle?.id ?? (droneCtl.active ? droneCtl.id : null));
+  for (const v of vehicleHitVolumes(localVehicles, inside)) {
+    const res = rayCapsuleHit(origin, dir, range, v);
+    if (res.hit && (!best || res.distance < best.distance)) best = { id: v.id, point: res.point, distance: res.distance };
+  }
+  return best;
+}
+
+function hitSoloVehicle(id, damage) {
+  const rec = localVehicles.get(id);
+  if (!rec || rec.done) return;
+  damageBaseGameVehicle(rec, damage);   // the wreck, its blasts and its removal are the step's job
+}
+
+// Every local vehicle inside a blast takes it, matching the room's own rule. A vehicle's own crash
+// blast and its secondaries are skipped, or a wreck would keep setting itself off while it burned.
+function blastSoloVehicles(point, radius, damage, weaponId = null) {
+  for (const rec of [...localVehicles.values()]) {
+    if (rec.done || `${rec.kind}_crash` === weaponId) continue;
+    const dmg = blastDamageOnVehicle(rec, point, radius, damage);
+    if (dmg > 0) damageBaseGameVehicle(rec, dmg);
+  }
 }
 
 // bot-viewer-v3's spawnBlastFx: light regardless of effect state, reach scales with the drawn
@@ -2448,7 +2513,7 @@ const soloProjectiles = createProjectileManager({
     if (settings.worldMode === 'terrain' && hit.normal && hit.normal[1] > 0.5) return null;
     return { point: hit.point, kind: 'world', id: null };
   },
-  onDetonate: (point, proj, init) => { blastSoloDrones(point, proj.state.blastRadius, proj.state.damage, proj.weaponId); presentExplosion(point, proj.state.blastRadius, { contact: isSurfaceDetonation(init?.cause), weaponId: proj.weaponId }); },
+  onDetonate: (point, proj, init) => { blastSoloDrones(point, proj.state.blastRadius, proj.state.damage, proj.weaponId); blastSoloVehicles(point, proj.state.blastRadius, proj.state.damage, proj.weaponId); presentExplosion(point, proj.state.blastRadius, { contact: isSurfaceDetonation(init?.cause), weaponId: proj.weaponId }); },
   onTrail: (proj, point) => {
     const l = worldCoordinates.toRenderLocal(point, _soloTrail);
     emitTrailPuff(proj.weaponId, l[0], l[1], l[2]);
@@ -2531,6 +2596,76 @@ function emitTrailPuff(weaponId, x, y, z) {
     rise: 0.3, opacity: rocket ? 0.34 : 0.16,
   });
 }
+// ---- damaged and burning vehicles -------------------------------------------------------------
+// A hurt aircraft trails smoke in the flight sim, and it is the only health cue you get on someone
+// else's machine -- you cannot read a number off a hull at 80 m, but you can see it smoking. The
+// same is true of a vehicle, and it costs nothing on the wire: `hp` is already replicated and the
+// def is a client-side constant, so this is drawn entirely from what every client already knows.
+//
+// A wreck burns on top of that, which is what makes it worth leaving one behind at all.
+const VEHICLE_FX = {
+  smokeGap: 0.07,        // seconds between puffs on a hurt but living vehicle
+  wreckSmokeGap: 0.09,
+  emberGap: 0.05,
+  popGap: 1.4,           // an occasional bang inside the fire, the flight sim's `ev.pop`
+  burnFor: 14,           // the fire dies down well before the hull is cleared
+};
+const _fxAt = [0, 0, 0];
+const fxJitter = (r) => (Math.random() - 0.5) * 2 * r;
+function updateVehicleDamageFx(dt) {
+  for (const rec of droneView.drones.values()) {
+    const def = BASE_GAME_VEHICLE_DEFS[rec.kind];
+    if (!def || !rec.mesh?.visible) continue;
+    const st = rec.latest;
+    if (!st) continue;
+    const m = rec.mesh.position;
+    _fxAt[0] = m.x; _fxAt[1] = m.y; _fxAt[2] = m.z;
+    rec.fx ??= { smoke: 0, ember: 0, pop: 0, burn: 0 };
+    const fx = rec.fx;
+
+    if (st.state === 'wreck') {
+      fx.burn += dt;
+      const fade = Math.max(0, 1 - fx.burn / VEHICLE_FX.burnFor);
+      fx.smoke -= dt;
+      if (fx.smoke <= 0) {
+        fx.smoke = VEHICLE_FX.wreckSmokeGap;
+        // Black, slow and climbing: the column is what you see from across the map.
+        pushEffect('smoke_puff', [_fxAt[0] + fxJitter(0.7), _fxAt[1] + 0.5, _fxAt[2] + fxJitter(0.7)], 3.4, {
+          color: [0.11, 0.1, 0.1], size: def.bodyRadius * 0.7, growth: 1.5, rise: 1.5, opacity: 0.42,
+        });
+      }
+      if (fade > 0) {
+        fx.ember -= dt;
+        if (fx.ember <= 0) {
+          fx.ember = VEHICLE_FX.emberGap;
+          pushEffect('smoke_puff', [_fxAt[0] + fxJitter(0.5), _fxAt[1] + 0.35, _fxAt[2] + fxJitter(0.5)], 0.42, {
+            color: [1, 0.52, 0.16], size: def.bodyRadius * 0.34, growth: 0.5, rise: 1.9, opacity: 0.85 * fade,
+          });
+        }
+        fx.pop -= dt;
+        if (fx.pop <= 0) {
+          fx.pop = VEHICLE_FX.popGap * (0.6 + Math.random());
+          flashLights.flash({ x: _fxAt[0], y: _fxAt[1] + 0.6, z: _fxAt[2] }, { ...BLAST_FLASH, distance: 14 });
+        }
+      }
+      continue;
+    }
+
+    // Alive: smoke once it is badly hurt, harder and darker the closer it is to dead.
+    const hurt = 1 - Math.max(0, Math.min(1, (st.hp ?? def.hp) / def.hp));
+    const at = def.smokeAt ?? 0.55;
+    if (hurt <= at) { fx.smoke = 0; continue; }
+    const bad = (hurt - at) / (1 - at);
+    fx.smoke -= dt;
+    if (fx.smoke > 0) continue;
+    fx.smoke = VEHICLE_FX.smokeGap / (0.35 + bad);
+    const grey = 0.42 - bad * 0.28;
+    pushEffect('smoke_puff', [_fxAt[0] + fxJitter(0.3), _fxAt[1] + 0.6, _fxAt[2] + fxJitter(0.3)], 2.4, {
+      color: [grey, grey, grey], size: def.bodyRadius * 0.4, growth: 1.1, rise: 1.2, opacity: 0.12 + bad * 0.2,
+    });
+  }
+}
+
 // Where the missile the camera is riding ended up this frame, in render-local space, or null when
 // there isn't one. Filled by updateProjectiles so the camera block reads a placed mesh, not a guess.
 const missileCam = { active: false, position: [0, 0, 0], velocity: [0, 0, 0], id: null };
@@ -6024,7 +6159,7 @@ async function animate() {
     if (settings.visorMode !== 'rgb' && (visorSweepTick += dt) >= 1) { visorSweepTick = 0; applyVisor(); }
     passStart = profileFrame ? performance.now() : 0;
     const fxNow = performance.now();
-    updateProjectiles(fxNow, dt); updateShotEffects(fxNow); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt);
+    updateProjectiles(fxNow, dt); updateVehicleDamageFx(dt); updateShotEffects(fxNow); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt);
     devLightRegistry.tick(dt, { now: fxNow / 1000, terrainHeight: devLightGround }); devLightPool.sync(devLightRegistry.renderList(), devLightToLocal);
     const gunLight = weaponLightSource(canControl); weaponLight.update(dt, gunLight); weaponLaser.update(dt, gunLight); updateDevHeldLight(dt, gunLight);
     if (profileFrame) frameProfiler.mark('fx', performance.now() - passStart);

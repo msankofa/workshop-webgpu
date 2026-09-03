@@ -132,9 +132,11 @@ Per tick, server-side and identically in `stepSoloVehicles`:
 2. **The shot.** Mount instances, muzzle, arc refusal, cooldown and burst, through the server's
    existing hitscan path. Room test that a non-owner's trigger does nothing and that a shot out of
    arc is refused rather than fired, mirroring `server/test-base-game-drones-room.mjs`'s AGM case.
-3. **Hit volume.** Arming the UGV without this gives a thing that kills and cannot be killed.
-   `damageBaseGameVehicle` exists and nothing calls it; wreck and crash blast then fire on their own.
-   Note this gap is repo-wide: the AGM spec records that no drone has a hit volume either.
+3. **Hit volume.** DONE 2026-09-03, and it brought the rest of destruction with it: two capsules
+   over the axles rather than the drone's one sphere, a wreck that stays and burns for 45 s instead
+   of the record being deleted inside its own explosion, staged secondaries for the fuel-carrying
+   buggy, and damage smoke. See `docs/subsystems/base-game.md`. Still open: a wreck blocks nothing,
+   because it leaves the hit list entirely rather than becoming a static obstacle.
 4. **The gunner picture.** `drawSensorHud` already draws crosshair, blast ring and range, so this is
    wiring rather than authoring.
 

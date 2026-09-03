@@ -32,7 +32,12 @@ export const BASE_GAME_VEHICLE_DEFS = Object.freeze({
     rollingResistance: 0.022, cdA: 0.34, cornerStiffnessFront: 15000, cornerStiffnessRear: 14000,
     maxSteer: 0.68, steerResponse: 10, steerSpeedFalloff: 0.07, maxSpeed: 7,
     shadowOffset: 3, followRadius: 1.5, stopRadius: 2, maxGrade: 0.7,
-    hp: 40, bodyRadius: 0.75, meshScale: 1, crashBlast: { radius: 3, damage: 20 },
+    // `bodyRadius` is the hull HALF-WIDTH and `hitHeight` its height above the wheel contact; see
+    // the hit volume below for why a ground vehicle is not one sphere. Both are pinned against the
+    // drawn hull by test-vehicle-meshes.mjs, so a mesh change that outgrows them fails a test.
+    hp: 40, bodyRadius: 0.6, hitHeight: 1.6, meshScale: 1, crashBlast: { radius: 3, damage: 20 },
+    // A battery pack is one bang. The buggy's fuel is not: see `secondaries`.
+    smokeAt: 0.55,
     seatOffset: [0, 0, 0], exitOffset: [-1.2, 0, 0],
     // The remote weapon station. `pivot` is the trunnion in the SIM frame (forward +Z); the mesh
     // draws it at -z because craft meshes point their nose down -Z. Its height is the mesh's own
@@ -49,7 +54,15 @@ export const BASE_GAME_VEHICLE_DEFS = Object.freeze({
     tint: 0xb8a074,   // desert tan, the light-strike-vehicle reference
     mass: 900, wheelbase: 2.4, track: 1.6, clearance: 0.4, cgHeight: 0.52, yawInertia: 1550,
     engineForce: 6800, powerLimit: 100000, reverseForce: 3400, brakeForce: 10500, handbrakeForce: 7600,
-    maxSpeed: 24, hp: 120, bodyRadius: 1.5, meshScale: 1, crashBlast: { radius: 5, damage: 40 },
+    maxSpeed: 24, hp: 120, bodyRadius: 1.0, hitHeight: 1.9, meshScale: 1, crashBlast: { radius: 5, damage: 40 },
+    // It carries fuel, so it does not go up all at once: three smaller blasts follow the first,
+    // offset around the wreck. The flight sim's depot is the same idea and the same shape.
+    smokeAt: 0.55,
+    secondaries: Object.freeze([
+      Object.freeze({ at: 0.25, offset: [0.9, 0.6, -0.5], radius: 3.4, damage: 22 }),
+      Object.freeze({ at: 0.55, offset: [-0.8, 0.5, 0.7], radius: 3.0, damage: 18 }),
+      Object.freeze({ at: 0.9, offset: [0.2, 0.8, 0.9], radius: 2.6, damage: 14 }),
+    ]),
     seatOffset: [-0.42, 0.72, 0.05], exitOffset: [-1.2, 0, 0], maxGrade: 0.7,
   }),
 });
@@ -94,7 +107,7 @@ export function createBaseGameVehicle(kind, { ownerId = null, team = 0, from = [
     y: ground + def.clearance, pitch: 0, roll: 0, airV: 0, airborne: false,
     mode: def.autonomy ? 'auto' : 'parked', state: def.autonomy ? 'deploy' : 'parked', stateT: 0,
     target: null, driver: null,
-    input: { ...ZERO_INPUT }, hp: def.hp, done: false, crash: null,
+    input: { ...ZERO_INPUT }, hp: def.hp, done: false, crash: null, wreckT: 0, pending: null,
     stepAcc: 0, age: 0, probeT: idPhase(vehicleId), probeYaw: body.yaw,
     stuckT: 0, stuckFrom: null, lastRecoveryAt: -Infinity, secondStuck: false, probeTarget: 0, steerCmd: 0,
     turretYaw: 0, turretPitch: 0, aim: null, turretOnTarget: false, firing: false, followYaw: null,
@@ -253,13 +266,20 @@ function stepFixed(rec, world) {
 
 // Variable caller time is accumulated into exactly the road model's 120 Hz steps.
 export function stepBaseGameVehicle(rec, dt, world) {
-  if (!rec || !world?.groundY || rec.done) return { crash: rec?.crash ?? null };
+  if (!rec) return { crash: null, expired: false };
+  // A wreck still gets a step: it does not drive, but it ages, and that clock is what its
+  // secondaries and its own removal are timed off.
+  if (rec.done) {
+    rec.wreckT += Math.max(0, Number(dt) || 0);
+    return { crash: rec.crash, expired: vehicleWreckExpired(rec) };
+  }
+  if (!world?.groundY) return { crash: rec.crash, expired: false };
   rec.stepAcc += Math.max(0, Number(dt) || 0);
   let steps = 0;
   while (rec.stepAcc + 1e-10 >= FIXED_STEP && steps < 24) {
     stepFixed(rec, world); rec.stepAcc -= FIXED_STEP; steps++;
   }
-  return { crash: rec.crash };
+  return { crash: rec.crash, expired: false };
 }
 
 export function sendVehicleTo(rec, point) {
@@ -311,12 +331,124 @@ export function vehicleSeatPoint(rec, exit = false) {
 }
 
 export function damageBaseGameVehicle(rec, amount) {
-  if (!rec || rec.done) return { dead: false };
+  if (!rec || rec.done) return { dead: false, driver: null };
   rec.hp -= Math.max(0, Number(amount) || 0);
-  if (rec.hp > 0) return { dead: false };
-  rec.hp = 0; rec.done = true; rec.mode = 'parked'; rec.driver = null; enter(rec, 'wreck');
+  if (rec.hp > 0) return { dead: false, driver: null };
+  // The driver is returned because this clears it: a caller that read `rec.driver` afterwards to
+  // free the seat would find it already gone and leave the client stuck controlling a wreck.
+  const driver = rec.driver;
+  rec.hp = 0; rec.done = true; rec.mode = 'parked'; rec.driver = null; rec.firing = false;
+  enter(rec, 'wreck');
+  rec.wreckT = 0;
   rec.crash = [rec.body.x, rec.y, rec.body.z];
-  return { dead: true };
+  queueWreckBlasts(rec);
+  return { dead: true, driver };
+}
+
+// ─── the wreck ───────────────────────────────────────────────────────────────
+//
+// A dead vehicle used to be deleted on the tick it died, so the hull vanished inside its own
+// explosion. The flight sim does not do that -- a downed craft leaves a burning hulk and a ground
+// site leaves rubble on a rebuild timer -- and there is nothing about being on the ground that
+// stops us. The record simply stays: `stepBaseGameVehicle` already returns early on `done`, so a
+// wreck sits still and keeps replicating with no extra work, and `wreck` was already a legal state
+// on the wire. All that is new is a clock, so wrecks do not pile up forever.
+export const WRECK_SECONDS = 45;
+
+// The blasts a wreck owes, each with the time after death it is due. The first is the crash blast
+// that always fired; the rest are `def.secondaries`, which is what makes a fuel vehicle come apart
+// in stages instead of all at once. A client timer cannot do this -- a blast is authoritative
+// damage -- so it rides the same tick clock as everything else.
+function queueWreckBlasts(rec) {
+  const def = rec.def;
+  rec.pending = [];
+  if (def.crashBlast) {
+    rec.pending.push({ t: 0, point: [...rec.crash], radius: def.crashBlast.radius, damage: def.crashBlast.damage });
+  }
+  const sy = Math.sin(rec.body.yaw), cy = Math.cos(rec.body.yaw);
+  for (const s of def.secondaries ?? []) {
+    const o = s.offset;
+    rec.pending.push({
+      t: s.at, radius: s.radius, damage: s.damage,
+      point: [rec.crash[0] + o[0] * cy + o[2] * sy, rec.crash[1] + o[1], rec.crash[2] - o[0] * sy + o[2] * cy],
+    });
+  }
+}
+
+// Blasts that have come due since the last call, in order. The caller detonates them -- the server
+// into its room and Solo into the page, and neither knows about the other, which is the seam
+// `fireAgm` already established.
+export function dueVehicleBlasts(rec, out = []) {
+  const q = rec?.pending;
+  if (!q?.length) return out;
+  let keep = 0;
+  for (const b of q) { if (rec.wreckT >= b.t) out.push(b); else q[keep++] = b; }
+  q.length = keep;
+  return out;
+}
+
+// Is the wreck finished with? True once it has burned out AND paid every blast it owed.
+export function vehicleWreckExpired(rec) {
+  return !!rec?.done && rec.wreckT >= WRECK_SECONDS && !rec.pending?.length;
+}
+
+// ─── the hit volume ──────────────────────────────────────────────────────────
+//
+// What a bullet, a rocket or a blast can hit. `bodyRadius` sat on both defs and nothing read it,
+// so a vehicle was scenery you could shoot straight through -- exactly the gap the drones had.
+//
+// A drone is one sphere because it is a dot in the sky. A ground vehicle is not: the UGV is 2.1 m
+// long and 1.1 m wide, and a single radius either misses the visible nose or catches air a metre
+// beside the door. So it is TWO upright capsules, standing over the axles -- which is why their
+// spacing is the wheelbase and needs no new number.
+//
+// A wreck is not a target. It is drawn, but nothing hits it, the same simplification the drones
+// make by disappearing entirely.
+export function vehicleHitParts(rec, out = []) {
+  if (!rec || rec.done) return out;
+  const def = rec.def, r = def.bodyRadius;
+  if (!(r > 0)) return out;
+  const height = def.hitHeight ?? r * 2;
+  const ground = rec.y - def.clearance;      // `y` is the hull origin, one clearance above the tyres
+  const y = ground + height * 0.5;
+  const h = Math.max(0, height - r * 2);     // the caps carry the rest, so the extent is `height`
+  const half = def.wheelbase * 0.5;
+  const sy = Math.sin(rec.body.yaw), cy = Math.cos(rec.body.yaw);
+  for (const s of [half, -half]) {
+    out.push({
+      id: rec.id, p: [rec.body.x + s * sy, y, rec.body.z + s * cy], r, h,
+      alive: true, ownerId: rec.ownerId, kind: rec.kind,
+    });
+  }
+  return out;
+}
+
+// Every live vehicle in a map or list, as `resolveHitscan` mob entries. `exclude` skips one id, so
+// a gunner never shoots the vehicle he is sitting in. Two entries share an id per vehicle; the
+// hitscan takes the nearest, and the caller looks the record up by id either way.
+export function vehicleHitVolumes(vehicles, exclude = null) {
+  const out = [];
+  for (const rec of (vehicles?.values ? vehicles.values() : vehicles) || []) {
+    if (!rec || rec.id === exclude) continue;
+    vehicleHitParts(rec, out);
+  }
+  return out;
+}
+
+// Blast damage on a vehicle: the same falloff a player takes, measured off the nearer capsule's
+// surface, so a shell beside the buggy's bonnet has hit the bonnet.
+export function blastDamageOnVehicle(rec, point, radius, damage) {
+  if (!(radius > 0)) return 0;
+  const parts = vehicleHitParts(rec);
+  if (!parts.length) return 0;
+  let best = Infinity;
+  for (const c of parts) {
+    const dy = Math.max(0, Math.abs(point[1] - c.p[1]) - c.h * 0.5);   // along the capsule axis
+    const d = Math.max(0, Math.hypot(point[0] - c.p[0], dy, point[2] - c.p[2]) - c.r);
+    if (d < best) best = d;
+  }
+  if (best >= radius) return 0;
+  return damage * (1 - best / radius);
 }
 
 // ─── the weapon station ──────────────────────────────────────────────────────

@@ -55,6 +55,19 @@ for (const [kind, def] of Object.entries(BASE_GAME_VEHICLE_DEFS)) {
       `${kind} wheel bottom ${(_world.y - wheel.radius).toFixed(4)} sits at -clearance ${-def.clearance}`);
   }
 
+  // The hit volume is claimed against the DRAWN hull, so a mesh that grows past it fails here
+  // rather than quietly leaving a strip of the vehicle you cannot shoot. `bodyRadius` is the
+  // half-width, `hitHeight` the height above the wheel contact.
+  _box.setFromObject(v.g);
+  const halfWidth = Math.max(Math.abs(_box.min.x), Math.abs(_box.max.x));
+  const drawnHeight = _box.max.y + def.clearance;
+  ok(def.bodyRadius >= halfWidth - 1e-6,
+    `${kind} hit radius ${def.bodyRadius} covers the drawn half-width ${halfWidth.toFixed(3)}`);
+  ok(def.hitHeight <= drawnHeight + 1e-6,
+    `${kind} hit height ${def.hitHeight} claims no more than the drawn ${drawnHeight.toFixed(3)} m`);
+  ok(def.hitHeight >= drawnHeight * 0.6,
+    `${kind} hit height ${def.hitHeight} still covers the bulk of the drawn ${drawnHeight.toFixed(3)} m`);
+
   // Nose is -Z for every craft mesh here, so the steered pair is the one at negative z.
   for (const wheel of v.wheels) {
     ok(wheel.front === (wheel.pivot.position.z < 0),

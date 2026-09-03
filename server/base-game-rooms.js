@@ -43,7 +43,7 @@ import { createBaseGameDrone, spawnWorldDrone, stepBaseGameDrone, sendDroneTo, r
 import {
   VEHICLE_UGV, VEHICLE_BUGGY, createBaseGameVehicle, stepBaseGameVehicle, stepVehicleSeat,
   sendVehicleTo, recallVehicle, takeOverVehicle, releaseVehicle, vehicleWireState, vehicleSeatState,
-  fireVehicleTurret,
+  fireVehicleTurret, vehicleHitVolumes, blastDamageOnVehicle, damageBaseGameVehicle, dueVehicleBlasts,
 } from '../base-game-vehicles.js';
 import { createProjectileManager } from '../bot-projectiles.js';
 import { blastDamageAt } from '../entity-types/explosion.js';
@@ -212,7 +212,8 @@ export function createBaseGameRoomService({
           players.push({ id: other.id, rig: other.hitPose, alive: other.hitPose.alive });
         }
         // Never the aircraft that fired it: a missile leaves from inside its launcher's hit sphere.
-        const mobs = droneHitVolumes(room.drones, proj?.guide?.droneId ?? null);
+        const exclude = proj?.guide?.droneId ?? null;
+        const mobs = droneHitVolumes(room.drones, exclude).concat(vehicleHitVolumes(room.vehicles, exclude));
         const hit = resolveHitscan({ shooterId: ownerId, origin: from, dir, range, players, mobs, playerInflate: radius, occluder: worldOccluder(room) });
         if (!hit || hit.kind === 'none') return null;
         if (hit.kind === 'world' && terrainHeight && hit.normal && hit.normal[1] > 0.5) return null;   // ground: the entity bounces or detonates itself
@@ -243,6 +244,26 @@ export function createBaseGameRoomService({
     }
   }
 
+  // Damage onto one vehicle. Unlike a drone it does not fall, so it goes off where it stands, and
+  // it leaves a wreck: `stepVehicles` drains the blasts it owes and removes it when it has burned
+  // out. Killing it frees whoever was driving, which is why the driver comes back from the call.
+  function hitVehicle(room, id, damage, point, weaponId, shooterId) {
+    const rec = room.vehicles.get(id);
+    if (!rec || rec.done) return;
+    const before = rec.hp;
+    const res = damageBaseGameVehicle(rec, damage);
+    room.events.hits.push({ victim: id, shooter: shooterId ?? null, point: [...point], weapon: weaponId ?? null, damage: Math.min(before, damage), tick: room.tick });
+    if (!res.dead) return;
+    const driver = res.driver ? room.clients.get(res.driver) : null;
+    if (driver?.controlling === id) driver.controlling = null;
+  }
+
+  // A mob id is a drone or a vehicle; both ride the same capsule list into `resolveHitscan`.
+  function hitMob(room, id, damage, point, weaponId, shooterId) {
+    if (room.drones.has(id)) hitDrone(room, id, damage, point, weaponId, shooterId);
+    else if (room.vehicles.has(id)) hitVehicle(room, id, damage, point, weaponId, shooterId);
+  }
+
   // environment-viewer's applyExplosionBlast on the room roster: blastDamageAt falloff, friendly
   // fire and self-damage on, every victim gets a hit event so clients flash the same way.
   function detonateProjectile(room, point, proj, init = null) {
@@ -269,6 +290,13 @@ export function createBaseGameRoomService({
       if (rec.done || `${rec.kind}_crash` === weaponId) continue;
       const dmg = blastDamageOnDrone(rec, point, radius, damage);
       if (dmg > 0) hitDrone(room, rec.id, dmg, point, weaponId, ownerId);
+    }
+    // Vehicles the same way, and on the same rule: a vehicle's own crash blast and its secondaries
+    // never damage it, or a wreck would keep setting itself off for as long as it burned.
+    for (const rec of [...room.vehicles.values()]) {
+      if (rec.done || `${rec.kind}_crash` === weaponId) continue;
+      const dmg = blastDamageOnVehicle(rec, point, radius, damage);
+      if (dmg > 0) hitVehicle(room, rec.id, dmg, point, weaponId, ownerId);
     }
   }
 
@@ -1235,11 +1263,12 @@ export function createBaseGameRoomService({
     _vehicleWorld.seaLevel = room.water?.enabled ? room.water.level : -Infinity;
     return _vehicleWorld;
   }
+  const _dueBlasts = [];
   function stepVehicles(room) {
     if (!room.vehicles.size) return;
     const dt = stepMs / 1000;
-    for (const rec of room.vehicles.values()) {
-      if (!rec.driver) stepBaseGameVehicle(rec, dt, vehicleWorld(room, rec));
+    for (const rec of [...room.vehicles.values()]) {
+      const res = rec.driver ? null : stepBaseGameVehicle(rec, dt, vehicleWorld(room, rec));
       // The station only fires while its owner is connected and at the stick: a stale trigger on a
       // vanished operator would leave a UGV shooting at whatever it was last pointed at.
       const gunner = rec.firing ? room.clients.get(rec.ownerId) : null;
@@ -1252,9 +1281,15 @@ export function createBaseGameRoomService({
       const driver = rec.driver ? room.clients.get(rec.driver) : null;
       if (driver && (rec.mode !== 'manual' || rec.driver !== driver.id)) driver.controlling = null;
       if (rec.done) {
-        if (rec.crash && rec.def.crashBlast) detonateBlast(room, rec.crash, { ...rec.def.crashBlast, ownerId: rec.ownerId, weaponId: `${rec.kind}_crash`, contact: true });
+        // Whatever it owes and has come due: the crash blast at once, then any secondaries. It
+        // stays on the roster as a wreck until it has burned out, so the hull does not vanish
+        // inside its own explosion.
+        _dueBlasts.length = 0;
+        for (const b of dueVehicleBlasts(rec, _dueBlasts)) {
+          detonateBlast(room, b.point, { radius: b.radius, damage: b.damage, ownerId: rec.ownerId, weaponId: `${rec.kind}_crash`, contact: true });
+        }
         if (driver?.controlling === rec.id) driver.controlling = null;
-        room.vehicles.delete(rec.id);
+        if (res?.expired) room.vehicles.delete(rec.id);
       }
     }
   }
@@ -1326,11 +1361,11 @@ export function createBaseGameRoomService({
     }
     // Drones ride in as mobs, which is the capsule list resolveHitscan already has. A drone with a
     // body radius and nothing reading it was scenery you could shoot straight through.
-    const mobs = droneHitVolumes(room.drones, excludeMobId);
+    const mobs = droneHitVolumes(room.drones, excludeMobId).concat(vehicleHitVolumes(room.vehicles, excludeMobId));
     const shooterId = shooter?.id ?? null;
     const hit = resolveHitscan({ shooterId, origin, dir, range: weapon.range ?? 300, players, mobs, occluder: worldOccluder(room) });
     room.events.shots.push({ shooter: shooterId, weapon: weaponId, origin, dir, end: hit.point, normal: hit.normal ?? null, kind: hit.kind, tick: room.tick });
-    if (hit.kind === 'mob') { hitDrone(room, hit.id, weapon.damage, hit.point, weaponId, shooterId); return hit; }
+    if (hit.kind === 'mob') { hitMob(room, hit.id, weapon.damage, hit.point, weaponId, shooterId); return hit; }
     if (hit.kind !== 'player') return hit;
     const victim = room.clients.get(hit.id);
     if (victim) applyDamage(room, victim, weapon.damage, {

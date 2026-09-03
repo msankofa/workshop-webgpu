@@ -156,4 +156,58 @@ assert.ok(sanitizeBaseGamePlayerState(JSON.parse(JSON.stringify(snap.players.fin
   assert.ok(clean && Number.isFinite(clean.turretYaw) && Number.isFinite(clean.turretAmmo));
 }
 
+// Destruction, through the room. Before this a vehicle was scenery: `damageBaseGameVehicle` existed
+// and nothing called it, so the UGV could kill and could not be killed.
+{
+  const room = service.rooms.get('VEHICLES');
+  const { createBaseGameVehicle, vehicleHitVolumes, blastDamageOnVehicle, WRECK_SECONDS } =
+    await import('../base-game-vehicles.js');
+
+  const rec = createBaseGameVehicle('buggy', { ownerId, from: [40, 0, 40], yaw: 0, groundY: 0 });
+  room.vehicles.set(rec.id, rec);
+
+  const vols = vehicleHitVolumes(room.vehicles).filter(v => v.id === rec.id);
+  assert.equal(vols.length, 2, 'a live vehicle is two capsules the hitscan can see');
+  assert.equal(vehicleHitVolumes(room.vehicles, rec.id).some(v => v.id === rec.id), false,
+    'the excluded id is left out, so a gunner does not shoot his own hull');
+
+  // A blast beside it hurts it; one across the map does not.
+  assert.ok(blastDamageOnVehicle(rec, [rec.body.x, rec.y + 0.5, rec.body.z], 10, 100) > 90,
+    'a blast on the hull does full damage');
+  assert.equal(blastDamageOnVehicle(rec, [rec.body.x + 500, rec.y, rec.body.z], 10, 100), 0,
+    'and none from far away');
+
+  // Kill it and watch the wreck: it stays on the roster, and the crash blast reaches the snapshot.
+  const def = BASE_GAME_VEHICLE_DEFS.buggy;
+  const before = [rec.body.x, rec.body.z];
+  const { damageBaseGameVehicle } = await import('../base-game-vehicles.js');
+  assert.equal(damageBaseGameVehicle(rec, def.hp * 2).dead, true, 'enough damage kills it');
+  const snap = drive(owner, 0.3);
+  const wreck = snap.vehicles.find(v => v.id === rec.id);
+  assert.ok(wreck, 'the wreck is still replicated rather than deleted on the tick it died');
+  assert.equal(wreck.state, 'wreck', 'and says so on the wire');
+  assert.equal(wreck.hp, 0, 'with no health left');
+
+  const boom = snap.explosions?.find(e => e.weapon === 'buggy_crash');
+  assert.ok(boom, 'the crash blast rides the snapshot');
+  assert.ok(Math.hypot(boom.p[0] - before[0], boom.p[2] - before[1]) < 4,
+    'and goes off where the vehicle stood');
+
+  // The secondaries follow, each its own explosion event, because it carries fuel. The first
+  // snapshot already covers 0.3 s of wreck, so its own count goes in too.
+  let blasts = (snap.explosions ?? []).filter(e => e.weapon === 'buggy_crash').length;
+  for (let i = 0; i < 12; i++) {
+    const s = drive(owner, 0.1);
+    blasts += (s.explosions ?? []).filter(e => e.weapon === 'buggy_crash').length;
+  }
+  assert.equal(blasts, 1 + def.secondaries.length,
+    `the crash blast and all ${def.secondaries.length} secondaries go off (${blasts})`);
+
+  // It is not a target while it burns, and it is gone once it has.
+  assert.equal(vehicleHitVolumes(room.vehicles).some(v => v.id === rec.id), false,
+    'a wreck offers nothing to hit');
+  for (let i = 0; i < Math.ceil(WRECK_SECONDS / 2) + 2; i++) drive(owner, 2);
+  assert.equal(room.vehicles.has(rec.id), false, `the wreck is cleared after ${WRECK_SECONDS} s`);
+}
+
 console.log('Base-game vehicle room tests passed.');

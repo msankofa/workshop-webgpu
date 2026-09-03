@@ -1798,8 +1798,47 @@ per-tick movement from 54.69 to 10.65 mrad over the same drive. And the spin: a 
 `body.yaw` toward the owner's directly rather than through the wheels, so it rotated on the spot
 with its tyres pointing straight ahead. It now keeps the heading it arrived on.
 
-**Still one-sided.** Nothing can shoot a vehicle back: `damageBaseGameVehicle` exists and nothing
-calls it, and there is no `vehicleHitVolumes` beside the drones'. Step 3 of the plan.
+### Destruction (2026-09-03)
+
+Until this, a vehicle could kill and could not be killed: `damageBaseGameVehicle` existed and
+nothing called it, so every round and every blast went straight through the hull. The whole
+consequence half was already built — the record enters the `wreck` state, records a `crash` point
+and fires `crashBlast`, and `wreck` was already legal on the wire — so what was missing was only
+the way in.
+
+**The hit volume.** `vehicleHitParts(rec)` returns the vehicle as `resolveHitscan` mob capsules,
+`vehicleHitVolumes(list, exclude)` flattens a roster, and `blastDamageOnVehicle` is the drone's
+falloff measured off the capsule surface. Two capsules, not the drone's one sphere: a UGV is 2.1 m
+long and 1.1 m wide, and one radius either misses the visible nose or catches air a metre beside
+the door. They stand over the axles, so their spacing is the wheelbase and needs no new number;
+`bodyRadius` is now the hull half-width and `hitHeight` the height above the wheel contact, both
+pinned against the drawn hull by `test-vehicle-meshes.mjs` so a mesh that outgrows them fails a
+test rather than quietly leaving a strip you cannot shoot. A wreck is drawn but is not a target.
+
+Both rosters ride into the same list: `hitMob` routes a mob id to `hitDrone` or `hitVehicle` by
+which map holds it. Solo mirrors it in `nearestSoloVehicleHit`/`blastSoloVehicles`, and the nearest
+of the drone and vehicle hits takes the round, so one bullet cannot hit both.
+
+**The wreck stays.** Both callers used to delete the record on the tick it died, so the hull
+vanished inside its own explosion. It now sits on the roster for `WRECK_SECONDS` (45), replicating
+as it already knew how to — `stepBaseGameVehicle` returns early on `done`, so the only new thing is
+a clock. `vehicleWreckExpired` says when it may go.
+
+**Staged secondaries.** The flight sim's fuel depot goes up in three delayed pops rather than all
+at once, and the buggy carries fuel where the UGV carries a battery. The flight sim uses
+`setTimeout` because a blast there is a local effect; here a blast is authoritative damage, so
+`queueWreckBlasts` puts them on the record with the time each is due and `dueVehicleBlasts(rec)`
+hands the caller whatever has come due — the server detonating into its room and Solo into the
+page, which is the seam `fireAgm` established. A wreck's own blasts never damage it, or it would
+set itself off for as long as it burned.
+
+**Damage smoke** is the flight sim's rule (`hurt > 0.45`, here `def.smokeAt`) and costs nothing on
+the wire: `hp` is already replicated and the def is a client-side constant. It is the only health
+cue you get on someone else's hull at range. `updateVehicleDamageFx` in `base-game.html` draws it,
+and the burning wreck, out of the `smoke_puff` effect the page already had.
+
+**Still missing.** A wreck blocks nothing — bullets and vehicles pass through it, because it is out
+of the hit list entirely rather than being a static obstacle.
 
 Assembling from primitives cost 44 and 85 parts, and `buildCraftMesh` disables frustum culling on
 every one, so each was a guaranteed draw call against a 6-18 house average. `mergeByMaterial` bakes
