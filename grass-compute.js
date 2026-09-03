@@ -17,7 +17,7 @@
 // buffer, blade material, and indirect draw are shared between both modes.
 import * as THREE from 'three';
 import {
-  MeshStandardNodeMaterial, StorageInstancedBufferAttribute, StorageBufferAttribute,
+  MeshStandardNodeMaterial, MeshLambertNodeMaterial, StorageInstancedBufferAttribute, StorageBufferAttribute,
   IndirectStorageBufferAttribute,
 } from 'three/webgpu';
 import {
@@ -205,7 +205,7 @@ export function createComputeGrass(opts) {
   // View cone in XZ, same law as plants-gpu.js: a blade survives inside the camera's horizontal
   // field of view plus a margin, or within nearKeep of it. uCosHalf -1 keeps everything (looking
   // nearly straight down, or a camera without fov). Rotation re-runs the cull like a cell change.
-  const frustumCull = opts.frustumCull ?? true;
+  let frustumCull = opts.frustumCull ?? true;
   const uFwd = uniform(new THREE.Vector2(1, 0));
   const uCosHalf = uniform(-1);
   const uNearKeep = uniform(opts.nearKeep ?? 6);
@@ -673,19 +673,29 @@ export function createComputeGrass(opts) {
   const paletteLit = grassColor.mul(uAmbient.add(uKey)).mul(cloud).mul(look.nodes.rootShade(bladeT));
   const colorNode = mix(paletteLit, groundColor, tintFinal);
 
-  const mat = new MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 1, metalness: 0 });
-  mat.positionNode = posNode;
-  mat.colorNode = colorNode;
+  // Two materials over one graph: standard (PBR, the original) and Lambert, which keeps the light
+  // loop and the shadow term but drops the GGX lobe that at roughness 1 was all cost and no look
+  // (the same choice grass.js offers as `lighting`). setShading swaps the mesh between them.
+  const mats = {
+    standard: new MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 1, metalness: 0 }),
+    lambert: new MeshLambertNodeMaterial({ side: THREE.DoubleSide }),
+  };
   // grass-look's normal is view space (65 % blade face by default); a ground-coloured blade moves
   // it toward the ground's up by the same amount, or it lights differently per yaw than the ground.
   const upView = cameraViewMatrix.transformDirection(vec3(0, 1, 0));
-  mat.normalNode = normalize(mix(curl.normal, upView, tintFinal));
+  const normalNode = normalize(mix(curl.normal, upView, tintFinal));
   // SP4a: optional additive clustered point-light term. Sample at the blade's ground-planted
   // BASE (not the swaying elevated tip) so grass lighting stays locked to the terrain pool
   // directly beneath it — avoids height-parallax desync as lights move.
   const backlight = look.nodes.translucency({ t: bladeT, worldPos: positionWorld, tipColor: uTipColor });
   const emissive = opts.addEmissive ? opts.addEmissive(base, vec3(0, 1, 0)).add(backlight) : backlight;
-  mat.emissiveNode = emissive.mul(float(1).sub(proofOnly));
+  for (const m of Object.values(mats)) {
+    m.positionNode = posNode;
+    m.colorNode = colorNode;
+    m.normalNode = normalNode;
+    m.emissiveNode = emissive.mul(float(1).sub(proofOnly));
+  }
+  const mat = mats[opts.shading] ?? mats.standard;
 
   const mesh = new THREE.Mesh(geom, mat);
   mesh.frustumCulled = false;
@@ -913,6 +923,27 @@ export function createComputeGrass(opts) {
     get groundTint() {
       return { amount: uGroundTint.value, far: uGroundTintFar.value, reach: uGroundTintReach.value, available: !!injectedGround };
     },
+    // 'standard' | 'lambert'; unknown keys are ignored. A material swap, no recull.
+    setShading(key) {
+      const next = mats[key];
+      if (next && mesh.material !== next) mesh.material = next;
+    },
+    get shading() { return mesh.material === mats.lambert ? 'lambert' : 'standard'; },
+    setReceiveShadow(on) {
+      const next = !!on;
+      if (mesh.receiveShadow === next) return;
+      mesh.receiveShadow = next;
+      for (const m of Object.values(mats)) m.needsUpdate = true;
+    },
+    // The XZ view cone, live: a change moves the cone, which re-culls like a turn does.
+    setFrustumCull(on) { frustumCull = !!on; },
+    get frustumCull() { return frustumCull; },
+    setNearKeep(m) {
+      const v = Math.max(0, Number(m) || 0);
+      if (uNearKeep.value === v) return;
+      uNearKeep.value = v;
+      markDirty();
+    },
     // 'palette' | 'ground' | 'proof'; unknown keys are ignored. Live, no recull.
     setColorMode(key) {
       const idx = COLOR_MODES.indexOf(key);
@@ -973,7 +1004,7 @@ export function createComputeGrass(opts) {
         }
       }
       geom.dispose();
-      mat.dispose();
+      for (const m of Object.values(mats)) m.dispose();
     },
   };
 }

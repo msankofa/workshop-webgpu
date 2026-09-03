@@ -295,6 +295,31 @@ section('cover floor and distance tiers reach the cull');
   terrain.dispose();
 }
 
+section('the buffer and the cell cap rebuild; the draw controls do not');
+{
+  const { terrain, flora } = builtRig();
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.load();
+  await flora.update(0.016);
+  const first = flora.grass, capacity = flora.stats.capacity;
+  flora.apply({ grassShading: 'lambert', grassReceiveShadow: false, grassFrustumCull: false, grassNearKeep: 10 });
+  check('shading, shadows and the cone reach the mesh without a rebuild', flora.grass === first && first.shading === 'lambert'
+    && first.mesh.receiveShadow === false && first.frustumCull === false);
+  flora.apply({ grassBufferMB: 32 });
+  check('a smaller buffer tears the grass down', flora.built === false && flora.grass === null && flora.stats.rebuilds === 1);
+  await flora.update(0.05);
+  check('and the next update builds it again, smaller', flora.built === true && flora.stats.capacity < capacity, `${flora.stats.capacity} vs ${capacity}`);
+  check('the rebuilt grass keeps the draw controls', flora.grass.shading === 'lambert' && flora.grass.mesh.receiveShadow === false);
+  flora.apply({ grassKmax: 64 });
+  await flora.update(0.1);
+  check('the cell cap rebuilds too and caps the density', flora.stats.rebuilds === 2 && flora.stats.maxDensity === 16);
+  flora.dispose();
+  terrain.dispose();
+}
+
 section('the ground colour probe and its CPU twin');
 {
   const { terrain, flora } = builtRig();

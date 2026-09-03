@@ -200,8 +200,8 @@ section('the ground colour is mixed after the palette lighting');
   const src = readFileSync('grass-compute.js', 'utf8');
   check('the palette takes the light, cloud and root-shade terms', /const paletteLit = grassColor\.mul\(uAmbient\.add\(uKey\)\)\.mul\(cloud\)\.mul\(look\.nodes\.rootShade\(bladeT\)\)/.test(src));
   check('and the ground colour is mixed in after them', /const colorNode = mix\(paletteLit, groundColor, tintFinal\)/.test(src));
-  check('the normal moves toward the ground\'s up by the same amount', /mat\.normalNode = normalize\(mix\(curl\.normal, upView, tintFinal\)\)/.test(src));
-  check('proof mode drops the emissive term', /mat\.emissiveNode = emissive\.mul\(float\(1\)\.sub\(proofOnly\)\)/.test(src));
+  check('the normal moves toward the ground\'s up by the same amount', /const normalNode = normalize\(mix\(curl\.normal, upView, tintFinal\)\)/.test(src));
+  check('proof mode drops the emissive term', /m\.emissiveNode = emissive\.mul\(float\(1\)\.sub\(proofOnly\)\)/.test(src));
   const { grass } = rig();
   check('the colour mode starts on the palette', grass.colorMode === 'palette');
   grass.setColorMode('ground');
@@ -303,6 +303,31 @@ section('distance tiers give the far grass its own density');
   tight.setTiers([{ radius: 10, density: 1 }, { radius: Infinity, density: 1 }]);
   await recullTight();
   check('a tight budget thins the far tier and leaves the feet alone', tight.stats.tiers[0].density === 12 && tight.stats.tiers[1].density < 12 && tight.stats.dispatchClamped, JSON.stringify(tight.stats.tiers));
+}
+
+section('draw-cost controls: the cone, the shading, the shadows');
+{
+  const { grass, camera, recull } = rig();
+  await recull();
+  const reculls = grass.stats.reculls;
+  await grass.update(2);
+  check('the same cell and cone skip the recull', grass.stats.reculls === reculls);
+  check('the cone is on by default', grass.frustumCull === true);
+  grass.setFrustumCull(false);
+  await grass.update(3);
+  check('turning the cone off re-culls without a cell change', grass.stats.reculls === reculls + 1);
+  grass.setNearKeep(12);
+  check('the near keep is read in the cull, so it marks it dirty', grass.stats.dirty === true);
+  check('the mesh starts on the standard material', grass.shading === 'standard' && grass.mesh.material.isMeshStandardNodeMaterial === true);
+  grass.setShading('lambert');
+  check('setShading swaps to Lambert', grass.shading === 'lambert' && grass.mesh.material.isMeshLambertNodeMaterial === true);
+  grass.setShading('phong');
+  check('and ignores an unknown key', grass.shading === 'lambert');
+  check('both materials share the one graph', grass.mesh.material.positionNode !== null && grass.mesh.material.colorNode !== null);
+  check('blades receive shadows by default', grass.mesh.receiveShadow === true);
+  grass.setReceiveShadow(false);
+  check('and can stop', grass.mesh.receiveShadow === false);
+  void camera;
 }
 
 section('the wind gets a clock, not a frame delta');

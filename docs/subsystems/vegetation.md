@@ -206,6 +206,17 @@ Two constraints worth knowing before changing this:
   returns its fallback unless all four tiles the bilinear footprint touches have landed. Before
   this the sampler's `inside` was a bounds test only, and a blade past the streamed strip read
   whatever the array last held there: stale heights in a vehicle, zeros at spawn.
+- **Draw-cost controls (2026-09-03, grass plan phase 4).** The XZ view cone the other session
+  added is exposed (`grassFrustumCull`, `grassNearKeep`; grass-compute `setFrustumCull`,
+  `setNearKeep`) so the frame rate can be A/B'd with it off. `grassShading` picks between two
+  materials built over the one graph, `standard` (PBR, the original) and `lambert` (the light
+  loop and the shadow term without the GGX lobe, the same choice `grass.js` offers as
+  `lighting`); `setShading` swaps the mesh's material, no rebuild. `grassReceiveShadow` toggles
+  the mesh's shadow receive. `grassBufferMB` and `grassKmax` are now panel sliders (commit on
+  release): both size the storage buffers, so `apply()` tears the grass down (`dispose()` frees
+  the buffers) and the next `update()` builds it again; `stats.rebuilds` counts. `stats.recullRate`
+  is reculls a second, sampled with the readbacks, so a compute spike in the `?gputime=1`
+  `computeTotal` can be laid at the grass's door or not; there is no grass-only GPU timer.
 - **`expectedBlades(radius, density, cullStart)`** is the area integral of the edge fade, not
   `pi*r^2*d`: keep probability falls linearly from 1 at `cullStart` to 0 at the radius, which works
   out to 0.813 of the disc at the default `cullStart = 0.8r`. It is still an UPPER bound, since

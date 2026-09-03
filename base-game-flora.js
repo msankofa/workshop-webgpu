@@ -37,6 +37,12 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   grassMidDensity: 0.5,        // fraction of the density slider in the middle tier
   grassTierFar: 0,             // where the middle tier ends (m); 0 = no far tier
   grassFarDensity: 0.25,       // fraction in the far tier
+  // Draw cost (grass plan phase 4). The view cone and its near keep are grass-compute's own
+  // defaults; shading and shadow receive are the original look.
+  grassFrustumCull: true,      // drop blades outside the camera's horizontal field of view
+  grassNearKeep: 6,            // metres around the camera kept whatever the cone says
+  grassShading: 'standard',    // 'standard' (PBR) or 'lambert' (diffuse only, cheaper per fragment)
+  grassReceiveShadow: true,
   grassKmax: 512,              // blades per 2 m cell; the density ceiling is this / cellSize^2
   // The ceiling the radius slider can reach. Height comes from the contact window close in and the
   // 2 km placement window past it, so the limit is this number and the buffer budget, not a window.
@@ -150,7 +156,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     reculls: 0, skippedReculls: 0, coverage: 0, placementCoverage: 0, lastError: null,
     // Readbacks on a timer: blades the last cull kept, the ground colour under the camera as the
     // cull packs it (global y), and the CPU twin of that colour from the layer averages.
-    drawn: null, probe: null, groundTwin: null, probeError: null, coverHere: null, waitingOnTextures: false };
+    drawn: null, probe: null, groundTwin: null, probeError: null, coverHere: null, waitingOnTextures: false,
+    rebuilds: 0, recullRate: 0 };
 
   // Global = render-local + origin. One vec3 uniform, mutated on rebase; the graph never rebuilds.
   const uRenderOrigin = uniform(new injectedTHREE.Vector3());
@@ -247,6 +254,18 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   let groundWait = 0;
   const GROUND_WAIT_FRAMES = 600;
   let appliedMip = null;
+  // The buffer budget and the per-cell cap size the storage buffers, so changing either is a
+  // teardown and a fresh build on the next update; dispose() frees the buffers.
+  let builtWith = null;
+  function rebuild() {
+    if (!grass) return;
+    scene.remove(grass.mesh);
+    grass.dispose();
+    grass = null;
+    built = false;
+    stats.built = false;
+    stats.rebuilds++;
+  }
   async function build() {
     if (built || !grassModule) return false;
     const contact = terrain.contactField;
@@ -290,8 +309,13 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       nearFadeStart: cfg.grassNearFadeStart,
       nearFadeEnd: cfg.grassNearFadeEnd,
       tiers: tierSpecFor(cfg),
+      frustumCull: cfg.grassFrustumCull,
+      nearKeep: cfg.grassNearKeep,
+      shading: cfg.grassShading,
     });
+    builtWith = { bufferMB: cfg.grassBufferMB, kmax: cfg.grassKmax };
     grass.setLook?.({ faceNormalMix: cfg.grassFaceNormalMix });
+    grass.setReceiveShadow?.(cfg.grassReceiveShadow);
     grass.setWorldOrigin?.(readOrigin()[0], readOrigin()[2]);
     grass.mesh.frustumCulled = false;
     grass.mesh.name = 'base-game-grass';
@@ -307,11 +331,14 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
 
   // GPU readbacks for the panel, once a second: the blade count the last cull kept, and the ground
   // colour under the camera as the cull packs it, beside its CPU twin from the layer averages.
-  let lastSample = -Infinity, sampling = false;
+  let lastSample = -Infinity, sampling = false, lastReculls = 0;
   const SAMPLE_EVERY = 1;
   function sampleReadbacks(seconds) {
     if (sampling || seconds - lastSample < SAMPLE_EVERY) return;
-    if (typeof renderer?.getArrayBufferAsync !== 'function' || !grass?.readBladeCount) return;
+    // Reculls a second: the compute cost is per recull, so this says whether a spike is grass.
+    stats.recullRate = (stats.reculls - lastReculls) / SAMPLE_EVERY;
+    lastReculls = stats.reculls;
+    if (typeof renderer?.getArrayBufferAsync !== 'function' || !grass?.readBladeCount) { lastSample = seconds; return; }
     sampling = true; lastSample = seconds;
     const o = uRenderOrigin.value, ox = o.x, oy = o.y, oz = o.z;
     const x = camera.position.x, z = camera.position.z;
@@ -410,6 +437,11 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     apply(next = {}) {
       Object.assign(cfg, next);
       if (!grass) return;
+      if (builtWith && (builtWith.bufferMB !== cfg.grassBufferMB || builtWith.kmax !== cfg.grassKmax)) { rebuild(); return; }
+      grass.setFrustumCull?.(cfg.grassFrustumCull);
+      grass.setNearKeep?.(cfg.grassNearKeep);
+      grass.setShading?.(cfg.grassShading);
+      grass.setReceiveShadow?.(cfg.grassReceiveShadow);
       const radius = Math.max(1, Math.min(cfg.grassRadius, maxRadius || cfg.grassRadius));
       grass.setRadius(radius);
       grass.setDispatchBudget(cfg.grassDispatchBudgetM * 1e6);
