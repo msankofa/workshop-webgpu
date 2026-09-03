@@ -234,8 +234,35 @@ section('the mip slider forces a recull');
   check('an unknown mode is ignored', flora.grass.colorMode === 'proof');
   flora.apply({ grassFaceNormalMix: 0.2 });
   check('the face-normal mix reaches grass-look', flora.grass.getLook().faceNormalMix === 0.2);
+  // The fade controls, through apply(): 0 means "as before" for every one of them.
+  const r = flora.grass.fade.end;
+  check('the fade ends at the radius with the defaults', r === flora.stats.radius && r > flora.grass.fade.start, `${r} vs ${flora.stats.radius}`);
+  const fadeEnd = Math.round((flora.grass.fade.start + r) / 2);
+  flora.apply({ grassFadeEnd: fadeEnd, grassFadeCurve: 2.5, grassFadeHeight: 1, grassFadeWidth: 0.5,
+    grassTintFadeStart: 5, grassTintFadeEnd: 20, grassNearFadeStart: 0.5, grassNearFadeEnd: 2 });
+  const f = flora.grass.fade;
+  check('every fade control reaches grass-compute', f.end === fadeEnd && f.curve === 2.5 && f.height === 1 && f.width === 0.5
+    && f.tintStart === 5 && f.tintEnd === 20 && f.nearStart === 0.5 && f.nearEnd === 2, JSON.stringify(f));
+  flora.apply({ grassFadeEnd: 0, grassTintFadeStart: 0, grassTintFadeEnd: 0 });
+  check('and 0 hands them back to the radius and the keep band', flora.grass.fade.end >= r - 1e-6 && flora.grass.fade.tintStart === flora.grass.fade.start);
+  const before = flora.stats.handover;
+  flora.apply({ grassHandoverDistance: 30, grassNearFade: 5 });
+  await flora.update(0.05);
+  check('the height handover is exposed', before && flora.stats.handover.distance === 30 && flora.stats.handover.band === 5, JSON.stringify(flora.stats.handover));
   flora.dispose();
   terrain.dispose();
+}
+
+section('expectedBlades integrates the fade curve');
+{
+  const { expectedBlades } = await import('./base-game-flora.js');
+  // The old closed form for the linear ramp, to pin the new one against.
+  const old = (r, d, c) => { const b = r - c; return Math.round((Math.PI * c * c + (2 * Math.PI / b) * (r * (r * r - c * c) / 2 - (r ** 3 - c ** 3) / 3)) * d); };
+  check('the linear ramp to the radius is unchanged', expectedBlades(100, 12, 80) === old(100, 12, 80), `${expectedBlades(100, 12, 80)} vs ${old(100, 12, 80)}`);
+  check('a fade ending short of the radius holds fewer blades', expectedBlades(100, 12, 80, 90) < expectedBlades(100, 12, 80));
+  check('a curve above 1 keeps more of the band', expectedBlades(100, 12, 80, 0, 3) > expectedBlades(100, 12, 80));
+  check('and below 1 fewer', expectedBlades(100, 12, 80, 0, 0.5) < expectedBlades(100, 12, 80));
+  check('a fade end at the start is the inner disc alone', expectedBlades(100, 12, 80, 80) === Math.round(Math.PI * 80 * 80 * 12));
 }
 
 section('the ground colour probe and its CPU twin');

@@ -23,7 +23,7 @@ import {
 import {
   Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast, modInt,
   vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld, max,
-  atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix,
+  atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix, pow,
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
 import { createGrassLook } from './grass-look.js';
@@ -104,6 +104,15 @@ export function createComputeGrass(opts) {
     lake:    opts.terrainParams?.lake ?? 0.45,
     lakeDepth: opts.terrainParams?.lakeDepth ?? 3.2,
     cullStart: opts.cullStart ?? null,
+    // Fade controls. null = follow: fadeEnd the radius, the tint band the keep band.
+    fadeEnd: opts.fadeEnd ?? null,
+    fadeCurve: opts.fadeCurve ?? 1,
+    fadeHeight: opts.fadeHeight ?? 0,
+    fadeWidth: opts.fadeWidth ?? 0,
+    tintFadeStart: opts.tintFadeStart ?? null,
+    tintFadeEnd: opts.tintFadeEnd ?? null,
+    nearFadeStart: opts.nearFadeStart ?? 0,
+    nearFadeEnd: opts.nearFadeEnd ?? 0,
     maxBlades: opts.maxBlades ?? 0,
     bladeHeight: opts.bladeHeight ?? 1.0,
     bladeWidth: opts.bladeWidth ?? 1.0,
@@ -259,6 +268,32 @@ export function createComputeGrass(opts) {
   };
   const uRadius   = uniform(o.radius);
   const uCullStart = uniform(o.cullStart !== null ? o.cullStart : o.radius * 0.8);
+  // The distance fade, in pieces. Keep probability is 1 up to cullStart (the fade start), then
+  // falls as edge^fadeCurve to 0 at fadeEnd; the material tapers height and width over the same
+  // band by fadeHeight/fadeWidth (0 = the coin flip alone, the old look), tints toward the ground
+  // over its own band, and shrinks blades nearer than nearFadeEnd (0 = off). One slider used to
+  // drive all of it.
+  const uFadeEnd = uniform(o.radius);
+  const uFadeCurve = uniform(Math.max(0.01, o.fadeCurve));
+  const uFadeHeight = uniform(Math.max(0, Math.min(1, o.fadeHeight)));
+  const uFadeWidth = uniform(Math.max(0, Math.min(1, o.fadeWidth)));
+  const uTintFadeStart = uniform(0), uTintFadeEnd = uniform(1);
+  const uNearFadeStart = uniform(Math.max(0, o.nearFadeStart));
+  const uNearFadeEnd = uniform(Math.max(0, o.nearFadeEnd));
+  // The bands that follow the radius and the fade start, resolved whenever either moves.
+  function syncFadeBands() {
+    const start = uCullStart.value;
+    const end = o.fadeEnd !== null ? Math.max(start, Math.min(o.fadeEnd, uRadius.value)) : uRadius.value;
+    uFadeEnd.value = end;
+    uTintFadeStart.value = o.tintFadeStart !== null ? Math.max(0, o.tintFadeStart) : start;
+    uTintFadeEnd.value = o.tintFadeEnd !== null ? Math.max(uTintFadeStart.value, o.tintFadeEnd) : end;
+  }
+  syncFadeBands();
+  // Keep-probability edge; grass-cells.fadeEdge is the JS twin.
+  const fadeEdgeFn = (dist) => {
+    const band = uFadeEnd.sub(uCullStart).max(float(0.001));
+    return pow(clamp(dist.sub(uCullStart).div(band), 0, 1), uFadeCurve);
+  };
   const uMaxBlades = uniform(o.maxBlades, 'uint');
   const uHalf     = uniform(half0);
   const uSide     = uniform(2 * half0 + 1);
@@ -386,8 +421,7 @@ export function createComputeGrass(opts) {
       const a = anchorsBuf.element(idx).toVar();
       const wx = a.x, wy = a.y, wz = a.z;
       const dist = length(vec2(wx.sub(uCam.x), wz.sub(uCam.y)));
-      const gradRange = uRadius.sub(uCullStart).max(float(0.001));
-      const edge = clamp(dist.sub(uCullStart).div(gradRange), 0, 1);
+      const edge = fadeEdgeFn(dist);
       const keepRand = anchorRandFn(idx, int(7));
       const biomeDensity = densityFn(wx, wz).mul(uDensityScale);
       const dry = hasHeightTex
@@ -438,8 +472,7 @@ export function createComputeGrass(opts) {
       const wz = gz.toFloat().mul(uCellSize).add(jz.mul(uCellSize));
       const wy = heightFn(wx, wz);
       const dist = length(vec2(wx.sub(uCam.x), wz.sub(uCam.y)));
-      const gradRange = uRadius.sub(uCullStart).max(float(0.001));
-      const edge = clamp(dist.sub(uCullStart).div(gradRange), 0, 1);
+      const edge = fadeEdgeFn(dist);
       const keepRand = slotRandFn(hx, hz, slot, int(7));
       const densityRand = slotRandFn(hx, hz, slot, int(8));
       const biomeDensity = densityFn(wx, wz);
@@ -502,12 +535,21 @@ export function createComputeGrass(opts) {
   const base = rec0.xyz, bladeH = rec0.w, yaw = rec1.x;
   const groundColor = rec1.yzw;                       // written by the cull; zero when not injected
 
+  // The fade bands as the material sees them: the keep edge the cull used, the tint ramp, and the
+  // near band. Height and width taper over the keep band; the near band shrinks toward the ground.
+  const camDist = length(vec2(base.x.sub(uCam.x), base.z.sub(uCam.y)));
+  const edgeM = fadeEdgeFn(camDist);
+  const tintT = camDist.sub(uTintFadeStart).div(uTintFadeEnd.sub(uTintFadeStart).max(float(0.001))).clamp(0, 1);
+  const nearS = camDist.sub(uNearFadeStart).div(uNearFadeEnd.sub(uNearFadeStart).max(float(0.001))).clamp(0, 1);
+  const fadeScaleH = float(1).sub(uFadeHeight.mul(edgeM)).mul(nearS);
+  const fadeScaleW = float(1).sub(uFadeWidth.mul(edgeM)).mul(nearS);
+
   // rotate local blade (width axis = local X, blade in XY plane, z=0) by yaw, scale height
   const cy = cos(yaw), sy = sin(yaw);
-  const bladeX = positionLocal.x.mul(uBladeWidth);
+  const bladeX = positionLocal.x.mul(uBladeWidth).mul(fadeScaleW);
   const rx = bladeX.mul(cy);
   const rz = bladeX.mul(sy);
-  const ly = positionLocal.y.mul(bladeH.div(0.8)).mul(uBladeHeight);
+  const ly = positionLocal.y.mul(bladeH.div(0.8)).mul(uBladeHeight).mul(fadeScaleH);
 
   // Global, not render-local: a rebase must not jump the wind phase or the cloud shadows.
   const baseWorld = vec2(base.x.add(uWorldOrigin.x), base.z.add(uWorldOrigin.y));
@@ -550,14 +592,12 @@ export function createComputeGrass(opts) {
   const uDryColor = uniform(new THREE.Color(0x786028));
   const grassColorBase = mix(uBaseColor, uTipColor, aWind).mul(fiberMul);
   const grassColor = mix(grassColorBase, uDryColor, styleSample.g.mul(0.7));
-  // Read as the ground the blade stands on: strongest at the root, and total at the draw edge, so
-  // the field dissolves into the terrain instead of ending on a visible line.
-  const camDist = length(vec2(base.x.sub(uCam.x), base.z.sub(uCam.y)));
-  const edgeT = camDist.sub(uCullStart).div(uRadius.sub(uCullStart).max(float(0.001))).clamp(0, 1);
+  // Read as the ground the blade stands on: strongest at the root, and total at the far end of
+  // the tint ramp, so the field dissolves into the terrain instead of ending on a visible line.
   // Confined to the base, the way grass-look's rootShade does it; a full-length linear ramp left
   // the blade's midpoint half ground-coloured and washed the whole field out.
   const rootW = float(1).sub(smoothstep(float(0), uGroundTintReach.max(float(0.001)), bladeT));
-  const tintAmt = uGroundTint.mul(mix(rootW, float(1), edgeT.mul(uGroundTintFar))).clamp(0, 1);
+  const tintAmt = uGroundTint.mul(mix(rootW, float(1), tintT.mul(uGroundTintFar))).clamp(0, 1);
   // Colour modes: palette (the tint sliders decide), ground (tint 1 everywhere), proof (the raw
   // ground sample with the ground's normal and nothing else, so a blade should vanish into the
   // terrain and any blade you can still pick out is a sampling error).
@@ -719,6 +759,7 @@ export function createComputeGrass(opts) {
       if (uRadius.value === r && uHalf.value === half && uSide.value === 2 * half + 1) return;
       uRadius.value = r; uHalf.value = half; uSide.value = 2 * half + 1;
       if (o.cullStart === null) uCullStart.value = r * 0.8;
+      syncFadeBands();
       syncPerCell();          // a wider window is more cells, so fewer blades each fit the budget
       markDirty();
     },
@@ -727,7 +768,41 @@ export function createComputeGrass(opts) {
       if (uCullStart.value === v) return;
       o.cullStart = v;
       uCullStart.value = v;
+      syncFadeBands();
       markDirty();
+    },
+    // Where keep probability reaches 0; null follows the radius. Read in the cull, so a recull.
+    setFadeEnd(wu) {
+      const v = wu === null || wu === undefined ? null : Math.max(0, Number(wu) || 0);
+      if (o.fadeEnd === v) return;
+      o.fadeEnd = v;
+      const before = uFadeEnd.value;
+      syncFadeBands();
+      if (uFadeEnd.value !== before) markDirty();
+    },
+    setFadeCurve(p) {
+      const v = Math.max(0.01, Number(p) || 1);
+      if (uFadeCurve.value === v) return;
+      uFadeCurve.value = v;
+      markDirty();
+    },
+    // Material-side tapers and ramps: live, no recull.
+    setFadeHeight(v) { uFadeHeight.value = Math.max(0, Math.min(1, Number(v) || 0)); },
+    setFadeWidth(v) { uFadeWidth.value = Math.max(0, Math.min(1, Number(v) || 0)); },
+    setTintFade(start, end) {
+      o.tintFadeStart = start === null || start === undefined ? null : Math.max(0, Number(start) || 0);
+      o.tintFadeEnd = end === null || end === undefined ? null : Math.max(0, Number(end) || 0);
+      syncFadeBands();
+    },
+    setNearFade(start, end) {
+      uNearFadeStart.value = Math.max(0, Number(start) || 0);
+      uNearFadeEnd.value = Math.max(0, Number(end) || 0);
+    },
+    get fade() {
+      return { start: uCullStart.value, end: uFadeEnd.value, curve: uFadeCurve.value,
+        height: uFadeHeight.value, width: uFadeWidth.value,
+        tintStart: uTintFadeStart.value, tintEnd: uTintFadeEnd.value,
+        nearStart: uNearFadeStart.value, nearEnd: uNearFadeEnd.value };
     },
     // Threads per recull. Raising it buys density at large radius, at whatever your GPU will take.
     setDispatchBudget(n) {

@@ -41,6 +41,18 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   // says so rather than stalling.
   grassDispatchBudgetM: 8,
   grassNearFade: 10,           // metres over which height crosses from the contact to the placement window
+  grassHandoverDistance: 0,    // where that crossing starts; 0 = the contact window's reach less the band
+  // The distance fade in pieces (grass plan phase 2). Every 0 below means "as before": the keep
+  // ramp ends at the radius, blades thin but do not shrink, the tint follows the keep ramp, and
+  // nothing fades near the camera.
+  grassFadeEnd: 0,             // where keep probability reaches 0 (m); 0 = the draw radius
+  grassFadeCurve: 1,           // power on the ramp; above 1 holds density then drops it late
+  grassFadeHeight: 0,          // 0..1, how far blades shrink across the fade band
+  grassFadeWidth: 0,           // 0..1, how far they thin
+  grassTintFadeStart: 0,       // the ground-tint ramp's own band (m); 0 = the keep band
+  grassTintFadeEnd: 0,
+  grassNearFadeStart: 0,       // blades nearer than this vanish, growing to full height by the end (m)
+  grassNearFadeEnd: 0,         // 0 = off
   // Blades take the colour of the ground they stand on: at the root, and everywhere at the draw
   // edge, so the field dissolves into the terrain rather than ending on a line.
   grassGroundTint: 0.8,
@@ -59,15 +71,18 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   grassFaceNormalMix: 0.65,
 });
 
-// Blades a full disc holds once the edge fade has thinned it. Keep probability falls linearly from
-// 1 at cullStart to 0 at the radius, so this is the area integral of that, not pi*r^2. It is still
-// an UPPER bound: biome cover and the water gate thin further, and neither is knowable on the CPU.
-export function expectedBlades(radius, density, cullStart) {
+// Blades a full disc holds once the edge fade has thinned it. Keep probability is 1 up to
+// cullStart and falls as t^curve to 0 at fadeEnd (the radius unless set), so this is the area
+// integral of that, not pi*r^2: with b = fadeEnd - cullStart the band holds
+// 2*pi*b*(c*(1 - 1/(p+1)) + b*(1/2 - 1/(p+2))) per blade of density. It is still an UPPER bound:
+// biome cover and the water gate thin further, and neither is knowable on the CPU.
+export function expectedBlades(radius, density, cullStart, fadeEnd = 0, curve = 1) {
   const r = Math.max(0, radius), d = Math.max(0, density);
   if (!r || !d) return 0;
   const c = Math.max(0, Math.min(cullStart || r * 0.8, r));
-  const band = r - c;
-  const outer = band > 1e-6 ? (2 * Math.PI / band) * (r * (r * r - c * c) / 2 - (r ** 3 - c ** 3) / 3) : 0;
+  const e = Math.max(c, Math.min(fadeEnd || r, r));
+  const b = e - c, p = Math.max(0.01, curve || 1);
+  const outer = b > 1e-6 ? 2 * Math.PI * b * (c * (1 - 1 / (p + 1)) + b * (0.5 - 1 / (p + 2))) : 0;
   return Math.round((Math.PI * c * c + outer) * d);
 }
 
@@ -117,6 +132,11 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
 
   const heightFieldOf = w => (w?.fields.includes('surfaceHeights') ? 'surfaceHeights'
     : w?.fields.includes('heights') ? 'heights' : null);
+  // Where the height handover to the coarse field starts: set, or the contact window's reach
+  // less the band so the crossing finishes before the exact heights run out.
+  const handoverDistance = () => (cfg.grassHandoverDistance > 0
+    ? cfg.grassHandoverDistance
+    : Math.max(4, safeRadiusFor(terrain.contactField) - cfg.grassNearFade));
 
   function buildSamplers() {
     const contact = terrain.contactField;
@@ -130,8 +150,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // Contact posts are 1.25 m and reach ~70 m; the placement window is 8 m posts over 2 km. Blades
     // cross from one to the other over a band, by distance from the camera rather than by window
     // edge, so the handover is a fixed ring and not a moving square.
-    const nearEnd = Math.max(4, safeRadiusFor(contact) - cfg.grassNearFade);
-    uNearEnd = uniform(nearEnd);
+    uNearEnd = uniform(handoverDistance());
     uFadeBand = uniform(Math.max(0.5, cfg.grassNearFade));
     // Render-local (x, z) in, render-local Y out. MISSING sinks the blade far below the ground,
     // where grass-compute's own water/height gates drop it.
@@ -221,6 +240,14 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       groundTintFar: cfg.grassGroundTintFar,
       groundTintReach: cfg.grassGroundTintReach,
       colorMode: cfg.grassColorMode,
+      fadeEnd: cfg.grassFadeEnd || null,
+      fadeCurve: cfg.grassFadeCurve,
+      fadeHeight: cfg.grassFadeHeight,
+      fadeWidth: cfg.grassFadeWidth,
+      tintFadeStart: cfg.grassTintFadeStart || null,
+      tintFadeEnd: cfg.grassTintFadeEnd || null,
+      nearFadeStart: cfg.grassNearFadeStart,
+      nearFadeEnd: cfg.grassNearFadeEnd,
     });
     grass.setLook?.({ faceNormalMix: cfg.grassFaceNormalMix });
     grass.setWorldOrigin?.(readOrigin()[0], readOrigin()[2]);
@@ -328,8 +355,11 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       // truncates at the far edge rather than clamping the sliders, so the panel can say so.
       stats.groundTint = grass.groundTint;
       stats.groundSamplesTextures = terrain.groundColorSamplesTextures ?? false;
-      stats.expected = expectedBlades(stats.radius, stats.density, cfg.grassCullStart || stats.radius * 0.8);
+      stats.expected = expectedBlades(stats.radius, stats.density, cfg.grassCullStart || stats.radius * 0.8,
+        cfg.grassFadeEnd, cfg.grassFadeCurve);
       stats.truncating = stats.expected > stats.capacity;
+      stats.fade = grass.fade ?? null;
+      stats.handover = uNearEnd ? { distance: uNearEnd.value, band: uFadeBand.value } : null;
       return true;
     },
     // Every knob is a setter on the one instance. Radius is clamped to what the window can serve
@@ -350,6 +380,20 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       grass.setGroundTint?.(cfg.grassGroundTint, cfg.grassGroundTintFar, cfg.grassGroundTintReach);
       grass.setColorMode?.(cfg.grassColorMode);
       grass.setLook?.({ faceNormalMix: cfg.grassFaceNormalMix });
+      grass.setFadeEnd?.(cfg.grassFadeEnd || null);
+      grass.setFadeCurve?.(cfg.grassFadeCurve);
+      grass.setFadeHeight?.(cfg.grassFadeHeight);
+      grass.setFadeWidth?.(cfg.grassFadeWidth);
+      grass.setTintFade?.(cfg.grassTintFadeStart || null, cfg.grassTintFadeEnd || null);
+      grass.setNearFade?.(cfg.grassNearFadeStart, cfg.grassNearFadeEnd);
+      // The height handover is read in the cull, like the mip.
+      if (uNearEnd && uFadeBand) {
+        const distance = handoverDistance(), band = Math.max(0.5, cfg.grassNearFade);
+        if (uNearEnd.value !== distance || uFadeBand.value !== band) {
+          uNearEnd.value = distance; uFadeBand.value = band;
+          grass.forceRecull();
+        }
+      }
       // The mip is read in the cull, so without a recull the slider does nothing until the next cell.
       if (cfg.grassGroundTintMip !== appliedMip) {
         appliedMip = cfg.grassGroundTintMip;

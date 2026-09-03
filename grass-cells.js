@@ -63,3 +63,12 @@ export function perCellCount(density, cellSize, Kmax) {
   const per = Math.round(density * cellSize * cellSize);
   return Math.max(0, Math.min(Kmax, per));
 }
+
+// Keep-probability edge of the distance fade, the JS twin of grass-compute's fadeEdgeFn: 0 up
+// to start, ((d - start) / (end - start))^curve to 1 at end. A blade survives when its fixed
+// per-(cell, slot) random exceeds this.
+export function fadeEdge(dist, start, end, curve = 1) {
+  const band = Math.max(1e-3, end - start);
+  const t = Math.min(1, Math.max(0, (dist - start) / band));
+  return t ** Math.max(0.01, curve);
+}

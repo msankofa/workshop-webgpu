@@ -211,6 +211,50 @@ section('the ground colour is mixed after the palette lighting');
   check('a host without a ground node has no probe', grass.hasGroundProbe === false);
 }
 
+section('the fade comes apart into start, end, curve and tapers');
+{
+  const { fadeEdge } = await import('./grass-cells.js');
+  check('the edge is 0 before the fade starts', fadeEdge(10, 40, 50) === 0);
+  check('and 1 past its end', fadeEdge(60, 40, 50) === 1);
+  check('linear in between', Math.abs(fadeEdge(45, 40, 50) - 0.5) < 1e-9);
+  check('a curve above 1 holds density then drops it late', fadeEdge(45, 40, 50, 3) < 0.2 && fadeEdge(49, 40, 50, 3) > 0.7 && fadeEdge(50, 40, 50, 3) === 1);
+  check('a zero-width band is a step, not a division by zero', fadeEdge(50.01, 50, 50) === 1 && fadeEdge(49.99, 50, 50) === 0 && Number.isFinite(fadeEdge(50, 50, 50)));
+  const src = readFileSync('grass-compute.js', 'utf8');
+  check('both cull kernels take the edge from the shared curve', (src.match(/const edge = fadeEdgeFn\(dist\)/g) || []).length === 2);
+  check('the kernel curve is the same law', /pow\(clamp\(dist\.sub\(uCullStart\)\.div\(band\), 0, 1\), uFadeCurve\)/.test(src));
+  check('the material tapers height and width over the keep edge', /fadeScaleH = float\(1\)\.sub\(uFadeHeight\.mul\(edgeM\)\)\.mul\(nearS\)/.test(src)
+    && /fadeScaleW = float\(1\)\.sub\(uFadeWidth\.mul\(edgeM\)\)\.mul\(nearS\)/.test(src));
+  check('and the tint has its own ramp', /tintT\.mul\(uGroundTintFar\)/.test(src));
+
+  const { grass, recull } = rig({ radius: 50, maxRadius: 60 });
+  await recull();
+  check('the fade ends at the radius by default', grass.fade.end === 50 && grass.fade.start === 40);
+  check('and the tint band follows the keep band', grass.fade.tintStart === 40 && grass.fade.tintEnd === 50);
+  grass.setRadius(60);
+  check('a wider radius carries the fade end with it', grass.fade.end === 60 && grass.fade.tintEnd === 60);
+  await recull();
+  grass.setFadeEnd(55);
+  check('a set fade end is honoured', grass.fade.end === 55 && grass.stats.dirty === true, JSON.stringify(grass.fade));
+  await recull();
+  grass.setFadeEnd(500);
+  check('and clamped to the radius', grass.fade.end === 60);
+  grass.setFadeEnd(10);
+  check('and never before the fade start', grass.fade.end === grass.fade.start);
+  grass.setFadeEnd(null);
+  check('null follows the radius again', grass.fade.end === 60);
+  await recull();
+  grass.setFadeHeight(0.5); grass.setFadeWidth(0.25);
+  check('the tapers are material-side and do not recull', grass.fade.height === 0.5 && grass.fade.width === 0.25 && grass.stats.dirty === false);
+  grass.setTintFade(10, 30);
+  check('the tint ramp can be set apart from the keep ramp', grass.fade.tintStart === 10 && grass.fade.tintEnd === 30 && grass.stats.dirty === false);
+  grass.setTintFade(null, null);
+  check('and follows again on null', grass.fade.tintStart === grass.fade.start && grass.fade.tintEnd === grass.fade.end);
+  grass.setNearFade(1, 3);
+  check('the near fade takes a start and an end', grass.fade.nearStart === 1 && grass.fade.nearEnd === 3);
+  grass.setFadeCurve(2);
+  check('a curve change reculls, since the cull reads it', grass.fade.curve === 2 && grass.stats.dirty === true);
+}
+
 section('the wind gets a clock, not a frame delta');
 {
   // uTime drives the sway phase. Passing dt pins it near 0.016 and the blades hold one fixed bend;

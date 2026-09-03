@@ -188,11 +188,21 @@ Two constraints worth knowing before changing this:
   `pi*r^2*d`: keep probability falls linearly from 1 at `cullStart` to 0 at the radius, which works
   out to 0.813 of the disc at the default `cullStart = 0.8r`. It is still an UPPER bound, since
   biome cover and the water gate thin further and neither is knowable on the CPU.
-- **The edge fade is `keepRand > edge`**, with `edge` ramping 0 to 1 across `cullStart -> radius`
-  and `keepRand` fixed per (cell, slot). So density thins linearly over the band and a blade appears
-  exactly once as you approach it rather than flickering. Blades thin but do NOT shrink: the
-  height-collapse fade (`grassFadeKeep`) belongs to the CPU `grass.js` path, not this one.
-  `grassCullStart` is a panel slider (0 = auto, meaning 80% of the radius).
+- **The edge fade is `keepRand > edge`**, with `keepRand` fixed per (cell, slot), so a blade
+  appears exactly once as you approach it rather than flickering. Since 2026-09-03 (grass plan
+  phase 2) the fade comes apart: `edge = ((d - fadeStart) / (fadeEnd - fadeStart))^fadeCurve`
+  (`grass-cells.fadeEdge` is the JS twin, `fadeEdgeFn` the TSL, used by both cull kernels);
+  `fadeStart` is the old `cullStart` (`grassCullStart`, 0 = 80 % of the radius), `fadeEnd` is
+  where keep reaches 0 (`grassFadeEnd`, 0 = the radius), `fadeCurve` above 1 holds density and
+  drops it late. The material tapers height and width over the same band by `grassFadeHeight` /
+  `grassFadeWidth` (0 = the coin flip alone, the old look; 1 = blades reach the ground at the end,
+  the `grass.js` `grassFadeKeep` idea), tints toward the ground over its own ramp
+  (`grassTintFadeStart/End`, 0 = the keep band), and shrinks blades nearer than
+  `grassNearFadeEnd` toward nothing at `grassNearFadeStart` (0 = off; first-person clutter). The
+  contact-to-placement height handover is exposed too: `grassHandoverDistance` (0 = the contact
+  reach less the band) and `grassNearFade`, the band. grass-compute: `setFadeEnd`, `setFadeCurve`
+  (both recull), `setFadeHeight`, `setFadeWidth`, `setTintFade`, `setNearFade` (material-side,
+  live), and a `fade` getter; `expectedBlades` integrates the curve and the end.
 - **The buffer is budgeted, not worst-cased.** `CAP` used to be `maxInstances(maxRadius, ...)` —
   every cell in the window full — which at radius 200 and 64 blades/m^2 is 331 MB for a field the
   cull gradient never fills. `opts.maxInstances` caps it instead (`grassBufferMB`, default 96 MB =
