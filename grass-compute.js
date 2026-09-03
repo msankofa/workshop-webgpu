@@ -23,12 +23,12 @@ import {
 import {
   Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast, modInt,
   vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld, max,
-  atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix, pow,
+  atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix, pow, select, sqrt, ceil,
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
 import { createGrassLook } from './grass-look.js';
 import { FIBER_REMAP_MIN, FIBER_REMAP_MAX, STYLE_KEYS } from './grass-textures.js';
-import { maxInstances, perCellCount } from './grass-cells.js';
+import { maxInstances, perCellCount, tierLayout, thinTiers } from './grass-cells.js';
 import {
   buildChunkIndex, sampleChunk, slotCapacityForRadius,
   chunkKey, parseChunkKey, pointToChunkDist,
@@ -86,6 +86,18 @@ const slotRandFn = Fn(([gx, gz, slot, salt]) => {
 });
 
 export const COLOR_MODES = Object.freeze(['palette', 'ground', 'proof']);
+
+// Up to three distance tiers, sorted by radius, the last always open-ended.
+export function normaliseTiers(spec) {
+  const list = (Array.isArray(spec) ? spec : [])
+    .map(t => ({ radius: Number(t?.radius), density: Math.max(0, Math.min(1, Number(t?.density ?? 1))) }))
+    .filter(t => Number.isFinite(t.radius) && t.radius > 0 || t.radius === Infinity)
+    .sort((a, b) => a.radius - b.radius)
+    .slice(0, 3);
+  if (!list.length) return [{ radius: Infinity, density: 1 }];
+  list[list.length - 1].radius = Infinity;
+  return list;
+}
 
 export function createComputeGrass(opts) {
   const { renderer, camera } = opts;
@@ -303,6 +315,13 @@ export function createComputeGrass(opts) {
   // threads -- a hang rather than a degraded frame. Thinning is visible in stats, never silent.
   let dispatchBudget = Math.max(1, opts.dispatchBudget ?? 8e6);
   let requestedPerCell = perCellCount(o.density, cellSize, Kmax);
+  // Distance tiers (procedural mode): [{ radius, density }], density a fraction of the base and
+  // radius where the tier ends (the last runs to the window edge). One tier at 1 is the old field.
+  let tierSpec = normaliseTiers(opts.tiers);
+  const uTierThreads0 = uniform(0, 'int'), uTierThreads1 = uniform(0, 'int');
+  const uTierCells0 = uniform(0, 'int'), uTierCells1 = uniform(0, 'int');
+  const uTierPerCell0 = uniform(0, 'int'), uTierPerCell1 = uniform(0, 'int'), uTierPerCell2 = uniform(0, 'int');
+  let totalThreads = 0;
   const uCellSize = uniform(cellSize);
   // Cell indices are render-local, so a floating-origin rebase used to shift every hash input and
   // re-roll the whole field in one frame. Placement hashes add this back to get a GLOBAL cell.
@@ -360,18 +379,43 @@ export function createComputeGrass(opts) {
     dirty = true;
     stats.dirty = true;
   };
-  // Blades per cell actually used: what density asks for, thinned to fit the thread budget. Slots
-  // are hashed independently, so thinning drops the high slots and leaves the rest where they are.
+  // Blades per cell actually used, per tier: what density asks for, thinned to fit the thread
+  // budget from the outer tier inward. Slots are hashed independently, so thinning drops the high
+  // slots and leaves the rest where they are. The thread layout (grass-cells.tierLayout) is the
+  // cumulative cell and thread count at each tier's end, which the kernel inverts.
   function syncPerCell() {
-    const side = Math.max(1, uSide.value);
-    const room = Math.max(1, Math.floor(dispatchBudget / (side * side)));
-    const eff = Math.max(0, Math.min(requestedPerCell, room));
+    const half = Math.max(0, uHalf.value);
+    const asked = tierSpec.map(t => ({
+      ring: Number.isFinite(t.radius) ? Math.ceil(t.radius / cellSize) : half,
+      perCell: perCellCount(o.density * t.density, cellSize, Kmax),
+    }));
+    const thinned = thinTiers(half, asked, dispatchBudget);
+    const lay = tierLayout(half, thinned);
+    const last = lay.threads.length - 1;
+    const next = {
+      t0: lay.threads[0], t1: lay.threads[1] ?? lay.threads[0],
+      c0: lay.cells[0], c1: lay.cells[1] ?? lay.cells[0],
+      p0: lay.perCell[0], p1: lay.perCell[1] ?? 0, p2: lay.perCell[2] ?? 0,
+    };
+    const changed = uTierThreads0.value !== next.t0 || uTierThreads1.value !== next.t1
+      || uTierCells0.value !== next.c0 || uTierCells1.value !== next.c1
+      || uTierPerCell0.value !== next.p0 || uTierPerCell1.value !== next.p1 || uTierPerCell2.value !== next.p2;
+    uTierThreads0.value = next.t0; uTierThreads1.value = next.t1;
+    uTierCells0.value = next.c0; uTierCells1.value = next.c1;
+    uTierPerCell0.value = next.p0; uTierPerCell1.value = next.p1; uTierPerCell2.value = next.p2;
+    totalThreads = lay.threads[last];
+    requestedPerCell = asked[0].perCell;
     stats.perCellRequested = requestedPerCell;
-    stats.perCell = eff;
-    stats.dispatchClamped = eff < requestedPerCell;
-    stats.density = eff / (cellSize * cellSize);
+    stats.perCell = thinned[0].perCell;
+    stats.dispatchClamped = thinned.some((t, i) => t.perCell < asked[i].perCell);
+    stats.density = thinned[0].perCell / (cellSize * cellSize);
     stats.requestedDensity = requestedPerCell / (cellSize * cellSize);
-    if (uPerCell.value !== eff) { uPerCell.value = eff; markDirty(); }
+    stats.tiers = thinned.map((t, i) => ({
+      radius: Number.isFinite(tierSpec[i].radius) ? tierSpec[i].radius : uRadius.value,
+      density: t.perCell / (cellSize * cellSize), requested: asked[i].perCell / (cellSize * cellSize),
+    }));
+    if (uPerCell.value !== thinned[0].perCell) uPerCell.value = thinned[0].perCell;
+    if (changed) markDirty();
   }
   syncPerCell();
 
@@ -451,19 +495,36 @@ export function createComputeGrass(opts) {
 
   const proceduralCull = anchorMode ? null : Fn(() => {
     const idx = int(instanceIndex);                  // 0 .. cull.count-1, sized to the live window
-    const perCell = int(uPerCell);
+    // Which tier this thread belongs to, and its cell-major index within it.
+    const inT0 = idx.lessThan(uTierThreads0), inT1 = idx.lessThan(uTierThreads1);
+    const local = select(inT0, idx, select(inT1, idx.sub(uTierThreads0), idx.sub(uTierThreads1)));
+    const perCell = select(inT0, uTierPerCell0, select(inT1, uTierPerCell1, uTierPerCell2));
+    const cellBase = select(inT0, int(0), select(inT1, uTierCells0, uTierCells1));
     const K = perCell.max(int(1));                   // live blades per cell; 0 would divide by zero
-    const slot = modInt(idx, K);
-    const cellI = idx.div(K);                        // integer cell index in the window (int domain)
+    const slot = modInt(local, K);
+    const cellI = cellBase.add(local.div(K));        // ring-ordered cell index (grass-cells.ringCell)
     const side = int(uSide);
     // Clips the workgroup rounding tail, and the whole dispatch when density is zero.
     If(perCell.greaterThan(int(0)).and(cellI.lessThan(side.mul(side))), () => {
-      const lx = modInt(cellI, side);
-      const lz = cellI.sub(lx).div(side);
+      // Ring k holds cells [(2k-1)^2, (2k+1)^2); the float sqrt is corrected by one either way.
+      const k = int(ceil(sqrt(cellI.add(int(1)).toFloat()).sub(1).div(2))).toVar();
+      const lo = k.mul(int(2)).sub(int(1));
+      If(k.greaterThan(int(0)).and(lo.mul(lo).greaterThan(cellI)), () => { k.subAssign(int(1)); });
+      const hi = k.mul(int(2)).add(int(1));
+      If(hi.mul(hi).lessThanEqual(cellI), () => { k.addAssign(int(1)); });
+      const lo2 = k.mul(int(2)).sub(int(1));
+      const j = cellI.sub(select(k.greaterThan(int(0)), lo2.mul(lo2), int(0)));
+      const L = k.mul(int(2)).max(int(1));
+      const sideIdx = j.div(L), t = modInt(j, L);
+      // Around the ring: top edge left to right, right edge down, bottom edge right to left, left edge up.
+      const ox = select(sideIdx.equal(int(0)), k.negate().add(t),
+        select(sideIdx.equal(int(1)), k, select(sideIdx.equal(int(2)), k.sub(t), k.negate())));
+      const oz = select(sideIdx.equal(int(0)), k.negate(),
+        select(sideIdx.equal(int(1)), k.negate().add(t), select(sideIdx.equal(int(2)), k, k.sub(t))));
       const camGx = int(floor(uCam.x.div(uCellSize)));
       const camGz = int(floor(uCam.y.div(uCellSize)));
-      const gx = camGx.add(lx).sub(int(uHalf));
-      const gz = camGz.add(lz).sub(int(uHalf));
+      const gx = camGx.add(ox);
+      const gz = camGz.add(oz);
       // Positions stay render-local; only the hash inputs are global.
       const hx = gx.add(uCellOriginX), hz = gz.add(uCellOriginZ);
       const jx = slotRandFn(hx, hz, slot, int(1));
@@ -717,7 +778,7 @@ export function createComputeGrass(opts) {
       // count drives both the dispatch and the shader's own bounds guard, so shrinking the radius
       // or the density now shrinks the work instead of discarding it inside the kernel.
       if (!anchorMode) {
-        cull.count = Math.max(1, uSide.value * uSide.value * uPerCell.value);
+        cull.count = Math.max(1, totalThreads);
         stats.dispatch = cull.count;
       }
       uCam.value.set(camera.position.x, camera.position.z);
@@ -750,9 +811,17 @@ export function createComputeGrass(opts) {
         markDirty();
         return;
       }
-      requestedPerCell = perCellCount(d, cellSize, Kmax);
+      o.density = Math.max(0, Number(d) || 0);
       syncPerCell();
     },
+    // Distance tiers, [{ radius, density }] with density a fraction of the base; null = one tier.
+    setTiers(spec) {
+      const next = normaliseTiers(spec);
+      if (JSON.stringify(next) === JSON.stringify(tierSpec)) return;
+      tierSpec = next;
+      syncPerCell();
+    },
+    get tiers() { return tierSpec.map(t => ({ ...t })); },
     setRadius(r) {
       r = Math.min(r, maxRadius);                       // never exceed the buffer capacity
       const half = Math.ceil(r / cellSize) | 0;

@@ -265,6 +265,36 @@ section('expectedBlades integrates the fade curve');
   check('a fade end at the start is the inner disc alone', expectedBlades(100, 12, 80, 80) === Math.round(Math.PI * 80 * 80 * 12));
 }
 
+section('cover floor and distance tiers reach the cull');
+{
+  const { tierSpecFor, expectedBlades } = await import('./base-game-flora.js');
+  check('no radii is one tier', JSON.stringify(tierSpecFor({})) === JSON.stringify([{ radius: Infinity, density: 1 }]));
+  check('a mid radius alone makes two tiers', tierSpecFor({ grassTierMid: 30, grassMidDensity: 0.5 }).length === 2);
+  const three = tierSpecFor({ grassTierMid: 30, grassTierFar: 120, grassMidDensity: 0.5, grassFarDensity: 0.25 });
+  check('mid and far make three, the last open-ended', three.length === 3 && three[1].radius === 120 && three[2].radius === Infinity && three[2].density === 0.25);
+  check('a far radius alone is two tiers too', tierSpecFor({ grassTierFar: 120, grassFarDensity: 0.25 }).length === 2);
+  check('a far radius inside the mid one is ignored', tierSpecFor({ grassTierMid: 30, grassTierFar: 20 }).length === 2);
+  check('tiered expected blades are fewer', expectedBlades(100, 12, 80, 0, 1, [{ radius: 30, density: 1 }, { radius: Infinity, density: 0.25 }]) < expectedBlades(100, 12, 80));
+  const numeric = expectedBlades(100, 12, 80, 0, 1, [{ radius: 20, density: 1 }, { radius: Infinity, density: 1 }]);
+  check('the numeric integral matches the closed form', Math.abs(numeric / expectedBlades(100, 12, 80) - 1) < 0.002, `${numeric} vs ${expectedBlades(100, 12, 80)}`);
+  const { terrain, flora } = builtRig();
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.load();
+  await flora.update(0.016);
+  check('the build leaves the cull clean', flora.grass.stats.dirty === false);
+  flora.apply({ grassCoverFloor: 0.3 });
+  check('a cover floor reculls, since the cull reads it', flora.grass.stats.dirty === true);
+  await flora.update(0.05);
+  flora.apply({ grassTierMid: 20, grassMidDensity: 0.5 });
+  await flora.update(0.1);
+  check('tiers reach grass-compute and the stats', flora.stats.tiers?.length === 2 && Math.abs(flora.stats.tiers[1].density - flora.stats.density * 0.5) < 0.5, JSON.stringify(flora.stats.tiers));
+  flora.dispose();
+  terrain.dispose();
+}
+
 section('the ground colour probe and its CPU twin');
 {
   const { terrain, flora } = builtRig();

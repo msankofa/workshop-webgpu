@@ -255,6 +255,56 @@ section('the fade comes apart into start, end, curve and tapers');
   check('a curve change reculls, since the cull reads it', grass.fade.curve === 2 && grass.stats.dirty === true);
 }
 
+section('cells are numbered in rings from the camera outward');
+{
+  const { ringCell, ringOfCell, cellsWithinRing, tierLayout, thinTiers } = await import('./grass-cells.js');
+  const half = 7, side = 2 * half + 1;
+  const seen = new Map();
+  let ordered = true, lastRing = 0;
+  for (let i = 0; i < side * side; i++) {
+    const c = ringCell(i);
+    if (c.ring < lastRing) ordered = false;
+    lastRing = c.ring;
+    if (Math.max(Math.abs(c.x), Math.abs(c.z)) !== c.ring) ordered = false;
+    seen.set(`${c.x},${c.z}`, (seen.get(`${c.x},${c.z}`) ?? 0) + 1);
+  }
+  check('every cell of the window is visited exactly once', seen.size === side * side && [...seen.values()].every(n => n === 1), `${seen.size} cells`);
+  check('in non-decreasing ring order, each at its Chebyshev distance', ordered);
+  check('the ring of a cell is exact at the square boundaries', ringOfCell(0) === 0 && ringOfCell(1) === 1 && ringOfCell(8) === 1 && ringOfCell(9) === 2 && ringOfCell(24) === 2 && ringOfCell(25) === 3);
+  check('cellsWithinRing is the odd square', cellsWithinRing(0) === 1 && cellsWithinRing(3) === 49);
+  const src = readFileSync('grass-compute.js', 'utf8');
+  check('the kernel inverts the same ring numbering', /const lo = k\.mul\(int\(2\)\)\.sub\(int\(1\)\)/.test(src) && /sideIdx = j\.div\(L\)/.test(src));
+
+  const lay = tierLayout(3, [{ ring: 1, perCell: 4 }, { ring: 2, perCell: 2 }, { ring: 99, perCell: 1 }]);
+  check('a tier layout is cumulative cells and threads', lay.cells.join() === '9,25,49' && lay.threads.join() === '36,68,92');
+  const thin = thinTiers(3, [{ ring: 1, perCell: 4 }, { ring: 2, perCell: 2 }, { ring: 99, perCell: 1 }], 70);
+  check('thinning takes from the far tier first', thin[0].perCell === 4 && thin[1].perCell === 2 && thin[2].perCell === 0, JSON.stringify(thin));
+  const thin2 = thinTiers(3, [{ ring: 1, perCell: 4 }, { ring: 2, perCell: 2 }, { ring: 99, perCell: 1 }], 40);
+  check('then the middle, and the inner tier last', thin2[0].perCell === 4 && thin2[1].perCell === 0, JSON.stringify(thin2));
+  check('one tier thins the way it always did', thinTiers(3, [{ ring: 99, perCell: 4 }], 100)[0].perCell === Math.floor(100 / 49));
+}
+
+section('distance tiers give the far grass its own density');
+{
+  const { grass, recull } = rig({ radius: 40, maxRadius: 40, density: 12, dispatchBudget: 1e9 });
+  await recull();
+  const oneTier = grass.stats.dispatch;
+  grass.setTiers([{ radius: 10, density: 1 }, { radius: 20, density: 0.5 }, { radius: Infinity, density: 0.25 }]);
+  check('tiers mark the cull dirty', grass.stats.dirty === true);
+  await recull();
+  check('and the dispatch shrinks with the far tiers thinned', grass.stats.dispatch < oneTier, `${grass.stats.dispatch} vs ${oneTier}`);
+  check('the inner tier keeps the slider density', grass.stats.density === 12 && grass.stats.tiers[0].density === 12);
+  check('the middle and far tiers are fractions of it', grass.stats.tiers[1].density === 6 && grass.stats.tiers[2].density === 3, JSON.stringify(grass.stats.tiers));
+  check('the last tier runs to the radius', grass.stats.tiers[2].radius === 40);
+  grass.setTiers(null);
+  await recull();
+  check('null is one tier again', grass.stats.tiers.length === 1 && grass.stats.dispatch === oneTier);
+  const { grass: tight, recull: recullTight } = rig({ radius: 40, maxRadius: 40, density: 12, dispatchBudget: 20000 });
+  tight.setTiers([{ radius: 10, density: 1 }, { radius: Infinity, density: 1 }]);
+  await recullTight();
+  check('a tight budget thins the far tier and leaves the feet alone', tight.stats.tiers[0].density === 12 && tight.stats.tiers[1].density < 12 && tight.stats.dispatchClamped, JSON.stringify(tight.stats.tiers));
+}
+
 section('the wind gets a clock, not a frame delta');
 {
   // uTime drives the sway phase. Passing dt pins it near 0.016 and the blades hold one fixed bend;

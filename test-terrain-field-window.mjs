@@ -135,6 +135,33 @@ section('field window: fill, sample, readiness');
   scheduler.dispose();
 }
 
+section('field window: the GPU sampler gates on tile residency');
+{
+  // The arrays keep whatever a tile held after it is evicted, and the sampler's bounds test could
+  // not tell a landed tile from a stale one; the mask can.
+  const { readFileSync } = await import('node:fs');
+  const scheduler = createFieldScheduler({ useWorker: false, maxInFlight: 64, syncBudgetMs: 1000 });
+  const fw = createFieldWindow({
+    source, descriptor, scheduler, label: 'residency',
+    fields: ['surfaceHeights'], post: 8, tileIntervals: 4, tilesPerSide: 4, maxRequestsPerUpdate: 2,
+  });
+  const release = fw.acquire();
+  check('the mask starts empty, one byte per tile', fw.residency.length === 16 && fw.residency.every(v => v === 0) && fw.residencyTexture !== null);
+  fw.update(0, 0); scheduler.pump(); fw.update(0, 0);
+  const landed = fw.residency.filter(v => v === 255).length;
+  check('landed tiles are marked as they commit', landed > 0 && landed < 16 && landed === fw.win.presentCount, `${landed} of ${fw.win.presentCount}`);
+  check('and the mask has a revision for the upload', fw.residencyRevision > 0);
+  for (let i = 0; i < 12; i++) { fw.update(0, 0); scheduler.pump(); }
+  check('a full window is fully marked', fw.residency.every(v => v === 255));
+  const rev = fw.residencyRevision;
+  fw.update(2000, 2000);
+  check('a recentre clears the evicted tiles without waiting for a commit', fw.residency.some(v => v === 0) && fw.residencyRevision > rev);
+  const src = readFileSync('terrain-field-window.js', 'utf8');
+  check('the sampler reads the mask for all four corner tiles',
+    /bounded\.and\(landed\(t00\)\)\.and\(landed\(t11\)\)\.and\(landed\(t10\)\)\.and\(landed\(t01\)\)/.test(src));
+  release(); fw.dispose(); scheduler.dispose();
+}
+
 section('registry: one window, many holders');
 {
   const scheduler = createFieldScheduler({ useWorker: false, syncBudgetMs: 1000 });

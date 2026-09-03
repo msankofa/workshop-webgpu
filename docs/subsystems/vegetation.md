@@ -184,6 +184,28 @@ Two constraints worth knowing before changing this:
   by ring so that it becomes true). The Plants panel prints both. Slider ranges are 5-600 m and 0-128 blades/m^2, and
   `test-grass-compute.mjs` asserts the implementation ceilings cover them -- the invariant that was
   broken when the panel offered 0-60 against a 16/m^2 ceiling.
+- **Cells are dispatched in rings from the camera outward (2026-09-03, grass plan phase 3).**
+  The procedural cull numbers its cells in square rings (`grass-cells.ringCell`: ring k holds the
+  8k cells at Chebyshev distance k, cell 0 is the camera cell) and the kernel inverts that
+  numbering from the thread index, so the atomic counter fills near-to-far and the buffer cap
+  truncates at the outer ring instead of along a row of the window. This assumes workgroups run
+  roughly in index order, which is how GPUs schedule but not a guarantee. On top of it sit up to
+  three DISTANCE TIERS (`setTiers([{ radius, density }])`, density a fraction of the base, the
+  last tier open-ended; `grass-cells.tierLayout` is the cumulative cell and thread count at each
+  tier's end, which the kernel reads from `uTierThreads0/1`, `uTierCells0/1` and
+  `uTierPerCell0/1/2`). The thread budget thins the OUTER tier first (`grass-cells.thinTiers`), so
+  raising the radius thins the far grass and not the grass at your feet; one tier at 1 thins
+  exactly as before. Base Game: `grassTierMid` / `grassMidDensity` / `grassTierFar` /
+  `grassFarDensity` (`tierSpecFor(cfg)`), `stats.tiers` in the runtime line, and
+  `expectedBlades` integrates the tiers numerically when there is more than one.
+- **`grassCoverFloor`** keeps a fraction of the density where cover is 0, beside the gate
+  (`max(1 - gate + cover * gate, floor)`); read in the cull, so it reculls.
+- **The field windows gate on tile residency (2026-09-03).** `terrain-field-window.js` keeps a
+  one-byte-per-tile mask (`residency`, `residencyTexture`, toroidal by tile index like the window)
+  synced when tiles commit AND on recentre, since eviction never bumped the version; `gpuSampler`
+  returns its fallback unless all four tiles the bilinear footprint touches have landed. Before
+  this the sampler's `inside` was a bounds test only, and a blade past the streamed strip read
+  whatever the array last held there: stale heights in a vehicle, zeros at spawn.
 - **`expectedBlades(radius, density, cullStart)`** is the area integral of the edge fade, not
   `pi*r^2*d`: keep probability falls linearly from 1 at `cullStart` to 0 at the radius, which works
   out to 0.813 of the disc at the default `cullStart = 0.8r`. It is still an UPPER bound, since

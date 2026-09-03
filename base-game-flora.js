@@ -29,6 +29,14 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   grassStyle: 'streaks',
   grassVerticalOffset: -0.05,  // bias low, never high
   grassCoverGate: 1,           // how hard scalar cover thins the field (0 = ignore cover)
+  grassCoverFloor: 0,          // the density fraction kept where cover is 0 (0 = bare stays bare)
+  // Distance tiers (grass plan phase 3): the density slider is the inner tier; the middle and far
+  // tiers are fractions of it past their radii. 0 radii mean one tier, the old field. Raising
+  // the draw radius then thins the far tier, not the grass at your feet.
+  grassTierMid: 0,             // where the inner tier ends (m); 0 = no tiers
+  grassMidDensity: 0.5,        // fraction of the density slider in the middle tier
+  grassTierFar: 0,             // where the middle tier ends (m); 0 = no far tier
+  grassFarDensity: 0.25,       // fraction in the far tier
   grassKmax: 512,              // blades per 2 m cell; the density ceiling is this / cellSize^2
   // The ceiling the radius slider can reach. Height comes from the contact window close in and the
   // 2 km placement window past it, so the limit is this number and the buffer budget, not a window.
@@ -76,14 +84,45 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
 // integral of that, not pi*r^2: with b = fadeEnd - cullStart the band holds
 // 2*pi*b*(c*(1 - 1/(p+1)) + b*(1/2 - 1/(p+2))) per blade of density. It is still an UPPER bound:
 // biome cover and the water gate thin further, and neither is knowable on the CPU.
-export function expectedBlades(radius, density, cullStart, fadeEnd = 0, curve = 1) {
+// With distance tiers ([{ radius, density }], density a fraction) the closed form no longer
+// applies, so the disc is integrated numerically in 1024 rings; the closed form is what the test
+// pins the linear, single-tier case against.
+export function expectedBlades(radius, density, cullStart, fadeEnd = 0, curve = 1, tiers = null) {
   const r = Math.max(0, radius), d = Math.max(0, density);
   if (!r || !d) return 0;
   const c = Math.max(0, Math.min(cullStart || r * 0.8, r));
   const e = Math.max(c, Math.min(fadeEnd || r, r));
   const b = e - c, p = Math.max(0.01, curve || 1);
-  const outer = b > 1e-6 ? 2 * Math.PI * b * (c * (1 - 1 / (p + 1)) + b * (0.5 - 1 / (p + 2))) : 0;
-  return Math.round((Math.PI * c * c + outer) * d);
+  if (!tiers?.length || (tiers.length === 1 && tiers[0].density === 1)) {
+    const outer = b > 1e-6 ? 2 * Math.PI * b * (c * (1 - 1 / (p + 1)) + b * (0.5 - 1 / (p + 2))) : 0;
+    return Math.round((Math.PI * c * c + outer) * d);
+  }
+  const N = 1024, dr = e / N;
+  let sum = 0;
+  for (let i = 0; i < N; i++) {
+    const x = (i + 0.5) * dr;
+    const keep = x <= c ? 1 : b > 1e-6 ? 1 - ((x - c) / b) ** p : 0;
+    let frac = tiers[tiers.length - 1].density;
+    for (const t of tiers) if (x <= t.radius) { frac = t.density; break; }
+    sum += 2 * Math.PI * x * keep * frac * dr;
+  }
+  return Math.round(sum * d);
+}
+
+// The grass-compute tier spec for a settings block: [{ radius, density }], the last open-ended.
+export function tierSpecFor(cfg) {
+  const mid = Math.max(0, cfg.grassTierMid || 0), far = Math.max(0, cfg.grassTierFar || 0);
+  const tiers = [];
+  if (mid > 0 && far > mid) {
+    tiers.push({ radius: mid, density: 1 }, { radius: far, density: cfg.grassMidDensity }, { radius: Infinity, density: cfg.grassFarDensity });
+  } else if (mid > 0) {
+    tiers.push({ radius: mid, density: 1 }, { radius: Infinity, density: cfg.grassMidDensity });
+  } else if (far > 0) {
+    tiers.push({ radius: far, density: 1 }, { radius: Infinity, density: cfg.grassFarDensity });
+  } else {
+    tiers.push({ radius: Infinity, density: 1 });
+  }
+  return tiers;
 }
 
 // How far from the player a square window can be trusted. Half the extent, less the half tile the
@@ -102,7 +141,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   if (!terrain?.acquireFields) throw new TypeError('flora needs the Base Game terrain facade');
   const cfg = { ...BASE_GAME_FLORA_DEFAULTS, ...settings };
 
-  let grass = null, grassModule = null, onMeshCb = null, uCoverGate = null;
+  let grass = null, grassModule = null, onMeshCb = null, uCoverGate = null, uCoverFloor = null;
   let releaseFields = null, releaseContact = null;
   let enabled = false, active = false, built = false;
   let maxRadius = 0;
@@ -169,10 +208,12 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // placement window is optional) means an unthinned field, which is the previous look.
     const coverSampler = field?.fields.includes('coverGrass') ? field.gpuSampler('coverGrass') : null;
     uCoverGate = uniform(cfg.grassCoverGate);
+    uCoverFloor = uniform(cfg.grassCoverFloor);
     const densityNode = coverSampler
       ? Fn(([x, z]) => {
           const cover = coverSampler(vec2(x, z).add(originXZ), float(0)).div(255).clamp(0, 1);
-          return float(1).sub(uCoverGate).add(cover.mul(uCoverGate)).clamp(0, 1);
+          // The floor keeps a fraction of the density where nothing grows, beside the gate.
+          return float(1).sub(uCoverGate).add(cover.mul(uCoverGate)).max(uCoverFloor).clamp(0, 1);
         })
       : null;
     // The ground colour a blade should read as. Terrain owns it, because what the ground actually
@@ -248,6 +289,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       tintFadeEnd: cfg.grassTintFadeEnd || null,
       nearFadeStart: cfg.grassNearFadeStart,
       nearFadeEnd: cfg.grassNearFadeEnd,
+      tiers: tierSpecFor(cfg),
     });
     grass.setLook?.({ faceNormalMix: cfg.grassFaceNormalMix });
     grass.setWorldOrigin?.(readOrigin()[0], readOrigin()[2]);
@@ -355,8 +397,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       // truncates at the far edge rather than clamping the sliders, so the panel can say so.
       stats.groundTint = grass.groundTint;
       stats.groundSamplesTextures = terrain.groundColorSamplesTextures ?? false;
+      stats.tiers = grass.stats.tiers ?? null;
       stats.expected = expectedBlades(stats.radius, stats.density, cfg.grassCullStart || stats.radius * 0.8,
-        cfg.grassFadeEnd, cfg.grassFadeCurve);
+        cfg.grassFadeEnd, cfg.grassFadeCurve, stats.tiers?.map(t => ({ radius: t.radius, density: stats.density > 0 ? t.density / stats.density : 0 })));
       stats.truncating = stats.expected > stats.capacity;
       stats.fade = grass.fade ?? null;
       stats.handover = uNearEnd ? { distance: uNearEnd.value, band: uFadeBand.value } : null;
@@ -404,6 +447,11 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
         uCoverGate.value = cfg.grassCoverGate;
         grass.forceRecull();
       }
+      if (uCoverFloor && uCoverFloor.value !== cfg.grassCoverFloor) {
+        uCoverFloor.value = cfg.grassCoverFloor;
+        grass.forceRecull();
+      }
+      grass.setTiers?.(tierSpecFor(cfg));
     },
     setLook(partial) { grass?.setLook?.(partial); },
     setSunDir(v) { grass?.setSunDir?.(v); },

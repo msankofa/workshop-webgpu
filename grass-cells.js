@@ -72,3 +72,57 @@ export function fadeEdge(dist, start, end, curve = 1) {
   const t = Math.min(1, Math.max(0, (dist - start) / band));
   return t ** Math.max(0.01, curve);
 }
+
+// Square-ring cell numbering (grass plan phase 3). Ring k >= 1 holds the 8k cells at Chebyshev
+// distance k from the camera cell, numbered [(2k-1)^2, (2k+1)^2); cell 0 is the camera cell.
+// Near-to-far, so a dispatch in index order fills the survivor buffer from the camera outward and
+// the buffer cap truncates at the outer ring instead of along a row. The TSL in grass-compute.js's
+// procedural cull is the same arithmetic; ringOfCell corrects the float sqrt by one either way.
+export function ringOfCell(cellI) {
+  let k = Math.ceil((Math.sqrt(cellI + 1) - 1) / 2);
+  if (k > 0 && (2 * k - 1) ** 2 > cellI) k--;
+  if ((2 * k + 1) ** 2 <= cellI) k++;
+  return k;
+}
+export function ringCell(cellI) {
+  const k = ringOfCell(cellI);
+  if (k === 0) return { x: 0, z: 0, ring: 0 };
+  const j = cellI - (2 * k - 1) ** 2, L = 2 * k;
+  const side = Math.floor(j / L), t = j % L;
+  if (side === 0) return { x: -k + t, z: -k, ring: k };
+  if (side === 1) return { x: k, z: -k + t, ring: k };
+  if (side === 2) return { x: k - t, z: k, ring: k };
+  return { x: -k, z: k - t, ring: k };
+}
+export const cellsWithinRing = (k) => (2 * k + 1) ** 2;
+
+// Tiered thread layout. tiers[t] = { ring, perCell }, ring being the last ring the tier covers
+// (the final tier always runs to half). Threads are laid out tier by tier, cell-major within a
+// tier; the result is the cumulative cell and thread count at each tier's end.
+export function tierLayout(half, tiers) {
+  const out = { cells: [], threads: [], perCell: [] };
+  let threads = 0, prevCells = 0;
+  for (let i = 0; i < tiers.length; i++) {
+    const ring = i === tiers.length - 1 ? half : Math.min(half, Math.max(0, tiers[i].ring | 0));
+    const cells = Math.max(prevCells, cellsWithinRing(ring));
+    const perCell = Math.max(0, tiers[i].perCell | 0);
+    threads += (cells - prevCells) * perCell;
+    out.cells.push(cells); out.threads.push(threads); out.perCell.push(perCell);
+    prevCells = cells;
+  }
+  return out;
+}
+// Thin the tiers to a thread budget, outer tiers first, so the grass at your feet is the last
+// to go. Returns a new tier list.
+export function thinTiers(half, tiers, budget) {
+  const t = tiers.map(x => ({ ...x }));
+  for (let i = t.length - 1; i >= 0; i--) {
+    const lay = tierLayout(half, t);
+    if (lay.threads[lay.threads.length - 1] <= budget) break;
+    const innerThreads = i > 0 ? lay.threads[i - 1] : 0;
+    const tierCells = lay.cells[i] - (i > 0 ? lay.cells[i - 1] : 0);
+    const room = Math.max(0, Math.floor((budget - innerThreads) / Math.max(1, tierCells)));
+    t[i].perCell = Math.min(t[i].perCell, room);
+  }
+  return t;
+}

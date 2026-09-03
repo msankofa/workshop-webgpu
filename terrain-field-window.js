@@ -65,6 +65,27 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     tex.needsUpdate = true;
     textures.set(name, tex);
   }
+  // Which tiles have landed, one byte per tile, indexed like the window (toroidal by tile). The
+  // arrays keep whatever a tile held after it is evicted, so without this the GPU sampler read
+  // stale data for a tile that had not arrived; with it the sampler returns its fallback there.
+  const tiles = win.tilesPerSide, tileN = win.tileIntervals;
+  const residency = new Uint8Array(tiles * tiles);
+  const residencyTex = gpu ? new THREE.DataTexture(residency, tiles, tiles, THREE.RedFormat, THREE.UnsignedByteType) : null;
+  if (residencyTex) { residencyTex.magFilter = THREE.NearestFilter; residencyTex.minFilter = THREE.NearestFilter; residencyTex.needsUpdate = true; }
+  uniforms.tileN = uniform(tileN, 'int');
+  uniforms.tiles = uniform(tiles, 'int');
+  let residencyRevision = 0;
+  function syncResidency() {
+    const tx0 = win.originPX / tileN, tz0 = win.originPZ / tileN;
+    let changed = false;
+    for (let tz = tz0; tz < tz0 + tiles; tz++) for (let tx = tx0; tx < tx0 + tiles; tx++) {
+      const i = wrapIndex(tz, tiles) * tiles + wrapIndex(tx, tiles);
+      const v = win.hasTile(tx, tz) ? 255 : 0;
+      if (residency[i] !== v) { residency[i] = v; changed = true; }
+    }
+    if (changed) { residencyRevision++; if (residencyTex) residencyTex.needsUpdate = true; }
+    return changed;
+  }
 
   // The scan walks tilesPerSide^2 keys and builds a string per tile, so it is skipped whenever the
   // answer cannot have changed: a full window, or no commit and no move since the last one.
@@ -99,7 +120,10 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
 
   function recentre(x, z) {
     focus = [x, z];
-    if (win.recentre(x, z)) scheduler.cancelOwner(owner);   // the old window's pending tiles are moot
+    if (win.recentre(x, z)) {
+      scheduler.cancelOwner(owner);   // the old window's pending tiles are moot
+      syncResidency();                // eviction does not bump the version, so it is synced here
+    }
     uniforms.origin.value.set(win.originPX, win.originPZ);
   }
 
@@ -107,10 +131,13 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     if (disposed || refs <= 0) return false;
     recentre(x, z);
     requestTiles();
-    if (gpu && win.version !== uploadedVersion) {
+    if (win.version !== uploadedVersion) {
       uploadedVersion = win.version;
-      for (const tex of textures.values()) tex.needsUpdate = true;
-      stats.uploads++;
+      syncResidency();
+      if (gpu) {
+        for (const tex of textures.values()) tex.needsUpdate = true;
+        stats.uploads++;
+      }
     }
     return win.coverage >= 1;
   }
@@ -125,10 +152,17 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     return Fn(([xz, fallback = float(-1000)]) => {
       const p = xz.div(uniforms.post).sub(uniforms.origin);
       const c = floor(p), f = fract(p), r = uniforms.res;
-      const inside = c.x.greaterThanEqual(0).and(c.y.greaterThanEqual(0)).and(c.x.lessThan(r.sub(1))).and(c.y.lessThan(r.sub(1)));
+      const bounded = c.x.greaterThanEqual(0).and(c.y.greaterThanEqual(0)).and(c.x.lessThan(r.sub(1))).and(c.y.lessThan(r.sub(1)));
       const wrap = v => ivec2(v.sub(floor(v.div(r)).mul(r)));
       const gi = c.add(uniforms.origin);
       const i0 = wrap(gi), i1 = wrap(gi.add(1));
+      // Inside means in bounds AND every tile the four posts touch has landed.
+      const tilesN = uniforms.tiles, tileN = uniforms.tileN;
+      const tileOf = (g) => { const t = ivec2(floor(g.div(tileN.toFloat()))); return t.sub(ivec2(floor(t.toFloat().div(tilesN.toFloat()))).mul(tilesN)); };
+      const landed = (t) => textureLoad(residencyTex, t).x.greaterThan(0.5);
+      const t00 = tileOf(gi), t11 = tileOf(gi.add(1));
+      const t10 = ivec2(t11.x, t00.y), t01 = ivec2(t00.x, t11.y);
+      const inside = bounded.and(landed(t00)).and(landed(t11)).and(landed(t10)).and(landed(t01));
       const load = (a, b) => {
         const raw = textureLoad(tex, ivec2(a, b)).x;
         return isU8 ? raw.mul(U8_SCALE) : raw;
@@ -196,6 +230,10 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     get lod() { return win.lod; },
     get fields() { return win.fields; },
     get coverage() { return win.coverage; },
+    // The tile-residency mask the GPU sampler gates on: one byte per tile, toroidal by tile index.
+    get residency() { return residency; },
+    get residencyRevision() { return residencyRevision; },
+    get residencyTexture() { return residencyTex; },
     get version() { return win.version; },
     get refs() { return refs; },
     texture: name => textures.get(name) ?? null,
@@ -225,6 +263,7 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
       scheduler.cancelOwner(owner);
       for (const tex of textures.values()) tex.dispose();
       textures.clear();
+      residencyTex?.dispose();
     },
   };
 }

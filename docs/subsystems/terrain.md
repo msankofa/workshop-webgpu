@@ -135,7 +135,11 @@ one-worker-per-feature arrangement water and rain were heading toward.
   `sampleAt(name, x, z)` and `ready(x, z)` on the CPU; `gpuSampler(name)` returns a TSL `Fn(xz,
   fallback)` doing the toroidal `textureLoad` (never normalized uv — the texel under a uv moves as
   the window recentres, so the seam smears), and `gpuSamplerRenderLocal(name, renderOriginXZ)` is
-  the adapter for render-local callers like grass. Id fields ride an **`r8unorm`** texture decoded
+  the adapter for render-local callers like grass. Since 2026-09-03 the sampler also gates on a
+  tile-residency mask (`residency` / `residencyTexture`, one byte per tile, toroidal by tile index,
+  synced on commit and on recentre): a read returns its fallback unless all four tiles under the
+  bilinear footprint have landed, because the arrays keep whatever an evicted tile held and the
+  bounds test alone read that stale data back. Id fields ride an **`r8unorm`** texture decoded
   by ×255: r184 maps `RedIntegerFormat` for `IntType`/`UnsignedIntType` only, so a `Uint8Array`
   integer texture is rejected outright. `acquire()` reference-counts; `createFieldWindowRegistry`
   keys windows so water, weather and flora asking for the same resolution share one.
