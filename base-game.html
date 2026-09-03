@@ -280,6 +280,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassNearKeep: BASE_GAME_FLORA_DEFAULTS.grassNearKeep,
   grassShading: BASE_GAME_FLORA_DEFAULTS.grassShading,
   grassReceiveShadow: BASE_GAME_FLORA_DEFAULTS.grassReceiveShadow,
+  grassOcclusion: true,           // blades behind the spawn building's concrete are not generated
   grassBufferMB: BASE_GAME_FLORA_DEFAULTS.grassBufferMB,
   grassKmax: BASE_GAME_FLORA_DEFAULTS.grassKmax,
   grassDispatchBudgetM: BASE_GAME_FLORA_DEFAULTS.grassDispatchBudgetM,
@@ -3238,7 +3239,7 @@ const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRad
   'grassFadeEnd', 'grassFadeCurve', 'grassFadeHeight', 'grassFadeWidth', 'grassTintFadeStart', 'grassTintFadeEnd',
   'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade', 'grassHeightSource',
   'grassCoverFloor', 'grassTierMid', 'grassMidDensity', 'grassTierFar', 'grassFarDensity',
-  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax'];
+  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion'];
 const appliedFlora = {};
 let floraLoading = false;
 function applyFloraSettings() {
@@ -3288,6 +3289,7 @@ function applyFloraSettings() {
     grassBufferMB: settings.grassBufferMB,
     grassKmax: settings.grassKmax,
   });
+  flora.setOcclusionEnabled?.(settings.grassOcclusion);
 }
 
 const TRAIL_APPLY_KEYS = ['trailsEnabled', 'worldMode', 'trailSeed', 'trailSpacing', 'trailWidth', 'trailMaxGrade', 'trailShow'];
@@ -4619,6 +4621,7 @@ addRange(plantsSec, 'grassDispatchBudgetM', 'Recull thread budget (millions)', 1
 addCommitRange(plantsSec, 'grassBufferMB', 'Instance buffer (MB; rebuilds the grass)', 8, 512, 8, value => `${value.toFixed(0)} MB`);
 addCommitRange(plantsSec, 'grassKmax', 'Blades per 2 m cell cap (rebuilds the grass)', 16, 2048, 16, value => value.toFixed(0));
 addToggle(plantsSec, 'grassFrustumCull', 'Cull blades outside the view cone');
+addToggle(plantsSec, 'grassOcclusion', 'Cull blades hidden behind the spawn building');
 addRange(plantsSec, 'grassNearKeep', 'Keep everything within (m)', 0, 30, 0.5, value => `${value.toFixed(1)} m`);
 addSelect(plantsSec, 'grassShading', 'Blade shading', ['standard', 'lambert'], ['Standard (PBR)', 'Lambert (diffuse only, cheaper)']);
 addToggle(plantsSec, 'grassReceiveShadow', 'Blades receive shadows');
@@ -4682,8 +4685,9 @@ function refreshGrassRuntimeLine() {
   const cover = g.coverHere != null ? `, cover here ${g.coverHere.toFixed(2)} so ${(g.density * g.coverHere).toFixed(1)}/m^2 of it` : '';
   const ground = !g.groundTint?.available ? 'no ground colour' : g.groundSamplesTextures ? 'ground colour from the textures' : 'ground colour from the tint';
   const stands = g.heightSource === 'drawn' ? 'far blades on the drawn rings' : `far blades on the 8 m field${g.heightSource === 'field (no rings)' ? ' (no rings to stand on)' : ''}`;
+  const occ = flora.occlusion ? (flora.occlusion.enabled ? ', occlusion on' : ', occlusion off') : ', no occluders';
   setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity})${cover}: `
-    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s, ${ground}, ${stands}, `
+    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s${occ}, ${ground}, ${stands}, `
     + `contact field ${(g.coverage * 100).toFixed(0)}% and placement field ${(g.placementCoverage * 100).toFixed(0)}% streamed.`
     + `${tiers}${thinned}${over}`);
   grassProbeLine.hidden = false;
