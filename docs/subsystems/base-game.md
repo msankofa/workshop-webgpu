@@ -2821,6 +2821,16 @@ constant triangle count over a 2 km run, source swap, and the Base Game fixture 
 ground probes return the exact height while the ring's own height differs by metres; rebasing is a
 translation).
 
+**Depth precision (2026-09-03).** The renderer is built with `reversedDepthBuffer: true`, the flag
+`demos/flight-sim.html` already carries. With a standard 24-bit depth buffer, near 0.1 and the far
+plane at 9.2 km, the smallest gap the buffer can separate is 0.15 m at 500 m, 0.6 m at 1 km and 15 m
+at 5 km; the clipmap rings sit 0.25 m under the exact chunks and overlap each other, and the water
+depth-tests against ground within centimetres of it, so from a drone at altitude the whole view
+z-fought. The flag also switches the attachment to `depth32float`. The water fade
+(`base-game-water.js`) and depth of field (`depth-of-field.js`) linearize through
+`perspectiveDepthToViewZ`, which reads the flag; shadow compares and the camera's own
+`updateProjectionMatrix` do too, so nothing else needed changing.
+
 **Volumetric far LOD (2026-08-23).** Volumetric is the primary ground, so in volumetric mode far
 LOD is a **marching-cubes cascade**, not the heightfield rings (those showed a step and a gap
 against the warped volume surface): `BASE_GAME_TERRAIN_DEFAULTS.volumeLod` = three extra

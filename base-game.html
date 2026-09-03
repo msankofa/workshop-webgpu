@@ -1051,7 +1051,8 @@ window.gpuTime = (on = true) => {
   try { on ? localStorage.setItem(GPU_TIMESTAMP_KEY, '1') : localStorage.removeItem(GPU_TIMESTAMP_KEY); } catch { /* ignore */ }
   return `GPU timestamps ${on ? 'ON' : 'OFF'} on next reload (currently ${GPU_TIMESTAMPS ? 'ON' : 'OFF'})`;
 };
-const renderer = new WebGPURenderer({ antialias: true, trackTimestamp: GPU_TIMESTAMPS });
+// Reversed float depth, the flight sim's fix: near 0.1 against a 9 km far plane put the clipmap rings, the exact chunks and the water inside one depth step past ~600 m.
+const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, trackTimestamp: GPU_TIMESTAMPS });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
