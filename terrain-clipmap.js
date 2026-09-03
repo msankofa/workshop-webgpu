@@ -217,16 +217,24 @@ export function createTerrainClipmap({ source, descriptor = null, useWorker = tr
   // read. Inside the exact chunks' hole this is ring 0's height, which the chunks cover.
   // Inside the exact chunks' hole the chunks are what is drawn, so the rings' sink bias is left
   // off there: ring 0's texels are the chunk surface to within their band limit.
-  const drawnHeightAt = Fn(([xz]) => {
-    const h = levels[levels.length - 1].heightAt(xz).toVar();
-    for (let L = levels.length - 2; L >= 0; L--) {
-      const lv = levels[L];
-      const d = max(abs(xz.x.sub(lv.uCenter.x)), abs(xz.y.sub(lv.uCenter.y)));
-      If(d.lessThan(lv.uHalf), () => { h.assign(lv.heightAt(xz)); });
-    }
-    const inHole = xz.x.greaterThan(uHoleMin.x).and(xz.x.lessThan(uHoleMax.x)).and(xz.y.greaterThan(uHoleMin.y)).and(xz.y.lessThan(uHoleMax.y));
-    return h.add(select(inHole, float(0), float(cfg.yBias)));
-  });
+  // `maxRadius` bounds the levels compiled in: every level's texture is a sampled-texture binding
+  // in the caller's shader stage, and WebGPU allows 16 per stage by default. A level's morph reads
+  // the next coarser texture too, so levels 0..K bind K+2 textures.
+  function drawnHeightNodeFor(maxRadius = Infinity) {
+    let K = levels.length - 1;
+    for (let L = 0; L < levels.length; L++) if (levels[L].half >= maxRadius) { K = L; break; }
+    return Fn(([xz]) => {
+      const h = levels[K].heightAt(xz).toVar();
+      for (let L = K - 1; L >= 0; L--) {
+        const lv = levels[L];
+        const d = max(abs(xz.x.sub(lv.uCenter.x)), abs(xz.y.sub(lv.uCenter.y)));
+        If(d.lessThan(lv.uHalf), () => { h.assign(lv.heightAt(xz)); });
+      }
+      const inHole = xz.x.greaterThan(uHoleMin.x).and(xz.x.lessThan(uHoleMax.x)).and(xz.y.greaterThan(uHoleMin.y)).and(xz.y.lessThan(uHoleMax.y));
+      return h.add(select(inHole, float(0), float(cfg.yBias)));
+    });
+  }
+  const drawnHeightAt = drawnHeightNodeFor(Infinity);
   // CPU twin of drawnHeightAt over the same windows: null where the chosen ring has no tile yet.
   function drawnHeightAtCPU(x, z) {
     const inHole = x > uHoleMin.value.x && x < uHoleMax.value.x && z > uHoleMin.value.y && z < uHoleMax.value.y;
@@ -315,6 +323,7 @@ export function createTerrainClipmap({ source, descriptor = null, useWorker = tr
     update,
     restream,
     drawnHeightNode: drawnHeightAt,
+    drawnHeightNodeFor,
     drawnHeightAt: drawnHeightAtCPU,
     get stats() {
       let triangles = 0;

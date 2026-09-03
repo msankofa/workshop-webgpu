@@ -234,6 +234,14 @@ Two constraints worth knowing before changing this:
   volumetric worlds) `drawn` falls back to the field and `stats.heightSource` says
   `field (no rings)`. The uniform is read in the cull, so a switch reculls. A rendered top-down
   height capture (the route that would also serve volumetric worlds) is the remaining follow-up.
+  **Texture bindings are the budget here.** Every map the cull reads is a sampled-texture binding
+  in one compute stage, and WebGPU's default `maxSampledTexturesPerShaderStage` is 16: the first
+  version bound all six ring levels and, with the spawn building's occluder image and planter maps,
+  the page hit 19 and drew no grass at all (the console said so; no Node test could). Now the
+  rings are compiled through `drawnHeightNodeFor(grassMaxRadius)`, levels 0..2 plus 3 for the
+  morph (15 bindings for the grass alone, asserted by `test-grass-wgsl-build.mjs`),
+  `base-game.html` requests the adapter's limit (clamped to 32) at device creation, and the flora
+  keeps the field when `renderer.backend.device.limits` says the device did not grant more than 16.
 - **`expectedBlades(radius, density, cullStart)`** is the area integral of the edge fade, not
   `pi*r^2*d`: keep probability falls linearly from 1 at `cullStart` to 0 at the radius, which works
   out to 0.813 of the disc at the default `cullStart = 0.8r`. It is still an UPPER bound, since

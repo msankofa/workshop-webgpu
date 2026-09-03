@@ -234,7 +234,13 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     const farField = heightFieldOf(field);
     const near = contact.gpuSampler(nearField);
     const far = farField ? field.gpuSampler(farField) : null;
-    const drawn = terrain.drawnHeightNode ?? null;
+    // Only the ring levels the radius can reach are compiled in: each is a sampled-texture binding
+    // in the cull, and with the splat maps, the windows, their residency masks and an occluder image
+    // the stage passed WebGPU's default 16 (the page asks the adapter for more; a device that did
+    // not grant it keeps the field).
+    const sampledLimit = renderer?.backend?.device?.limits?.maxSampledTexturesPerShaderStage;
+    const roomForRings = sampledLimit === undefined || sampledLimit > 16;
+    const drawn = roomForRings ? (terrain.drawnHeightNodeFor?.(cfg.grassMaxRadius) ?? terrain.drawnHeightNode ?? null) : null;
     drawnAvailable = !!drawn;
     uHeightSource.value = (cfg.grassHeightSource === 'drawn' && drawn) ? 1 : 0;
     // Contact posts are 1.25 m and reach ~70 m; the placement window is 8 m posts over 2 km. Blades

@@ -116,6 +116,14 @@ check('the field windows are read with textureLoad', count(cull, /textureLoad\(/
 // alone is more loads than the whole field path had (32) before it.
 check('the drawn rings are in the kernel too', count(cull, /textureLoad\(/g) > 40, `${count(cull, /textureLoad\(/g)} loads`);
 check('as branches, not all evaluated', /if \(/.test(cull));
+// Every texture here is a sampled-texture binding in one compute stage: 5 splat maps, the contact
+// window's height and residency, the placement window's height, cover and residency, and the far
+// rings compiled for only the levels grassMaxRadius (600 m) reaches, levels 0..2 plus level 3 for
+// the morph. That is 15. WebGPU's default limit is 16 and the spawn building adds an occluder
+// image and two planter maps on top, which is how the page shipped 19 and drew nothing; the page
+// now asks its adapter for a higher limit and the flora drops the rings on a device without one.
+const sampled = count(cull, /var [A-Za-z_0-9]+ : texture_2d</g);
+check('the cull binds 15 sampled textures on its own, no more', sampled <= 15, `${sampled} bound`);
 check('survivors are compacted through one atomic counter', count(cull, /atomicAdd\(/g) === 1);
 check('the view cone is in the kernel', /dot\(\s*\(\s*vec2<f32>/.test(cull) || /dot\( vec2<f32>/.test(cull));
 check('the occlusion branch is compiled out without an occluder image', count(cull, /uOcc|occlusion/g) === 0 && !/textureSample\(/.test(cull));

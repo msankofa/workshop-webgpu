@@ -788,6 +788,8 @@ export function createBaseGameTerrain({
     // The height the far rings draw at a GLOBAL xz: a TSL Fn(([xz]) => y) over the clipmap's own
     // textures, and its CPU twin. Null without the rings (far LOD off, or volumetric worlds).
     get drawnHeightNode() { return (clipmap && !volumetricMode) ? clipmap.drawnHeightNode : null; },
+    // The same, compiled for only the ring levels that reach `maxRadius` (fewer texture bindings).
+    drawnHeightNodeFor(maxRadius) { return (clipmap && !volumetricMode) ? clipmap.drawnHeightNodeFor(maxRadius) : null; },
     drawnHeightAt(x, z) { return (clipmap && !volumetricMode) ? clipmap.drawnHeightAt(x, z) : null; },
     setGroundColorMip(v) { splatGround?.setMip(v); },
     syncGroundColor,
