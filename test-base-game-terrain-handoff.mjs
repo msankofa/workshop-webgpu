@@ -96,5 +96,29 @@ console.log('\n[3] live toggle: collision never lapses while volume chunks are s
   ok(c.grounded && c.surface?.providerId === 'terrain', 'back on the heightfield');
 }
 
+console.log('\n[4] the stream focus leaves the body (a drone at the stick): the body keeps its ground');
+{
+  const scene = new THREE.Scene(), worldQuery = createWorldQueryService(), worldCoordinates = createWorldCoordinateSpace();
+  const terrain = createBaseGameTerrain({ scene, worldQuery, worldCoordinates, source: v5Descriptor(project()), useWorker: false, params: { renderRadius: 1 }, volumetric: true });
+  terrain.setActive(true);
+  const c = createBaseGamePlayerController({ worldQuery, spawn: terrain.spawnPosition(0, 0) });
+  for (let i = 0; i < 240; i++) { c.advance(FRAME); terrain.update(c.getPosition(), FRAME); }
+  ok(c.grounded && c.surface?.providerId === 'terrain-volume' && !terrain.handoffPending, 'stands on the volume with the focus on the body');
+  // The craft flies 2 km off: the body's chunks are evicted and their colliders with them.
+  for (let i = 0; i < 240; i++) { c.advance(FRAME); terrain.update([2000, 0, 2000], FRAME, c.getPosition()); }
+  const farOnly = [...terrain.system.chunks.keys()].every(k => { const [cx, cz] = k.split(',').map(Number); return Math.hypot(cx, cz) > 3; });
+  ok(farOnly && terrain.system.chunks.size > 0, `resident chunks sit around the focus, none under the body (${terrain.system.chunks.size} chunks)`);
+  ok(terrain.handoffPending && terrain.provider.enabled, 'the heightfield is re-armed while the body chunk is away');
+  const p = c.getPosition();
+  ok(c.grounded && p[1] > terrain.source.heightAt(p[0], p[2]) - 0.5, `the body did not fall (y ${p[1].toFixed(2)}, heightfield ${terrain.source.heightAt(p[0], p[2]).toFixed(2)})`);
+  // Back at the body: the chunk returns, the handoff completes, the page re-seats.
+  for (let i = 0; i < 240; i++) { c.advance(FRAME); terrain.update(c.getPosition(), FRAME); }
+  ok(!terrain.handoffPending && terrain.takeHandoffCompleted(), 'handoff completes once the focus is back on the body');
+  const q = c.getPosition(), ground = terrain.groundHeight(q[0], q[2]);
+  if (Math.abs(q[1] - ground) > 1) c.reset(terrain.spawnPosition(q[0], q[2]));
+  for (let i = 0; i < 240; i++) { c.advance(FRAME); terrain.update(c.getPosition(), FRAME); }
+  ok(c.grounded && c.surface?.providerId === 'terrain-volume', `back on the volume (y ${c.getPosition()[1].toFixed(2)})`);
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);

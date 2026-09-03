@@ -6129,10 +6129,13 @@ async function animate() {
     envAudio.update(frameStart);
     if (profileFrame) frameProfiler.mark('audio', performance.now() - passStart);
     passStart = profileFrame ? performance.now() : 0;
-    terrain.update(playerController.getPosition(playerPositionScratch), dt);
-    const trailFocus = playerController.getPosition(playerPositionScratch);
-    trails.update(trailFocus);
-    roads.setResidency(trailFocus[0], trailFocus[2], 70);
+    // The world streams around what you are flying when you are at the stick, the body otherwise; colliders stay with the body.
+    const bodyPosition = playerController.getPosition(playerPositionScratch);
+    const flown = droneCtl.active ? droneView.drones.get(droneCtl.id)?.latest?.p : null;
+    const streamFocus = flown ?? bodyPosition;
+    terrain.update(streamFocus, dt, bodyPosition);
+    trails.update(streamFocus);
+    roads.setResidency(streamFocus[0], streamFocus[2], 70);
     roads.update();
     if (profileFrame) frameProfiler.mark('terrain', performance.now() - passStart);
     // terrain.update's own slot hides three very different costs; split them out.

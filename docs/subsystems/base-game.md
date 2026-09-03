@@ -2921,6 +2921,16 @@ Old complete terrain remains visible until a replacement tile is ready. Generati
 inside the frame loop, and camera movement does not synchronously rebuild terrain, decoration, or
 collision structures. Ordinary chunk rendering keeps per-chunk frustum culling enabled.
 
+**Stream focus vs body (2026-09-03).** `terrain.update(streamFocus, dt, bodyPosition)`: the chunks,
+field windows, sea-depth window and clipmap stream around `streamFocus`, which the page sets to the
+flown craft's wire position while `droneCtl.active` and to the body otherwise; trails and road
+residency take the same point. Colliders and the heightfield-to-volume handoff follow `bodyPosition`
+(the third argument, defaulting to the focus). While the body's chunk is not resident in volumetric
+mode, `update` re-arms the handoff so the heightfield provider answers under the parked body; when
+the focus returns and the chunk's collider is back, the handoff completes and the page re-seats as
+it already did at boot. Before this the terrain, trails and roads stopped at the body while the
+camera flew on, and the trees, which read the camera, found no field data to place on.
+
 ### Flight-scale terrain LOD
 
 The flight demo's geometric clipmap establishes the large-world reference: a small fixed set of

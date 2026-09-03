@@ -852,14 +852,15 @@ export function createBaseGameTerrain({
       syncVolumeColliders();
     },
 
-    // Per frame with the player's GLOBAL position; streaming focus never uses render-local coords.
-    update(globalPosition, dt = 0) {
+    // Per frame with GLOBAL positions, never render-local: the world streams around `globalPosition`
+    // (the craft at the stick), colliders and the handoff follow `bodyPosition` (the player's body).
+    update(globalPosition, dt = 0, bodyPosition = globalPosition) {
       if (!active) return false;
       const t0 = performance.now();
       const changed = system.update(globalPosition[0], globalPosition[2]);
       const size = system.params.chunkSize;
-      const focusMoved = Math.floor(globalPosition[0] / size) !== Math.floor(colliderFocus[0] / size) || Math.floor(globalPosition[2] / size) !== Math.floor(colliderFocus[1] / size);
-      colliderFocus[0] = globalPosition[0]; colliderFocus[1] = globalPosition[2];
+      const focusMoved = Math.floor(bodyPosition[0] / size) !== Math.floor(colliderFocus[0] / size) || Math.floor(bodyPosition[2] / size) !== Math.floor(colliderFocus[1] / size);
+      colliderFocus[0] = bodyPosition[0]; colliderFocus[1] = bodyPosition[2];
       // Crossing a chunk boundary changes which chunks want colliders; the fold block below is the
       // one place that rebuilds them, so it only has to be told there is work.
       if (focusMoved && volumetricMode) colliderPending = true;
@@ -912,9 +913,14 @@ export function createBaseGameTerrain({
       if (changed || cascadeChanged) residencyRevision++;   // which chunks exist moved; anything baked over them is stale
       updateCoverage(globalPosition, dt, changed || cascadeChanged);
       lastFieldMs = performance.now() - tField;
-      if (handoffPending && volumeProvider.hasChunk(chunkKeyAt(globalPosition[0], globalPosition[2]))) {
+      const bodyCollided = volumeProvider.hasChunk(chunkKeyAt(bodyPosition[0], bodyPosition[2]));
+      if (handoffPending && bodyCollided) {
         handoffPending = false;
         handoffDone = true;
+        applyProviders();
+      } else if (volumetricMode && !handoffPending && !bodyCollided) {
+        // The body's chunk left (the stream focus is on a drone elsewhere): the heightfield answers until it is back.
+        handoffPending = true;
         applyProviders();
       }
       if (changed && tileBounds) refreshTileBounds();
