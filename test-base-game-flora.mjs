@@ -320,6 +320,46 @@ section('the buffer and the cell cap rebuild; the draw controls do not');
   terrain.dispose();
 }
 
+section('far blades stand on the drawn rings when there are rings');
+{
+  const { terrain, flora } = builtRig();
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.load();
+  await flora.update(0.016);
+  check('without far LOD the drawn source falls back to the field and says so', flora.stats.heightSource === 'field (no rings)', flora.stats.heightSource);
+  flora.dispose();
+  terrain.dispose();
+
+  const scene = new THREE.Scene();
+  const worldCoordinates = createWorldCoordinateSpace();
+  const withRings = createBaseGameTerrain({
+    scene, worldQuery: createWorldQueryService(), worldCoordinates,
+    source: analyticDescriptor({ key: 'flora-rings', seaLevel: 0 }), useWorker: false, farLod: true,
+  });
+  withRings.setActive(true);
+  withRings.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  const flora2 = createBaseGameFlora({ scene, renderer: stubRenderer, camera: new THREE.PerspectiveCamera(), terrain: withRings, worldCoordinates });
+  flora2.setEnabled(true);
+  settle(withRings, [0, 0, 0], 200);
+  await flora2.load();
+  await flora2.update(0.016);
+  check('with far LOD the drawn rings are the source', flora2.stats.heightSource === 'drawn', flora2.stats.heightSource);
+  check('the build leaves the cull clean', flora2.grass.stats.dirty === false);
+  flora2.apply({ grassHeightSource: 'field' });
+  check('switching to the field reculls', flora2.grass.stats.dirty === true);
+  await flora2.update(0.05);
+  check('and the stats follow', flora2.stats.heightSource === 'field');
+  // The CPU twin: the drawn height near the focus is the 2 m ring, within a metre of the ground.
+  const drawn = withRings.drawnHeightAt(120, 80), ground = withRings.groundHeight(120, 80);
+  check('the terrain exposes the drawn height on the CPU', Number.isFinite(drawn), String(drawn));
+  check('and near the focus it is the ground within a metre', Number.isFinite(drawn) && Math.abs(drawn - ground) < 1, `${drawn} vs ${ground}`);
+  flora2.dispose();
+  withRings.dispose();
+}
+
 section('the ground colour probe and its CPU twin');
 {
   const { terrain, flora } = builtRig();

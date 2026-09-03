@@ -135,7 +135,13 @@ one-worker-per-feature arrangement water and rain were heading toward.
   `sampleAt(name, x, z)` and `ready(x, z)` on the CPU; `gpuSampler(name)` returns a TSL `Fn(xz,
   fallback)` doing the toroidal `textureLoad` (never normalized uv — the texel under a uv moves as
   the window recentres, so the seam smears), and `gpuSamplerRenderLocal(name, renderOriginXZ)` is
-  the adapter for render-local callers like grass. Since 2026-09-03 the sampler also gates on a
+  the adapter for render-local callers like grass. `terrain-clipmap.js` exposes `drawnHeightNode`
+  (TSL `Fn(([xz]) => y)`, global xz) and `drawnHeightAt(x, z)` (its CPU twin) since 2026-09-03:
+  the height the rings DRAW at a point, i.e. the finest ring covering it with that ring's morph
+  and the y bias, read from the clipmap's own height textures as `If` branches so only the chosen
+  level's texels load; the Base Game facade forwards both (`terrain.drawnHeightNode`,
+  `terrain.drawnHeightAt`, null with far LOD off or in volumetric mode) and the grass stands its
+  far blades on it. Since 2026-09-03 the field sampler also gates on a
   tile-residency mask (`residency` / `residencyTexture`, one byte per tile, toroidal by tile index,
   synced on commit and on recentre): a read returns its fallback unless all four tiles under the
   bilinear footprint have landed, because the arrays keep whatever an evicted tile held and the

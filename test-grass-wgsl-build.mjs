@@ -76,7 +76,7 @@ section('the flora rig builds grass with the ground colour wired');
 const worldQuery = createWorldQueryService();
 const worldCoordinates = createWorldCoordinateSpace();
 const terrain = createBaseGameTerrain({ scene, worldQuery, worldCoordinates,
-  source: analyticDescriptor({ key: 'wgsl', seaLevel: 0 }), useWorker: false });
+  source: analyticDescriptor({ key: 'wgsl', seaLevel: 0 }), useWorker: false, farLod: true });
 terrain.setActive(true);
 // Placeholder maps are 1x1 nearest DataTextures, which the builder treats as unfilterable and
 // reads with textureLoad. The real maps are linear mipmapped sRGB, so make the stand-ins match.
@@ -94,6 +94,7 @@ const built = await flora.update(0.016);
 check('grass builds over the rig', built === true && flora.built);
 check('the ground colour node is injected', flora.stats.groundTint?.available === true);
 check('and it samples the textures, not the averages', terrain.groundColorSamplesTextures === true);
+check('far blades stand on the drawn rings', flora.stats.heightSource === 'drawn', flora.stats.heightSource);
 const grass = flora.grass;
 
 section('the cull kernel compiles to WGSL');
@@ -111,6 +112,10 @@ const cull = wgsl.cull ?? '';
 check('the cull samples the five splat maps with samplers', count(cull, /textureSampleLevel\(/g) === 5, `${count(cull, /textureSampleLevel\(/g)} calls`);
 check('and never with the plain textureSample a compute stage cannot use', count(cull, /textureSample\(/g) === 0);
 check('the field windows are read with textureLoad', count(cull, /textureLoad\(/g) > 0);
+// Six ring levels, each four wrapped loads plus a morph toward the next: the drawn-height branch
+// alone is more loads than the whole field path had (32) before it.
+check('the drawn rings are in the kernel too', count(cull, /textureLoad\(/g) > 40, `${count(cull, /textureLoad\(/g)} loads`);
+check('as branches, not all evaluated', /if \(/.test(cull));
 check('survivors are compacted through one atomic counter', count(cull, /atomicAdd\(/g) === 1);
 check('the view cone is in the kernel', /dot\(\s*\(\s*vec2<f32>/.test(cull) || /dot\( vec2<f32>/.test(cull));
 check('the occlusion branch is compiled out without an occluder image', count(cull, /uOcc|occlusion/g) === 0 && !/textureSample\(/.test(cull));

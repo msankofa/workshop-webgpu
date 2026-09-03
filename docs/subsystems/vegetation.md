@@ -217,6 +217,22 @@ Two constraints worth knowing before changing this:
   the buffers) and the next `update()` builds it again; `stats.rebuilds` counts. `stats.recullRate`
   is reculls a second, sampled with the readbacks, so a compute spike in the `?gputime=1`
   `computeTotal` can be laid at the grass's door or not; there is no grass-only GPU timer.
+- **Far blades stand on the drawn rings (2026-09-03, grass plan phase 5).** Past the contact
+  window the height used to come from the 8 m placement field, which the terrain module itself
+  says "decides where things go, never where they sit": measured against the true ground
+  (`scratchpads/grass-investigation/check-height-mismatch.mjs`, analytic source) it sits a median
+  +0.3 m and a p95 +3.6 m off, so half the far blades floated and a tenth were buried, and the
+  60-70 m handover was a visible ring. `grassHeightSource` = `drawn` (the default) reads
+  `terrain.drawnHeightNode` instead: `terrain-clipmap.js`'s `drawnHeightNode`, the finest ring
+  covering the point with that ring's own morph, from the same height textures the ring vertices
+  displace from, as `If` branches so only one level's texels load, with the rings' 25 cm sink bias
+  left off inside the chunk hole where the exact chunks are what is drawn. Beyond the hole this IS
+  the drawn surface by construction; inside it (`check-drawn-height.mjs`, 70-150 m) it is within
+  -0.35 / -0.11 / +0.10 m (p5 / p50 / p95) of the true ground against the field's
+  -0.69 / +0.29 / +3.60. `field` keeps the old source for comparison; without rings (far LOD off,
+  volumetric worlds) `drawn` falls back to the field and `stats.heightSource` says
+  `field (no rings)`. The uniform is read in the cull, so a switch reculls. A rendered top-down
+  height capture (the route that would also serve volumetric worlds) is the remaining follow-up.
 - **`expectedBlades(radius, density, cullStart)`** is the area integral of the edge fade, not
   `pi*r^2*d`: keep probability falls linearly from 1 at `cullStart` to 0 at the radius, which works
   out to 0.813 of the disc at the default `cullStart = 0.8r`. It is still an UPPER bound, since

@@ -54,6 +54,11 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   // so the far corner of the two sliders is a hang without a ceiling; over it, the field thins and
   // says so rather than stalling.
   grassDispatchBudgetM: 8,
+  // What far blades stand on past the contact window (grass plan phase 5): 'drawn' is the height
+  // the far rings actually draw (the clipmap's own textures, with its morph), 'field' the 8 m
+  // placement field, which sits a median 0.35 m and a p95 3.5 m off the drawn ground. Without
+  // rings (far LOD off, volumetric worlds) 'drawn' falls back to the field and the stats say so.
+  grassHeightSource: 'drawn',
   grassNearFade: 10,           // metres over which height crosses from the contact to the placement window
   grassHandoverDistance: 0,    // where that crossing starts; 0 = the contact window's reach less the band
   // The distance fade in pieces (grass plan phase 2). Every 0 below means "as before": the keep
@@ -163,6 +168,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   const uRenderOrigin = uniform(new injectedTHREE.Vector3());
   const uCamXZ = uniform(new injectedTHREE.Vector2());
   let uNearEnd = null, uFadeBand = null;
+  const uHeightSource = uniform(0);      // 0 = placement field, 1 = the drawn rings
+  let drawnAvailable = false;
   const HEIGHT_MISSING = -1e6;                 // sentinel: the window had nothing at this xz
   const originScratch = [0, 0, 0];        // getOrigin() allocates without one, and this runs per frame
   function readOrigin() {
@@ -193,6 +200,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     const farField = heightFieldOf(field);
     const near = contact.gpuSampler(nearField);
     const far = farField ? field.gpuSampler(farField) : null;
+    const drawn = terrain.drawnHeightNode ?? null;
+    drawnAvailable = !!drawn;
+    uHeightSource.value = (cfg.grassHeightSource === 'drawn' && drawn) ? 1 : 0;
     // Contact posts are 1.25 m and reach ~70 m; the placement window is 8 m posts over 2 km. Blades
     // cross from one to the other over a band, by distance from the camera rather than by window
     // edge, so the handover is a fixed ring and not a moving square.
@@ -203,7 +213,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     const heightNode = Fn(([x, z]) => {
       const g = vec2(x, z).add(originXZ);
       const hNear = near(g, float(HEIGHT_MISSING));
-      const hFar = far ? far(g, float(HEIGHT_MISSING)) : float(HEIGHT_MISSING);
+      const hField = far ? far(g, float(HEIGHT_MISSING)) : float(HEIGHT_MISSING);
+      // Past the contact window: the drawn rings' height when chosen and available, else the field.
+      const hFar = drawn ? select(uHeightSource.greaterThan(0.5), drawn(g), hField) : hField;
       const nearOk = hNear.greaterThan(float(HEIGHT_MISSING / 2));
       const farOk = hFar.greaterThan(float(HEIGHT_MISSING / 2));
       const t = length(vec2(x, z).sub(uCamXZ)).sub(uNearEnd).div(uFadeBand).clamp(0, 1);
@@ -430,6 +442,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       stats.truncating = stats.expected > stats.capacity;
       stats.fade = grass.fade ?? null;
       stats.handover = uNearEnd ? { distance: uNearEnd.value, band: uFadeBand.value } : null;
+      stats.heightSource = uHeightSource.value > 0.5 ? 'drawn' : drawnAvailable ? 'field' : 'field (no rings)';
       return true;
     },
     // Every knob is a setter on the one instance. Radius is clamped to what the window can serve
@@ -461,6 +474,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       grass.setFadeWidth?.(cfg.grassFadeWidth);
       grass.setTintFade?.(cfg.grassTintFadeStart || null, cfg.grassTintFadeEnd || null);
       grass.setNearFade?.(cfg.grassNearFadeStart, cfg.grassNearFadeEnd);
+      // Read in the cull, so a change reculls; unavailable rings leave it on the field.
+      const source = (cfg.grassHeightSource === 'drawn' && drawnAvailable) ? 1 : 0;
+      if (uHeightSource.value !== source) { uHeightSource.value = source; grass.forceRecull(); }
       // The height handover is read in the cull, like the mip.
       if (uNearEnd && uFadeBand) {
         const distance = handoverDistance(), band = Math.max(0.5, cfg.grassNearFade);

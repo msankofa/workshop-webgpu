@@ -267,6 +267,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassNearFadeEnd: BASE_GAME_FLORA_DEFAULTS.grassNearFadeEnd,
   grassHandoverDistance: BASE_GAME_FLORA_DEFAULTS.grassHandoverDistance,
   grassNearFade: BASE_GAME_FLORA_DEFAULTS.grassNearFade,
+  grassHeightSource: BASE_GAME_FLORA_DEFAULTS.grassHeightSource,
   grassCoverFloor: BASE_GAME_FLORA_DEFAULTS.grassCoverFloor,
   grassTierMid: BASE_GAME_FLORA_DEFAULTS.grassTierMid,
   grassMidDensity: BASE_GAME_FLORA_DEFAULTS.grassMidDensity,
@@ -3171,7 +3172,7 @@ const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRad
   'grassGroundTint', 'grassGroundTintFar', 'grassGroundTintReach', 'grassGroundTintMip',
   'grassColorMode', 'grassFaceNormalMix', 'grassCullStart', 'grassDispatchBudgetM',
   'grassFadeEnd', 'grassFadeCurve', 'grassFadeHeight', 'grassFadeWidth', 'grassTintFadeStart', 'grassTintFadeEnd',
-  'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade',
+  'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade', 'grassHeightSource',
   'grassCoverFloor', 'grassTierMid', 'grassMidDensity', 'grassTierFar', 'grassFarDensity',
   'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax'];
 const appliedFlora = {};
@@ -3210,6 +3211,7 @@ function applyFloraSettings() {
     grassNearFadeEnd: settings.grassNearFadeEnd,
     grassHandoverDistance: settings.grassHandoverDistance,
     grassNearFade: settings.grassNearFade,
+    grassHeightSource: settings.grassHeightSource,
     grassCoverFloor: settings.grassCoverFloor,
     grassTierMid: settings.grassTierMid,
     grassMidDensity: settings.grassMidDensity,
@@ -4540,6 +4542,8 @@ addRange(plantsSec, 'grassNearFadeEnd', 'Near fade: full height past (m, 0 = off
 addRange(plantsSec, 'grassHandoverDistance', 'Height handover to the coarse field (m, 0 = auto)', 0, 200, 1,
   value => (value ? `${value.toFixed(0)} m` : 'auto'));
 addRange(plantsSec, 'grassNearFade', 'Height handover band (m)', 0.5, 50, 0.5, value => `${value.toFixed(1)} m`);
+addSelect(plantsSec, 'grassHeightSource', 'Far blades stand on', ['drawn', 'field'],
+  ['The drawn far rings (needs far LOD)', 'The 8 m placement field']);
 addRange(plantsSec, 'grassDispatchBudgetM', 'Recull thread budget (millions)', 1, 128, 1,
   value => `${value.toFixed(0)}M`);
 addCommitRange(plantsSec, 'grassBufferMB', 'Instance buffer (MB; rebuilds the grass)', 8, 512, 8, value => `${value.toFixed(0)} MB`);
@@ -4607,8 +4611,9 @@ function refreshGrassRuntimeLine() {
     : `~${(g.expected / 1e3).toFixed(0)}k blades expected`;
   const cover = g.coverHere != null ? `, cover here ${g.coverHere.toFixed(2)} so ${(g.density * g.coverHere).toFixed(1)}/m^2 of it` : '';
   const ground = !g.groundTint?.available ? 'no ground colour' : g.groundSamplesTextures ? 'ground colour from the textures' : 'ground colour from the tint';
+  const stands = g.heightSource === 'drawn' ? 'far blades on the drawn rings' : `far blades on the 8 m field${g.heightSource === 'field (no rings)' ? ' (no rings to stand on)' : ''}`;
   setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity})${cover}: `
-    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s, ${ground}, `
+    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s, ${ground}, ${stands}, `
     + `contact field ${(g.coverage * 100).toFixed(0)}% and placement field ${(g.placementCoverage * 100).toFixed(0)}% streamed.`
     + `${tiers}${thinned}${over}`);
   grassProbeLine.hidden = false;
