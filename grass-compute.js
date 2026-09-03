@@ -256,7 +256,9 @@ export function createComputeGrass(opts) {
     ? (wx, wy, wz, h, dist) => {
         const base = project(wx, wy, wz);
         const top = project(wx, wy.add(h), wz);
-        const visible = base.onScreen.or(top.onScreen).or(dist.lessThan(1.5));
+        // Only while occlusion is on: off, the depth image and its view-projection stop updating,
+        // and a frozen frustum would go on culling everything outside where the camera last was.
+        const visible = uOccOn.lessThan(0.5).or(base.onScreen).or(top.onScreen).or(dist.lessThan(1.5));
         // WebGPU samples a render target with row 0 at the top and the WGSL builder adds no flip,
         // so V runs down from clip-space +y.
         const uv = vec2(clamp(top.ndc.x.mul(0.5).add(0.5), 0, 1), clamp(float(0.5).sub(top.ndc.y.mul(0.5)), 0, 1));
