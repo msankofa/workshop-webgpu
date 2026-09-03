@@ -411,6 +411,11 @@ landing voices as the fallback.
 
 ## Verification
 
+First, `node test-page-syntax.mjs`: it extracts each page's inline module script (base-game,
+bot-viewer-v3, environment-viewer by default; pass other pages as arguments) and hands it to
+`node --check`. No module test can see a syntax error in the page itself, and one shipped on
+2026-09-03 (two `const stands` in one function, f199597) as a blank page with a single console error.
+
 Run the existing pure/state tests:
 
 ```powershell
