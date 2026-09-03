@@ -134,6 +134,9 @@ export function createPlantsGPU(opts) {
       .and(ndc.y.greaterThan(-NDC_MARGIN)).and(ndc.y.lessThan(NDC_MARGIN));
     return { w, ndc, onScreen };
   };
+  // One texture node, sampled five times through .sample(): one binding, not five. The cull
+  // stage is near WebGPU's sampled-texture limit (see vegetation.md), so every binding counts.
+  const occTex = occlusion ? texture(occlusion.texture) : null;
   const keepFn = occlusion
     ? (wx, wy, wz, h, dist) => {
         const base = project(wx, wy, wz);
@@ -143,8 +146,8 @@ export function createPlantsGPU(opts) {
         // so V runs down from clip-space +y.
         const uv = vec2(clamp(top.ndc.x.mul(0.5).add(0.5), 0, 1), clamp(float(0.5).sub(top.ndc.y.mul(0.5)), 0, 1));
         const tx = vec2(uOccTexel.x, 0), tz = vec2(0, uOccTexel.y);
-        const far = max(max(texture(occlusion.texture, uv).r, texture(occlusion.texture, uv.add(tx)).r),
-          max(texture(occlusion.texture, uv.sub(tx)).r, max(texture(occlusion.texture, uv.add(tz)).r, texture(occlusion.texture, uv.sub(tz)).r)));
+        const far = max(max(occTex.sample(uv).r, occTex.sample(uv.add(tx)).r),
+          max(occTex.sample(uv.sub(tx)).r, max(occTex.sample(uv.add(tz)).r, occTex.sample(uv.sub(tz)).r)));
         const occluded = uOccOn.greaterThan(0.5).and(top.onScreen).and(top.w.greaterThan(far.add(uOccBias).add(top.w.mul(0.01))));
         return visible.and(occluded.not());
       }
