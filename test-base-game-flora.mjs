@@ -227,6 +227,13 @@ section('the mip slider forces a recull');
   check('applying the same mip does not recull', flora.grass.stats.dirty === false);
   flora.apply({ grassGroundTintMip: BASE_GAME_FLORA_DEFAULTS.grassGroundTintMip + 2 });
   check('a new mip marks the cull dirty, since the colour is read there', flora.grass.stats.dirty === true);
+  check('the colour mode starts on the palette', flora.grass.colorMode === 'palette');
+  flora.apply({ grassColorMode: 'proof' });
+  check('and apply() switches it', flora.grass.colorMode === 'proof');
+  flora.apply({ grassColorMode: 'nonsense' });
+  check('an unknown mode is ignored', flora.grass.colorMode === 'proof');
+  flora.apply({ grassFaceNormalMix: 0.2 });
+  check('the face-normal mix reaches grass-look', flora.grass.getLook().faceNormalMix === 0.2);
   flora.dispose();
   terrain.dispose();
 }

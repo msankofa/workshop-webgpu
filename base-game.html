@@ -254,6 +254,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassGroundTintFar: BASE_GAME_FLORA_DEFAULTS.grassGroundTintFar,
   grassGroundTintReach: BASE_GAME_FLORA_DEFAULTS.grassGroundTintReach,
   grassGroundTintMip: BASE_GAME_FLORA_DEFAULTS.grassGroundTintMip,
+  grassColorMode: BASE_GAME_FLORA_DEFAULTS.grassColorMode,
+  grassFaceNormalMix: BASE_GAME_FLORA_DEFAULTS.grassFaceNormalMix,
   grassCullStart: BASE_GAME_FLORA_DEFAULTS.grassCullStart,
   grassDispatchBudgetM: BASE_GAME_FLORA_DEFAULTS.grassDispatchBudgetM,
   // Trees. Density and the palette shape the forest every peer stands in; the draw radius,
@@ -3146,7 +3148,7 @@ flora.onMesh(mesh => { if (mesh && !reflectionExclusions.includes(mesh)) reflect
 const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRadius', 'grassBladeHeight',
   'grassBladeWidth', 'grassWind', 'grassStyle', 'grassVerticalOffset', 'grassCoverGate',
   'grassGroundTint', 'grassGroundTintFar', 'grassGroundTintReach', 'grassGroundTintMip',
-  'grassCullStart', 'grassDispatchBudgetM'];
+  'grassColorMode', 'grassFaceNormalMix', 'grassCullStart', 'grassDispatchBudgetM'];
 const appliedFlora = {};
 let floraLoading = false;
 function applyFloraSettings() {
@@ -3169,6 +3171,8 @@ function applyFloraSettings() {
     grassGroundTintFar: settings.grassGroundTintFar,
     grassGroundTintReach: settings.grassGroundTintReach,
     grassGroundTintMip: settings.grassGroundTintMip,
+    grassColorMode: settings.grassColorMode,
+    grassFaceNormalMix: settings.grassFaceNormalMix,
     grassCullStart: settings.grassCullStart,
     grassDispatchBudgetM: settings.grassDispatchBudgetM,
   });
@@ -4481,6 +4485,9 @@ addRange(plantsSec, 'grassGroundTint', 'Ground tint at the root', 0, 1, 0.05, va
 addRange(plantsSec, 'grassGroundTintFar', 'Ground tint at the draw edge', 0, 1, 0.05, value => value.toFixed(2));
 addRange(plantsSec, 'grassGroundTintReach', 'Ground tint reach up the blade', 0.01, 1, 0.01, value => value.toFixed(2));
 addRange(plantsSec, 'grassGroundTintMip', 'Ground texture detail (mip)', 0, 10, 1, value => value.toFixed(0));
+addSelect(plantsSec, 'grassColorMode', 'Blade colour', ['palette', 'ground', 'proof'],
+  ['Grass palette, tinted by the ground', 'Ground colour everywhere', 'Proof: the raw ground sample only']);
+addRange(plantsSec, 'grassFaceNormalMix', 'Blade face in the lighting normal', 0, 1, 0.05, value => value.toFixed(2));
 // What the sliders actually bought. Both of them used to clamp in silence.
 const grassRuntimeLine = document.createElement('div');
 grassRuntimeLine.className = 'note';

@@ -122,6 +122,21 @@ Two constraints worth knowing before changing this:
   used a full-length linear ramp, which left a blade's midpoint half ground-coloured and washed the
   field out rather than seating it. All three are live setters; none forces a recull, because the
   colour is already in the record.
+- **The mix comes after the palette lighting (2026-09-03, grass plan phase 1).** The ground colour
+  is what the terrain already draws, lit by the scene the way the terrain is, so the flat
+  `uAmbient + uKey` factor (1.1), the cloud noise (0.65..1) and grass-look's root shade multiply the
+  PALETTE side only: `mix(paletteLit, groundColor, tint)`. They used to multiply the blend, which
+  left the ground part 10 % too bright and blotchy even at tint 1. The lighting normal moves toward
+  the ground's up (view space, like grass-look's) by the same amount, so a ground-coloured blade no
+  longer lights differently per yaw than the ground under it; `grassFaceNormalMix` exposes
+  grass-look's `faceNormalMix` (0.65) for the untinted part. The maps are tiled at RENDER-LOCAL xz,
+  the frame the terrain material tiles from (`positionWorld`); global xz put every blade on a
+  different texel from the one under it once the origin had moved. `grassColorMode` (grass-compute
+  `setColorMode`, `COLOR_MODES`): `palette` (the sliders decide), `ground` (tint 1 everywhere),
+  `proof` (the raw ground sample with the ground's normal and no emissive; blades should vanish
+  into the terrain, and any blade you can still pick out is a sampling error). Defaults moved from
+  tint 0.5 / reach 0.35 / mip 4 to 0.8 / 0.7 / 6 (25 cm texels, a footprint average rather than a
+  6 cm speck); the ranges did not change.
 - **Grass waits for the ground textures before it builds.** They load in the background, the grass
   graph is built exactly once, and a graph built too early would tint from the fallback for the
   whole session. `build()` holds while `terrain.groundTexturesLoaded` is false, bounded at 600

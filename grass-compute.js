@@ -23,7 +23,7 @@ import {
 import {
   Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast, modInt,
   vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld, max,
-  atomicAdd, atomicStore, atomicLoad, texture, dot,
+  atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix,
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
 import { createGrassLook } from './grass-look.js';
@@ -84,6 +84,8 @@ const slotRandFn = Fn(([gx, gz, slot, salt]) => {
   h = h.bitXor(h.shiftRight(uint(16)));
   return h.toFloat().div(4294967296.0);
 });
+
+export const COLOR_MODES = Object.freeze(['palette', 'ground', 'proof']);
 
 export function createComputeGrass(opts) {
   const { renderer, camera } = opts;
@@ -556,18 +558,33 @@ export function createComputeGrass(opts) {
   // the blade's midpoint half ground-coloured and washed the whole field out.
   const rootW = float(1).sub(smoothstep(float(0), uGroundTintReach.max(float(0.001)), bladeT));
   const tintAmt = uGroundTint.mul(mix(rootW, float(1), edgeT.mul(uGroundTintFar))).clamp(0, 1);
-  const grounded = mix(grassColor, groundColor, tintAmt);
-  const colorNode = grounded.mul(uAmbient.add(uKey)).mul(cloud).mul(look.nodes.rootShade(bladeT));
+  // Colour modes: palette (the tint sliders decide), ground (tint 1 everywhere), proof (the raw
+  // ground sample with the ground's normal and nothing else, so a blade should vanish into the
+  // terrain and any blade you can still pick out is a sampling error).
+  const uColorMode = uniform(Math.max(0, COLOR_MODES.indexOf(opts.colorMode || 'palette')), 'float');
+  const groundOnly = clamp(uColorMode, 0, 1);
+  const proofOnly = clamp(uColorMode.sub(1), 0, 1);
+  const tintFinal = injectedGround ? mix(tintAmt, float(1), groundOnly) : float(0);
+  // The ground colour is what the terrain already draws, lit by the scene the way the terrain is,
+  // so the flat key/ambient factor, the cloud noise and the root shade belong to the palette side
+  // alone. Mixed AFTER them: at tint 1 a blade is the ground colour exactly. They used to multiply
+  // the blend, which left the ground part 10 % too bright and blotchy.
+  const paletteLit = grassColor.mul(uAmbient.add(uKey)).mul(cloud).mul(look.nodes.rootShade(bladeT));
+  const colorNode = mix(paletteLit, groundColor, tintFinal);
 
   const mat = new MeshStandardNodeMaterial({ side: THREE.DoubleSide, roughness: 1, metalness: 0 });
   mat.positionNode = posNode;
   mat.colorNode = colorNode;
-  mat.normalNode = curl.normal;                       // vec3(0,1,0) unless curl is on
+  // grass-look's normal is view space (65 % blade face by default); a ground-coloured blade moves
+  // it toward the ground's up by the same amount, or it lights differently per yaw than the ground.
+  const upView = cameraViewMatrix.transformDirection(vec3(0, 1, 0));
+  mat.normalNode = normalize(mix(curl.normal, upView, tintFinal));
   // SP4a: optional additive clustered point-light term. Sample at the blade's ground-planted
   // BASE (not the swaying elevated tip) so grass lighting stays locked to the terrain pool
   // directly beneath it — avoids height-parallax desync as lights move.
   const backlight = look.nodes.translucency({ t: bladeT, worldPos: positionWorld, tipColor: uTipColor });
-  mat.emissiveNode = opts.addEmissive ? opts.addEmissive(base, vec3(0, 1, 0)).add(backlight) : backlight;
+  const emissive = opts.addEmissive ? opts.addEmissive(base, vec3(0, 1, 0)).add(backlight) : backlight;
+  mat.emissiveNode = emissive.mul(float(1).sub(proofOnly));
 
   const mesh = new THREE.Mesh(geom, mat);
   mesh.frustumCulled = false;
@@ -752,6 +769,12 @@ export function createComputeGrass(opts) {
     get groundTint() {
       return { amount: uGroundTint.value, far: uGroundTintFar.value, reach: uGroundTintReach.value, available: !!injectedGround };
     },
+    // 'palette' | 'ground' | 'proof'; unknown keys are ignored. Live, no recull.
+    setColorMode(key) {
+      const idx = COLOR_MODES.indexOf(key);
+      if (idx >= 0) uColorMode.value = idx;
+    },
+    get colorMode() { return COLOR_MODES[uColorMode.value] ?? 'palette'; },
     // grass-look.js toggles/amounts; live, no recull. setSunDir takes the world direction TOWARD the sun.
     setLook(partial) { look.set(partial); },
     // Blade colours and the flat light terms, live; the CPU grass takes these as build options.

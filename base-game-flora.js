@@ -43,14 +43,20 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   grassNearFade: 10,           // metres over which height crosses from the contact to the placement window
   // Blades take the colour of the ground they stand on: at the root, and everywhere at the draw
   // edge, so the field dissolves into the terrain rather than ending on a line.
-  grassGroundTint: 0.5,
+  grassGroundTint: 0.8,
   grassGroundTintFar: 1,
-  // How far up the blade the root tint reaches. grass-look's rootShade uses smoothstep(0, 0.35, t)
-  // for the same job, and a full-length linear ramp washes the whole blade instead of its base.
-  grassGroundTintReach: 0.35,
-  // Mip the ground textures are read at, per blade. 0 is per-texel noise; a few levels up is the
-  // local average over roughly a blade's footprint, which is what blending wants.
-  grassGroundTintMip: 4,
+  // How far up the blade the root tint reaches, as 1 - smoothstep(0, reach, t). 0.35 confined it
+  // to the base you never see from eye height; 0.7 carries it into the visible mid-blade.
+  grassGroundTintReach: 0.7,
+  // Mip the ground textures are read at, per blade. 0 is per-texel noise; 6 on a 1024 px map over
+  // a 4 m tile is a 25 cm texel, roughly a blade's footprint, which is what blending wants.
+  grassGroundTintMip: 6,
+  // 'palette' (the tint sliders decide), 'ground' (tint 1 everywhere), 'proof' (the raw ground
+  // sample and nothing else, for checking the sampling by eye).
+  grassColorMode: 'palette',
+  // grass-look's faceNormalMix: how much of the blade's own face is in the lighting normal, the
+  // rest being straight up. Its default; base-game never set it before.
+  grassFaceNormalMix: 0.65,
 });
 
 // Blades a full disc holds once the edge fade has thinned it. Keep probability falls linearly from
@@ -165,7 +171,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       const hz1 = far(vec2(g.x, g.y.add(p)), yGlobal), hz0 = far(vec2(g.x, g.y.sub(p)), yGlobal);
       const dx = hx1.sub(hx0).div(p.mul(2)), dz = hz1.sub(hz0).div(p.mul(2));
       const normalY = float(1).div(dx.mul(dx).add(dz.mul(dz)).add(1).sqrt());
-      return groundColor(g.x, g.y, yGlobal, normalY);
+      // The maps are tiled at RENDER-LOCAL xz, because that is the frame the terrain material
+      // tiles them from (positionWorld); the weights take the global height.
+      return groundColor(x, z, yGlobal, normalY);
     }) : null;
     return { heightNode, densityNode, groundColorNode };
   }
@@ -212,7 +220,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       groundTint: cfg.grassGroundTint,
       groundTintFar: cfg.grassGroundTintFar,
       groundTintReach: cfg.grassGroundTintReach,
+      colorMode: cfg.grassColorMode,
     });
+    grass.setLook?.({ faceNormalMix: cfg.grassFaceNormalMix });
     grass.setWorldOrigin?.(readOrigin()[0], readOrigin()[2]);
     grass.mesh.frustumCulled = false;
     grass.mesh.name = 'base-game-grass';
@@ -338,6 +348,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       grass.setWind(cfg.grassWind);
       grass.setBladeStyle?.(cfg.grassStyle);
       grass.setGroundTint?.(cfg.grassGroundTint, cfg.grassGroundTintFar, cfg.grassGroundTintReach);
+      grass.setColorMode?.(cfg.grassColorMode);
+      grass.setLook?.({ faceNormalMix: cfg.grassFaceNormalMix });
       // The mip is read in the cull, so without a recull the slider does nothing until the next cell.
       if (cfg.grassGroundTintMip !== appliedMip) {
         appliedMip = cfg.grassGroundTintMip;

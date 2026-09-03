@@ -192,6 +192,25 @@ section('no colour in the graph skips sRGB to linear');
   check('the dry tint goes through THREE.Color', /uDryColor\s*=\s*uniform\(new THREE\.Color/.test(src));
 }
 
+section('the ground colour is mixed after the palette lighting');
+{
+  // The ground colour is what the terrain already draws, lit the way the terrain is; the flat
+  // key/ambient factor, the cloud noise and the root shade belong to the palette side alone, or
+  // a fully tinted blade is 10 % brighter and blotchier than the ground it stands on.
+  const src = readFileSync('grass-compute.js', 'utf8');
+  check('the palette takes the light, cloud and root-shade terms', /const paletteLit = grassColor\.mul\(uAmbient\.add\(uKey\)\)\.mul\(cloud\)\.mul\(look\.nodes\.rootShade\(bladeT\)\)/.test(src));
+  check('and the ground colour is mixed in after them', /const colorNode = mix\(paletteLit, groundColor, tintFinal\)/.test(src));
+  check('the normal moves toward the ground\'s up by the same amount', /mat\.normalNode = normalize\(mix\(curl\.normal, upView, tintFinal\)\)/.test(src));
+  check('proof mode drops the emissive term', /mat\.emissiveNode = emissive\.mul\(float\(1\)\.sub\(proofOnly\)\)/.test(src));
+  const { grass } = rig();
+  check('the colour mode starts on the palette', grass.colorMode === 'palette');
+  grass.setColorMode('ground');
+  check('setColorMode switches it', grass.colorMode === 'ground');
+  grass.setColorMode('nonsense');
+  check('and ignores an unknown key', grass.colorMode === 'ground');
+  check('a host without a ground node has no probe', grass.hasGroundProbe === false);
+}
+
 section('the wind gets a clock, not a frame delta');
 {
   // uTime drives the sway phase. Passing dt pins it near 0.016 and the blades hold one fixed bend;
