@@ -1228,9 +1228,7 @@ const traversalLab = createBaseGameTraversalLab({ scene, worldQuery });
 // The eco-brutalist spawn building (docs/subsystems/base-game.md, "Spawn building"): the same
 // collider the room server registers, seated on the same source, dressed in chunked concrete.
 // Online it exists only when the room's terrain config says so; Solo heightfield terrain always has it.
-const spawnBuilding = createBaseGameSpawnBuilding({
-  THREE, scene, worldQuery, heightAt: (x, z) => terrain.groundHeight(x, z), seaLevel: terrain.seaLevel,
-});
+// The instance is created below the terrain (it samples it); these functions are hoisted.
 function spawnBuildingWanted() {
   if (settings.worldMode !== 'terrain') return false;
   if (isOnline()) return roomTerrainConfig?.spawnBuilding === true;
@@ -1262,6 +1260,9 @@ const BATCH_FRUSTUM_CULLED = readFlagDefaultTrue('chunkcull');
 const terrain = createBaseGameTerrain({
   scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR,
   params: { batchFrustumCulled: BATCH_FRUSTUM_CULLED },
+});
+const spawnBuilding = createBaseGameSpawnBuilding({
+  THREE, scene, worldQuery, heightAt: (x, z) => terrain.groundHeight(x, z), seaLevel: terrain.seaLevel,
 });
 const trails = createBaseGameTrails({ terrain, options: {
   enabled: settings.trailsEnabled, seed: settings.trailSeed, spacing: settings.trailSpacing,
