@@ -74,6 +74,7 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
   if (residencyTex) { residencyTex.magFilter = THREE.NearestFilter; residencyTex.minFilter = THREE.NearestFilter; residencyTex.needsUpdate = true; }
   uniforms.tileN = uniform(tileN, 'int');
   uniforms.tiles = uniform(tiles, 'int');
+  uniforms.gate = uniform(1);
   let residencyRevision = 0;
   function syncResidency() {
     const tx0 = win.originPX / tileN, tz0 = win.originPZ / tileN;
@@ -162,7 +163,8 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
       const landed = (t) => textureLoad(residencyTex, t).x.greaterThan(0.5);
       const t00 = tileOf(gi), t11 = tileOf(gi.add(1));
       const t10 = ivec2(t11.x, t00.y), t01 = ivec2(t00.x, t11.y);
-      const inside = bounded.and(landed(t00)).and(landed(t11)).and(landed(t10)).and(landed(t01));
+      // The gate can be switched off (setResidencyGate) to fall back to the bounds test alone.
+      const inside = bounded.and(uniforms.gate.lessThan(0.5).or(landed(t00).and(landed(t11)).and(landed(t10)).and(landed(t01))));
       const load = (a, b) => {
         const raw = textureLoad(tex, ivec2(a, b)).x;
         return isU8 ? raw.mul(U8_SCALE) : raw;
@@ -234,6 +236,9 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
     get residency() { return residency; },
     get residencyRevision() { return residencyRevision; },
     get residencyTexture() { return residencyTex; },
+    // Off, the GPU sampler trusts the bounds test alone (the pre-2026-09-03 behaviour).
+    setResidencyGate(on) { uniforms.gate.value = on ? 1 : 0; },
+    get residencyGate() { return uniforms.gate.value > 0.5; },
     get version() { return win.version; },
     get refs() { return refs; },
     texture: name => textures.get(name) ?? null,

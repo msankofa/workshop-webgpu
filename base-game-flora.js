@@ -60,6 +60,9 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   // placement field, which sits a median 0.35 m and a p95 3.5 m off the drawn ground. Without
   // rings (far LOD off, volumetric worlds) 'drawn' falls back to the field and the stats say so.
   grassHeightSource: 'drawn',
+  // The field samplers return "missing" for a tile that has not landed (the residency gate). Off,
+  // they trust the bounds test alone and read whatever the window holds, as before 2026-09-03.
+  grassResidencyGate: true,
   grassNearFade: 10,           // metres over which height crosses from the contact to the placement window
   grassHandoverDistance: 0,    // where that crossing starts; 0 = the contact window's reach less the band
   // The distance fade in pieces (grass plan phase 2). Every 0 below means "as before": the keep
@@ -208,7 +211,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   const uCamXZ = uniform(new injectedTHREE.Vector2());
   let uNearEnd = null, uFadeBand = null;
   const uHeightSource = uniform(0);      // 0 = placement field, 1 = the drawn rings
+  const uDrawnReady = uniform(0);        // 1 once the rings the graph reads have streamed
   let drawnAvailable = false, drawnRetried = false;
+  let lastStreamed = -1, lastStreamRecull = -Infinity, pendingStreamRecull = false;
   const HEIGHT_MISSING = -1e6;                 // sentinel: the window had nothing at this xz
   const originScratch = [0, 0, 0];        // getOrigin() allocates without one, and this runs per frame
   function readOrigin() {
@@ -262,7 +267,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       const hNear = near(g, float(HEIGHT_MISSING));
       const hField = far ? far(g, float(HEIGHT_MISSING)) : float(HEIGHT_MISSING);
       // Past the contact window: the drawn rings' height when chosen and available, else the field.
-      const hFar = drawn ? select(uHeightSource.greaterThan(0.5), drawn(g), hField) : hField;
+      // The rings' windows are zero-filled on a restream and their sampler clamps instead of
+      // reporting a hole, so the drawn source is used only while the rings have streamed.
+      const hFar = drawn ? select(uHeightSource.greaterThan(0.5).and(uDrawnReady.greaterThan(0.5)), drawn(g), hField) : hField;
       const nearOk = hNear.greaterThan(float(HEIGHT_MISSING / 2));
       const farOk = hFar.greaterThan(float(HEIGHT_MISSING / 2));
       const t = length(vec2(x, z).sub(uCamXZ)).sub(uNearEnd).div(uFadeBand).clamp(0, 1);
@@ -414,6 +421,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     } : null;
     const holes = w => (w?.residency ? w.residency.reduce((n, v) => n + (v ? 0 : 1), 0) : null);
     stats.maskHoles = { contact: holes(terrain.contactField), placement: holes(terrain.fields) };
+    // A tile build that throws is swallowed into the window's stats, and that tile never lands.
+    stats.windowError = terrain.fields?.stats?.lastError ?? terrain.contactField?.stats?.lastError ?? null;
     // A second probe walks a ring around the camera, one step a second, so a hole in the far
     // height (a tile the GPU reads as not landed, or anything else that sinks a blade) shows up
     // as a count rather than as a missing block you have to spot.
@@ -531,6 +540,23 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       }
       // Sea level and the origin both move; the water gate is in render-local Y like the blades.
       grass.setWaterLevel(terrain.seaLevel - uRenderOrigin.value.y);
+      // Read in the cull: while the rings restream, far blades stand on the field and come back
+      // to the rings with one recull once every level the graph reads has landed.
+      const ready = drawnAvailable && terrain.drawnHeightReady?.(cfg.grassMaxRadius) ? 1 : 0;
+      if (uDrawnReady.value !== ready) { uDrawnReady.value = ready; grass.forceRecull(); }
+      // Tiles landing change what the samplers return, and a cull that ran while a window was
+      // empty stays that way until the next cell crossing; so a residency change reculls, at most
+      // twice a second while a window is streaming.
+      const streamed = (terrain.fields?.residencyRevision ?? 0) + (terrain.contactField?.residencyRevision ?? 0) * 1e6;
+      if (streamed !== lastStreamed) {
+        lastStreamed = streamed;
+        pendingStreamRecull = true;
+      }
+      if (pendingStreamRecull && seconds - lastStreamRecull >= 0.5) {
+        pendingStreamRecull = false;
+        lastStreamRecull = seconds;
+        grass.forceRecull();
+      }
       if (occlusion && occlusion.state.enabled) occlusion.update();
       await grass.update(seconds);
       // The surviving blade count is written by the GPU into the indirect buffer, so the CPU can
@@ -563,7 +589,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       stats.truncating = stats.expected > stats.capacity;
       stats.fade = grass.fade ?? null;
       stats.handover = uNearEnd ? { distance: uNearEnd.value, band: uFadeBand.value } : null;
-      stats.heightSource = uHeightSource.value > 0.5 ? 'drawn' : drawnAvailable ? 'field' : 'field (no rings)';
+      stats.heightSource = uHeightSource.value > 0.5
+        ? (uDrawnReady.value > 0.5 ? 'drawn' : 'field (rings streaming)')
+        : drawnAvailable ? 'field' : 'field (no rings)';
       stats.lastRecull = grass.stats.lastRecull ?? '';
       return true;
     },
@@ -599,6 +627,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       // Read in the cull, so a change reculls; unavailable rings leave it on the field.
       const source = (cfg.grassHeightSource === 'drawn' && drawnAvailable) ? 1 : 0;
       if (uHeightSource.value !== source) { uHeightSource.value = source; grass.forceRecull(); }
+      for (const w of [terrain.fields, terrain.contactField]) {
+        if (w?.setResidencyGate && w.residencyGate !== !!cfg.grassResidencyGate) { w.setResidencyGate(cfg.grassResidencyGate); grass.forceRecull(); }
+      }
       // The height handover is read in the cull, like the mip.
       if (uNearEnd && uFadeBand) {
         const distance = handoverDistance(), band = Math.max(0.5, cfg.grassNearFade);

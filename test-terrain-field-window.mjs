@@ -158,7 +158,8 @@ section('field window: the GPU sampler gates on tile residency');
   check('a recentre clears the evicted tiles without waiting for a commit', fw.residency.some(v => v === 0) && fw.residencyRevision > rev);
   const src = readFileSync('terrain-field-window.js', 'utf8');
   check('the sampler reads the mask for all four corner tiles',
-    /bounded\.and\(landed\(t00\)\)\.and\(landed\(t11\)\)\.and\(landed\(t10\)\)\.and\(landed\(t01\)\)/.test(src));
+    /bounded\.and\(uniforms\.gate\.lessThan\(0\.5\)\.or\(landed\(t00\)\.and\(landed\(t11\)\)\.and\(landed\(t10\)\)\.and\(landed\(t01\)\)\)\)/.test(src));
+  check('and the gate can be switched off', fw.residencyGate === true && (fw.setResidencyGate(false), fw.residencyGate === false));
   release(); fw.dispose(); scheduler.dispose();
 }
 

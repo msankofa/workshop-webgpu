@@ -235,6 +235,16 @@ export function createTerrainClipmap({ source, descriptor = null, useWorker = tr
     });
   }
   const drawnHeightAt = drawnHeightNodeFor(Infinity);
+  // The levels drawnHeightNodeFor(maxRadius) reads have all streamed. The windows are zero-filled
+  // on a restream and levelHeight clamps to the window edge rather than reporting a hole, so a
+  // consumer must hold off until this is true or its far blades stand at height 0.
+  function drawnHeightReady(maxRadius = Infinity) {
+    let K = levels.length - 1;
+    for (let L = 0; L < levels.length; L++) if (levels[L].half >= maxRadius) { K = L; break; }
+    const top = Math.min(levels.length - 1, K + 1);
+    for (let L = 0; L <= top; L++) if (levels[L].window.coverage < 1) return false;
+    return true;
+  }
   // CPU twin of drawnHeightAt over the same windows: null where the chosen ring has no tile yet.
   function drawnHeightAtCPU(x, z) {
     const inHole = x > uHoleMin.value.x && x < uHoleMax.value.x && z > uHoleMin.value.y && z < uHoleMax.value.y;
@@ -324,6 +334,7 @@ export function createTerrainClipmap({ source, descriptor = null, useWorker = tr
     restream,
     drawnHeightNode: drawnHeightAt,
     drawnHeightNodeFor,
+    drawnHeightReady,
     drawnHeightAt: drawnHeightAtCPU,
     get stats() {
       let triangles = 0;

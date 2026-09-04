@@ -271,6 +271,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassHandoverDistance: BASE_GAME_FLORA_DEFAULTS.grassHandoverDistance,
   grassNearFade: BASE_GAME_FLORA_DEFAULTS.grassNearFade,
   grassHeightSource: BASE_GAME_FLORA_DEFAULTS.grassHeightSource,
+  grassResidencyGate: BASE_GAME_FLORA_DEFAULTS.grassResidencyGate,
   grassCoverFloor: BASE_GAME_FLORA_DEFAULTS.grassCoverFloor,
   grassTierMid: BASE_GAME_FLORA_DEFAULTS.grassTierMid,
   grassMidDensity: BASE_GAME_FLORA_DEFAULTS.grassMidDensity,
@@ -3246,7 +3247,7 @@ const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRad
   'grassGroundTint', 'grassGroundTintFar', 'grassGroundTintReach', 'grassGroundTintMip',
   'grassColorMode', 'grassFaceNormalMix', 'grassCullStart', 'grassDispatchBudgetM',
   'grassFadeEnd', 'grassFadeCurve', 'grassFadeHeight', 'grassFadeWidth', 'grassTintFadeStart', 'grassTintFadeEnd',
-  'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade', 'grassHeightSource',
+  'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade', 'grassHeightSource', 'grassResidencyGate',
   'grassCoverFloor', 'grassTierMid', 'grassMidDensity', 'grassTierFar', 'grassFarDensity',
   'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion'];
 const appliedFlora = {};
@@ -3286,6 +3287,7 @@ function applyFloraSettings() {
     grassHandoverDistance: settings.grassHandoverDistance,
     grassNearFade: settings.grassNearFade,
     grassHeightSource: settings.grassHeightSource,
+    grassResidencyGate: settings.grassResidencyGate,
     grassCoverFloor: settings.grassCoverFloor,
     grassTierMid: settings.grassTierMid,
     grassMidDensity: settings.grassMidDensity,
@@ -4625,6 +4627,7 @@ addRange(plantsSec, 'grassHandoverDistance', 'Height handover to the coarse fiel
 addRange(plantsSec, 'grassNearFade', 'Height handover band (m)', 0.5, 50, 0.5, value => `${value.toFixed(1)} m`);
 addSelect(plantsSec, 'grassHeightSource', 'Far blades stand on', ['drawn', 'field'],
   ['The drawn far rings (needs far LOD)', 'The 8 m placement field']);
+addToggle(plantsSec, 'grassResidencyGate', 'Plant only on tiles that have landed (residency gate)');
 addRange(plantsSec, 'grassDispatchBudgetM', 'Recull thread budget (millions)', 1, 128, 1,
   value => `${value.toFixed(0)}M`);
 addCommitRange(plantsSec, 'grassBufferMB', 'Instance buffer (MB; rebuilds the grass)', 8, 512, 8, value => `${value.toFixed(0)} MB`);
@@ -4697,7 +4700,8 @@ function refreshGrassRuntimeLine() {
   const coverKept = g.coverHere != null ? Math.max(g.coverHere, settings.grassCoverFloor || 0) : null;
   const cover = coverKept != null ? `, cover here ${g.coverHere.toFixed(2)} so ${(g.density * coverKept).toFixed(1)}/m^2 of it` : '';
   const ground = !g.groundTint?.available ? 'no ground colour' : g.groundSamplesTextures ? 'ground colour from the textures' : 'ground colour from the tint';
-  const stands = g.heightSource === 'drawn' ? 'far blades on the drawn rings' : `far blades on the 8 m field${g.heightSource === 'field (no rings)' ? ` (no rings: ${g.ringsWhy || 'not at build time'})` : ''}`;
+  const stands = g.heightSource === 'drawn' ? 'far blades on the drawn rings'
+    : `far blades on the 8 m field${g.heightSource === 'field (no rings)' ? ` (no rings: ${g.ringsWhy || 'not at build time'})` : g.heightSource === 'field (rings streaming)' ? ' (rings still streaming)' : ''}`;
   const occ = flora.occlusion ? (flora.occlusion.enabled ? ', occlusion on' : ', occlusion off') : ', no occluders';
   setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity})${cover}: `
     + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s (last: ${g.lastRecull || '?'})${occ}, ${ground}, ${stands}, `
@@ -4714,7 +4718,7 @@ function refreshGrassRuntimeLine() {
   const ring = g.ringProbe
     ? ` At ${g.ringProbe.radius} m around you, by direction (. = a blade would live, h = height missing, w = under water, d = density 0, c = outside the cone): ${g.ringProbe.compass}; worst height ${g.ringProbe.worst >= 0 ? '+' : ''}${g.ringProbe.worst.toFixed(2)} m from the ground.`
     : '';
-  const holes = g.maskHoles ? ` Tiles not landed: contact ${g.maskHoles.contact ?? '?'}, placement ${g.maskHoles.placement ?? '?'}.` : '';
+  const holes = g.maskHoles ? ` Tiles not landed: contact ${g.maskHoles.contact ?? '?'}, placement ${g.maskHoles.placement ?? '?'}.${g.windowError ? ` A tile build failed: ${String(g.windowError?.message ?? g.windowError).slice(0, 120)}.` : ''}` : '';
   const struct = g.structure
     ? ` Building footprint ${g.structure.w.toFixed(0)} x ${g.structure.d.toFixed(0)} m, ${g.structure.distance.toFixed(0)} m from you, you are ${g.structure.inside ? 'inside' : 'outside'} it; no terrain grass grows inside.`
     : ' No building footprint.';

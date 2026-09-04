@@ -790,6 +790,8 @@ export function createBaseGameTerrain({
     get drawnHeightNode() { return (clipmap && !volumetricMode) ? clipmap.drawnHeightNode : null; },
     // The same, compiled for only the ring levels that reach `maxRadius` (fewer texture bindings).
     drawnHeightNodeFor(maxRadius) { return (clipmap && !volumetricMode) ? clipmap.drawnHeightNodeFor(maxRadius) : null; },
+    // Whether those levels have streamed; false during a restream, when they read as height 0.
+    drawnHeightReady(maxRadius) { return !!(clipmap && !volumetricMode && clipmap.drawnHeightReady(maxRadius)); },
     drawnHeightAt(x, z) { return (clipmap && !volumetricMode) ? clipmap.drawnHeightAt(x, z) : null; },
     setGroundColorMip(v) { splatGround?.setMip(v); },
     syncGroundColor,
