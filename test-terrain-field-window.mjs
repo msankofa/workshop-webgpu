@@ -159,7 +159,7 @@ section('field window: the GPU sampler gates on tile residency');
   const src = readFileSync('terrain-field-window.js', 'utf8');
   check('the sampler reads the mask for all four corner tiles',
     /bounded\.and\(uniforms\.gate\.lessThan\(0\.5\)\.or\(landed\(t00\)\.and\(landed\(t11\)\)\.and\(landed\(t10\)\)\.and\(landed\(t01\)\)\)\)/.test(src));
-  check('and the gate can be switched off', fw.residencyGate === true && (fw.setResidencyGate(false), fw.residencyGate === false));
+  check('the gate is off by default and can be switched', fw.residencyGate === false && (fw.setResidencyGate(true), fw.residencyGate === true));
   release(); fw.dispose(); scheduler.dispose();
 }
 

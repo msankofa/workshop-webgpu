@@ -74,7 +74,7 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
   if (residencyTex) { residencyTex.magFilter = THREE.NearestFilter; residencyTex.minFilter = THREE.NearestFilter; residencyTex.needsUpdate = true; }
   uniforms.tileN = uniform(tileN, 'int');
   uniforms.tiles = uniform(tiles, 'int');
-  uniforms.gate = uniform(1);
+  uniforms.gate = uniform(0);   // off: the GPU-side read of the mask bares two opposite world quadrants (2026-09-03, seen)
   let residencyRevision = 0;
   function syncResidency() {
     const tx0 = win.originPX / tileN, tz0 = win.originPZ / tileN;

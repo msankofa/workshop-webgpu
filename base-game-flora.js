@@ -62,7 +62,7 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   grassHeightSource: 'drawn',
   // The field samplers return "missing" for a tile that has not landed (the residency gate). Off,
   // they trust the bounds test alone and read whatever the window holds, as before 2026-09-03.
-  grassResidencyGate: true,
+  grassResidencyGate: false,
   grassNearFade: 10,           // metres over which height crosses from the contact to the placement window
   grassHandoverDistance: 0,    // where that crossing starts; 0 = the contact window's reach less the band
   // The distance fade in pieces (grass plan phase 2). Every 0 below means "as before": the keep
