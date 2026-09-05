@@ -1,6 +1,6 @@
 # Base Game: every occluder hides, every flora kind is hidden
 
-STATUS: planned 2026-09-05, nothing started.
+STATUS: phases 1 and 2 committed 2026-09-05 (28ab06f), unseen in a browser; 3 and 4 not started.
 
 ## Goal
 
