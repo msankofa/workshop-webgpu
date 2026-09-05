@@ -27,7 +27,7 @@ does not measure uploads, GPU execution, or browser frame pacing.
   shader branches for bounds, distance, cone, fade, and density. Preserve all hashes and
   acceptance predicates. Branch between structure and terrain sampling. Compile both
   occlusion and non-occlusion paths and run placement, wind, and fade checks.
-- [ ] 5. Cache settings-derived grass telemetry calculations and objects rather than
+- [x] 5. Cache settings-derived grass telemetry calculations and objects rather than
   recomputing/allocating them each frame. Keep live counters accurate.
 - [ ] 6. Reduce forest source uploads with changed attribute ranges. Verify additions,
   removals, rebases, overflow, and variant publication. Stable chunk slots are a larger
@@ -85,3 +85,8 @@ and material shading are unchanged. Validation: 33 WGSL checks (including genera
 ordering and both procedural/anchor occlusion builds), 103 flora checks, 90 grass checks,
 wind/cell checks, and 18,458 anchor assertions passed. Browser visual/GPU validation remains.
 Fix 3 commit: `52a3207`.
+
+Fix 5: tiered expected-count integration and tint/fade/handover objects now refresh on settings
+or effective-tier changes. Cone calculations reuse scratch storage, and skipped frames retain
+the actual last recull reason. Validation: 106 flora checks and 91 grass checks passed.
+Fix 4 commit: `a2522b1`.

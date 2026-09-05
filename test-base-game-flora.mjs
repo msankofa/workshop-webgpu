@@ -495,5 +495,24 @@ section('diagnostics are opt-in, sequential, and cannot publish retired results'
   terrain.dispose();
 }
 
+section('settings-derived telemetry is reused until its inputs change');
+{
+  const { terrain, flora } = builtRig();
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  flora.setEnabled(true); settle(terrain); await flora.load();
+  flora.apply({ grassTierMid: 20, grassMidDensity: 0.5 });
+  await flora.update(0);
+  const tint = flora.stats.groundTint, fade = flora.stats.fade, handover = flora.stats.handover;
+  const expected = flora.stats.expected;
+  for (let i = 1; i <= 10; i++) await flora.update(i / 60);
+  check('idle frames reuse their diagnostic objects', tint === flora.stats.groundTint && fade === flora.stats.fade && handover === flora.stats.handover);
+  check('the tiered expected count stays accurate', flora.stats.expected === expected);
+  flora.apply({ grassDensity: 6, grassFadeCurve: 2, grassNearFade: 5 });
+  await flora.update(1);
+  check('new settings refresh telemetry', flora.stats.expected !== expected && flora.stats.handover.band === 5 && flora.stats.fade !== fade);
+  flora.dispose(); terrain.dispose();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

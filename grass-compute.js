@@ -210,21 +210,24 @@ export function createComputeGrass(opts) {
   const uCosHalf = uniform(-1);
   const uNearKeep = uniform(opts.nearKeep ?? 6);
   const _dir = new THREE.Vector3();
+  const coneScratch = { fx: 1, fz: 0, cos: -1 };
   let lastFx = NaN, lastFz = NaN, lastCos = NaN;
   function coneFor() {
-    if (!frustumCull || !(camera.fov > 0)) return { fx: 1, fz: 0, cos: -1 };
+    coneScratch.fx = 1; coneScratch.fz = 0; coneScratch.cos = -1;
+    if (!frustumCull || !(camera.fov > 0)) return coneScratch;
     camera.getWorldDirection(_dir);
     const hl = Math.hypot(_dir.x, _dir.z);
-    if (hl < 0.35) return { fx: 1, fz: 0, cos: -1 };
+    if (hl < 0.35) return coneScratch;
     const halfV = (camera.fov * Math.PI / 180) / 2, halfH = Math.atan(Math.tan(halfV) * (camera.aspect || 1));
     const denom = hl - Math.tan(halfV) * Math.sqrt(Math.max(0, 1 - hl * hl));
-    if (denom < 0.2) return { fx: 1, fz: 0, cos: -1 };
+    if (denom < 0.2) return coneScratch;
     // Quantised so a turning camera re-culls every ~6 degrees, not every frame: the 0.22 rad
     // margin above is wider than one step, so the cone stays conservative between reculls.
     const STEP = 0.1;
     const half = Math.min(Math.PI, Math.ceil((Math.atan(Math.tan(halfH) / denom) + 0.22) / STEP) * STEP);
     const yaw = Math.round(Math.atan2(_dir.z, _dir.x) / STEP) * STEP;
-    return { fx: Math.cos(yaw), fz: Math.sin(yaw), cos: Math.cos(half) };
+    coneScratch.fx = Math.cos(yaw); coneScratch.fz = Math.sin(yaw); coneScratch.cos = Math.cos(half);
+    return coneScratch;
   }
   // Occlusion against flora-occlusion.js's depth image: project the candidate with the same
   // view-projection, read the stored view depth at the point and its four neighbours, and drop
@@ -804,16 +807,16 @@ export function createComputeGrass(opts) {
       const cellX = Math.floor(camera.position.x / cellSize);
       const cellZ = Math.floor(camera.position.z / cellSize);
       const cellChanged = cellX !== lastCellX || cellZ !== lastCellZ;
-      stats.lastCell = `${cellX}:${cellZ}`;
+      if (cellChanged) stats.lastCell = `${cellX}:${cellZ}`;
       const cone = coneFor();
       const coneChanged = cone.fx !== lastFx || cone.fz !== lastFz || cone.cos !== lastCos;
       // Occlusion depends on the exact camera, so any camera change re-culls while it is on.
       const occChanged = syncOcclusion();
-      stats.lastRecull = dirty ? 'dirty:' + stats.dirtyReason : cellChanged ? 'cell' : coneChanged ? 'cone' : occChanged ? 'occlusion' : 'frame';
       if (recullMode !== 'frame' && !dirty && !cellChanged && !coneChanged && !occChanged) {
         stats.skippedReculls++;
         return;
       }
+      stats.lastRecull = dirty ? 'dirty:' + stats.dirtyReason : cellChanged ? 'cell' : coneChanged ? 'cone' : occChanged ? 'occlusion' : 'frame';
       // count drives both the dispatch and the shader's own bounds guard, so shrinking the radius
       // or the density now shrinks the work instead of discarding it inside the kernel.
       if (!anchorMode) {

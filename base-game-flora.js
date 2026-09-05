@@ -206,6 +206,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   let releaseFields = null, releaseContact = null;
   let enabled = false, active = false, built = false;
   let maxRadius = 0;
+  let telemetryDirty = true, sampledTiers = null, sampledDensity = NaN;
   const stats = { enabled: false, built: false, radius: 0, requestedRadius: 0, maxRadius: 0, density: 0,
     requestedDensity: 0, maxDensity: 0, capacity: 0, dispatch: 0, expected: 0, truncating: false, dispatchClamped: false,
     reculls: 0, skippedReculls: 0, coverage: 0, placementCoverage: 0, lastError: null,
@@ -402,6 +403,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     grass.setWind?.(cfg.grassWind);
     grass.setBladeStyle?.(cfg.grassStyle);
     built = true;
+    telemetryDirty = true;
     stats.built = true;
     stats.maxRadius = maxRadius;
     return true;
@@ -622,14 +624,21 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       stats.dispatch = grass.stats.dispatch;
       // Blades the sliders are asking for against blades the buffer holds. Over the line the field
       // truncates at the far edge rather than clamping the sliders, so the panel can say so.
-      stats.groundTint = grass.groundTint;
       stats.groundSamplesTextures = terrain.groundColorSamplesTextures ?? false;
       stats.tiers = grass.stats.tiers ?? null;
-      stats.expected = expectedBlades(stats.radius, stats.density, cfg.grassCullStart || stats.radius * 0.8,
-        cfg.grassFadeEnd, cfg.grassFadeCurve, stats.tiers?.map(t => ({ radius: t.radius, density: stats.density > 0 ? t.density / stats.density : 0 })));
+      // Tiered expectations integrate 1024 rings. These inputs change with settings, not the
+      // camera; neither the integration nor the getter/object allocations belong in every frame.
+      if (telemetryDirty || sampledTiers !== stats.tiers || sampledDensity !== stats.density) {
+        stats.groundTint = grass.groundTint;
+        stats.expected = expectedBlades(stats.radius, stats.density, cfg.grassCullStart || stats.radius * 0.8,
+          cfg.grassFadeEnd, cfg.grassFadeCurve, stats.tiers?.map(t => ({ radius: t.radius, density: stats.density > 0 ? t.density / stats.density : 0 })));
+        stats.fade = grass.fade ?? null;
+        stats.handover = uNearEnd ? { distance: uNearEnd.value, band: uFadeBand.value } : null;
+        sampledTiers = stats.tiers;
+        sampledDensity = stats.density;
+        telemetryDirty = false;
+      }
       stats.truncating = stats.expected > stats.capacity;
-      stats.fade = grass.fade ?? null;
-      stats.handover = uNearEnd ? { distance: uNearEnd.value, band: uFadeBand.value } : null;
       stats.heightSource = uHeightSource.value > 0.5
         ? (uDrawnReady.value > 0.5 ? 'drawn' : 'field (rings streaming)')
         : drawnAvailable ? 'field' : 'field (no rings)';
@@ -639,6 +648,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // Every knob is a setter on the one instance. Radius is clamped to what the window can serve
     // and to what the buffers were sized for; nothing here reallocates.
     apply(next = {}) {
+      telemetryDirty = true;
       Object.assign(cfg, next);
       if (!grass) return;
       if (builtWith && (builtWith.bufferMB !== cfg.grassBufferMB || builtWith.kmax !== cfg.grassKmax)) { rebuild(); return; }

@@ -359,5 +359,15 @@ section('occluder edits recull even when the camera is stationary');
   grass.dispose(); occlusion.texture.dispose();
 }
 
+section('skipped frames retain the actual last recull reason');
+{
+  const { grass } = rig();
+  await grass.update(0);
+  const reason = grass.stats.lastRecull;
+  await grass.update(1);
+  check('a skipped recull does not invent a frame-triggered recull', grass.stats.lastRecull === reason);
+  grass.dispose();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
