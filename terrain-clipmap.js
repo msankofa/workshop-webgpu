@@ -66,6 +66,7 @@ export function createTerrainClipmap({ source, descriptor = null, useWorker = tr
   let epoch = 0;
   let focus = [0, 0];
   let visible = true;
+  let maxHalfExtent = Infinity;   // rings whose half-extent exceeds this stay hidden
   let wireframe = false;
   const stats = { tilesBuilt: 0, tilesInFlight: 0, lastBuildMs: 0, uploads: 0 };
 
@@ -298,7 +299,7 @@ export function createTerrainClipmap({ source, descriptor = null, useWorker = tr
       const snap = w.post * 2;
       const cx = Math.round(focus[0] / snap) * snap, cz = Math.round(focus[1] / snap) * snap;
       if (lv.uCenter.value.x !== cx || lv.uCenter.value.y !== cz) { lv.uCenter.value.set(cx, cz); changed = true; }
-      lv.mesh.visible = visible && w.presentCount > 0;
+      lv.mesh.visible = visible && w.presentCount > 0 && lv.half <= maxHalfExtent;
     }
     return changed;
   }
@@ -314,7 +315,7 @@ export function createTerrainClipmap({ source, descriptor = null, useWorker = tr
     root,
     windows,
     get levels() { return levels.length; },
-    get outerHalfExtent() { return levels[levels.length - 1].half; },
+    get outerHalfExtent() { let half = levels[0].half; for (const lv of levels) if (lv.half <= maxHalfExtent) half = lv.half; return half; },
     get epoch() { return epoch; },
     get focus() { return focus; },
     get source() { return currentSource; },
@@ -326,7 +327,9 @@ export function createTerrainClipmap({ source, descriptor = null, useWorker = tr
       currentDescriptor = nextDescriptor;
       restream();
     },
-    setVisible(v) { visible = !!v; for (const lv of levels) lv.mesh.visible = visible && lv.window.presentCount > 0; },
+    setVisible(v) { visible = !!v; for (const lv of levels) lv.mesh.visible = visible && lv.window.presentCount > 0 && lv.half <= maxHalfExtent; },
+    // Cap the drawn extent: the innermost ring always draws, so nothing stops a ring already streamed.
+    setMaxHalfExtent(r) { maxHalfExtent = Math.max(levels[0].half, r ?? Infinity); this.setVisible(visible); },
     setWireframe(v) { wireframe = !!v; for (const lv of levels) lv.mat.wireframe = wireframe; },
     setHoleRect,
     get holeRect() { return holeRect ? [...holeRect] : null; },

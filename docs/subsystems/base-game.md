@@ -350,8 +350,12 @@ What it clamps:
   real shadow distance; the forest's `treeShadowReach` follows it so no LOD rung starts past the map.
 
 The ceiling floors at 40 m so a slider at the bottom cannot draw nothing. **Fog hides the far edge**
-(`drawDistanceFog`) raises the exp2 fog density to `2 / far`, where the fog reaches 98%, so the
-clipped world sits in haze instead of ending on a line; the weather fog still wins when it is denser.
+(`drawDistanceFog`) applies the weather fog at full strength (`weatherFogBase + weatherFogPerRain`,
+sky-tracked colour) whatever the weather is doing, because that is the fog that looked right; a
+density derived from the ceiling was denser and read wrong. The far edge can still show past the
+haze on a large ceiling. The far rings are capped at 0.9x the ceiling (`terrain.setFarExtentCap`,
+`clipmap.setMaxHalfExtent`): the sky dome sits at 0.88 of the far plane, and a ring beyond the dome
+is behind the sun sprite's depth, so the sun drew over the ground.
 Both keys are local: they are not in `BASE_GAME_SHARED_KEYS`, so a low-end machine's ceiling never
 reaches the room. Nothing here has been seen in a browser yet.
 

@@ -908,6 +908,8 @@ export function createBaseGameTerrain({
     },
     // Visual toggle only: collision stays authoritative while hidden.
     setVisible(value) { visible = !!value; applyVisibility(); },
+    // Hide far rings past this half-extent (heightfield mode only; the cascade has no rings).
+    setFarExtentCap(r) { if (clipmap) clipmap.setMaxHalfExtent(r); },
     setDrawRadius(radius) {
       const r = Math.max(0, Math.floor(radius));
       if (r !== system.params.renderRadius) system.params.renderRadius = r;   // picked up by update()'s chunking signature

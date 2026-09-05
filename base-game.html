@@ -994,8 +994,9 @@ function applyAtmosphereSettings() {
   // So the fog exists from startup at density 0 and only the number moves.
   // A thermal sensor sees through haze that stops the eye, so the fog thins under IR. applyVisor
   // calls back into here on every mode change, which is what makes the number move.
-  // With the fog link on, the far plane sits at 2/density, where exp2 fog reaches 98%.
-  const linked = settings.drawDistanceFog && settings.drawDistance > 0 ? 2 / (drawCeiling() * 1.5) : 0;
+  // The fog link is the weather fog at full strength, whatever the weather is doing: the same
+  // density and sky-tracked colour that a 100% storm gives, rather than a number from the ceiling.
+  const linked = settings.drawDistanceFog && settings.drawDistance > 0 ? settings.weatherFogBase + settings.weatherFogPerRain : 0;
   const density = Math.max(linked, settings.weatherFogEnabled ? settings.weatherFogBase + settings.weatherRain * settings.weatherFogPerRain : 0)
     * (uIR.value ? BASE_GAME_IR_FOG_SCALE : 1);
   if (density !== appliedAtmosphere.density) { appliedAtmosphere.density = density; scene.fog.density = density; }
@@ -3732,6 +3733,9 @@ function updateWorld(dt) {
   // it with the far plane, or far terrain draws in front of the planets.
   if (camera.far !== wantFar || !skyRadiusApplied) { camera.far = wantFar; camera.updateProjectionMatrix(); sky.setRadius(wantFar * 0.88); skyRadiusApplied = true; }
   terrain.setVisible(settings.terrainVisible);
+  // Rings must end inside the sky dome (0.88 of the far plane): a ring beyond it sits behind the
+  // sun sprite's depth and the sun draws over the ground. 0.9x the ceiling keeps the corners in.
+  terrain.setFarExtentCap(drawCeiling() * 0.9);
   terrain.setDrawRadius(Math.min(settings.terrainDrawRadius, Math.max(1, Math.floor(drawCeiling() / terrain.system.params.chunkSize))));
   terrain.setWireframe(settings.terrainWireframe);
   terrain.setNormals(settings.terrainNormals);
