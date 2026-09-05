@@ -3549,8 +3549,8 @@ batches (the far clipmap rings are placed by a position node, so the depth pass 
 flat; the debug bounds and contact marker are not batches either). A crest therefore hides the
 blades behind it. Streaming adds batches under the unmoved terrain root, which the pass's static
 cache cannot see, so `updateFloraOccluders()` re-marks the roots whenever
-`terrain.residencyRevision` moves. The setting `grassTerrainOccludes` (default on, "Terrain hides
-blades behind a crest") drops the terrain root from the list; it is a flora apply key, so a toggle
+`terrain.residencyRevision` moves. The setting `grassTerrainOccludes` (default on, "Terrain
+occlusion") drops the terrain root from the list; it is a flora apply key, so a toggle
 re-syncs at once. The cost, an extra draw of the visible chunk batches at 256 px on every moving
 frame, has not been measured; the flora HUD's occlusion render time is where to read it. The lab
 entry has no visible effect yet, because the grass only runs in the terrain world.

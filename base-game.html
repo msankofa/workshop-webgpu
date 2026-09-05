@@ -4698,8 +4698,8 @@ addRange(plantsSec, 'grassDispatchBudgetM', 'Recull thread budget (millions)', 1
 addCommitRange(plantsSec, 'grassBufferMB', 'Instance buffer (MB; rebuilds the grass)', 8, 512, 8, value => `${value.toFixed(0)} MB`);
 addCommitRange(plantsSec, 'grassKmax', 'Blades per 2 m cell cap (rebuilds the grass)', 16, 2048, 16, value => value.toFixed(0));
 addToggle(plantsSec, 'grassFrustumCull', 'Cull blades outside the view cone');
-addToggle(plantsSec, 'grassOcclusion', 'Cull blades hidden behind concrete and terrain');
-addToggle(plantsSec, 'grassTerrainOccludes', 'Terrain hides blades behind a crest');
+addToggle(plantsSec, 'grassOcclusion', 'Occlusion culling');
+addToggle(plantsSec, 'grassTerrainOccludes', 'Terrain occlusion');
 addRange(plantsSec, 'grassNearKeep', 'Keep everything within (m)', 0, 30, 0.5, value => `${value.toFixed(1)} m`);
 addSelect(plantsSec, 'grassShading', 'Blade shading', ['standard', 'lambert'], ['Standard (PBR)', 'Lambert (diffuse only, cheaper)']);
 addToggle(plantsSec, 'grassReceiveShadow', 'Blades receive shadows');
