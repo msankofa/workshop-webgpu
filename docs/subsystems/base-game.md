@@ -1686,6 +1686,21 @@ operator remains where they took the wheel. Reconciliation compares the vehicle 
 player body, so remote UGV drift is visible even while the operator's feet have not moved, restores
 the nine-number `vehicleSeatState`, and replays unacknowledged movement ticks.
 
+**Brakes (2026-09-05).** The road model had no static friction, so a driven UGV with nothing pressed
+rolled down any grade steeper than 1.3 degrees (rolling resistance is 39 N against 307 N of gravity
+on a 10 degree slope), coasted for tens of metres off the throttle, and chattered at plus or minus
+0.1 m/s under a held brake because the brake force flipped sign every tick. Three additions in
+`city-vehicle-model.js`, each a def number so the two vehicles differ: `holdSpeed` parks the hull
+(longitudinal velocity zeroed, grade ignored) when no drive input is held and it is nearly stopped;
+`engineBrake` applies that fraction of `brakeForce` against travel whenever no pedal is down (UGV 0.3,
+the one-pedal feel of an electric drivetrain; buggy 0.12; city cars 0.1). In `stepVehicleSeat` a pedal
+opposed to travel is the service brake until the hull has stopped, so S while rolling forward stops the
+UGV rather than throwing it into reverse, and W while reversing does the same. The autonomy gained the
+missing half of the same problem: `driveToward` plans an arrival speed from the distance left
+(`APPROACH_DECEL`) and brakes above it, where before it held a throttle floor to the cap and a UGV
+three metres from its station could not turn into it and orbited. Pinned in `test-base-game-vehicles.mjs`.
+
+
 **Meshes (rebuilt 2026-09-02).** `flight-meshes.js` registers `ugv` and `buggy` builders with
 steerable/spinning wheels. The first pass stacked boxes and hand-authored the wheel positions, and
 they had drifted: the drawn wheelbase was 0.72 m against a simulated 1.1 m (UGV) and 1.52 m against

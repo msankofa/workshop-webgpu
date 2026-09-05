@@ -589,4 +589,57 @@ function wrapPiLocal(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
   ok(vehicleWreckExpired(rec) === false, 'the hull is still burning after the last one');
 }
 
+// Brakes (2026-09-05). A parked UGV holds on a grade with nothing pressed, lifting off slows it
+// like a one-pedal EV, S while rolling forward is the brake and not reverse, and the autonomy
+// plans its arrival speed instead of reaching the cap three metres from the station and orbiting.
+{
+  const slope = (x, z) => -Math.tan(20 * Math.PI / 180) * z;   // downhill toward +z, 20 degrees
+  const rec = createBaseGameVehicle(VEHICLE_UGV, { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY: slope(0, 0) });
+  assert.ok(takeOverVehicle(rec, 'p1'));
+  const start = rec.body.z;
+  run(rec, 3, world(slope), { moveZ: 0, moveX: 0 });
+  assert.ok(Math.abs(rec.body.z - start) < 0.05, `a driven UGV holds on a 20 degree grade with no input (${(rec.body.z - start).toFixed(3)} m)`);
+  assert.ok(rec.body.speed < 0.01, 'and it does not chatter about zero');
+  const loose = createBaseGameVehicle(VEHICLE_UGV, { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY: slope(0, 0) });
+  loose.body.def.holdSpeed = 0; loose.body.def.engineBrake = 0; takeOverVehicle(loose, 'p1');
+  run(loose, 3, world(slope), { moveZ: 0, moveX: 0 });
+  assert.ok(loose.body.z > 5, `without the hold and engine brake the same UGV rolls away (${loose.body.z.toFixed(1)} m)`);
+}
+{
+  const drive = def => { const rec = createBaseGameVehicle(VEHICLE_UGV, { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY: 0 }); Object.assign(rec.body.def, def); takeOverVehicle(rec, 'p1'); run(rec, 4, world(), { moveZ: 1 }); return rec; };
+  const ev = drive({}), coaster = drive({ engineBrake: 0 });
+  assert.ok(ev.body.speed > 6, 'the UGV reaches its cap under full throttle');
+  const z0 = ev.body.z;
+  run(ev, 3, world(), { moveZ: 0 });
+  assert.ok(ev.body.speed < 0.01, 'lifting off brings the UGV to a stop within three seconds');
+  assert.ok(ev.body.z - z0 < 8, `and within a few metres (${(ev.body.z - z0).toFixed(1)} m)`);
+  const c0 = coaster.body.z;
+  run(coaster, 3, world(), { moveZ: 0 });
+  assert.ok(coaster.body.z - c0 > 12, `with no engine brake it coasts much further (${(coaster.body.z - c0).toFixed(1)} m)`);
+}
+{
+  const rec = createBaseGameVehicle(VEHICLE_UGV, { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY: 0 });
+  takeOverVehicle(rec, 'p1');
+  run(rec, 3, world(), { moveZ: 1 });
+  stepVehicleSeat(rec, { moveZ: -1 }, DT, world());
+  assert.equal(rec.input.brake, 1, 'S while rolling forward is the service brake');
+  assert.equal(rec.input.reverse, 0, 'and not reverse thrust');
+  let t = 0;
+  while (rec.body.longitudinalSpeed > 0.01 && t < 2) { stepVehicleSeat(rec, { moveZ: -1 }, DT, world()); t += DT; }
+  assert.ok(t < 1, `the UGV stops from its cap in under a second on S (${t.toFixed(2)} s)`);
+  run(rec, 1, world(), { moveZ: -1 });
+  assert.ok(rec.input.reverse > 0 && rec.body.longitudinalSpeed < -1, 'once stopped, S held reverses');
+  stepVehicleSeat(rec, { moveZ: 1 }, DT, world());
+  assert.equal(rec.input.brake, 1, 'W while reversing brakes the same way');
+}
+{
+  const rec = createBaseGameVehicle(VEHICLE_UGV, { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY: 0 });
+  assert.ok(sendVehicleTo(rec, [0, 0, 6]));
+  let peak = 0;
+  for (let i = 0; i < 120 * 8; i++) { stepBaseGameVehicle(rec, DT, world()); peak = Math.max(peak, rec.body.speed); }
+  const dist = Math.hypot(rec.body.x, rec.body.z - 6);
+  assert.ok(dist <= rec.def.stopRadius && rec.body.speed < 0.05, `a six metre goto arrives and stops (${dist.toFixed(2)} m off, ${rec.body.speed.toFixed(2)} m/s)`);
+  assert.ok(peak < 6, `and never reaches the cap on the way (${peak.toFixed(1)} m/s)`);
+}
+
 console.log('base-game-vehicles: all assertions passed');

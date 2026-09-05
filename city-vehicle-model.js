@@ -29,6 +29,8 @@ export const DEFAULT_ROAD_VEHICLE = Object.freeze({
   yawDamping: 0.38,
   lateralDrag: 0.12,
   maxSpeed: 58,
+  engineBrake: 0.1,   // fraction of brakeForce applied against travel when no pedal is held
+  holdSpeed: 0.35,    // below this, with no drive input, the car is parked: no creep, no roll-away
 });
 
 export function makeRoadVehicle(options = {}) {
@@ -79,8 +81,13 @@ export function stepRoadVehicle(body, input = {}, dt = 1 / 120) {
   const driveForce = throttle * Math.min(d.engineForce, d.powerLimit / Math.max(4, forward));
   const reverseForce = reverse * Math.min(d.reverseForce, d.powerLimit / Math.max(4, Math.abs(vLong)));
   const brakeDirection = Math.sign(vLong || 1);
+  // Parked: no drive input and nearly stopped. Static friction is not modelled, so without this the
+  // hull rolls down any grade steeper than rolling resistance and chatters under a held brake.
+  const held = throttle === 0 && reverse === 0 && Math.abs(vLong) < (d.holdSpeed || 0);
   let longitudinalForce = driveForce - reverseForce - brake * d.brakeForce * brakeDirection;
   if (handbrake) longitudinalForce -= d.handbrakeForce * brakeDirection;
+  // Off the pedals the drivetrain drags: a fraction of the service brake against travel.
+  if (throttle === 0 && reverse === 0 && brake === 0 && !handbrake) longitudinalForce -= (d.engineBrake || 0) * d.brakeForce * brakeDirection;
   // Positive grade is uphill in the vehicle's forward direction. Callers that live on a
   // plane leave it at zero; terrain-aware callers update it from their ground fit.
   longitudinalForce -= d.mass * G * Math.sin(Number(body.grade) || 0);
@@ -90,6 +97,7 @@ export function stepRoadVehicle(body, input = {}, dt = 1 / 120) {
   if (Math.abs(vLong) > 0.02) {
     longitudinalForce -= Math.sign(vLong) * (d.rollingResistance * d.mass * G + 0.5 * 1.225 * d.cdA * vLong * Math.abs(vLong));
   }
+  if (held) { longitudinalForce = 0; body.vx -= vLong * fx; body.vz -= vLong * fz; vLong = 0; }
   const estimatedAccel = longitudinalForce / d.mass;
   const rearStatic = d.mass * G * 0.5;
   const transfer = d.mass * estimatedAccel * d.cgHeight / d.wheelbase;
