@@ -4360,7 +4360,7 @@ function refreshStructureRuntimeLine() {
   const near = structuresWanted() ? structures.nearest(here[0], here[2]) : null;
   const fixed = isOnline() && roomTerrainConfig?.structures ? ` · room seed ${roomTerrainConfig.structureSeed} at ${roomTerrainConfig.structureSpacing} m` : '';
   setTextIfChanged(structureRuntimeLine, !structuresWanted() ? (isOnline() ? 'Off in this room.' : 'Off.')
-    : `${st.built} buildings in ${st.tiles} settled tiles · ${st.meshes} meshes · ${st.collisionTriangles.toLocaleString()} collision tris · bake ${st.buildMs.toFixed(0)} ms${near ? ` · nearest ${near.tile.structure.kind} ${near.distance.toFixed(0)} m` : ''}${fixed}`);
+    : `${st.built} buildings and ${st.scattered} cover structures in ${st.tiles} settled tiles · ${st.meshes} meshes · ${st.collisionTriangles.toLocaleString()} collision tris · bake ${st.buildMs.toFixed(0)} ms${near ? ` · nearest ${near.tile.structure.kind} ${near.distance.toFixed(0)} m` : ''}${fixed}`);
 }
 refreshStructureRuntimeLine();
 const labSummary = document.createElement('div');

@@ -407,6 +407,7 @@ console.log('\n[10] scattered structures: the room streams a building at a plan 
   ok(structs.builtCount >= 4, `${structs.builtCount} buildings built around the player in ${rounds} prepare calls (${structs.tileCount} tiles settled)`);
   const tile = structs.get(1, 1);
   ok(tile && !tile.empty && tile.model, `tile 1:1 holds a ${tile?.structure?.kind}`);
+  ok(tile?.scatter && tile.scatter.placed.length > 0 && tile.navRects.length > tile.scatter.navRects.length, `and ${tile?.scatter?.placed.length} bot-viewer cover structures around it, all in the nav rects`);
   const spawn = tile.model.spawn;
   const hit = room.sim.worldQuery.raycast({ origin: [spawn[0], spawn[1] + 3, spawn[2]], direction: [0, -1, 0], maxDistance: 20 });
   ok(hit && hit.providerId === STRUCTURES_PROVIDER_ID && hit.surfaceType === 'structure' && Math.abs(hit.point[1] - spawn[1]) < 0.02, 'a ray down at the building spawn lands on its floor through the structures provider');

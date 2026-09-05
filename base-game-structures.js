@@ -103,8 +103,8 @@ export function clearanceAgainstRects(rects, x, z, { margin = STRUCTURE_CLEAR.ma
 
 // Polylines that, stamped with radius `reach`, visit every post a slab's clearance touches: one
 // pass per slab along its long axis, so work scales with the building and not with its box.
-export function structureStampPaths(model, { margin = STRUCTURE_CLEAR.margin, fade = STRUCTURE_CLEAR.fade } = {}) {
-  return structureFloorRects(model).map((r) => {
+export function structureStampPaths(model, { margin = STRUCTURE_CLEAR.margin, fade = STRUCTURE_CLEAR.fade } = {}, rects = null) {
+  return (rects ?? structureFloorRects(model)).map((r) => {
     const alongX = r.w >= r.d;
     const half = (alongX ? r.w : r.d) / 2, shortHalf = (alongX ? r.d : r.w) / 2;
     const reach = shortHalf + margin + fade;
@@ -112,4 +112,65 @@ export function structureStampPaths(model, { margin = STRUCTURE_CLEAR.margin, fa
     const b = alongX ? { x: r.x + half, z: r.z } : { x: r.x, z: r.z + half };
     return { path: [a, b], reach };
   });
+}
+
+// ---- the bot viewer's kinds, scattered around the anchor -----------------------------------
+// bot-structures.js builds small combat cover (buildings, maze pockets, obstacle fields, portals,
+// colonnades, slots, ramparts, corners, platforms) as rects in metres. They are scattered in a
+// box around the tile's eco anchor, with the anchor as an avoid circle, through the generator's
+// own `site` path: each candidate reads the ground under its footprint and seats on a foundation
+// at the highest sample, or refuses (water, too steep) and the scatter tries elsewhere. Terrace
+// is a pad-only kind and is dropped with padTerrain:false; the ground here is never written.
+import { generateStructures, rampBox } from './bot-structures.js';
+
+export const SCATTER_DEFAULTS = Object.freeze({
+  count: 5,            // per tile, before rejections
+  reach: 110,          // m half-size of the scatter box around the anchor
+  gap: 6,              // m between the anchor's footprint circle and a scattered structure
+  minSeparation: 6,
+  attempts: 30,
+  maxSpan: 4,          // m of ground rise under a footprint before the site refuses
+  wallHeight: 3,
+  wallT: 0.3,
+  clearance: 0.05,     // m the floor sits above the highest sample
+});
+
+function rangeUnder(heightAt, x, z, w, d, n = 3) {
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const h = heightAt(x - w / 2 + (w * i) / (n - 1), z - d / 2 + (d * j) / (n - 1));
+    if (!Number.isFinite(h)) return null;
+    if (h < min) min = h;
+    if (h > max) max = h;
+  }
+  return { min, max };
+}
+
+export function scatterForStructure(structure, anchorRadius, heightAt, { seaLevel = 0, ...params } = {}) {
+  const P = { ...SCATTER_DEFAULTS, ...params };
+  const bounds = { minX: structure.x - P.reach, maxX: structure.x + P.reach, minZ: structure.z - P.reach, maxZ: structure.z + P.reach };
+  const site = (cx, cz, w, d) => {
+    const r = rangeUnder(heightAt, cx, cz, w, d);
+    if (!r || r.min <= seaLevel + 0.3 || r.max - r.min > P.maxSpan) return null;
+    return { floorY: r.max + P.clearance, skirtDepth: r.max - r.min };
+  };
+  const out = generateStructures(bounds, {
+    seed: (structure.seed ^ 0x5ca7) >>> 0, count: P.count, mix: 'mixed', padTerrain: false,
+    wallHeight: P.wallHeight, wallT: P.wallT, edgeMargin: 0, minSeparation: P.minSeparation, attempts: P.attempts, site,
+  }, [{ x: structure.x, z: structure.z, radius: anchorRadius + P.gap }]);
+  // Boxes in the spawn collider's convention (y = base, h = height), ramps in centre form.
+  const boxes = {
+    walls: out.walls.map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d, y: r.y || 0, h: P.wallHeight })),
+    covers: out.covers.map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d, y: r.y || 0, h: r.h })),
+    slabs: out.slabs.map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d, y: r.y, h: r.h })),
+    foundations: out.foundations.map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d, y: r.y, h: r.h })),
+  };
+  const ramps = out.ramps.map(rampBox);
+  // Nav: walls and covers block; slabs are walked under; foundations sit under the walls.
+  const navRects = [
+    ...boxes.walls.map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d, h: P.wallHeight })),
+    ...boxes.covers.map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d, h: r.h })),
+  ];
+  const keepOut = [...boxes.walls, ...boxes.covers, ...boxes.foundations].map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d }));
+  return { placed: out.placed, boxes, ramps, navRects, keepOut, dropped: out.dropped };
 }

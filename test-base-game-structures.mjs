@@ -1,6 +1,6 @@
 // Node checks for base-game-structures.js: which building stands at a site, and how it is seated.
 // Run: node test-base-game-structures.mjs
-import { STRUCTURE_DEFAULTS, STRUCTURE_CLEAR, structureKindFor, structuresForTile, createStructureModel, structureNavRects, structureBounds, structureFloorRects, clearanceAgainstRects, structureStampPaths } from './base-game-structures.js';
+import { STRUCTURE_DEFAULTS, STRUCTURE_CLEAR, SCATTER_DEFAULTS, scatterForStructure, structureKindFor, structuresForTile, createStructureModel, structureNavRects, structureBounds, structureFloorRects, clearanceAgainstRects, structureStampPaths } from './base-game-structures.js';
 import { ECO_KINDS } from './base-game-spawn-layout.js';
 import { SIGHT_BLOCK_HEIGHT } from './nav-visibility.js';
 
@@ -87,6 +87,28 @@ for (const kind of ECO_KINDS.filter((k) => k !== 'spawn')) {
     if (!covered) missed++;
   }
   ok(checked > 0 && missed === 0, `the stamp paths reach every post the clearance touches (${checked} posts, ${missed} missed)`);
+}
+
+// The bot viewer's kinds around the anchor
+{
+  const heightAt = (x, z) => 30 + 0.01 * x;
+  const s1 = { key: '2:2', kind: 'lobby', seed: 11, x: 1200, z: 1200 };
+  const m = createStructureModel(s1, heightAt, { seaLevel: 0 });
+  const a = scatterForStructure(s1, m.radius, heightAt, { seaLevel: 0 });
+  const b = scatterForStructure(s1, m.radius, heightAt, { seaLevel: 0 });
+  ok(JSON.stringify(a.placed) === JSON.stringify(b.placed), 'the scatter is deterministic');
+  ok(a.placed.length > 0 && a.placed.length <= SCATTER_DEFAULTS.count, `${a.placed.length} of ${SCATTER_DEFAULTS.count} placed on flat dry ground`);
+  ok(a.placed.every((p) => Math.hypot(p.x - s1.x, p.z - s1.z) >= m.radius + SCATTER_DEFAULTS.gap + p.radius - 1e-6), 'nothing overlaps the anchor');
+  ok(a.placed.every((p) => p.kind !== 'terrace'), 'the terrace (a pad-only kind) is never scattered');
+  ok(a.placed.every((p) => Number.isFinite(p.floorY) && p.floorY > 30), 'each one seats on the ground under it');
+  ok(a.boxes.walls.every((w) => w.h === SCATTER_DEFAULTS.wallHeight && w.y >= 30), 'walls stand wall-height above their seated floor');
+  ok(a.boxes.foundations.length === a.placed.length, 'each one has a foundation down to grade');
+  ok(a.navRects.length > 0 && a.navRects.every((r) => r.h > 0) && a.keepOut.length >= a.navRects.length, 'nav rects and keep-out rects exist');
+  const wet = scatterForStructure(s1, m.radius, () => -5, { seaLevel: 0 });
+  ok(wet.placed.length === 0, 'underwater ground refuses every site');
+  const steep = scatterForStructure(s1, m.radius, (x) => x * 2, { seaLevel: 0 });
+  ok(steep.placed.length === 0, 'a hillside steeper than the span limit refuses every site');
+  ok(scatterForStructure(s1, m.radius, heightAt, { seaLevel: 0, count: 0 }).placed.length === 0, 'count 0 scatters nothing');
 }
 
 console.log(`base game structures: ${failed ? `${failed} failed` : 'all pass'}`);

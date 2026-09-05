@@ -3646,6 +3646,22 @@ the window. When a tile is dropped its resident posts keep their zero until thei
 the drop ring (two tiles, 960 m) is beyond the tree radius, so no tree is placed under a building
 that will come back. Planter grass at soil height is not carried over to scattered buildings.
 
+**Step 6, the bot viewer's kinds.** Each tile also scatters `bot-structures.js` cover around
+its eco anchor: `scatterForStructure(structure, anchorRadius, heightAt, { seaLevel })` in
+`base-game-structures.js` runs `generateStructures` in a 220 m box around the site with the
+anchor's footprint circle as an avoid, `mix: 'mixed'` and `padTerrain: false` (which drops the
+terrace, the one pad-only kind; the ground is never written), five per tile before rejections
+(`SCATTER_DEFAULTS`). Seating goes through the generator's own `site` path, the one written for
+imported ground: each candidate reads a 3 by 3 height range under its footprint and refuses water
+or more than 4 m of rise, else seats on a foundation at the highest sample, so a building on a
+slope stands on a skirt rather than floating on its downhill corner. The collider merges the
+scatter's walls, covers, slabs, foundations and tilted ramps into the tile's one geometry; the
+NPC bake gets its walls and covers as blockers (platform decks are walked under, not onto, until
+nav levels arrive); the cover keep-out takes walls, covers and foundations. The page dresses walls,
+slabs, ramps and foundations as the concrete walls and covers as the heavier-weathered covers.
+`scatter: false` on `createStructureCollision` gives the anchor alone. No config or protocol
+change: the tile's seed drives the scatter, and the world tag was left as `structs1`.
+
 **Step 5, settings.** No protocol change: the structure seed and spacing are world identity, not
 runtime shared keys, so they travel in the room's terrain config like the spawn building flag.
 The three settings join `ROOM_OWNED_GROUND_KEYS`: online the owner's change re-requests the world

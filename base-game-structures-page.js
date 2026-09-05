@@ -7,7 +7,7 @@ import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { instancedBoxes, clearBoxes } from './map-boxes.js';
 import { createConcreteMaterial } from './concrete-material.js';
 import { createStructureCollision } from './base-game-structure-collision.js';
-import { structureFloorRects, clearanceAgainstRects, structureStampPaths } from './base-game-structures.js';
+import { clearanceAgainstRects, structureStampPaths } from './base-game-structures.js';
 import { SPAWN_BUILDING_CHUNK, SPAWN_CONCRETE_WALL, SPAWN_CONCRETE_COVER } from './base-game-spawn-building.js';
 
 export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, seaLevel = () => 0, seed = 1, spacing = 480, chunk = SPAWN_BUILDING_CHUNK, collision: collisionOptions = {} }) {
@@ -40,11 +40,11 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
   };
   terrain.setStructureClearance?.(clearanceAt);
   let stampWrites = 0;
-  function stamp(model) {
+  function stamp(tile) {
     const fields = terrain.fields;
     if (!fields?.stampAlong) return 0;
     let writes = 0;
-    for (const { path, reach } of structureStampPaths(model)) {
+    for (const { path, reach } of structureStampPaths(tile.model, {}, tile.keepOut)) {
       writes += fields.stampAlong(['coverGrass', 'coverPlant', 'coverTree'], path, reach, (x, z, value) => Math.round(value * clearanceAt(x, z)));
     }
     stampWrites += writes;
@@ -55,7 +55,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
   let dressedVersion = -1;
   let version = 0;                 // bumps when a tile's meshes are added or removed
   const groups = new Map();        // tile key -> THREE.Group
-  const stats = { tiles: 0, built: 0, meshes: 0, collisionTriangles: 0, buildMs: 0, stampWrites: 0 };
+  const stats = { tiles: 0, built: 0, scattered: 0, meshes: 0, collisionTriangles: 0, buildMs: 0, stampWrites: 0 };
 
   function makeCollision() {
     collision?.dispose();
@@ -85,11 +85,19 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
     group.name = `structure-${tile.structure.kind}-${key}`;
     let meshes = 0;
     for (const [bucket, list] of Object.entries(tile.model.boxes)) meshes += emit(group, BUCKET_MATERIAL[bucket], list.map(toBox));
+    if (tile.scatter) {
+      // The bot viewer's kinds in the same concrete: walls, slabs, ramps and foundations as the
+      // walls, covers as the covers (the heavier weathering).
+      const sc = tile.scatter.boxes;
+      meshes += emit(group, wallMat, [...sc.walls, ...sc.slabs, ...sc.foundations].map(toBox));
+      meshes += emit(group, coverMat, sc.covers.map(toBox));
+      meshes += emit(group, wallMat, tile.scatter.ramps);   // already centre-form, with a tilt
+    }
     root.add(group);
     groups.set(key, group);
     stats.meshes += meshes;
-    floorRects.set(key, structureFloorRects(tile.model));
-    stamp(tile.model);
+    floorRects.set(key, tile.keepOut);
+    stamp(tile);
   }
   function undress(key) {
     const group = groups.get(key);
@@ -107,7 +115,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
     for (const [key, tile] of collision.tiles) if (!tile.empty && !groups.has(key)) dress(key, tile);
     for (const key of [...groups.keys()]) if (!collision.tiles.has(key) || collision.tiles.get(key).empty) undress(key);
     const s = collision.stats();
-    stats.tiles = s.tiles; stats.built = s.built; stats.collisionTriangles = s.triangles; stats.buildMs = s.buildMs; stats.stampWrites = stampWrites;
+    stats.tiles = s.tiles; stats.built = s.built; stats.scattered = s.scattered; stats.collisionTriangles = s.triangles; stats.buildMs = s.buildMs; stats.stampWrites = stampWrites;
     version++;
   }
 

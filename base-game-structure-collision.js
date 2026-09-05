@@ -7,13 +7,14 @@
 // Sites come from the world plan (base-game-sites.js). A host that already holds a plan window
 // (the page) passes `plan: () => window`; otherwise this module runs its own CPU-only plan window
 // on the source, the way test-base-game-plan.mjs does, pumped from ensure().
+import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createFieldScheduler } from './terrain-field-scheduler.js';
 import { createFieldWindow } from './terrain-field-window.js';
 import { createChunkMeshWorldQueryProvider } from './world-query-chunk-mesh-provider.js';
 import { buildSpawnBuildingGeometry } from './base-game-spawn-collider.js';
 import { BASE_GAME_PLAN_DEFAULTS, createPlanWalkDerive } from './base-game-plan.js';
-import { STRUCTURE_DEFAULTS, structuresForTile, createStructureModel, structureNavRects, structureBounds, structureKey } from './base-game-structures.js';
+import { STRUCTURE_DEFAULTS, structuresForTile, createStructureModel, structureNavRects, structureBounds, structureKey, structureFloorRects, scatterForStructure } from './base-game-structures.js';
 
 export const STRUCTURES_PROVIDER_ID = 'structures';
 export const STRUCTURE_COLLISION_DEFAULTS = Object.freeze({
@@ -24,9 +25,19 @@ export const STRUCTURE_COLLISION_DEFAULTS = Object.freeze({
   maxTrianglesPerChunk: 60_000,
 });
 
+// A box (y = base) or a rotated centre-form box (a ramp) as collision geometry.
+function boxGeometry(b, centred = false) {
+  const g = new THREE.BoxGeometry(b.w, b.h, b.d);
+  if (b.rx) g.rotateX(b.rx);
+  if (b.ry) g.rotateY(b.ry);
+  if (b.rz) g.rotateZ(b.rz);
+  g.translate(b.x, centred ? b.y : b.y + b.h / 2, b.z);
+  return g;
+}
+
 export function createStructureCollision(source, {
   worldQuery = null, heightAt = null, seaLevel = 0, seed = STRUCTURE_DEFAULTS.seed, spacing = STRUCTURE_DEFAULTS.spacing,
-  plan = null, priority = 100, ...options
+  plan = null, priority = 100, scatter: scatterOptions = null, ...options
 } = {}) {
   const cfg = { ...STRUCTURE_COLLISION_DEFAULTS, ...options };
   const groundAt = heightAt ?? ((x, z) => source.heightAt(x, z));
@@ -68,12 +79,26 @@ export function createStructureCollision(source, {
     const t0 = performance.now();
     const structure = list[0];
     const model = createStructureModel(structure, groundAt, { seaLevel });
+    // The bot viewer's kinds around the anchor, seated on the same ground. `scatter: false` is
+    // the anchor alone.
+    const scatter = scatterOptions === false ? null : scatterForStructure(structure, model.radius, groundAt, { seaLevel, ...(scatterOptions || {}) });
     const parts = [...buildSpawnBuildingGeometry(model).values()];
+    if (scatter) {
+      for (const list of Object.values(scatter.boxes)) for (const b of list) parts.push(boxGeometry(b));
+      for (const r of scatter.ramps) parts.push(boxGeometry(r, true));
+    }
     const geometry = parts.length === 1 ? parts[0] : mergeGeometries(parts, false);
     if (parts.length > 1) for (const g of parts) g.dispose();
     if (!geometry) throw new Error(`Could not merge structure geometry for tile ${key}`);
+    geometry.computeBoundingBox();
     provider.setChunk(key, geometry, { sourceVersion: source.descriptor?.sourceVersion ?? null });
-    tiles.set(key, { tx, tz, structure, model, navRects: structureNavRects(model), bounds: structureBounds(model), empty: false, buildMs: performance.now() - t0 });
+    const bb = geometry.boundingBox;
+    tiles.set(key, {
+      tx, tz, structure, model, scatter, empty: false, buildMs: performance.now() - t0,
+      navRects: [...structureNavRects(model), ...(scatter ? scatter.navRects : [])],
+      keepOut: [...structureFloorRects(model), ...(scatter ? scatter.keepOut : [])],
+      bounds: { minX: bb.min.x, maxX: bb.max.x, minZ: bb.min.z, maxZ: bb.max.z },
+    });
     buildMsTotal += performance.now() - t0;
     version++;
     return true;
@@ -133,11 +158,12 @@ export function createStructureCollision(source, {
     get plan() { return currentPlan(); },
     get tileCount() { return tiles.size; },
     get builtCount() { let n = 0; for (const t of tiles.values()) if (!t.empty) n++; return n; },
+    get scatteredCount() { let n = 0; for (const t of tiles.values()) if (t.scatter) n += t.scatter.placed.length; return n; },
     get buildMsTotal() { return buildMsTotal; },
     tiles, ensure, within, navRectsWithin,
     has: (tx, tz) => tiles.has(keyOf(tx, tz)),
     get: (tx, tz) => tiles.get(keyOf(tx, tz)) ?? null,
-    stats() { return { tiles: tiles.size, built: this.builtCount, triangles: provider.triangleCount, buildMs: buildMsTotal, version }; },
+    stats() { return { tiles: tiles.size, built: this.builtCount, scattered: this.scatteredCount, triangles: provider.triangleCount, buildMs: buildMsTotal, version }; },
     dispose() {
       provider.clear(); tiles.clear();
       unregister?.();
