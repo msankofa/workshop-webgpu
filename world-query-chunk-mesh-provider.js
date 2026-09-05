@@ -20,6 +20,7 @@ export function createChunkMeshWorldQueryProvider({
   layers = 0xffffffff,
   enabled = true,
   maxTrianglesPerChunk = 200_000,
+  surfaceType = 'terrain',   // what a hit reports; structures reuse this provider with their own
 } = {}) {
   const chunks = new Map();   // key -> { collider, box, triangles }
   const capsule = new Capsule(new THREE.Vector3(), new THREE.Vector3(), 0.35);
@@ -84,7 +85,7 @@ export function createChunkMeshWorldQueryProvider({
       let best = null;
       for (const [key, entry] of rayCandidates(query)) {
         const hit = entry.collider.raycast(query.origin, query.direction, query.maxDistance);
-        if (hit && (!best || hit.distance < best.distance)) best = { ...hit, colliderId: key, surfaceType: 'terrain' };
+        if (hit && (!best || hit.distance < best.distance)) best = { ...hit, colliderId: key, surfaceType };
       }
       return best;
     },
@@ -92,7 +93,7 @@ export function createChunkMeshWorldQueryProvider({
       const out = [];
       for (const [key, entry] of rayCandidates(query)) {
         for (const hit of entry.collider.raycastAll(query.origin, query.direction, query.maxDistance, [])) {
-          out.push({ ...hit, colliderId: key, surfaceType: 'terrain' });
+          out.push({ ...hit, colliderId: key, surfaceType });
         }
       }
       return out;
@@ -118,7 +119,7 @@ export function createChunkMeshWorldQueryProvider({
         });
         grounded = grounded || r.grounded;
         ceiling = ceiling || r.ceiling;
-        for (const c of scratchContacts) contacts.push({ ...c, colliderId: key, surfaceType: 'terrain' });
+        for (const c of scratchContacts) contacts.push({ ...c, colliderId: key, surfaceType });
       }
       if (!contacts.length) return null;
       return {

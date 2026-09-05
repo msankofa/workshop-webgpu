@@ -286,6 +286,7 @@ export function pickBaseGameSharedWorld(settings) {
 // the latter is resolved through `resolveProject(hash)` (the relay's terrain store, or a client
 // cache) and fails with `unknown_terrain` when nothing has it.
 // Returns { config, error, code? }. `config.worldVersion` is the string every peer must agree on.
+export const BASE_GAME_STRUCTURE_DEFAULTS = Object.freeze({ seed: 1, spacing: 480 });   // mirrors base-game-structures.js
 export function sanitizeBaseGameTerrainConfig(input, { resolveProject = null } = {}) {
   if (input == null) return { config: { kind: 'traversalLab', worldVersion: 'traversal-lab' }, error: null };
   if (typeof input !== 'object' || Array.isArray(input)) return { config: null, error: 'terrain config must be an object' };
@@ -295,6 +296,11 @@ export function sanitizeBaseGameTerrainConfig(input, { resolveProject = null } =
   // The eco-brutalist spawn building at the origin (base-game-spawn-collider.js). Part of the
   // world identity: a room with it and a room without it cannot share collision.
   const spawnBuilding = input.spawnBuilding === true;
+  // Scattered eco-brutalist structures at the world plan's sites (base-game-structures.js). Their
+  // seed and spacing fix where every wall stands, so they are world identity too.
+  const structures = input.structures === true;
+  const structureSeed = Math.max(0, Math.min(1e9, Math.round(Number(input.structureSeed ?? BASE_GAME_STRUCTURE_DEFAULTS.seed)))) || 0;
+  const structureSpacing = Math.max(120, Math.min(1920, Math.round(Number(input.structureSpacing ?? BASE_GAME_STRUCTURE_DEFAULTS.spacing)))) || BASE_GAME_STRUCTURE_DEFAULTS.spacing;
   let text;
   try { text = JSON.stringify(input.descriptor); } catch { return { config: null, error: 'terrain descriptor is not serializable' }; }
   if (!text || text.length > BASE_GAME_TERRAIN_CONFIG_MAX_BYTES) return { config: null, error: `terrain descriptor exceeds ${BASE_GAME_TERRAIN_CONFIG_MAX_BYTES} bytes` };
@@ -323,8 +329,10 @@ export function sanitizeBaseGameTerrainConfig(input, { resolveProject = null } =
   // a v5 project's sea level is inside its hash already; the analytic source's is only here
   const seaTag = seaLevel !== 0 ? `:sea${seaLevel}` : '';
   const spawnTag = spawnBuilding ? ':spawnbld1' : '';
-  const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}${volumetric ? ':volume' : ''}${seaTag}${spawnTag}`;
-  return { config: { kind: 'terrain', descriptor, projectHash, volumetric, spawnBuilding, worldVersion }, error: null };
+  if (structures && volumetric) return { config: null, error: 'scattered structures are not built in volumetric rooms yet' };
+  const structTag = structures ? `:structs1:${structureSeed}:${structureSpacing}` : '';
+  const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}${volumetric ? ':volume' : ''}${seaTag}${spawnTag}${structTag}`;
+  return { config: { kind: 'terrain', descriptor, projectHash, volumetric, spawnBuilding, structures, structureSeed, structureSpacing, worldVersion }, error: null };
 }
 
 // The wire form of a room config: the v5 project body is replaced by its hash (the relay stores
@@ -351,7 +359,7 @@ export function withTerrainProject(config, project) {
 // What snapshots carry about the ground: identity only, never the project body.
 export function describeBaseGameTerrainConfig(config) {
   if (!config) return null;
-  return { kind: config.kind, worldVersion: config.worldVersion, projectHash: config.projectHash ?? null, sourceKey: config.descriptor?.key ?? null, sourceVersion: config.descriptor?.sourceVersion ?? null, volumetric: config.volumetric === true, spawnBuilding: config.spawnBuilding === true };
+  return { kind: config.kind, worldVersion: config.worldVersion, projectHash: config.projectHash ?? null, sourceKey: config.descriptor?.key ?? null, sourceVersion: config.descriptor?.sourceVersion ?? null, volumetric: config.volumetric === true, spawnBuilding: config.spawnBuilding === true, structures: config.structures === true, structureSeed: config.structureSeed ?? null, structureSpacing: config.structureSpacing ?? null };
 }
 
 export function advanceBaseGameWorld(world, elapsedMs) {

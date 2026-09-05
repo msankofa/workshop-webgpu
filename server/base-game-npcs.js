@@ -5,7 +5,7 @@
 // the brain as `worldEntities` on their team; hits reach it through `damaged`. Plan:
 // docs/superpowers/plans/2026-08-27-base-game-npc-bots.md (slice 2).
 import { createBotBrain, createBrainBot, Vec3 } from '../bot-brain.js';
-import { finalizeNavGrid } from '../nav-grid.js';
+import { finalizeNavGrid, rasterizeBlockers } from '../nav-grid.js';
 import { buildSightGrid, buildLazyVisibilityField } from '../nav-visibility.js';
 import { buildCornerMap } from '../nav-corners.js';
 import { getRole } from '../bot-roles.js';
@@ -22,6 +22,7 @@ export const NPC_ZONE_SPAN = 384;            // m, the env-viewer zone bake (65k
 export const NPC_ZONE_CELL = 1.5;
 export const NPC_ZONE_REBAKE_DRIFT = 96;     // m the players' centroid moves before a rebake
 export const NPC_MAX_SLOPE = 1.3;            // rise per NPC_ZONE_CELL that is still walkable (~41 deg; the controller climbs 50)
+export const NPC_WALL_MARGIN = 0.55;         // m the nav raster grows a structure wall, as bot-viewer-v3 does, so paths do not hug it
 export const NPC_CREST = { minRise: 0.6, maxSpan: 4.5 / NPC_ZONE_CELL, farCells: 24 / NPC_ZONE_CELL, spacingCells: 4 / NPC_ZONE_CELL, stride: 1 };
 export const NPC_SPAWN_TRIES = 24;
 export const NPC_PATROL_RING_POINTS = 8;
@@ -89,7 +90,7 @@ export function findNpcSpawn({ near, spread = 6, heightAt, seaLevel = -Infinity,
   return best ?? [near[0], heightAt(near[0], near[2]), near[2]];
 }
 
-export function createRoomNpcs({ room, heightAt: rawHeightAt, raycast: rawRaycast, seaLevel = () => -Infinity, roomMs, log = null }) {
+export function createRoomNpcs({ room, heightAt: rawHeightAt, raycast: rawRaycast, structures = null, seaLevel = () => -Infinity, roomMs, log = null }) {
   // Cost accounting for the N1 gate: ms and counts per second, read by bench-base-game-npcs.mjs.
   const stats = { thinkMs: 0, syncMs: 0, thinks: 0, raycasts: 0, raycastMs: 0, bakes: 0, bakeMs: 0, inputMs: 0, heights: 0, heightMs: 0, vis: 0, visMs: 0, paths: 0, pathMs: 0 };
   const heightAt = (x, z) => { const t = performance.now(); stats.heights++; const h = rawHeightAt(x, z); stats.heightMs += performance.now() - t; return h; };
@@ -144,7 +145,7 @@ export function createRoomNpcs({ room, heightAt: rawHeightAt, raycast: rawRaycas
     const half = NPC_ZONE_SPAN / 2;
     const bounds = { minX: cx - half, maxX: cx + half, minZ: cz - half, maxZ: cz + half };
     const cols = Math.ceil(NPC_ZONE_SPAN / NPC_ZONE_CELL), rows = cols;
-    job = { cx, cz, bounds, cols, rows, cell: NPC_ZONE_CELL, heights: new Float32Array(cols * rows), cells: new Uint8Array(cols * rows), soft: new Uint8Array(cols * rows), row: 0, phase: 'sample', t0: performance.now(), sea: seaLevel() };
+    job = { cx, cz, bounds, cols, rows, cell: NPC_ZONE_CELL, heights: new Float32Array(cols * rows), cells: new Uint8Array(cols * rows), soft: new Uint8Array(cols * rows), row: 0, phase: 'sample', t0: performance.now(), sea: seaLevel(), structuresVersion: structures?.version ?? 0 };
   }
   function stepBake(budgetMs) {
     if (!job) return;
@@ -181,13 +182,20 @@ export function createRoomNpcs({ room, heightAt: rawHeightAt, raycast: rawRaycas
     }
     if (job.phase === 'finalize') {
       const tf = performance.now();
+      // Structure walls and covers inside the zone: blocked cells for paths, tall rects for sight
+      // and cover corners, the way bot-viewer-v3 feeds its layout in.
+      job.rects = structures ? structures.navRectsWithin(bounds) : [];
+      if (job.rects.length) {
+        const blocked = rasterizeBlockers({ cols, rows, cellSize: cell, minX: bounds.minX, minZ: bounds.minZ }, job.rects, NPC_WALL_MARGIN);
+        for (let k = 0; k < blocked.length; k++) if (blocked[k]) { cells[k] = 0; soft[k] = 0; }
+      }
       job.grid = finalizeNavGrid({ cols, rows, cellSize: cell, minX: bounds.minX, minZ: bounds.minZ, cells, heights, soft, levels: null }, { connectRegions: true });
       job.finalizeMs = performance.now() - tf;
       job.phase = 'vis'; return;
     }
     if (job.phase === 'vis') {
       const tv = performance.now();
-      job.visField = buildLazyVisibilityField(job.grid, buildSightGrid(job.grid, []), { terrain: { heights: job.grid.heights } });
+      job.visField = buildLazyVisibilityField(job.grid, buildSightGrid(job.grid, job.rects), { terrain: { heights: job.grid.heights } });
       const canSee = job.visField.canSee.bind(job.visField);
       job.visField.canSee = (a, b) => { const t = performance.now(); stats.vis++; const rr = canSee(a, b); stats.visMs += performance.now() - t; return rr; };
       job.visMs = performance.now() - tv;
@@ -195,10 +203,10 @@ export function createRoomNpcs({ room, heightAt: rawHeightAt, raycast: rawRaycas
     }
     if (job.phase === 'corners') {
       const tc = performance.now();
-      const cornerMap = buildCornerMap(job.grid, [], job.visField, { heights: job.grid.heights, crest: NPC_CREST });
+      const cornerMap = buildCornerMap(job.grid, job.rects, job.visField, { heights: job.grid.heights, crest: NPC_CREST });
       let walkableCells = 0; for (let i = 0; i < cells.length; i++) if (cells[i]) walkableCells++;
       const walkable = (x, z) => { const c = Math.floor((x - bounds.minX) / cell), r = Math.floor((z - bounds.minZ) / cell); return c >= 0 && r >= 0 && c < cols && r < rows && cells[r * cols + c] === 1; };
-      zone = { cx: job.cx, cz: job.cz, bounds, bakeMs: performance.now() - job.t0, cells: cols * rows, walkableCells, corners: cornerMap?.corners?.length ?? 0, walkable };
+      zone = { cx: job.cx, cz: job.cz, bounds, bakeMs: performance.now() - job.t0, cells: cols * rows, walkableCells, corners: cornerMap?.corners?.length ?? 0, walkable, rects: job.rects.length, structuresVersion: job.structuresVersion };
       stats.bakes++; stats.bakeMs += zone.bakeMs;
       brain.configure({ navGrid: job.grid, visField: job.visField, cornerMap, patrolPoints: patrolRing(job.cx, job.cz, walkable) });
       zone.phaseMs = { finalize: job.finalizeMs, vis: job.visMs, corners: performance.now() - tc };
@@ -230,7 +238,9 @@ export function createRoomNpcs({ room, heightAt: rawHeightAt, raycast: rawRaycas
   function ensureZone() {
     const c = playersCentroid();
     if (!c) return;
-    if (!job && (!zone || Math.hypot(c[0] - zone.cx, c[1] - zone.cz) > NPC_ZONE_REBAKE_DRIFT)) startBake(c[0], c[1]);
+    // A structure arriving or leaving anywhere rebakes: the version is cheap and a zone is 384 m.
+    const structuresMoved = zone && structures && structures.version !== zone.structuresVersion;
+    if (!job && (!zone || structuresMoved || Math.hypot(c[0] - zone.cx, c[1] - zone.cz) > NPC_ZONE_REBAKE_DRIFT)) startBake(c[0], c[1]);
     stepBake(NPC_BAKE_BUDGET_MS);
   }
   function rebake() { zone = null; job = null; ensureZone(); }

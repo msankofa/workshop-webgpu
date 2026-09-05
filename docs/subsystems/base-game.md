@@ -3577,5 +3577,32 @@ covers and bars whose base is within 0.9 m of the floor, heights relative to the
 bot walks under are left out. `structureBounds(model, margin)` is the footprint box for residency
 and keep-out.
 
-Not yet done: the room server's plan window, the streaming collider, the page's roots, cover
-stamps and occluders, and the shared settings.
+**Step 2, the room server** (`base-game-structure-collision.js`, `server/base-game-rooms.js`,
+`server/base-game-npcs.js`, `base-game-protocol.mjs`; block 10 of `test-base-game-rooms-terrain.mjs`).
+`structures: true` in a room's terrain config opts the room in, with `structureSeed` (default 1)
+and `structureSpacing` (default 480, clamped 120..1920); they are world identity, tagged
+`:structs1:<seed>:<spacing>`, so two rooms never share a world with walls in different places.
+Volumetric rooms refuse the flag for now.
+
+`createStructureCollision(source, { worldQuery, seaLevel, seed, spacing, plan })` is one
+world-query provider (`structures`, priority 100, `world-query-chunk-mesh-provider.js` with its
+new `surfaceType` option reporting `structure`) holding one collider per resident tile. It is the
+volumetric terrain's `ensure(positions)` pattern: `sim.prepare` runs it every tick, it builds the
+tiles within one tile of every player nearest first, one building per call, and drops tiles more
+than two tiles from everyone. Sites come from a plan window: the host's when it passes
+`plan: () => window` (the page), else a private CPU-only window on the source (six 480 m tiles a
+side, pumped from `ensure`). A tile is `null` until its plan tile is resident and is retried;
+an empty tile is settled once. `within(box)` and `navRectsWithin(box)` answer the NPC bake, and
+`version` bumps on every add or drop.
+
+The NPC zone bake takes the rects: `rasterizeBlockers` with `NPC_WALL_MARGIN` (0.55 m, the bot
+viewer's) zeroes the cells under walls, covers and bars, and the same rects feed the sight grid and
+the corner map, so bots path around the concrete and take cover at its corners. A change in the
+structures' `version` since the live zone was baked triggers a rebake at the next think. Upper
+floors are not levels yet: a bot walks under a slab, never onto it.
+
+Test block 10 proves the page-style 16-tile plan window and the room's private window place the
+same kind at the same site, and that a page collider built through the same module lands a ray
+on the same floor height as the room's.
+
+Not yet done: the page's roots, cover stamps and occluders, and the shared settings panel.

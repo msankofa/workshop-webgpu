@@ -110,17 +110,26 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
       const { createSpawnBuildingWorldQuery } = await import('../base-game-spawn-collider.js');
       building = createSpawnBuildingWorldQuery(worldQuery, (x, z) => source.heightAt(x, z), { seaLevel });
     }
+    // Scattered structures: one streamed provider, built around the players each tick from the
+    // same plan-window sites the page places them at (base-game-structure-collision.js).
+    let structures = null;
+    if (config.structures) {
+      const { createStructureCollision } = await import('../base-game-structure-collision.js');
+      structures = createStructureCollision(source, { worldQuery, seaLevel, seed: config.structureSeed, spacing: config.structureSpacing });
+    }
     return {
       worldQuery,
       spawn: building
         ? [building.spawn[0], building.spawn[1] + 1.5, building.spawn[2]]
         : [0, Math.max(source.heightAt(0, 0), seaLevel) + 1.5, 0],
       building,
+      structures,
       seaLevel,
       killPlaneYAt: (x, z) => source.heightAt(x, z) - killBelow,
       heightAt: (x, z) => source.heightAt(x, z),
       worldVersion: config.worldVersion,
       terrain: config,
+      prepare: structures ? positions => structures.ensure(positions) : undefined,
     };
   }
   // The spawn area: the eco-brutalist building on a flat slab at the origin, with the traversal
@@ -842,6 +851,7 @@ export function createBaseGameRoomService({
       room,
       heightAt: roomGroundY(room),
       raycast: worldOccluder(room) ?? (() => null),
+      structures: room.sim.structures ?? null,
       seaLevel: () => (room.water?.enabled ? room.water.level : -Infinity),
       roomMs: () => roomMs(room),
       log: process.env.BASE_GAME_NPC_LOG ? (...a) => console.log('[npc]', ...a) : null,
