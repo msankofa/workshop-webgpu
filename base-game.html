@@ -136,6 +136,7 @@ import { loadStreamedSplatTextures, createStreamedSplatMaterial, updateStreamedS
 import { sanitizeBaseGameTerrainConfig } from './base-game-protocol.mjs';
 import { createBaseGameTerrain, terrainSourceFromDescriptor, BASE_GAME_TERRAIN_DEFAULTS } from './base-game-terrain.js';
 import { createBaseGameTrails, BASE_GAME_TRAIL_DEFAULTS } from './base-game-trails.js';
+import { createBaseGameStructures } from './base-game-structures-page.js';
 import { createRoadSystem } from './roads.js';
 import { groundFromHeightFn } from './road-mesh.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
@@ -234,6 +235,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   trailWidth: BASE_GAME_TRAIL_DEFAULTS.width,
   trailMaxGrade: BASE_GAME_TRAIL_DEFAULTS.maxGrade,
   trailShow: true,
+  structuresEnabled: true,        // eco-brutalist buildings at the plan sites (base-game-structures.js)
+  structureSeed: 1,
+  structureSpacing: 480,
   waterEnabled: true,
   // A planar mirror renders the visible world a second time. Keep it opt-in: at the old radius-6
   // terrain default that made every other frame submit roughly 169 extra chunk draws.
@@ -760,7 +764,9 @@ function pickRoomTerrainConfig() {
   const descriptor = simulationReady ? activeTerrainDescriptor : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
   const volumetric = simulationReady && settings.terrainVolumetric && !!terrain.source?.densityAt;
   // The spawn building rides on heightfield terrain only; volumetric rooms keep the bare spawn.
-  return { kind: 'terrain', descriptor, volumetric, spawnBuilding: !volumetric };
+  // Scattered structures are heightfield-only too, and their seed and spacing are world identity.
+  return { kind: 'terrain', descriptor, volumetric, spawnBuilding: !volumetric,
+    structures: settings.structuresEnabled && !volumetric, structureSeed: settings.structureSeed, structureSpacing: settings.structureSpacing };
 }
 let roomTerrainConfig = null;   // the room's current terrain config while online (set on join and on owner changes)
 function connectOnlineSession({ mode, roomCode }) {
@@ -1276,6 +1282,18 @@ function spawnBuildingGround() {
     : { heightAt: flatGround, seaLevel: SPAWN_AREA_SEA_LEVEL, options: SPAWN_AREA_BUILDING_OPTIONS };
 }
 let spawnBuildingMode = null;   // the world mode the building was last seated for
+// The scattered structures (base-game-structures-page.js) stand on heightfield terrain only.
+// Online the room's terrain config decides and fixes their seed and spacing; Solo the settings do.
+let structures = null;         // created after the trails, below
+function structuresWanted() {
+  if (settings.worldMode !== 'terrain') return false;
+  if (isOnline()) return roomTerrainConfig?.structures === true;
+  return settings.structuresEnabled && !(settings.terrainVolumetric && !!terrain.source?.densityAt);
+}
+function structureParams() {
+  if (isOnline() && roomTerrainConfig?.structures) return { seed: roomTerrainConfig.structureSeed ?? 1, spacing: roomTerrainConfig.structureSpacing ?? 480 };
+  return { seed: settings.structureSeed, spacing: settings.structureSpacing };
+}
 // Reseats the building on the current source. Called after every setSource and from updateWorld.
 let floraForBuilding = null;   // set once the flora exists (it is created after the terrain)
 function syncSpawnBuilding() {
@@ -1283,6 +1301,7 @@ function syncSpawnBuilding() {
   spawnBuilding.rebuild(g.heightAt, g.seaLevel, g.options);
   spawnBuildingMode = settings.worldMode;
   spawnBuilding.setVisible(spawnBuildingWanted());
+  structures?.reset(structureParams());   // a new source moves every site
   syncSpawnBuildingFlora();
 }
 // The planters are a biome inside the building's rectangle, and the concrete occludes blades,
@@ -1295,16 +1314,23 @@ function syncSpawnBuildingFlora() {
   floraForBuilding.setStructure(wanted ? spawnBuilding.floraStructure : null);
   const roots = [];
   if (wanted) roots.push(spawnBuilding.root);
+  if (structures && structuresWanted()) roots.push(structures.root);
   if (settings.worldMode === 'traversalLab') roots.push(traversalLab.root);
   if (settings.worldMode === 'terrain' && settings.grassTerrainOccludes) roots.push({ root: terrain.root, filter: (o) => o.isBatchedMesh });
   floraForBuilding.setOccluders(roots);
   floraOccResidency = terrain.residencyRevision;
+  floraOccStructures = structures?.version ?? -1;
 }
-// Streaming adds batches under an unmoved terrain root, so the marking must follow residency.
+// Streaming adds batches under an unmoved terrain root, and structures add groups under theirs,
+// so the marking must follow both.
+let floraOccStructures = -1;
 function updateFloraOccluders() {
-  if (!floraForBuilding || settings.worldMode !== 'terrain' || !settings.grassTerrainOccludes) return;
-  if (terrain.residencyRevision === floraOccResidency) return;
+  if (!floraForBuilding || settings.worldMode !== 'terrain') return;
+  const terrainMoved = settings.grassTerrainOccludes && terrain.residencyRevision !== floraOccResidency;
+  const structuresMoved = structures && structuresWanted() && structures.version !== floraOccStructures;
+  if (!terrainMoved && !structuresMoved) return;
   floraOccResidency = terrain.residencyRevision;
+  floraOccStructures = structures?.version ?? -1;
   floraForBuilding.remarkOccluders();
 }
 // Phase 4 slice: the analytic source is the only runtime source until terrain-source-v5.js lands.
@@ -1330,6 +1356,8 @@ const trails = createBaseGameTrails({ terrain, options: {
   enabled: settings.trailsEnabled, seed: settings.trailSeed, spacing: settings.trailSpacing,
   width: settings.trailWidth, maxGrade: settings.trailMaxGrade,
 } });
+structures = createBaseGameStructures({ THREE, scene, worldQuery, terrain, seaLevel: () => terrain.seaLevel, ...structureParams() });
+structures.setEnabled(structuresWanted());
 // Use the exact 1.25 m contact field where it is resident, then the already-streamed plan height
 // for the off-screen part of a leg. Requiring both endpoints to be inside the tiny contact window
 // left every 480 m trail edge permanently queued and rendered only its centre junction patch.
@@ -1393,7 +1421,8 @@ let activeTerrainDescriptor = TERRAIN_SOURCE_DESCRIPTOR;
 function adoptRoomTerrain(config) {
   if (!config) return;
   if (config.kind === 'terrain') {
-    const check = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: config.descriptor, volumetric: config.volumetric === true });
+    const check = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: config.descriptor, volumetric: config.volumetric === true,
+      spawnBuilding: config.spawnBuilding === true, structures: config.structures === true, structureSeed: config.structureSeed, structureSpacing: config.structureSpacing });
     if (check.error) throw new Error(`room terrain rejected locally: ${check.error}`);
     if (check.config.worldVersion !== config.worldVersion) throw new Error(`room terrain version mismatch: ${check.config.worldVersion} vs ${config.worldVersion}`);
     const same = activeTerrainDescriptor.key === check.config.descriptor.key && activeTerrainDescriptor.sourceVersion === check.config.descriptor.sourceVersion;
@@ -3095,6 +3124,7 @@ const stopRebasePresentation = worldCoordinates.onRebase(event => {
   debrisSim.clear();   // pieces are render-local; the origin just moved under them
   traversalLab.root.position.add(rebaseShift);
   spawnBuilding.root.position.add(rebaseShift);
+  structures.root.position.add(rebaseShift);
   roads.group.position.add(rebaseShift);
   if (settings.playerControlMode === 'orbit') {
     camera.position.add(rebaseShift);
@@ -3376,6 +3406,17 @@ function applyFloraSettings() {
   if (flora.occlusion) flora.occlusion.bias = settings.grassOcclusionBias;
 }
 
+const STRUCTURE_APPLY_KEYS = ['structuresEnabled', 'worldMode', 'structureSeed', 'structureSpacing', 'terrainVolumetric'];
+const appliedStructures = {};
+function applyStructureSettings() {
+  let dirty = false;
+  for (const key of STRUCTURE_APPLY_KEYS) if (appliedStructures[key] !== settings[key]) { appliedStructures[key] = settings[key]; dirty = true; }
+  if (!dirty) return;
+  const p = structureParams();
+  if (p.seed !== structures.collision.seed || p.spacing !== structures.collision.spacing) structures.reset(p);
+  structures.setEnabled(structuresWanted());
+  syncSpawnBuildingFlora();
+}
 const TRAIL_APPLY_KEYS = ['trailsEnabled', 'worldMode', 'trailSeed', 'trailSpacing', 'trailWidth', 'trailMaxGrade', 'trailShow'];
 const appliedTrails = {};
 function applyTrailSettings() {
@@ -3497,7 +3538,7 @@ function labOccluderExtent() {
 terrain.setSplatRain(rain.groundShade);
 // The Traversal Lab has plain MeshStandardNodeMaterials, so it takes rain.js's own decorator
 // rather than the splat bundle. Puddles on the floors, run-off streaks down the walls.
-for (const material of spawnBuilding.materials) {
+for (const material of [...spawnBuilding.materials, ...structures.materials]) {
   applyWetSurface(material, rain.uniforms, { baseColor: material.colorNode ? undefined : materialColor, rippleScale: 2.6, puddleScale: 0.12 });
 }
 for (const material of traversalLab.materials) {
@@ -3672,6 +3713,7 @@ function updateWorld(dt) {
   terrain.setFarLod(settings.worldMode === 'terrain' && settings.terrainFarLod);
   applyWaterSettings();
   applyTrailSettings();
+  applyStructureSettings();
   applyFloraSettings();
   applyForestSettings();
   applyCloudSettings();
@@ -4299,6 +4341,21 @@ function refreshTrailRuntimeLine() {
   setTextIfChanged(trailRuntimeLine, `Plan ${(st.planCoverage * 100).toFixed(0)}% @ ${st.planOriginPX ?? '?'},${st.planOriginPZ ?? '?'} · ${st.sites} sites · ${st.routed} routed / ${st.pending} pending · ${st.edges} edges · ${roads.residentEdgeCount} resident · ${roads.pendingBuilds} mesh builds · route ${st.lastRouteMs.toFixed(1)} ms (max ${st.maxRouteMs.toFixed(1)})`);
 }
 refreshTrailRuntimeLine();
+const structuresSec = createSection(ctrlBody, 'Structures', { collapsed: true });
+addToggle(structuresSec, 'structuresEnabled', 'Eco-brutalist buildings at the plan sites');
+addRange(structuresSec, 'structureSeed', 'Structure seed', 0, 1e9, 1, value => value.toFixed(0));
+addRange(structuresSec, 'structureSpacing', 'Site spacing', 120, 1920, 30, value => `${value.toFixed(0)} m`);
+const structureRuntimeLine = document.createElement('div');
+structureRuntimeLine.className = 'note';
+structuresSec.append(structureRuntimeLine);
+function refreshStructureRuntimeLine() {
+  const st = structures.stats;
+  const here = playerController.getPosition();
+  const near = structuresWanted() ? structures.nearest(here[0], here[2]) : null;
+  setTextIfChanged(structureRuntimeLine, !structuresWanted() ? (isOnline() ? 'Off in this room.' : 'Off.')
+    : `${st.built} buildings in ${st.tiles} settled tiles · ${st.meshes} meshes · ${st.collisionTriangles.toLocaleString()} collision tris · bake ${st.buildMs.toFixed(0)} ms${near ? ` · nearest ${near.tile.structure.kind} ${near.distance.toFixed(0)} m` : ''}`);
+}
+refreshStructureRuntimeLine();
 const labSummary = document.createElement('div');
 labSummary.className = 'note';
 labSummary.textContent = `${traversalLab.stats.primitiveCount} diagnostic solids / `
@@ -6457,6 +6514,7 @@ async function animate() {
     const streamFocus = flown ?? bodyPosition;
     terrain.update(streamFocus, dt, bodyPosition);
     trails.update(streamFocus);
+    if (structuresWanted()) structures.update([bodyPosition]);   // colliders follow the body, like the terrain's
     roads.setResidency(streamFocus[0], streamFocus[2], 70);
     roads.update();
     if (profileFrame) frameProfiler.mark('terrain', performance.now() - passStart);
@@ -6481,6 +6539,7 @@ async function animate() {
       if (panelElementVisible(grassRuntimeLine)) refreshGrassRuntimeLine();
       if (panelElementVisible(forestRuntimeLine)) refreshForestRuntimeLine();
       if (panelElementVisible(trailRuntimeLine)) refreshTrailRuntimeLine();
+      if (panelElementVisible(structureRuntimeLine)) refreshStructureRuntimeLine();
     }
     // Terrain chunks, trees and grass stream in long after boot, and a material built while the visor
     // is already up would have no heat and render as a lit colour object in a heat frame. Re-sweeping

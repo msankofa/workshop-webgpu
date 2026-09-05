@@ -3605,4 +3605,25 @@ Test block 10 proves the page-style 16-tile plan window and the room's private w
 same kind at the same site, and that a page collider built through the same module lands a ray
 on the same floor height as the room's.
 
-Not yet done: the page's roots, cover stamps and occluders, and the shared settings panel.
+**Step 3, the page** (`base-game-structures-page.js`, `base-game.html`). `createBaseGameStructures`
+holds the terrain plan window (trails hold it too, but structures must place without them), runs
+the same `createStructureCollision` on the terrain's `groundHeight` and `plan`, and dresses each
+built tile into its own group under one root: the spawn building's bucket materials (cast
+concrete walls and covers, steel bars, soil, water) and its 32 m instanced cells. `update([pos])`
+runs `ensure` and reconciles groups to the collider's tiles by its `version`. The page calls it
+every frame after the trails, from the body's position, only while `structuresWanted()`: terrain
+world, and online the room's `structures` flag, Solo the `structuresEnabled` setting unless the
+terrain is volumetric. Online the room's `structureSeed` and `structureSpacing` win over the
+settings (`structureParams()`); `pickRoomTerrainConfig` sends the Solo values when creating a room.
+`syncSpawnBuilding` resets the structures on every source change, the root joins the rebase
+shift, its materials take the rain decorator, and its root joins the flora occluder list, with
+`updateFloraOccluders` re-marking when the structures' `version` moves. A Structures panel card
+has the toggle, seed and spacing, and a runtime line (buildings, tiles, meshes, collision
+triangles, bake time, nearest building).
+
+`adoptRoomTerrain` now passes `spawnBuilding` and the structure fields into its local sanitizer
+check; before this it compared a version computed without `spawnBuilding` against the room's,
+which would have thrown on any spawn-building room.
+
+Not yet done: cover-channel stamps under the floors (trees still grow through walls), the
+shared-settings relay, and anything seen in a browser.

@@ -1,0 +1,133 @@
+// base-game-structures-page.js — the scattered eco-brutalist buildings on the page: the same
+// streamed collider the room server runs (base-game-structure-collision.js, on the terrain's
+// own plan window and ground), dressed the way the spawn building is (one instanced mesh per
+// material bucket per 32 m cell, cast concrete), one child group per resident tile under a root
+// the render-origin rebase shifts like the spawn building's.
+import { MeshStandardNodeMaterial } from 'three/webgpu';
+import { instancedBoxes, clearBoxes } from './map-boxes.js';
+import { createConcreteMaterial } from './concrete-material.js';
+import { createStructureCollision } from './base-game-structure-collision.js';
+import { SPAWN_BUILDING_CHUNK, SPAWN_CONCRETE_WALL, SPAWN_CONCRETE_COVER } from './base-game-spawn-building.js';
+
+export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, seaLevel = () => 0, seed = 1, spacing = 480, chunk = SPAWN_BUILDING_CHUNK, collision: collisionOptions = {} }) {
+  if (!scene?.add) throw new TypeError('structures require a Three.js scene');
+  if (!worldQuery?.registerProvider) throw new TypeError('structures require a world-query service');
+  if (!terrain?.acquirePlan) throw new TypeError('structures need the terrain plan window');
+
+  const root = new THREE.Group();
+  root.name = 'structures';   // the visor sweep's default heat is a structure's
+  scene.add(root);
+
+  const wallMat = createConcreteMaterial({ THREE, color: 0x9c9e9a, block: SPAWN_CONCRETE_WALL });
+  const coverMat = createConcreteMaterial({ THREE, color: 0x8f918c, block: SPAWN_CONCRETE_COVER });
+  const barMat = new MeshStandardNodeMaterial({ color: 0xd6d9dc, roughness: 0.45, metalness: 0.5 });
+  const soilMat = new MeshStandardNodeMaterial({ color: 0x2a2319, roughness: 1.0, metalness: 0.0 });
+  const waterMat = new MeshStandardNodeMaterial({ color: 0x1b3a2e, roughness: 0.06, metalness: 0.6, transparent: true, opacity: 0.86 });
+  const materials = [wallMat, coverMat, barMat, soilMat, waterMat];
+  const BUCKET_MATERIAL = { walls: wallMat, plinth: wallMat, ground: wallMat, covers: coverMat, bars: barMat, soil: soilMat, water: waterMat };
+
+  // The plan window is held for as long as this exists: trails hold it too, but structures must
+  // place without them.
+  const releasePlan = terrain.acquirePlan();
+  let collision = null;
+  let enabled = true;
+  let dressedVersion = -1;
+  let version = 0;                 // bumps when a tile's meshes are added or removed
+  const groups = new Map();        // tile key -> THREE.Group
+  const stats = { tiles: 0, built: 0, meshes: 0, collisionTriangles: 0, buildMs: 0 };
+
+  function makeCollision() {
+    collision?.dispose();
+    collision = createStructureCollision(
+      { heightAt: (x, z) => terrain.groundHeight(x, z), descriptor: terrain.source?.descriptor ?? null },
+      { worldQuery, heightAt: (x, z) => terrain.groundHeight(x, z), seaLevel: seaLevel(), seed, spacing, plan: () => terrain.plan, ...collisionOptions },
+    );
+    collision.provider.enabled = enabled;
+    dressedVersion = -1;
+  }
+  makeCollision();
+
+  const toBox = (r) => ({ x: r.x, y: r.y + r.h / 2, z: r.z, w: r.w, h: r.h, d: r.d });
+  function emit(group, mat, boxes) {
+    if (!boxes.length) return 0;
+    if (!(chunk > 0)) { instancedBoxes(group, mat, boxes); return 1; }
+    const cells = new Map();
+    for (const b of boxes) {
+      const key = `${Math.floor(b.x / chunk)}:${Math.floor(b.z / chunk)}`;
+      let list = cells.get(key); if (!list) cells.set(key, (list = [])); list.push(b);
+    }
+    for (const list of cells.values()) instancedBoxes(group, mat, list);
+    return cells.size;
+  }
+  function dress(key, tile) {
+    const group = new THREE.Group();
+    group.name = `structure-${tile.structure.kind}-${key}`;
+    let meshes = 0;
+    for (const [bucket, list] of Object.entries(tile.model.boxes)) meshes += emit(group, BUCKET_MATERIAL[bucket], list.map(toBox));
+    root.add(group);
+    groups.set(key, group);
+    stats.meshes += meshes;
+  }
+  function undress(key) {
+    const group = groups.get(key);
+    if (!group) return;
+    stats.meshes -= group.children.length;
+    clearBoxes(group);
+    root.remove(group);
+    groups.delete(key);
+  }
+  // Meshes follow the collider's tiles: one dress per newly built tile, one teardown per drop.
+  function reconcile() {
+    if (collision.version === dressedVersion) return;
+    dressedVersion = collision.version;
+    for (const [key, tile] of collision.tiles) if (!tile.empty && !groups.has(key)) dress(key, tile);
+    for (const key of [...groups.keys()]) if (!collision.tiles.has(key) || collision.tiles.get(key).empty) undress(key);
+    const s = collision.stats();
+    stats.tiles = s.tiles; stats.built = s.built; stats.collisionTriangles = s.triangles; stats.buildMs = s.buildMs;
+    version++;
+  }
+
+  return {
+    root,
+    materials,           // for the page's rain decorator
+    stats,
+    get collision() { return collision; },
+    get version() { return version; },
+    get enabled() { return enabled; },
+    // Global positions ([x, y, z]); the plan window is driven by the terrain's own update.
+    update(positions) {
+      if (!enabled) return;
+      collision.ensure(positions);
+      reconcile();
+    },
+    setEnabled(on) {
+      enabled = !!on;
+      root.visible = enabled;
+      collision.provider.enabled = enabled;
+    },
+    // A new source or a new seed: everything placed is wrong now.
+    reset({ seed: nextSeed = seed, spacing: nextSpacing = spacing } = {}) {
+      seed = nextSeed; spacing = nextSpacing;
+      for (const key of [...groups.keys()]) undress(key);
+      makeCollision();
+      version++;
+    },
+    // What stands near a point, for readouts and the spawn picker.
+    nearest(x, z) {
+      let best = null, bestD = Infinity;
+      for (const t of collision.tiles.values()) {
+        if (t.empty) continue;
+        const d = Math.hypot(t.structure.x - x, t.structure.z - z);
+        if (d < bestD) { bestD = d; best = t; }
+      }
+      return best ? { tile: best, distance: bestD } : null;
+    },
+    dispose() {
+      for (const key of [...groups.keys()]) undress(key);
+      collision?.dispose();
+      releasePlan();
+      for (const m of materials) m.dispose();
+      scene.remove(root);
+    },
+  };
+}
