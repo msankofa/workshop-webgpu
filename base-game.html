@@ -283,7 +283,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassShading: BASE_GAME_FLORA_DEFAULTS.grassShading,
   grassReceiveShadow: BASE_GAME_FLORA_DEFAULTS.grassReceiveShadow,
   grassOcclusion: true,           // blades behind the spawn building's concrete are not generated
-  grassTerrainOccludes: true,     // the near terrain chunks hide blades behind a crest as well
+  grassTerrainOccludes: false,    // the near terrain chunks hide blades behind a crest; off until the bias is tuned
+  grassOcclusionBias: 0.12,       // metres a blade top may sit behind the depth image before it is culled
   grassBufferMB: BASE_GAME_FLORA_DEFAULTS.grassBufferMB,
   grassKmax: BASE_GAME_FLORA_DEFAULTS.grassKmax,
   grassDispatchBudgetM: BASE_GAME_FLORA_DEFAULTS.grassDispatchBudgetM,
@@ -3297,7 +3298,7 @@ const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRad
   'grassFadeEnd', 'grassFadeCurve', 'grassFadeHeight', 'grassFadeWidth', 'grassTintFadeStart', 'grassTintFadeEnd',
   'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade', 'grassHeightSource', 'grassResidencyGate',
   'grassCoverFloor', 'grassTierMid', 'grassMidDensity', 'grassTierFar', 'grassFarDensity',
-  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion', 'grassTerrainOccludes', 'drawDistance'];
+  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion', 'grassTerrainOccludes', 'grassOcclusionBias', 'drawDistance'];
 const appliedFlora = {};
 let floraLoading = false;
 function applyFloraSettings() {
@@ -3350,6 +3351,7 @@ function applyFloraSettings() {
   });
   flora.setOcclusionEnabled?.(settings.grassOcclusion);
   syncSpawnBuildingFlora();
+  if (flora.occlusion) flora.occlusion.bias = settings.grassOcclusionBias;
 }
 
 const TRAIL_APPLY_KEYS = ['trailsEnabled', 'worldMode', 'trailSeed', 'trailSpacing', 'trailWidth', 'trailMaxGrade', 'trailShow'];
@@ -4700,6 +4702,7 @@ addCommitRange(plantsSec, 'grassKmax', 'Blades per 2 m cell cap (rebuilds the gr
 addToggle(plantsSec, 'grassFrustumCull', 'Cull blades outside the view cone');
 addToggle(plantsSec, 'grassOcclusion', 'Occlusion culling');
 addToggle(plantsSec, 'grassTerrainOccludes', 'Terrain occlusion');
+addRange(plantsSec, 'grassOcclusionBias', 'Occlusion bias (m)', 0, 3, 0.02, value => `${value.toFixed(2)} m`);
 addRange(plantsSec, 'grassNearKeep', 'Keep everything within (m)', 0, 30, 0.5, value => `${value.toFixed(1)} m`);
 addSelect(plantsSec, 'grassShading', 'Blade shading', ['standard', 'lambert'], ['Standard (PBR)', 'Lambert (diffuse only, cheaper)']);
 addToggle(plantsSec, 'grassReceiveShadow', 'Blades receive shadows');
