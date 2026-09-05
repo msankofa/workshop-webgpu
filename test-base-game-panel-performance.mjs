@@ -21,8 +21,10 @@ for (const name of ['terrainRuntimeLine', 'grassRuntimeLine', 'forestRuntimeLine
 }
 assert.match(html, /if \(element\.textContent !== text\) element\.textContent = text/);
 assert.match(html, /if \(panelElementVisible\(playerStatus\)\)/);
-assert.ok(html.includes('flora.setDiagnosticsEnabled(!!activePerformanceCapture || panelElementVisible(grassRuntimeLine))'),
-  'GPU grass diagnostics run only for an active capture or visible panel');
+assert.ok(html.includes('flora.setDiagnosticsEnabled(!!activePerformanceCapture || panelElementVisible(grassRuntimeLine) || vegetationDebugHud.visible'),
+  'GPU grass diagnostics run only for an active capture, visible panel, or visible HUD');
+assert.ok(html.includes('{ groundProbes: !!activePerformanceCapture || panelElementVisible(grassRuntimeLine) }'),
+  'HUD-only observation does not submit ground probes');
 
 // Opening or folding the panel stores only UI state; it cannot serialize a terrain project.
 assert.match(html, /AUTOSAVE_TERRAIN_KEY = 'pcw:base-game:autosave:terrain'/);

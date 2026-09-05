@@ -117,6 +117,7 @@ import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPa
 import { createBaseGameWater } from './base-game-water.js';
 import { createBaseGameFlora, BASE_GAME_FLORA_DEFAULTS } from './base-game-flora.js';
 import { createBaseGameForest, BASE_GAME_FOREST_DEFAULTS, BASE_GAME_FOREST_SHADOW_LAYER } from './base-game-forest.js';
+import { createVegetationDebugHud, vegetationView } from './vegetation-debug-hud.js';
 import { BASE_GAME_TREE_DEFAULTS, expectedTreesPerChunk } from './base-game-trees.js';
 import { BASE_GAME_TREE_SPECIES, DEFAULT_BASE_GAME_TREE_SPECIES, selectedTreeSpeciesIds } from './base-game-tree-species.js';
 import { createBaseGameClouds, deckHorizonAngle } from './base-game-clouds.js';
@@ -6069,6 +6070,7 @@ function captureContext() {
     flora: {
       trees: { ...forest.sampleDetail() },
       grass: { ...flora.stats },
+      occlusion: flora.occlusion ? { ...flora.occlusionStats, enabled: flora.occlusion.enabled, size: flora.occlusion.size } : null,
       placementCoverage: terrain.fields ? +terrain.fields.coverage.toFixed(3) : null,
       contactCoverage: terrain.contactField ? +terrain.contactField.coverage.toFixed(3) : null,
       fieldScheduler: { ...terrain.fieldScheduler.stats },
@@ -6244,6 +6246,23 @@ function formatTriangles(count) {
   if (count >= 1_000) return `${(count / 1_000).toFixed(0)}k`;
   return String(count);
 }
+const vegetationDebugHud = createVegetationDebugHud({
+  document,
+  sample: () => ({
+    now: performance.now(), fps: shownFps, worstMs: shownWorst,
+    draws: lastRenderInfo.drawCalls, triangles: lastRenderInfo.triangles,
+    grass: { ...flora.stats }, trees: { ...forest.sampleDetail() },
+    occlusion: flora.occlusion ? { ...flora.occlusionStats, enabled: flora.occlusion.enabled, size: flora.occlusion.size } : null,
+    view: vegetationView(camera), gpuRequested: GPU_TIMESTAMPS, gpuResolved: gpuTimestampState.resolved,
+    configuration: JSON.stringify([Object.fromEntries(Object.entries(settings).filter(([key]) => key !== 'grassOcclusion')),
+      worldCoordinates.getOrigin(), terrain.fields?.coverage, terrain.contactField?.coverage]),
+  }),
+  toggleOcclusion: () => {
+    settings.grassOcclusion = !settings.grassOcclusion;
+    changed('grassOcclusion');
+    controlRegistry.get('grassOcclusion')?.sync();
+  },
+});
 function updateStats(frameMs) {
   fpsElapsed += frameMs;
   fpsFrames++;
@@ -6252,6 +6271,7 @@ function updateStats(frameMs) {
   if (fpsElapsed < 500) return;
   shownFps = fpsFrames * 1000 / fpsElapsed;
   shownWorst = worstPeak;
+  vegetationDebugHud.refresh();
   fpsElapsed = 0; fpsFrames = 0; worstPeak = 0;
   const dropped = frameProfiler.droppedFrames;
   const sessionText = activeMode === 'solo' ? 'solo'
@@ -6561,7 +6581,8 @@ async function animate() {
     if (profileFrame) frameProfiler.mark('fx', performance.now() - passStart);
     // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
     passStart = profileFrame ? performance.now() : 0;
-    flora.setDiagnosticsEnabled(!!activePerformanceCapture || panelElementVisible(grassRuntimeLine));
+    flora.setDiagnosticsEnabled(!!activePerformanceCapture || panelElementVisible(grassRuntimeLine) || vegetationDebugHud.visible,
+      { groundProbes: !!activePerformanceCapture || panelElementVisible(grassRuntimeLine) });
     await flora.update(frameStart / 1000);
     if (profileFrame) frameProfiler.mark('grassGpu', performance.now() - passStart);
     passStart = profileFrame ? performance.now() : 0;

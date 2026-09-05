@@ -490,6 +490,20 @@ section('diagnostics are opt-in, sequential, and cannot publish retired results'
   flora.setDiagnosticsEnabled(false);
   await flora.update(9);
   check('disabling stops subsequent readbacks', calls.length === 4);
+  flora.setDiagnosticsEnabled(true, { groundProbes: false });
+  flora.grass.readGroundProbe = () => { throw new Error('HUD must not submit ground probes'); };
+  await flora.update(10);
+  finishCount(27);
+  await flush();
+  check('HUD-only sampling reads the count without ground probes', flora.stats.drawn === 27 && flora.stats.probe === null);
+  check('HUD counts carry a fresh view and occlusion mode',
+    Number.isFinite(flora.stats.drawnSample?.atMs) && flora.stats.drawnSample.view.length === 23
+    && flora.stats.drawnSample.occlusion === false);
+  await flora.update(12);
+  flora.setDiagnosticsEnabled(false, { groundProbes: false });
+  finishCount(999);
+  await flush();
+  check('hiding the HUD discards an in-flight count and its metadata', flora.stats.drawn === null && flora.stats.drawnSample === null);
   delete stubRenderer.getArrayBufferAsync;
   flora.dispose();
   terrain.dispose();
