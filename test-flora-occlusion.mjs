@@ -19,6 +19,10 @@ const renderer = {
 };
 const occ = createFloraOcclusion({ scene, camera, renderer, cacheStatic: true });
 assert.equal(occ.markOccluders(root), 1);
+// A filter keeps a root's shader-placed meshes (clipmap rings) out of the depth image.
+const ring = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial()); ring.name = 'terrain-clipmap-ring-0'; root.add(ring);
+assert.equal(occ.markOccluders(root, (o) => !o.name.startsWith('terrain-clipmap')), 1);
+assert.ok(!ring.layers.isEnabled(OCCLUDER_LAYER)); root.remove(ring);
 assert.ok(wall.layers.isEnabled(OCCLUDER_LAYER));
 assert.equal(occ.update(), true);
 assert.equal(occ.state.revision, 1);

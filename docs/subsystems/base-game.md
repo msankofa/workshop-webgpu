@@ -3521,5 +3521,17 @@ builds a `flora-occlusion.js` pass over the building's chunked meshes and hands 
 `createComputeGrass`, whose cull kernel then drops blades behind the concrete; the first call
 before the grass exists is free, a later first call rebuilds the field once. The page calls both
 from `syncSpawnBuildingFlora()` whenever the building is reseated or the world mode changes.
+
+Since 2026-09-05 the occluder list is more than the building: in the spawn-area world the lab's
+root joins it, and on terrain the terrain root joins it filtered to its `BatchedMesh` chunk
+batches (the far clipmap rings are placed by a position node, so the depth pass would draw them
+flat; the debug bounds and contact marker are not batches either). A crest therefore hides the
+blades behind it. Streaming adds batches under the unmoved terrain root, which the pass's static
+cache cannot see, so `updateFloraOccluders()` re-marks the roots whenever
+`terrain.residencyRevision` moves. The setting `grassTerrainOccludes` (default on, "Terrain hides
+blades behind a crest") drops the terrain root from the list; it is a flora apply key, so a toggle
+re-syncs at once. The cost, an extra draw of the visible chunk batches at 256 px on every moving
+frame, has not been measured; the flora HUD's occlusion render time is where to read it. The lab
+entry has no visible effect yet, because the grass only runs in the terrain world.
 Grass, building meshes and the depth image all live in the render-local frame, so the kernel
 projection stays consistent across a rebase. Nothing is browser-verified yet.

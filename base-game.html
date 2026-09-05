@@ -283,6 +283,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassShading: BASE_GAME_FLORA_DEFAULTS.grassShading,
   grassReceiveShadow: BASE_GAME_FLORA_DEFAULTS.grassReceiveShadow,
   grassOcclusion: true,           // blades behind the spawn building's concrete are not generated
+  grassTerrainOccludes: true,     // the near terrain chunks hide blades behind a crest as well
   grassBufferMB: BASE_GAME_FLORA_DEFAULTS.grassBufferMB,
   grassKmax: BASE_GAME_FLORA_DEFAULTS.grassKmax,
   grassDispatchBudgetM: BASE_GAME_FLORA_DEFAULTS.grassDispatchBudgetM,
@@ -1273,12 +1274,27 @@ function syncSpawnBuilding() {
   spawnBuilding.setVisible(spawnBuildingWanted());
   syncSpawnBuildingFlora();
 }
-// The planters are a biome inside the building's rectangle, and the concrete occludes blades.
+// The planters are a biome inside the building's rectangle, and the concrete occludes blades,
+// with the lab and the near terrain chunks (never the far clipmap rings, which a position node
+// places and the depth pass would draw flat).
+let floraOccResidency = -1;
 function syncSpawnBuildingFlora() {
   if (!floraForBuilding) return;
   const wanted = spawnBuildingWanted();
   floraForBuilding.setStructure(wanted ? spawnBuilding.floraStructure : null);
-  floraForBuilding.setOccluders(wanted ? spawnBuilding.root : null);
+  const roots = [];
+  if (wanted) roots.push(spawnBuilding.root);
+  if (settings.worldMode === 'traversalLab') roots.push(traversalLab.root);
+  if (settings.worldMode === 'terrain' && settings.grassTerrainOccludes) roots.push({ root: terrain.root, filter: (o) => o.isBatchedMesh });
+  floraForBuilding.setOccluders(roots);
+  floraOccResidency = terrain.residencyRevision;
+}
+// Streaming adds batches under an unmoved terrain root, so the marking must follow residency.
+function updateFloraOccluders() {
+  if (!floraForBuilding || settings.worldMode !== 'terrain' || !settings.grassTerrainOccludes) return;
+  if (terrain.residencyRevision === floraOccResidency) return;
+  floraOccResidency = terrain.residencyRevision;
+  floraForBuilding.remarkOccluders();
 }
 // Phase 4 slice: the analytic source is the only runtime source until terrain-source-v5.js lands.
 const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
@@ -3270,7 +3286,7 @@ const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRad
   'grassFadeEnd', 'grassFadeCurve', 'grassFadeHeight', 'grassFadeWidth', 'grassTintFadeStart', 'grassTintFadeEnd',
   'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade', 'grassHeightSource', 'grassResidencyGate',
   'grassCoverFloor', 'grassTierMid', 'grassMidDensity', 'grassTierFar', 'grassFarDensity',
-  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion'];
+  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion', 'grassTerrainOccludes'];
 const appliedFlora = {};
 let floraLoading = false;
 function applyFloraSettings() {
@@ -3322,6 +3338,7 @@ function applyFloraSettings() {
     grassKmax: settings.grassKmax,
   });
   flora.setOcclusionEnabled?.(settings.grassOcclusion);
+  syncSpawnBuildingFlora();
 }
 
 const TRAIL_APPLY_KEYS = ['trailsEnabled', 'worldMode', 'trailSeed', 'trailSpacing', 'trailWidth', 'trailMaxGrade', 'trailShow'];
@@ -4654,7 +4671,8 @@ addRange(plantsSec, 'grassDispatchBudgetM', 'Recull thread budget (millions)', 1
 addCommitRange(plantsSec, 'grassBufferMB', 'Instance buffer (MB; rebuilds the grass)', 8, 512, 8, value => `${value.toFixed(0)} MB`);
 addCommitRange(plantsSec, 'grassKmax', 'Blades per 2 m cell cap (rebuilds the grass)', 16, 2048, 16, value => value.toFixed(0));
 addToggle(plantsSec, 'grassFrustumCull', 'Cull blades outside the view cone');
-addToggle(plantsSec, 'grassOcclusion', 'Cull blades hidden behind the spawn building');
+addToggle(plantsSec, 'grassOcclusion', 'Cull blades hidden behind concrete and terrain');
+addToggle(plantsSec, 'grassTerrainOccludes', 'Terrain hides blades behind a crest');
 addRange(plantsSec, 'grassNearKeep', 'Keep everything within (m)', 0, 30, 0.5, value => `${value.toFixed(1)} m`);
 addSelect(plantsSec, 'grassShading', 'Blade shading', ['standard', 'lambert'], ['Standard (PBR)', 'Lambert (diffuse only, cheaper)']);
 addToggle(plantsSec, 'grassReceiveShadow', 'Blades receive shadows');
@@ -6452,6 +6470,7 @@ async function animate() {
     // as rain randomly costing several milliseconds.
     passStart = profileFrame ? performance.now() : 0;
     updateRainOccluders();
+    updateFloraOccluders();
     if (profileFrame) frameProfiler.mark('rainBake', performance.now() - passStart);
     if (!terrainStudio.open) {
       // postRender is one timer around four different things: the shadow map redraw, the planar

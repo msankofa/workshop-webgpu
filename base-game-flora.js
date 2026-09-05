@@ -170,7 +170,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   const structDensityNode = texture(placeholderTex);
   const structHeightNode = texture(placeholderTex);
   // The occluder depth image the cull kernels test against; built on the first setOccluders.
-  let occlusion = null, occluderRoot = null;
+  let occlusion = null, occluderRoots = [];
   function wrapStructure(samplers) {
     const originXZ = vec2(uRenderOrigin.x, uRenderOrigin.z);
     const inside = (g) => {
@@ -549,17 +549,23 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       }
       grass?.forceRecull?.();
     },
-    // The group whose opaque meshes occlude blades. The kernels compile the test in at build, so
-    // the first call before the grass exists is free; a later first call rebuilds the field.
-    setOccluders(root) {
-      occluderRoot = root || null;
-      if (!occluderRoot) { if (occlusion) occlusion.setEnabled(false); return; }
+    // The groups whose opaque meshes occlude blades: one Object3D, or a list of Object3D or
+    // { root, filter }. The kernels compile the test in at build, so the first call before the
+    // grass exists is free; a later first call rebuilds the field.
+    setOccluders(roots) {
+      occluderRoots = (Array.isArray(roots) ? roots : [roots]).filter(Boolean).map((r) => (r.isObject3D ? { root: r, filter: null } : r));
+      if (!occluderRoots.length) { if (occlusion) occlusion.setEnabled(false); return; }
       if (!occlusion) {
         occlusion = createFloraOcclusion({ renderer, scene, camera, cacheStatic: true });
         if (grass) rebuild();
       }
       occlusion.setEnabled(true);
-      occlusion.markOccluders(occluderRoot);
+      this.remarkOccluders();
+    },
+    // Re-marks every root: a streamed terrain grows new batches under an unmoved root.
+    remarkOccluders() {
+      if (!occlusion) return;
+      for (const { root, filter } of occluderRoots) occlusion.markOccluders(root, filter);
     },
     setOcclusionEnabled(on) { if (occlusion) occlusion.setEnabled(!!on); },
     get occlusion() { return occlusion ? occlusion.state : null; },

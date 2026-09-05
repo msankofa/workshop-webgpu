@@ -89,15 +89,16 @@ export function createFloraOcclusion({ renderer, scene, camera, size = 256, laye
     return true;
   }
 
-  // Opaque meshes under `root` become occluders; transparent ones (water) stay out.
-  function markOccluders(root) {
+  // Opaque meshes under `root` become occluders; transparent ones (water) stay out. `filter`
+  // narrows further (the terrain root also holds clipmap rings placed by a position node).
+  function markOccluders(root, filter = null) {
     // A reseated building replaces its root. Detached roots need no cached references.
     for (const previous of roots.keys()) if (!previous.parent) roots.delete(previous);
     if (cacheStatic && !roots.has(root)) roots.set(root, { matrix: new THREE.Matrix4(), visible: null, parent: null });
     invalidate();
     let n = 0;
     root.traverse((o) => {
-      if (!o.isMesh || (o.material && o.material.transparent)) return;
+      if (!o.isMesh || (o.material && o.material.transparent) || (filter && !filter(o))) return;
       o.layers.enable(layer); n++;
     });
     return n;
