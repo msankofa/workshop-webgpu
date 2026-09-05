@@ -100,7 +100,7 @@ export function createBaseGameDroneView({ scene, worldCoordinates, tintFor = () 
           p: [raw.body.x, raw.y, raw.body.z], v: [raw.body.vx, raw.airV, raw.body.vz],
           yaw: raw.body.yaw, pitch: raw.pitch, roll: raw.roll, steer: raw.body.steering,
           turretYaw: raw.def?.turret ? raw.turretYaw : null, turretPitch: raw.def?.turret ? raw.turretPitch : null,
-          hp: raw.hp, mode: raw.mode, state: raw.state, target: raw.target }, serverTime, seen);
+          hp: raw.hp, mode: raw.mode, state: raw.state, target: raw.target, lights: raw.lights ?? 0 }, serverTime, seen);
       } else if (raw?.d) {
         pushState({ id: raw.id, kind: raw.kind, owner: raw.ownerId, team: raw.team,
           p: raw.d.p, v: raw.d.v, yaw: raw.d.yaw, pitch: raw.d.pitch, bank: -raw.d.bank,   // record bank is bot-drones' cosmetic sign, see droneWireState
