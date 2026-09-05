@@ -350,10 +350,12 @@ What it clamps:
   real shadow distance; the forest's `treeShadowReach` follows it so no LOD rung starts past the map.
 
 The ceiling floors at 40 m so a slider at the bottom cannot draw nothing. **Fog hides the far edge**
-(`drawDistanceFog`) applies the weather fog at full strength (`weatherFogBase + weatherFogPerRain`,
-sky-tracked colour) whatever the weather is doing, because that is the fog that looked right; a
-density derived from the ceiling was denser and read wrong. The far edge can still show past the
-haze on a large ceiling. The far rings are capped at 0.9x the ceiling (`terrain.setFarExtentCap`,
+(`drawDistanceFog`) is the atmosphere of 100% weather without the rain: `atmosphereStrength()`
+reads 1 instead of `weatherRain` for the overcast lid, the fog density, the sun dimming and the
+ambient lift, so the sky, both cloud decks and the fog share the lid's grey the way they do in a
+storm. Drops, wet ground and lightning still follow the weather slider. A density derived from the
+ceiling was tried first and read wrong. The far edge can still show past the haze on a large
+ceiling. The far rings are capped at 0.9x the ceiling (`terrain.setFarExtentCap`,
 `clipmap.setMaxHalfExtent`): the sky dome sits at 0.88 of the far plane, and a ring beyond the dome
 is behind the sun sprite's depth, so the sun drew over the ground.
 Both keys are local: they are not in `BASE_GAME_SHARED_KEYS`, so a low-end machine's ceiling never

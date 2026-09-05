@@ -973,8 +973,14 @@ function applyRainSettings() {
 
 // How lidded the sky is: the manual slider plus the master's response, capped at 1. One number
 // feeds the dome, both cloud decks and (through the sky colour) the fog tint.
+// The strength the atmosphere responds to. The fog link is the look of 100% weather without the
+// rain: lid, fog, sun dimming and ambient lift all read full strength, while drops, wet ground and
+// lightning still read the weather slider.
+function atmosphereStrength() {
+  return settings.drawDistanceFog && settings.drawDistance > 0 ? 1 : settings.weatherRain;
+}
 function overcastAmount() {
-  return Math.min(1, settings.weatherOvercast + settings.weatherRain * settings.overcastPerRain);
+  return Math.min(1, settings.weatherOvercast + atmosphereStrength() * settings.overcastPerRain);
 }
 const appliedAtmosphere = { overcast: -1, density: -1, source: null, color: null, lid: null };
 const _fogColor = new THREE.Color();
@@ -998,10 +1004,7 @@ function applyAtmosphereSettings() {
   // So the fog exists from startup at density 0 and only the number moves.
   // A thermal sensor sees through haze that stops the eye, so the fog thins under IR. applyVisor
   // calls back into here on every mode change, which is what makes the number move.
-  // The fog link is the weather fog at full strength, whatever the weather is doing: the same
-  // density and sky-tracked colour that a 100% storm gives, rather than a number from the ceiling.
-  const linked = settings.drawDistanceFog && settings.drawDistance > 0 ? settings.weatherFogBase + settings.weatherFogPerRain : 0;
-  const density = Math.max(linked, settings.weatherFogEnabled ? settings.weatherFogBase + settings.weatherRain * settings.weatherFogPerRain : 0)
+  const density = (settings.weatherFogEnabled ? settings.weatherFogBase + atmosphereStrength() * settings.weatherFogPerRain : 0)
     * (uIR.value ? BASE_GAME_IR_FOG_SCALE : 1);
   if (density !== appliedAtmosphere.density) { appliedAtmosphere.density = density; scene.fog.density = density; }
   if (settings.weatherFogSource === 'custom') {
@@ -3922,7 +3925,7 @@ function updateWorld(dt) {
   // tracks that separately from ambLight.intensity — so a multiply is not undone next frame and
   // compounds every frame (1.15x at 60 fps is ~4400x after one second, i.e. a white screen).
   // sunIntensity/moonIntensity are safe because they are locals that go back through the rig.
-  const weatherDim = 1 - settings.sunDimPerRain * settings.weatherRain;
+  const weatherDim = 1 - settings.sunDimPerRain * atmosphereStrength();
   sunIntensity *= weatherDim;
   moonIntensity *= weatherDim;
   // A bolt briefly lights the whole sky. Kept OUT of sunIntensity: it used to be added here, and
@@ -3930,7 +3933,7 @@ function updateWorld(dt) {
   // ownership test below and repainted the clouds with warm sunlight aimed from under the horizon.
   // It is added to whichever body owns the key light instead, and never decides which that is.
   const keyLift = lightning.sunLift;
-  rig.ambLight.intensity = ambientBase * (1 + settings.ambientLiftPerRain * settings.weatherRain);
+  rig.ambLight.intensity = ambientBase * (1 + settings.ambientLiftPerRain * atmosphereStrength());
 
   // Only one directional shadow map per frame, and it is ALWAYS rig.dirLight: three r184 disposes
   // a light's ShadowNode the moment castShadow flips false while render objects built earlier
