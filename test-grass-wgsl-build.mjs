@@ -14,7 +14,8 @@ globalThis.document ??= { createElement: () => ({ width: 0, height: 0, getContex
   createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
   putImageData: () => {} }) }) };
 const THREE = await import('three/webgpu');
-const { context } = await import('three/tsl');
+const { context, Fn, float, vec3 } = await import('three/tsl');
+const { createComputeGrass } = await import('./grass-compute.js');
 const { createBaseGameFlora } = await import('./base-game-flora.js');
 const { createBaseGameTerrain } = await import('./base-game-terrain.js');
 const { createWorldQueryService } = await import('./world-query.js');
@@ -154,6 +155,41 @@ section('the ground probe evaluates the same node');
   check('with no atomics or instance writes', count(src, /atomicAdd\(/g) === 0);
 }
 
+section('early rejection encloses samples and both occlusion paths compile');
+{
+  const occTexture = new THREE.DataTexture(new Uint16Array(4), 1, 1, THREE.RGBAFormat, THREE.HalfFloatType);
+  const occlusion = { enabled: true, texture: occTexture, viewProj: new THREE.Matrix4(),
+    texel: new THREE.Vector2(1, 1), bias: 0.12, revision: 1 };
+  const options = { renderer, camera, radius: 4, maxRadius: 4, density: 1, occlusion,
+    heightNode: Fn(() => float(2).toVar('auditHeightSample')),
+    densityNode: Fn(() => float(1).toVar('auditDensitySample')),
+    groundColorNode: Fn(() => vec3(0.2, 0.3, 0.4)) };
+  const field = createComputeGrass(options);
+  await field.update(1);
+  let src = '', err = null;
+  try { src = buildCompute(captured[1]); } catch (e) { err = e; }
+  check('the procedural occlusion kernel builds', !err, String(err?.message ?? ''));
+  const densityAt = src.search(/auditDensitySample\s*=/), heightAt = src.search(/auditHeightSample\s*=/);
+  const densityLine = src.split('\n').find(l => /auditDensitySample\s*=/.test(l)) ?? '';
+  const heightLine = src.split('\n').find(l => /auditHeightSample\s*=/.test(l)) ?? '';
+  check('density is evaluated after the cone gate and before height', densityAt > src.indexOf('dot(') && heightAt > densityAt);
+  check('height is nested inside an additional rejection branch', heightLine.search(/\S/) > densityLine.search(/\S/));
+  check('occlusion retains exactly five depth taps', count(src, /textureLoad\(/g) === 5, `${count(src, /textureLoad\(/g)} taps`);
+  const firstDepth = src.indexOf('textureLoad(');
+  check('depth is sampled only after height', firstDepth > heightAt);
+  check('the guarded compute path never emits derivative-based textureSample', !/textureSample\(/.test(src));
+  field.dispose();
+  const surface = new THREE.BufferGeometry();
+  surface.setAttribute('position', new THREE.Float32BufferAttribute([-2, 2, -2, -2, 2, 2, 2, 2, -2], 3));
+  const anchored = createComputeGrass({ ...options, surfaceGeometry: surface });
+  await anchored.update(2);
+  err = null;
+  try { src = buildCompute(captured[1]); } catch (e) { err = e; }
+  check('the shared occlusion function also builds for anchored grass', !err, String(err?.message ?? ''));
+  anchored.dispose(); surface.dispose(); occTexture.dispose();
+}
+
+flora.dispose();
 terrain.dispose();
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

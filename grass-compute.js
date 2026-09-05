@@ -21,7 +21,7 @@ import {
   IndirectStorageBufferAttribute,
 } from 'three/webgpu';
 import {
-  Fn, If, instanceIndex, storage, uniform, attribute, float, int, uint, bitcast, modInt,
+  Fn, If, instanceIndex, storage, uniform, attribute, float, bool, int, uint, bitcast, modInt,
   vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld, max,
   atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix, pow, select, sqrt, ceil,
 } from 'three/tsl';
@@ -253,21 +253,25 @@ export function createComputeGrass(opts) {
   // stage is near WebGPU's sampled-texture limit (see vegetation.md), so every binding counts.
   const occTex = occlusion ? texture(occlusion.texture) : null;
   const keepFn = occlusion
-    ? (wx, wy, wz, h, dist) => {
-        const base = project(wx, wy, wz);
-        const top = project(wx, wy.add(h), wz);
-        // Only while occlusion is on: off, the depth image and its view-projection stop updating,
-        // and a frozen frustum would go on culling everything outside where the camera last was.
-        const visible = uOccOn.lessThan(0.5).or(base.onScreen).or(top.onScreen).or(dist.lessThan(1.5));
-        // WebGPU samples a render target with row 0 at the top and the WGSL builder adds no flip,
-        // so V runs down from clip-space +y.
-        const uv = vec2(clamp(top.ndc.x.mul(0.5).add(0.5), 0, 1), clamp(float(0.5).sub(top.ndc.y.mul(0.5)), 0, 1));
-        const tx = vec2(uOccTexel.x, 0), tz = vec2(0, uOccTexel.y);
-        const far = max(max(occTex.sample(uv).r, occTex.sample(uv.add(tx)).r),
-          max(occTex.sample(uv.sub(tx)).r, max(occTex.sample(uv.add(tz)).r, occTex.sample(uv.sub(tz)).r)));
-        const occluded = uOccOn.greaterThan(0.5).and(top.onScreen).and(top.w.greaterThan(far.add(uOccBias).add(top.w.mul(0.01))));
-        return visible.and(occluded.not());
-      }
+    ? Fn(([wx, wy, wz, h, dist]) => {
+        const keep = bool(true).toVar();
+        If(uOccOn.greaterThan(0.5), () => {
+          const base = project(wx, wy, wz);
+          const top = project(wx, wy.add(h), wz);
+          const visible = base.onScreen.or(top.onScreen).or(dist.lessThan(1.5));
+          keep.assign(visible);
+          // Off-screen points and disabled occlusion need no depth reads. Keep the same five
+          // conservative taps and bias for points whose tops actually project into the image.
+          If(visible.and(top.onScreen), () => {
+            const uv = vec2(clamp(top.ndc.x.mul(0.5).add(0.5), 0, 1), clamp(float(0.5).sub(top.ndc.y.mul(0.5)), 0, 1));
+            const tx = vec2(uOccTexel.x, 0), tz = vec2(0, uOccTexel.y);
+            const far = max(max(occTex.sample(uv).r, occTex.sample(uv.add(tx)).r),
+              max(occTex.sample(uv.sub(tx)).r, max(occTex.sample(uv.add(tz)).r, occTex.sample(uv.sub(tz)).r)));
+            keep.assign(top.w.greaterThan(far.add(uOccBias).add(top.w.mul(0.01))).not());
+          });
+        });
+        return keep;
+      })
     : null;
   let lastOccRevision = -1;
   function syncOcclusion() {
@@ -543,31 +547,36 @@ export function createComputeGrass(opts) {
       const jz = slotRandFn(hx, hz, slot, int(2));
       const wx = gx.toFloat().mul(uCellSize).add(jx.mul(uCellSize));
       const wz = gz.toFloat().mul(uCellSize).add(jz.mul(uCellSize));
-      const wy = heightFn(wx, wz);
       const dist = length(vec2(wx.sub(uCam.x), wz.sub(uCam.y)));
       const edge = fadeEdgeFn(dist);
       const keepRand = slotRandFn(hx, hz, slot, int(7));
       const densityRand = slotRandFn(hx, hz, slot, int(8));
-      const biomeDensity = densityFn(wx, wz);
-      const live = wy.greaterThan(uWaterMin)
-        .and(wx.greaterThanEqual(uTerrainMinX)).and(wx.lessThanEqual(uTerrainMaxX))
+      const planarLive = wx.greaterThanEqual(uTerrainMinX).and(wx.lessThanEqual(uTerrainMaxX))
         .and(wz.greaterThanEqual(uTerrainMinZ)).and(wz.lessThanEqual(uTerrainMaxZ))
         .and(dist.lessThan(uRadius))
         .and(inConeFn(wx, wz, dist))
-        .and(keepFn ? keepFn(wx, wy, wz, uBladeHeight.mul(1.2), dist) : float(1).greaterThan(0))
-        .and(keepRand.greaterThan(edge))
-        .and(densityRand.lessThan(biomeDensity));
-      If(live, () => {
-        const s = atomicAdd(counter.element(0), uint(1));
-        const withinCap = s.lessThan(uHardCap)
-          .and(uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades)));
-        If(withinCap, () => {
-          const base2 = s.mul(uint(2));
-          const yaw = slotRandFn(hx, hz, slot, int(3)).mul(6.2831853);
-          const bh = float(0.8).add(slotRandFn(hx, hz, slot, int(5)).mul(0.6));
-          const g = injectedGround ? injectedGround(wx, wz, wy) : vec3(0);
-          inst.element(base2).assign(vec4(wx, wy, wz, bh));
-          inst.element(base2.add(uint(1))).assign(vec4(yaw, g.x, g.y, g.z));
+        .and(keepRand.greaterThan(edge));
+      // Explicit control flow is intentional: a compound predicate can evaluate texture-heavy
+      // node expressions before its final If. Keep the exact predicates but stage the work.
+      If(planarLive, () => {
+        const biomeDensity = densityFn(wx, wz);
+        If(densityRand.lessThan(biomeDensity), () => {
+          const wy = heightFn(wx, wz);
+          If(wy.greaterThan(uWaterMin), () => {
+            If(keepFn ? keepFn(wx, wy, wz, uBladeHeight.mul(1.2), dist) : bool(true), () => {
+              const s = atomicAdd(counter.element(0), uint(1));
+              const withinCap = s.lessThan(uHardCap)
+                .and(uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades)));
+              If(withinCap, () => {
+                const base2 = s.mul(uint(2));
+                const yaw = slotRandFn(hx, hz, slot, int(3)).mul(6.2831853);
+                const bh = float(0.8).add(slotRandFn(hx, hz, slot, int(5)).mul(0.6));
+                const g = injectedGround ? injectedGround(wx, wz, wy) : vec3(0);
+                inst.element(base2).assign(vec4(wx, wy, wz, bh));
+                inst.element(base2.add(uint(1))).assign(vec4(yaw, g.x, g.y, g.z));
+              });
+            });
+          });
         });
       });
     });

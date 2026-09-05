@@ -16,7 +16,7 @@
 //     supported radius and every slider maps to a setter; dispose() does free them.
 
 import * as THREE from 'three';
-import { Fn, float, vec2, uniform, select, mix, length, texture, clamp, step } from 'three/tsl';
+import { Fn, If, float, vec2, uniform, select, mix, length, texture, clamp, step } from 'three/tsl';
 import { createFloraOcclusion } from './flora-occlusion.js';
 
 export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
@@ -184,14 +184,22 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     const terrainDensity = samplers.densityNode || Fn(() => float(1));
     const densityNode = Fn(([x, z]) => {
       const g = vec2(x, z).add(originXZ);
-      const d = structDensityNode.sample(uvOf(g)).r;
-      return select(inside(g).and(d.greaterThanEqual(0)), d, terrainDensity(x, z));
+      const d = float(-1).toVar();
+      If(inside(g), () => { d.assign(structDensityNode.sample(uvOf(g)).r); });
+      const result = float(0).toVar();
+      If(d.greaterThanEqual(0), () => { result.assign(d); })
+        .Else(() => { result.assign(terrainDensity(x, z)); });
+      return result;
     });
     const heightNode = Fn(([x, z]) => {
       const g = vec2(x, z).add(originXZ);
-      const h = structHeightNode.sample(uvOf(g)).r;
-      const d = structDensityNode.sample(uvOf(g)).r;
-      return select(inside(g).and(d.greaterThanEqual(0)), h.sub(uRenderOrigin.y), samplers.heightNode(x, z));
+      const d = float(-1).toVar();
+      If(inside(g), () => { d.assign(structDensityNode.sample(uvOf(g)).r); });
+      const result = float(0).toVar();
+      If(d.greaterThanEqual(0), () => {
+        result.assign(structHeightNode.sample(uvOf(g)).r.sub(uRenderOrigin.y));
+      }).Else(() => { result.assign(samplers.heightNode(x, z)); });
+      return result;
     });
     return { ...samplers, densityNode, heightNode };
   }

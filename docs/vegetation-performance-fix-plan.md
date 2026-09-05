@@ -23,7 +23,7 @@ does not measure uploads, GPU execution, or browser frame pacing.
 - [x] 3. Cache unchanged flora occlusion renders. Invalidate for camera/projection changes,
   occluder changes, and re-enabling. Restore scene/renderer state on exceptions. Verify
   stationary frames reuse the image and moving cameras update immediately.
-- [ ] 4. Reject grass candidates before expensive height/occlusion sampling. Use explicit
+- [x] 4. Reject grass candidates before expensive height/occlusion sampling. Use explicit
   shader branches for bounds, distance, cone, fade, and density. Preserve all hashes and
   acceptance predicates. Branch between structure and terrain sampling. Compile both
   occlusion and non-occlusion paths and run placement, wind, and fade checks.
@@ -77,3 +77,11 @@ Root transforms and visibility invalidate the image; child/geometry edits use ma
 or invalidate. Depth revisions now invalidate both grass and plant culls, including edits
 with a stationary camera. Render failures restore scene state and retry. Validation: cache
 and failure-restoration checks, 90 grass checks, and 103 flora checks passed. Fix 2: `5152c82`.
+
+Fix 4: procedural grass now rejects bounds/radius/cone/fade, then density, before evaluating
+height and occlusion. Structure overrides branch around terrain samplers; disabled/off-screen
+occlusion avoids depth reads. Hashes, acceptance predicates, five depth taps, blade geometry,
+and material shading are unchanged. Validation: 33 WGSL checks (including generated branch
+ordering and both procedural/anchor occlusion builds), 103 flora checks, 90 grass checks,
+wind/cell checks, and 18,458 anchor assertions passed. Browser visual/GPU validation remains.
+Fix 3 commit: `52a3207`.
