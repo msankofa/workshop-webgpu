@@ -10,7 +10,7 @@ import { createStructureCollision } from './base-game-structure-collision.js';
 import { clearanceAgainstRects, structureStampPaths } from './base-game-structures.js';
 import { SPAWN_BUILDING_CHUNK, SPAWN_CONCRETE_WALL, SPAWN_CONCRETE_COVER } from './base-game-spawn-building.js';
 
-export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, seaLevel = () => 0, seed = 1, spacing = 480, chunk = SPAWN_BUILDING_CHUNK, collision: collisionOptions = {} }) {
+export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, renderer = null, camera = null, materials: shared = null, seaLevel = () => 0, seed = 1, spacing = 480, chunk = SPAWN_BUILDING_CHUNK, collision: collisionOptions = {} }) {
   if (!scene?.add) throw new TypeError('structures require a Three.js scene');
   if (!worldQuery?.registerProvider) throw new TypeError('structures require a world-query service');
   if (!terrain?.acquirePlan) throw new TypeError('structures need the terrain plan window');
@@ -19,17 +19,36 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
   root.name = 'structures';   // the visor sweep's default heat is a structure's
   scene.add(root);
 
-  const wallMat = createConcreteMaterial({ THREE, color: 0x9c9e9a, block: SPAWN_CONCRETE_WALL });
-  const coverMat = createConcreteMaterial({ THREE, color: 0x8f918c, block: SPAWN_CONCRETE_COVER });
-  const barMat = new MeshStandardNodeMaterial({ color: 0xd6d9dc, roughness: 0.45, metalness: 0.5 });
-  const soilMat = new MeshStandardNodeMaterial({ color: 0x2a2319, roughness: 1.0, metalness: 0.0 });
-  const waterMat = new MeshStandardNodeMaterial({ color: 0x1b3a2e, roughness: 0.06, metalness: 0.6, transparent: true, opacity: 0.86 });
+  // Materials are shared with the spawn building when the page passes them: it is on screen from
+  // the first frame, so its pipelines (main and shadow pass) are compiled before any scattered
+  // tile is, and a structure seen for the first time costs no compile. Own materials otherwise.
+  const own = !shared;
+  const wallMat = shared?.wall ?? createConcreteMaterial({ THREE, color: 0x9c9e9a, block: SPAWN_CONCRETE_WALL });
+  const coverMat = shared?.cover ?? createConcreteMaterial({ THREE, color: 0x8f918c, block: SPAWN_CONCRETE_COVER });
+  const barMat = shared?.bar ?? new MeshStandardNodeMaterial({ color: 0xd6d9dc, roughness: 0.45, metalness: 0.5 });
+  const soilMat = shared?.soil ?? new MeshStandardNodeMaterial({ color: 0x2a2319, roughness: 1.0, metalness: 0.0 });
+  const waterMat = shared?.water ?? new MeshStandardNodeMaterial({ color: 0x1b3a2e, roughness: 0.06, metalness: 0.6, transparent: true, opacity: 0.86 });
   const materials = [wallMat, coverMat, barMat, soilMat, waterMat];
   const BUCKET_MATERIAL = { walls: wallMat, plinth: wallMat, ground: wallMat, covers: coverMat, bars: barMat, soil: soilMat, water: waterMat };
 
   // The plan window is held for as long as this exists: trails hold it too, but structures must
   // place without them.
   const releasePlan = terrain.acquirePlan();
+
+  // Pipeline warmup: one instance per material, compiled off-screen through the non-blocking
+  // path, so the first tile that comes into view does not stall the main thread on a compile.
+  // The spawn building normally covers this by being visible; this covers the rooms without one.
+  const warmup = { done: false, ms: 0 };
+  async function warm() {
+    if (!renderer?.compileAsync || !camera) return;
+    const group = new THREE.Group();
+    const t0 = performance.now();
+    for (const mat of materials) instancedBoxes(group, mat, [{ x: 0, y: 0, z: 0, w: 1, h: 1, d: 1 }]);
+    scene.add(group);
+    try { await renderer.compileAsync(group, camera, scene); }
+    finally { clearBoxes(group); scene.remove(group); warmup.ms = performance.now() - t0; warmup.done = true; }
+  }
+  warm().catch(() => { warmup.done = true; });
   // Cover keep-out: every resident building's floor rects, for the field derive (tiles arriving
   // after a building) and for the stamp over resident posts (a building arriving after a tile).
   const floorRects = new Map();    // tile key -> rects
@@ -121,7 +140,9 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
 
   return {
     root,
-    materials,           // for the page's rain decorator
+    materials,           // for the page's rain decorator (the spawn building's when shared)
+    ownMaterials: own,
+    warmup,
     stats,
     get collision() { return collision; },
     get version() { return version; },
@@ -160,7 +181,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
       collision?.dispose();
       terrain.setStructureClearance?.(null);
       releasePlan();
-      for (const m of materials) m.dispose();
+      if (own) for (const m of materials) m.dispose();
       scene.remove(root);
     },
   };

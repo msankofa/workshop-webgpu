@@ -3685,6 +3685,15 @@ slabs, ramps and foundations as the concrete walls and covers as the heavier-wea
 `scatter: false` on `createStructureCollision` gives the anchor alone. No config or protocol
 change: the tile's seed drives the scatter, and the world tag was left as `structs1`.
 
+**First-sight stalls.** A material's pipelines compile on the first draw, and WebGPU's
+synchronous pipeline creation blocks the main thread, so a scattered tile turning into view for
+the first time was a hitch. Two fixes: the structures share the spawn building's materials
+(`spawnBuilding.bucketMaterials`), which is on screen from the first frame so its main and shadow
+pipelines are already compiled; and `createBaseGameStructures` warms one instance per material
+through `renderer.compileAsync` off-screen at creation, the forest's pattern, for rooms without a
+spawn building (`warmup.ms` records the cost). The rain decorator runs once per material through
+a `Set`, since both owners now list the same ones.
+
 **Step 5, settings.** No protocol change: the structure seed and spacing are world identity, not
 runtime shared keys, so they travel in the room's terrain config like the spawn building flag.
 The three settings join `ROOM_OWNED_GROUND_KEYS`: online the owner's change re-requests the world

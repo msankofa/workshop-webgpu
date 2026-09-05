@@ -124,6 +124,7 @@ export function createBaseGameSpawnBuilding({ THREE, scene, worldQuery, heightAt
   return {
     root,
     materials,           // for the page's rain decorator
+    bucketMaterials: { wall: wallMat, cover: coverMat, bar: barMat, soil: soilMat, water: waterMat },   // shared with the scattered structures
     get model() { return building?.model ?? null; },
     get spawn() { return building ? building.spawn : [0, 0, 0]; },
     get provider() { return building?.provider ?? null; },
