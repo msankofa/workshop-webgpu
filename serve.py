@@ -31,6 +31,7 @@ STATES_DIR = os.path.join(ROOT, 'states')
 BOT_STATES_DIR = os.path.join(ROOT, 'bot-states')
 NOTES_DIR = os.path.join(ROOT, 'notes')
 MAZE_LAYOUTS_DIR = os.path.join(ROOT, 'maze layouts')
+GROUND_TEXTURES_DIR = os.path.join(ROOT, 'textures', 'ground')
 SLOT_SAVES_DIR = os.path.join(ROOT, 'bot-viewer-saves')
 BODY_TUNING_DIR = os.path.join(ROOT, 'body-tuning')
 STADIUM_SAVES_DIR = os.path.join(ROOT, 'stadium-saves')
@@ -500,6 +501,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/list-bot-states':
             self._handle_list_bot_states()
             return
+        if path == '/api/list-ground-textures':
+            self._handle_list_ground_textures()
+            return
         if path == '/api/list-maze-layouts':
             self._handle_list_maze_layouts()
             return
@@ -680,6 +684,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         files.append(rel)
             files.sort()
             self._send_json({'ok': True, 'files': files})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=500)
+
+    # GET /api/list-ground-textures -- the terrain studio's material slot dropdowns. Every folder
+    # under textures/ground/ (one level, plus library/<pack>) that holds color.jpg + normal.jpg,
+    # with the catalog title when catalog.json has one.
+    def _handle_list_ground_textures(self):
+        try:
+            titles = {}
+            catalog_path = os.path.join(GROUND_TEXTURES_DIR, 'catalog.json')
+            if os.path.isfile(catalog_path):
+                with open(catalog_path, 'r', encoding='utf-8') as fh:
+                    for name, layer in (json.load(fh).get('layers') or {}).items():
+                        if isinstance(layer, dict) and layer.get('title'):
+                            titles[name] = layer['title']
+            folders = []
+            def scan(rel):
+                base = os.path.join(GROUND_TEXTURES_DIR, rel) if rel else GROUND_TEXTURES_DIR
+                if not os.path.isdir(base):
+                    return
+                for entry in sorted(os.listdir(base)):
+                    full = os.path.join(base, entry)
+                    if not os.path.isdir(full):
+                        continue
+                    key = f'{rel}/{entry}' if rel else entry
+                    if os.path.isfile(os.path.join(full, 'color.jpg')) and os.path.isfile(os.path.join(full, 'normal.jpg')):
+                        folders.append({'folder': key, 'title': titles.get(key, entry)})
+            scan('')
+            scan('library')
+            self._send_json({'ok': True, 'folders': folders})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=500)
 

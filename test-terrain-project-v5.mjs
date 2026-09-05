@@ -136,5 +136,20 @@ console.log('\n[6] classification and description');
   rejects(() => verifyProjectHash(p, 'deadbeef'), 'hash', 'verifyProjectHash rejects a wrong hash');
 }
 
+console.log('\n[material] ground texture slots: optional, validated, hash-neutral when absent');
+{
+  const base = editorProject();
+  const plain = normalizeProject(base).project;
+  ok(!('material' in plain), 'no material block -> none in the normalized project');
+  const moon = normalizeProject(editorProject({ material: { version: 1, slots: { grass: 'library/Ground003', rock: 'gravel' } } })).project;
+  ok(moon.material.slots.grass === 'library/Ground003' && moon.material.slots.rock === 'gravel', 'slots round-trip');
+  ok(hashProject(moon) !== hashProject(plain), 'slots change the hash');
+  const empty = normalizeProject(editorProject({ material: null })).project;
+  ok(hashProject(empty) === hashProject(plain), 'material: null hashes like no material');
+  rejects(() => normalizeProject(editorProject({ material: { slots: { grass: '../secret' } } })), 'material.slots.grass', 'rejects a path with ..');
+  rejects(() => normalizeProject(editorProject({ material: { slots: { lava: 'rock' } } })), 'material.slots.lava', 'rejects an unknown slot');
+  rejects(() => normalizeProject(editorProject({ material: { slots: {}, tint: 1 } })), 'material.tint', 'rejects an unknown material field');
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);
 process.exit(failures === 0 ? 0 : 1);

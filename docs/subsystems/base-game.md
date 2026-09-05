@@ -1700,7 +1700,6 @@ missing half of the same problem: `driveToward` plans an arrival speed from the 
 (`APPROACH_DECEL`) and brakes above it, where before it held a throttle floor to the cap and a UGV
 three metres from its station could not turn into it and orbited. Pinned in `test-base-game-vehicles.mjs`.
 
-
 **Meshes (rebuilt 2026-09-02).** `flight-meshes.js` registers `ugv` and `buggy` builders with
 steerable/spinning wheels. The first pass stacked boxes and hand-authored the wheel positions, and
 they had drifted: the drawn wheelbase was 0.72 m against a simulated 1.1 m (UGV) and 1.52 m against
@@ -2522,7 +2521,7 @@ with a hand-sync note; one import is better, because rain beading differently on
 the wall standing on it is exactly the drift that note would have been apologising for.
 
 **The rain bundle** is `{ uniforms, offset, puddleScale, rippleScale }` beside the existing `water`
-one, bound once at startup by `terrain.setSplatRain(rain.groundShade)` — not on first rain, because
+one, bound once at startup by `terrain.setSplatRain(rain.groundShade)` (the ground textures themselves come from the active project's `material.slots` at startup, and `applyTerrainProjectAtRuntime` swaps them in place through `terrain.swapSplatTextures` when a project with other slots is applied) — not on first rain, because
 the graph gates on the wetness uniform and rebuilding every splat instance mid-session is a visible
 hitch. `offset` is the render origin, so puddles are anchored to global XZ and stay with the ground
 across a rebase.
@@ -3294,6 +3293,27 @@ window, and `frames` already says how rare it was. It is also excluded from
 meter is drained every frame whether or not a capture is running — the counters are cumulative, so
 skipping idle frames would hand the first profiled frame every pipeline built since load — and the
 stats line grows a `N pipelines X ms` segment for the last half-second whenever that is non-zero.
+
+**What the first two instrumented captures said (2026-09-05, entries 1-2, identical settings).**
+`pipelinesBuilt` is **0 on every frame of both windows** — max 0, avg 0, over 788 samples. Nothing
+compiled, so lazy pipeline creation is not what `passPostMs` is, at least in a warm session away
+from load. (`context.render.pipelineMeterInstalled` was added straight after these two, because a
+meter that never attached reads the same zeros as a frame that genuinely built nothing.)
+
+`renderCalls` is **exactly 4 on every frame of both**, and the page issues one `renderer.render`.
+The other three are nested: the sun's shadow map, the laser's spot shadow, and one more that
+`render-pass-recorder.js` was written to name. The laser one is pure waste — `laserOn` was false in
+both captures, but `laserShadows` was true, and `ShadowNode.updateBefore` checks neither intensity
+nor `visible`, so a resident lamp ramped to zero still redraws its whole shadow map every frame.
+
+The two captures also re-test the draw-count reading and pass: `passPostMs` rose from 14.03 to
+18.72 ms average while `drawCalls` **fell** from 260 to 248. The worse of the two is the one with
+roughly double the terrain streaming activity (fold on 27 frames vs 12, colorize 21 vs 8, collider
+18 vs 7, field 232 vs 196), i.e. the one where the player was moving — so the encode itself grows
+with movement, with fewer things drawn, and not because anything compiled.
+
+Both had `shadowUpdateEvery: 1`, which makes `passPostShadowMs` identical to `passPostMs` and its
+pair silent. **The shadow split needs that setting above 1 to say anything.**
 
 **Base Game calls `compileAsync` nowhere.** `base-game-forest.js` is the only caller in the repo,
 added 2026-08-28 after the trees produced a hard freeze and 1000 ms walking spikes; nothing else was

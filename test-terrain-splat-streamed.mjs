@@ -2,7 +2,7 @@
 // Run: node test-terrain-splat-streamed.mjs
 import * as THREE from 'three';
 import { buildMaterial } from './tsl-build-check.mjs';
-import { createStreamedSplatMaterial, placeholderStreamedSplatTextures, splatWeights, detailFade, updateStreamedSplat, STREAMED_SPLAT_DEFAULTS, STREAMED_SPLAT_LAYERS } from './terrain-splat-streamed.js';
+import { createStreamedSplatMaterial, placeholderStreamedSplatTextures, splatWeights, detailFade, updateStreamedSplat, STREAMED_SPLAT_DEFAULTS, STREAMED_SPLAT_LAYERS, splatSlotFolders, replaceStreamedSplatImages } from './terrain-splat-streamed.js';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
@@ -128,6 +128,30 @@ console.log('\n[5] LOD dissolve: coverage maps ramp per chunk; fine levels disso
   terrain.dispose();
 }
 
+console.log('\n[7] texture slots: folder mapping and in-place image swap');
+{
+  const f = splatSlotFolders({ grass: 'library/Ground003', snow: 'gravel' });
+  ok(f.grass === 'library/Ground003' && f.snow === 'gravel' && f.sand === 'sand' && f.rock === 'rock', 'unset slots fall back to the layer name');
+  ok(JSON.stringify(splatSlotFolders(null)) === JSON.stringify(splatSlotFolders({})), 'null and empty slots agree');
+  const current = placeholderStreamedSplatTextures();
+  const mat = createStreamedSplatMaterial(current);
+  const grassColor = current.layers.grass.color;
+  const next = placeholderStreamedSplatTextures();
+  next.layers.grass.average = [0.5, 0.5, 0.5];
+  next.slots = splatSlotFolders({ grass: 'library/Ground003' });
+  const patch = replaceStreamedSplatImages(current, next);
+  ok(current.layers.grass.color === grassColor, 'the bound texture object survives the swap');
+  ok(current.layers.grass.color.image === next.layers.grass.color.image, 'its image is the new one');
+  ok(current.slots.grass === 'library/Ground003', 'the set records the folders it now shows');
+  updateStreamedSplat(mat, patch);
+  const avg = mat.userData.streamedSplat.uniforms.averages.grass.value;
+  ok(near(avg.x, 0.5) && near(avg.y, 0.5), 'averages patch reaches the uniforms');
+  ok(updateStreamedSplat(mat, { tileMeters: 6 }) && near(mat.userData.streamedSplat.cfg.tileMeters, 6), 'numeric patches still apply');
+}
+
+console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
+process.exit(failures ? 1 : 0);
+
 console.log('\n[6] water shade: wet band + Snell caustic build headless');
 {
   const { uniform, vec4, vec2 } = await import('three/tsl');
@@ -144,6 +168,3 @@ console.log('\n[6] water shade: wet band + Snell caustic build headless');
   const bare = createStreamedSplatMaterial(placeholderStreamedSplatTextures());
   ok(!bare.emissiveNode && bare.userData.streamedSplat.water === false, 'without water: no emissive, flag false');
 }
-
-console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
-process.exit(failures ? 1 : 0);

@@ -14,7 +14,10 @@ export const PROJECT_FORMAT_VERSION = 1;          // the editor's `version` fiel
 export const PROJECT_ALGORITHM_VERSION = 'v5-bounded-1';   // legacy: bounded 1,200 m climate lattice (editor preview only)
 export const PROJECT_ALGORITHM_UNBOUNDED = 'v5-unbounded-1'; // coordinate-hashed climate fields; streamable at any global coordinate
 export const PROJECT_ALGORITHM_VERSIONS = Object.freeze([PROJECT_ALGORITHM_VERSION, PROJECT_ALGORITHM_UNBOUNDED]);
-const TOP_KEYS = new Set(['app', 'version', 'savedAt', 'name', 'algorithmVersion', 'cfg', 'density', 'stack', 'paint', 'imports']);
+const TOP_KEYS = new Set(['app', 'version', 'savedAt', 'name', 'algorithmVersion', 'cfg', 'density', 'stack', 'paint', 'imports', 'material']);
+// Ground texture slots the streamed splat blends (terrain-splat-streamed.js); a slot names a folder under textures/ground/.
+export const MATERIAL_SLOTS = Object.freeze(['sand', 'grass', 'dirt', 'rock', 'snow']);
+const SAFE_FOLDER = /^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*$/;
 const SAFE_NAME = /^[A-Za-z0-9 _-]+$/;
 
 export class TerrainProjectError extends Error {
@@ -78,6 +81,23 @@ function normalizePaint(raw) {
   return out;
 }
 
+// `material` is optional and null means "today's folders", so existing projects keep their hash.
+function normalizeMaterial(raw) {
+  if (raw == null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) fail('material must be an object or null', 'material');
+  for (const k of Object.keys(raw)) if (k !== 'version' && k !== 'slots') fail(`unknown material field ${k}`, `material.${k}`);
+  if (raw.version != null && raw.version !== 1) fail(`unsupported material version ${raw.version}`, 'material.version');
+  const slots = {};
+  const src = raw.slots ?? {};
+  if (typeof src !== 'object' || Array.isArray(src)) fail('material.slots must be an object', 'material.slots');
+  for (const [k, v] of Object.entries(src)) {
+    if (!MATERIAL_SLOTS.includes(k)) fail(`unknown material slot ${k}`, `material.slots.${k}`);
+    if (typeof v !== 'string' || !SAFE_FOLDER.test(v)) fail(`material.slots.${k} must be a folder path of letters, digits, _ - and /`, `material.slots.${k}`);
+    slots[k] = v;
+  }
+  return { version: 1, slots };
+}
+
 function normalizeImports(raw, stack) {
   if (raw == null) return {};
   if (typeof raw !== 'object' || Array.isArray(raw)) fail('imports must be an object', 'imports');
@@ -112,8 +132,10 @@ export function normalizeProject(raw) {
   const stack = normalizeStackStrict(raw.stack, report);
   const paint = normalizePaint(raw.paint);
   const imports = normalizeImports(raw.imports, stack);
+  const material = normalizeMaterial(raw.material);
 
   const project = { app: PROJECT_APP, version: PROJECT_FORMAT_VERSION, algorithmVersion, cfg, density, stack, paint, imports };
+  if (material) project.material = material;
   if (raw.name != null) project.name = raw.name;
   if (typeof raw.savedAt === 'string') project.savedAt = raw.savedAt;
   return { project, report };

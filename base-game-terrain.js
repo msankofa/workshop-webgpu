@@ -13,7 +13,7 @@ import { createChunkMeshWorldQueryProvider } from './world-query-chunk-mesh-prov
 import { globalToRenderLocal } from './world-coordinates.js';
 import { createTerrainClipmap } from './terrain-clipmap.js';
 import { createChunkBatcher } from './terrain-chunk-batches.js';
-import { createStreamedSplatMaterial, syncStreamedSplatCoverage, updateStreamedSplat, createSplatSampleNode } from './terrain-splat-streamed.js';
+import { createStreamedSplatMaterial, syncStreamedSplatCoverage, updateStreamedSplat, createSplatSampleNode, replaceStreamedSplatImages } from './terrain-splat-streamed.js';
 import { createLodCoverage } from './terrain-lod-coverage.js';
 import { createSeaDepthMap } from './terrain-sea-depth.js';
 import { createFieldScheduler, FIELD_PRIORITY } from './terrain-field-scheduler.js';
@@ -744,6 +744,16 @@ export function createBaseGameTerrain({
       splatInstances.clear();
       applyMaterials();
     },
+    // Swap the pictures behind the bound texture set (a project's material slots). Every instance
+    // and the grass ground node keep their graphs; only the images and averages change.
+    swapSplatTextures(next) {
+      if (!splatTextures || !next) return false;
+      const patch = replaceStreamedSplatImages(splatTextures, next);
+      splatGround?.setTextures?.(splatTextures);
+      this.updateSplat(patch);
+      return true;
+    },
+    get splatSlots() { return splatTextures?.slots ?? null; },
     // Live tuning for every splat instance at once.
     updateSplat(patch) { if (splatMaterial) updateStreamedSplat(splatMaterial, patch); for (const m of splatInstances.values()) updateStreamedSplat(m, patch); },
     get lodCoverage() { return { exact: coverExact, levels: coverLevels }; },

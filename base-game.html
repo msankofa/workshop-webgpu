@@ -110,6 +110,7 @@ import { sunPosition, moonPosition } from './solar-position.js';
 import { lerpHex } from './sky-field.js';
 import { createFrameProfiler } from './frame-profiler.js';
 import { createPipelineMeter } from './gpu-pipeline-meter.js';
+import { createRenderPassRecorder } from './render-pass-recorder.js';
 import { buildPerformanceMeasurement, changedPerformanceSettings } from './performance-capture.mjs';
 import { createSlotSection } from './bot-viewer-slots.js';
 import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld, BASE_GAME_TEAMS, BASE_GAME_NPC_ROLE_IDS } from './base-game-protocol.mjs';
@@ -131,7 +132,7 @@ const BASE_GAME_WATER_LOOKS = Object.freeze(Object.keys(WATER_PRESETS).filter(na
 import { connectBaseGameSession } from './base-game-session.mjs';
 import { createBaseGamePauseMenu, showBaseGameStartMenu } from './base-game-menu.mjs';
 import { createTerrainProjectStore, createBaseGameTerrainStudio } from './base-game-terrain-studio.js';
-import { loadStreamedSplatTextures, createStreamedSplatMaterial, updateStreamedSplat } from './terrain-splat-streamed.js';
+import { loadStreamedSplatTextures, createStreamedSplatMaterial, updateStreamedSplat, splatSlotFolders, STREAMED_SPLAT_LAYERS } from './terrain-splat-streamed.js';
 import { sanitizeBaseGameTerrainConfig } from './base-game-protocol.mjs';
 import { createBaseGameTerrain, terrainSourceFromDescriptor, BASE_GAME_TERRAIN_DEFAULTS } from './base-game-terrain.js';
 import { createBaseGameTrails, BASE_GAME_TRAIL_DEFAULTS } from './base-game-trails.js';
@@ -1108,6 +1109,10 @@ try { gpuDeviceSupportsTimestamps = renderer.hasFeature('timestamp-query'); } ca
 // frame the thing that needs it draws, so the cost arrives scattered through a session rather than
 // at load, and it lands inside the render call where no slot can see it. See passPipelineMs.
 const pipelineMeter = createPipelineMeter(renderer.backend?.device);
+// renderCalls counts the whole scene renders a frame paid for; this says what they were. Three
+// renames the scene to `Shadow Map [ <light> ]` across a shadow pass, so each one names its light.
+const renderPasses = createRenderPassRecorder(renderer);
+let lastRenderPassSummary = '';
 if (GPU_TIMESTAMPS && gpuDeviceSupportsTimestamps === false) {
   console.warn('[base-game] ?gputime requested but this GPU/browser exposes no timestamp-query. '
     + 'Chrome gates it behind chrome://flags/#enable-webgpu-developer-features.');
@@ -1320,10 +1325,19 @@ const roads = createRoadSystem({ parent: scene, network: trails.network, ground:
 roads.group.name = 'base-game-trails';
 const trailOrigin = worldCoordinates.getOrigin();
 roads.group.position.set(-trailOrigin[0], -trailOrigin[1], -trailOrigin[2]);
-// Ground textures load in the background; the vertex tint shows until they arrive.
-loadStreamedSplatTextures().then(tex => {
+// Ground textures load in the background; the vertex tint shows until they arrive. The active
+// project's material slots pick the folders; a later project swaps the images in place.
+const groundTextureLoad = loadStreamedSplatTextures({ slots: terrainStore.activeProject?.material?.slots ?? null }).then(tex => {
   terrain.setSplatMaterial(createStreamedSplatMaterial(tex, { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade }), tex);
-}).catch(err => console.warn(`ground textures unavailable, keeping the tint: ${err.message}`));
+  return tex;
+}).catch(err => { console.warn(`ground textures unavailable, keeping the tint: ${err.message}`); return null; });
+async function applyGroundTextureSlots(slots) {
+  if (!(await groundTextureLoad)) return false;
+  const wanted = splatSlotFolders(slots);
+  const have = terrain.splatSlots;
+  if (have && STREAMED_SPLAT_LAYERS.every(n => have[n] === wanted[n])) return false;
+  return terrain.swapSplatTextures(await loadStreamedSplatTextures({ slots: wanted }));
+}
 let activeTerrainDescriptor = TERRAIN_SOURCE_DESCRIPTOR;
 // Make the local world match a room's terrain config exactly (same descriptor, same hash),
 // or throw so the handshake fails instead of predicting against substitute ground.
@@ -1381,6 +1395,7 @@ async function applyTerrainProjectAtRuntime(project) {
   terrain.setSource(descriptor);
   syncSpawnBuilding();
   activeTerrainDescriptor = descriptor;
+  applyGroundTextureSlots(project.material?.slots ?? null).catch(err => console.warn(`ground texture slots not applied: ${err.message}`));
   settings.terrainSeaLevel = descriptor.seaLevel;
   if (settings.worldMode !== 'terrain') { settings.worldMode = 'terrain'; syncAllControls(); }
   updateWorld(0);
@@ -5869,6 +5884,14 @@ function captureContext() {
       pixelRatio: window.devicePixelRatio,
     },
     network: networkDiagnostics(),
+    // What the frame's render calls actually were, and whether the two instruments that report on
+    // them were able to attach at all -- a meter that never installed reads the same zeros as a
+    // frame that genuinely built nothing, and those must not be confused.
+    render: {
+      passes: lastRenderPassSummary,
+      pipelineMeterInstalled: pipelineMeter.installed,
+      passRecorderInstalled: renderPasses.installed,
+    },
     world: {
       mode: settings.worldMode,
       renderOrigin: worldCoordinates.getOrigin(),
@@ -6465,6 +6488,8 @@ async function animate() {
     // would hand the first profiled frame every pipeline built since the page loaded. Marked
     // against the frame rather than a pass -- a compile can also land in a warmup or a compute
     // submit -- but the bulk of it is inside the render call above, so it is not a partition slot.
+    lastRenderPassSummary = renderPasses.summary();
+    renderPasses.take();   // drained every frame: the counts are per frame, not cumulative
     const pipelineCost = pipelineMeter.take();
     pipelineWindow.built += pipelineCost.render + pipelineCost.compute;
     pipelineWindow.ms += pipelineCost.ms;

@@ -186,7 +186,13 @@ export function averageColorOfImage(image) {
 }
 
 // Browser: load colour + normal maps for every layer. Returns { layers: { name: { color, normal, average } } }.
-export async function loadStreamedSplatTextures({ basePath = STREAMED_SPLAT_DEFAULTS.basePath, anisotropy = STREAMED_SPLAT_DEFAULTS.anisotropy, layers = STREAMED_SPLAT_LAYERS } = {}) {
+// `slots` maps a layer to the folder it loads from (a project's material.slots); a missing slot
+// loads the folder named after the layer. Returned `slots` records what was actually loaded.
+export function splatSlotFolders(slots = null, layers = STREAMED_SPLAT_LAYERS) {
+  return Object.fromEntries(layers.map(name => [name, (typeof slots?.[name] === 'string' && slots[name]) || name]));
+}
+export async function loadStreamedSplatTextures({ basePath = STREAMED_SPLAT_DEFAULTS.basePath, anisotropy = STREAMED_SPLAT_DEFAULTS.anisotropy, layers = STREAMED_SPLAT_LAYERS, slots = null } = {}) {
+  const folders = splatSlotFolders(slots, layers);
   const loader = new THREE.TextureLoader();
   const load = (url, color) => new Promise((resolve, reject) => loader.load(url, t => {
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
@@ -199,10 +205,30 @@ export async function loadStreamedSplatTextures({ basePath = STREAMED_SPLAT_DEFA
   }, undefined, reject));
   const out = {};
   await Promise.all(layers.map(async name => {
-    const [color, normal] = await Promise.all([load(`${basePath}${name}/color.jpg`, true), load(`${basePath}${name}/normal.jpg`, false)]);
+    const [color, normal] = await Promise.all([load(`${basePath}${folders[name]}/color.jpg`, true), load(`${basePath}${folders[name]}/normal.jpg`, false)]);
     out[name] = { color, normal, average: averageColorOfImage(color.image) ?? AVERAGE_FALLBACK[name] };
   }));
-  return { layers: out };
+  return { layers: out, slots: folders };
+}
+
+// Swap the pictures behind an already-bound texture set in place: every material that sampled
+// `current` (terrain instances, the grass ground node) keeps its graph and sees the new images.
+// Returns the averages patch for updateStreamedSplat. Disposes nothing the caller still holds.
+export function replaceStreamedSplatImages(current, next, layers = STREAMED_SPLAT_LAYERS) {
+  const averages = {};
+  for (const name of layers) {
+    const c = current?.layers?.[name], n = next?.layers?.[name];
+    if (!c || !n) continue;
+    for (const map of ['color', 'normal']) {
+      if (!c[map] || !n[map] || c[map] === n[map]) continue;
+      c[map].image = n[map].image;
+      c[map].needsUpdate = true;
+    }
+    c.average = n.average ?? c.average;
+    averages[name] = c.average;
+  }
+  if (current && next?.slots) current.slots = { ...next.slots };
+  return { averages };
 }
 
 // Node/test stand-in: 1x1 textures per layer so the material graph builds headless.
@@ -466,6 +492,7 @@ export function updateStreamedSplat(material, patch = {}) {
   if (!s) return false;
   const u = s.uniforms;
   for (const [k, v] of Object.entries(patch)) {
+    if (k === 'averages' && v && typeof v === 'object') { for (const [n, a] of Object.entries(v)) if (u.averages[n] && Array.isArray(a)) u.averages[n].value.set(a[0], a[1], a[2]); continue; }
     if (!Number.isFinite(v)) continue;
     if (k === 'tileMeters') { u.tile.value = 1 / Math.max(0.1, v); s.cfg.tileMeters = v; continue; }
     if (u[k] && typeof u[k].value === 'number') { u[k].value = v; s.cfg[k] = v; }
