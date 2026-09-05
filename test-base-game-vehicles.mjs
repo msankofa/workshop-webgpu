@@ -11,11 +11,12 @@ import {
   sanitizeBaseGameVehicleState, sanitizeBaseGameVehicleSeatState,
   vehicleBasis, turretPivotWorld, aimVehicleTurret, turretDirWorld, fireVehicleTurret,
   vehicleHitParts, vehicleHitVolumes, blastDamageOnVehicle, dueVehicleBlasts, vehicleWreckExpired, WRECK_SECONDS,
+  BASE_GAME_VEHICLE_LIGHTS, vehicleLightMask, setVehicleLights,
 } from './base-game-vehicles.js';
 import { createBaseGamePrediction } from './base-game-prediction.js';
 import { rayCapsuleHit } from './combat.js';
 import { getWeapon } from './weapons.js';
-import { BASE_GAME_WEAPON_IDS } from './base-game-protocol.mjs';
+import { BASE_GAME_WEAPON_IDS, sanitizeBaseGameDroneInput } from './base-game-protocol.mjs';
 
 const DT = 1 / 120;
 const flat = () => 0;
@@ -640,6 +641,29 @@ function wrapPiLocal(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
   const dist = Math.hypot(rec.body.x, rec.body.z - 6);
   assert.ok(dist <= rec.def.stopRadius && rec.body.speed < 0.05, `a six metre goto arrives and stops (${dist.toFixed(2)} m off, ${rec.body.speed.toFixed(2)} m/s)`);
   assert.ok(peak < 6, `and never reaches the cap on the way (${peak.toFixed(1)} m/s)`);
+}
+
+// Lights (2026-09-05). A bitmask clipped to the switches the hull has, absolute on the stick, on the
+// vehicle wire, restored with the seat, and out on a wreck.
+{
+  const L = BASE_GAME_VEHICLE_LIGHTS;
+  assert.equal(vehicleLightMask(BASE_GAME_VEHICLE_DEFS.buggy), L.head | L.lamp | L.high, 'the buggy has headlights, a lamp and high beams');
+  assert.equal(vehicleLightMask(BASE_GAME_VEHICLE_DEFS.ugv), L.head | L.lamp | L.turretLight | L.turretLaser, 'the UGV has a headlight, a lamp, a turret light and a turret laser');
+  const buggy = createBaseGameVehicle(VEHICLE_BUGGY, { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY: 0 });
+  assert.ok(setVehicleLights(buggy, L.head | L.turretLaser | 64), 'a mask is accepted');
+  assert.equal(buggy.lights, L.head, 'and clipped to the switches the buggy has');
+  assert.equal(vehicleWireState(buggy).lights, L.head, 'the wire carries it');
+  assert.equal(sanitizeBaseGameVehicleState(vehicleWireState(buggy)).lights, L.head, 'and the sanitizer keeps it');
+  assert.equal(sanitizeBaseGameVehicleState({ ...vehicleWireState(buggy), lights: 'on' }).lights, 0, 'a malformed field reads as all off');
+  assert.equal(sanitizeBaseGameDroneInput({ id: 'v', mode: 1 }).lights, null, 'a stick that does not mention the lights leaves them alone');
+  assert.equal(sanitizeBaseGameDroneInput({ id: 'v', mode: 1, lights: 255 }).lights, 31, 'and one that does is clipped to the known bits');
+  const seat = vehicleSeatState(buggy);
+  const other = createBaseGameVehicle(VEHICLE_BUGGY, { ownerId: 'o', from: [0, 0, 0], yaw: 0, groundY: 0, id: buggy.id });
+  assert.ok(restoreVehicleSeatState(other, seat));
+  assert.equal(other.lights, L.head, 'the seat state restores the switches');
+  damageBaseGameVehicle(buggy, 1000);
+  assert.equal(buggy.lights, 0, 'a wreck has its lights out');
+  assert.equal(setVehicleLights(buggy, L.head), false, 'and cannot be switched back on');
 }
 
 console.log('base-game-vehicles: all assertions passed');

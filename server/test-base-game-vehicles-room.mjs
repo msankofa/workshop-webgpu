@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createBaseGameRoomService } from './base-game-rooms.js';
 import {
   BASE_GAME_PROTOCOL_VERSION, BASE_GAME_DEFAULT_LOADOUT, BASE_GAME_WEAPON_SLOTS, BASE_GAME_SIM_HZ,
-  sanitizeBaseGamePlayerState, sanitizeBaseGameVehicleState, sanitizeBaseGameVehicleSeatState,
+  sanitizeBaseGamePlayerState, sanitizeBaseGameVehicleState, sanitizeBaseGameVehicleSeatState, BASE_GAME_VEHICLE_LIGHTS,
 } from '../base-game-protocol.mjs';
 import { BASE_GAME_VEHICLE_DEFS } from '../base-game-vehicles.js';
 
@@ -122,9 +122,18 @@ assert.ok(sanitizeBaseGamePlayerState(JSON.parse(JSON.stringify(snap.players.fin
   const shooter = { id: ugv.id, mode: 1 };
   const aimAt = (v, reach) => [v.p[0] + Math.sin(v.yaw) * reach, v.p[1] + 0.6, v.p[2] + Math.cos(v.yaw) * reach];
 
-  // Aim well off the boresight, then check it is still slewing rather than already there.
+    // Aim well off the boresight, then check it is still slewing rather than already there.
   let s = message(owner, 'base:snapshot');
   let v = s.vehicles.find(x => x.id === ugv.id);
+  // The switches. Only the driver's stick sets them, they stay as left when the stick is dropped,
+  // and a bit the hull does not have never reaches the wire.
+  s = drive(owner, 0.05, { drone: { ...shooter, lights: BASE_GAME_VEHICLE_LIGHTS.head | BASE_GAME_VEHICLE_LIGHTS.high } });
+  v = s.vehicles.find(x => x.id === ugv.id);
+  assert.equal(v.lights, BASE_GAME_VEHICLE_LIGHTS.head, 'the driver switches the headlight on; high beams are not a UGV switch');
+  s = drive(owner, 0.05, { drone: { ...shooter } });
+  v = s.vehicles.find(x => x.id === ugv.id);
+  assert.equal(v.lights, BASE_GAME_VEHICLE_LIGHTS.head, 'a stick that does not mention the lights leaves them on');
+
   const side = [v.p[0] + 40, v.p[1] + 0.6, v.p[2]];
   s = drive(owner, 0.05, { drone: { ...shooter, aim: side, fire: true } });
   v = s.vehicles.find(x => x.id === ugv.id);

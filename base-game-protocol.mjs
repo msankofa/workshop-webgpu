@@ -8,7 +8,7 @@ import {
   sanitizeBaseGameBodyModel,
 } from './base-game-body-models.js';
 
-export const BASE_GAME_PROTOCOL_VERSION = 21;   // 21: the UGV's weapon station, trained and firing
+export const BASE_GAME_PROTOCOL_VERSION = 22;   // 22: vehicle lights as a bitmask on the stick and the vehicle state
 // Firing (phase 3): the tick's `fire` is consumed by the server, ammo and health are authoritative,
 // and snapshots carry one-shot `hits` / `deaths` events for feedback.
 export const BASE_GAME_LAG_COMP_MS = 100;             // rewind victims by the client interpolation delay
@@ -434,6 +434,10 @@ export function sanitizeBaseGameTickInput(input) {
 export const BASE_GAME_DRONE_KINDS = Object.freeze(['quad', 'uav', 'sentinel']);
 export const BASE_GAME_DRONE_MODES = Object.freeze(['auto', 'manual']);
 export const BASE_GAME_DRONE_STATES = Object.freeze(['launch', 'follow', 'goto', 'hold', 'return', 'manual', 'deadstick']);
+// A vehicle's switches, one bit each. Which bits a kind honours is on its def; the wire only clamps.
+export const BASE_GAME_VEHICLE_LIGHTS = Object.freeze({ head: 1, lamp: 2, high: 4, turretLight: 8, turretLaser: 16 });
+export const BASE_GAME_VEHICLE_LIGHT_MASK = 31;
+const lightBits = (x) => (Number.isInteger(x) ? (x & BASE_GAME_VEHICLE_LIGHT_MASK) : null);
 const clamp1 = (x) => Math.max(-1, Math.min(1, Number(x) || 0));
 const finiteVec3Lim = (a, lim) => Array.isArray(a) && a.length === 3 && a.every((x) => Number.isFinite(x) && Math.abs(x) <= lim);
 const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
@@ -453,6 +457,9 @@ export function sanitizeBaseGameDroneInput(input) {
     // arriving after launch, because a missile already in flight follows it.
     aim: finiteVec3Lim(input.aim, MAX_ABS_COORDINATE) ? [...input.aim] : null,
     fire: input.fire === true,
+    // The driver's switches, absolute rather than toggles, so a dropped tick cannot leave a light
+    // inverted. Null means the tick did not say, and the vehicle keeps what it had.
+    lights: lightBits(input.lights),
   };
 }
 
@@ -508,6 +515,7 @@ export function sanitizeBaseGameVehicleState(s) {
     turretYaw: Number.isFinite(s.turretYaw) ? wrapPi(s.turretYaw) : null,
     turretPitch: Number.isFinite(s.turretPitch) ? wrapPi(s.turretPitch) : null,
     turretAmmo: Number.isFinite(s.turretAmmo) ? Math.max(0, Math.round(s.turretAmmo)) : null,
+    lights: lightBits(s.lights) ?? 0,
   };
 }
 

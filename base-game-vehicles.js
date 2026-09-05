@@ -3,13 +3,13 @@
 // remote operator versus an onboard seat; this module has no renderer or server dependency.
 import { G, DEFAULT_ROAD_VEHICLE, makeRoadVehicle, stepRoadVehicle } from './city-vehicle-model.js';
 import {
-  BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_MODES, BASE_GAME_VEHICLE_STATES,
+  BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_MODES, BASE_GAME_VEHICLE_STATES, BASE_GAME_VEHICLE_LIGHTS,
   sanitizeBaseGameVehicleState, sanitizeBaseGameVehicleSeatState,
 } from './base-game-protocol.mjs';
 
 export const VEHICLE_UGV = 'ugv';
 export const VEHICLE_BUGGY = 'buggy';
-export { BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_MODES, BASE_GAME_VEHICLE_STATES, sanitizeBaseGameVehicleState, sanitizeBaseGameVehicleSeatState };
+export { BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_MODES, BASE_GAME_VEHICLE_STATES, BASE_GAME_VEHICLE_LIGHTS, sanitizeBaseGameVehicleState, sanitizeBaseGameVehicleSeatState };
 
 const FIXED_STEP = 1 / 120;
 const PROBE_PERIOD = 0.1;
@@ -41,6 +41,8 @@ export const BASE_GAME_VEHICLE_DEFS = Object.freeze({
     // A battery pack is one bang. The buggy's fuel is not: see `secondaries`.
     smokeAt: 0.55,
     seatOffset: [0, 0, 0], exitOffset: [-1.2, 0, 0],
+    // The switches this hull has, in the order the light wheel shows them.
+    lights: Object.freeze(['head', 'lamp', 'turretLight', 'turretLaser']),
     // The remote weapon station. `pivot` is the trunnion in the SIM frame (forward +Z); the mesh
     // draws it at -z because craft meshes point their nose down -Z. Its height is the mesh's own
     // gun-axis band, and test-vehicle-meshes.mjs asserts the drawn trunnion agrees with it.
@@ -66,6 +68,7 @@ export const BASE_GAME_VEHICLE_DEFS = Object.freeze({
       Object.freeze({ at: 0.9, offset: [0.2, 0.8, 0.9], radius: 2.6, damage: 14 }),
     ]),
     seatOffset: [-0.42, 0.72, 0.05], exitOffset: [-1.2, 0, 0], maxGrade: 0.7,
+    lights: Object.freeze(['head', 'lamp', 'high']),
   }),
 });
 
@@ -113,6 +116,7 @@ export function createBaseGameVehicle(kind, { ownerId = null, team = 0, from = [
     stepAcc: 0, age: 0, probeT: idPhase(vehicleId), probeYaw: body.yaw,
     stuckT: 0, stuckFrom: null, lastRecoveryAt: -Infinity, secondStuck: false, probeTarget: 0, steerCmd: 0,
     turretYaw: 0, turretPitch: 0, aim: null, turretOnTarget: false, firing: false, followYaw: null,
+    lights: 0,
     mount: def.turret ? { cool: 0, ammo: def.turret.ammo } : null,
   };
 }
@@ -349,7 +353,7 @@ export function damageBaseGameVehicle(rec, amount) {
   // The driver is returned because this clears it: a caller that read `rec.driver` afterwards to
   // free the seat would find it already gone and leave the client stuck controlling a wreck.
   const driver = rec.driver;
-  rec.hp = 0; rec.done = true; rec.mode = 'parked'; rec.driver = null; rec.firing = false;
+  rec.hp = 0; rec.done = true; rec.mode = 'parked'; rec.driver = null; rec.firing = false; rec.lights = 0;
   enter(rec, 'wreck');
   rec.wreckT = 0;
   rec.crash = [rec.body.x, rec.y, rec.body.z];
@@ -566,7 +570,22 @@ export function vehicleWireState(rec) {
     hp: rec.hp, mode: rec.mode, state: rec.state, target: rec.target ? [...rec.target] : null,
     turretYaw: rec.def.turret ? rec.turretYaw : null, turretPitch: rec.def.turret ? rec.turretPitch : null,
     turretAmmo: rec.mount ? rec.mount.ammo : null,
+    lights: rec.lights,
   };
+}
+
+// The bits a kind honours, from its def's switch list.
+export function vehicleLightMask(def) {
+  let mask = 0;
+  for (const name of def?.lights ?? []) mask |= BASE_GAME_VEHICLE_LIGHTS[name] ?? 0;
+  return mask;
+}
+
+// Absolute, not a toggle, and clipped to the switches the hull has. A wreck has none.
+export function setVehicleLights(rec, mask) {
+  if (!rec || rec.done || !Number.isInteger(mask)) return false;
+  rec.lights = mask & vehicleLightMask(rec.def);
+  return true;
 }
 
 export function vehicleSeatState(rec) {
@@ -583,7 +602,7 @@ export function restoreVehicleSeatState(rec, state) {
   Object.assign(rec.body, { x, z, yaw, vx, vz, yawRate, steering });
   rec.y = y; rec.airV = airV; rec.airborne = Math.abs(airV) > 1e-6;
   rec.pitch = clean.pitch; rec.roll = clean.roll; rec.hp = clean.hp; rec.mode = clean.mode; rec.state = clean.state;
-  rec.target = clean.target; rec.driver = clean.driver;
+  rec.target = clean.target; rec.driver = clean.driver; rec.lights = clean.lights;
   return true;
 }
 

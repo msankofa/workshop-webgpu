@@ -41,7 +41,7 @@ import { createAmmoStore } from '../player-ammo.js';
 import { createTriggerState, stepTrigger, stepThrow, shotDirectionFor, createSwapState, beginSwap, swapPhase, lookDirection } from '../base-game-fire.js';
 import { createBaseGameDrone, spawnWorldDrone, stepBaseGameDrone, sendDroneTo, recallDrone, takeOverDrone, releaseDrone, droneWireState, fireAgm, stepGuidedProjectiles, droneHitVolumes, blastDamageOnDrone, damageBaseGameDrone } from '../base-game-drones.js';
 import {
-  VEHICLE_UGV, VEHICLE_BUGGY, createBaseGameVehicle, stepBaseGameVehicle, stepVehicleSeat,
+  VEHICLE_UGV, VEHICLE_BUGGY, createBaseGameVehicle, stepBaseGameVehicle, stepVehicleSeat, setVehicleLights,
   sendVehicleTo, recallVehicle, takeOverVehicle, releaseVehicle, vehicleWireState, vehicleSeatState,
   fireVehicleTurret, vehicleHitVolumes, blastDamageOnVehicle, damageBaseGameVehicle, dueVehicleBlasts,
 } from '../base-game-vehicles.js';
@@ -1236,11 +1236,15 @@ export function createBaseGameRoomService({
     }
     if (drone && rec.mode === 'manual') { rec.input.pitch = di.pitch; rec.input.roll = di.roll; rec.input.yaw = di.yaw; rec.input.throttle = di.throttle; rec.input.sweep = di.sweep; rec.input.flap = di.flap; }
     if (drone) applyDroneAim(room, rec, di);
-    // A ground station has no rounds in the air to steer: the aim is stored and the turret trains
-    // toward it inside the vehicle's own fixed step, so the slew is deterministic like the drive.
-    else if (rec.def.turret) {
-      if (di.aim) rec.aim = di.aim;
-      rec.firing = di.mode === 1 && di.fire === true;
+    else {
+      // The switches belong to whoever holds the stick, and stay as left when they get out.
+      if (di.lights !== null && client.controlling === rec.id) setVehicleLights(rec, di.lights);
+      // A ground station has no rounds in the air to steer: the aim is stored and the turret trains
+      // toward it inside the vehicle's own fixed step, so the slew is deterministic like the drive.
+      if (rec.def.turret) {
+        if (di.aim) rec.aim = di.aim;
+        rec.firing = di.mode === 1 && di.fire === true;
+      }
     }
   }
 
