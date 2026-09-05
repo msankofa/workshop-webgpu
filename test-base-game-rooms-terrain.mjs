@@ -386,10 +386,12 @@ console.log('\n[10] scattered structures: the room streams a building at a plan 
   const bare = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: JSON.parse(JSON.stringify(descriptor)) }).config;
   const withStructs = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: JSON.parse(JSON.stringify(descriptor)), structures: true, structureSeed: 9 }).config;
   ok(withStructs.structures === true && withStructs.structureSeed === 9 && withStructs.structureSpacing === 480 && bare.structures === false, 'structures are an explicit opt-in with a seed and a default spacing');
-  ok(withStructs.worldVersion !== bare.worldVersion && withStructs.worldVersion.endsWith(':structs1:9:480'), 'structures are part of the world identity');
+  ok(withStructs.worldVersion !== bare.worldVersion && withStructs.worldVersion.endsWith(':structs2:9:480:1:5:110'), 'structures are part of the world identity');
   ok(describeBaseGameTerrainConfig(withStructs).structures === true, 'the description carries them');
+  const sparse = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: JSON.parse(JSON.stringify(descriptor)), structures: true, structureSeed: 9, structureChance: 0.3, structureScatter: 2, structureReach: 60 }).config;
+  ok(sparse.structureChance === 0.3 && sparse.structureScatter === 2 && sparse.structureReach === 60 && sparse.worldVersion.endsWith(':structs2:9:480:0.3:2:60') && sparse.worldVersion !== withStructs.worldVersion, 'chance, scatter and reach are clamped, carried and part of the world identity');
   const vol = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: JSON.parse(JSON.stringify(v5Descriptor(v5Project(7)))), volumetric: true, structures: true });
-  ok(!vol.error && vol.config.structures === true && vol.config.worldVersion.includes(':volume') && vol.config.worldVersion.endsWith(':structs1:1:480'), 'structures are accepted in a volumetric room');
+  ok(!vol.error && vol.config.structures === true && vol.config.worldVersion.includes(':volume') && vol.config.worldVersion.endsWith(':structs2:1:480:1:5:110'), 'structures are accepted in a volumetric room');
 
   let clock = 1000;
   const service = createBaseGameRoomService({ now: () => clock });

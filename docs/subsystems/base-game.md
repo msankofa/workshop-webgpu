@@ -3694,9 +3694,13 @@ through `renderer.compileAsync` off-screen at creation, the forest's pattern, fo
 spawn building (`warmup.ms` records the cost). The rain decorator runs once per material through
 a `Set`, since both owners now list the same ones.
 
-**Step 5, settings.** No protocol change: the structure seed and spacing are world identity, not
-runtime shared keys, so they travel in the room's terrain config like the spawn building flag.
-The three settings join `ROOM_OWNED_GROUND_KEYS`: online the owner's change re-requests the world
+**Step 5, settings.** No protocol change: the structure knobs are world identity, not runtime
+shared keys, so they travel in the room's terrain config like the spawn building flag. They are
+`structureSeed`, `structureSpacing` (120..1920 m), `structureChance` (0..1, the share of tiles
+that get a building, decided per tile by a hash so the seed still picks which), `structureScatter`
+(0..12 cover structures per building) and `structureReach` (30..240 m they scatter within); the
+tag is `:structs2:<seed>:<spacing>:<chance>:<scatter>:<reach>`. All of them and the toggle join
+`ROOM_OWNED_GROUND_KEYS`: online the owner's change re-requests the world
 (everyone respawns into the new one, as for a world-mode change) and guests' controls are locked;
 Solo they apply at once. The Structures runtime line shows the room's fixed seed and spacing
 while online.

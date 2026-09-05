@@ -37,7 +37,7 @@ function boxGeometry(b, centred = false) {
 
 export function createStructureCollision(source, {
   worldQuery = null, heightAt = null, seaLevel = 0, seed = STRUCTURE_DEFAULTS.seed, spacing = STRUCTURE_DEFAULTS.spacing,
-  plan = null, priority = 100, scatter: scatterOptions = null, ...options
+  plan = null, priority = 100, chance = STRUCTURE_DEFAULTS.chance, scatter: scatterOptions = null, ...options
 } = {}) {
   const cfg = { ...STRUCTURE_COLLISION_DEFAULTS, ...options };
   const groundAt = heightAt ?? ((x, z) => source.heightAt(x, z));
@@ -72,7 +72,7 @@ export function createStructureCollision(source, {
   function build(tx, tz) {
     const p = currentPlan();
     if (!p) return null;
-    const list = structuresForTile(seed, tx, tz, p, { spacing });
+    const list = structuresForTile(seed, tx, tz, p, { spacing, chance });
     if (list == null) return null;
     const key = keyOf(tx, tz);
     if (!list.length) { tiles.set(key, { tx, tz, structure: null, model: null, navRects: [], bounds: null, empty: true }); version++; return false; }
@@ -152,7 +152,7 @@ export function createStructureCollision(source, {
   }
 
   return {
-    provider, seed, spacing,
+    provider, seed, spacing, chance, scatterOptions,
     get version() { return version; },
     get planCoverage() { const p = currentPlan(); return p ? p.coverage : 0; },
     get plan() { return currentPlan(); },

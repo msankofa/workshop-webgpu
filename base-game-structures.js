@@ -14,6 +14,7 @@ export const STRUCTURES_VERSION = 1;
 export const STRUCTURE_DEFAULTS = Object.freeze({
   seed: 1,
   spacing: 480,          // m per site tile; the trails default, so trails meet buildings by default
+  chance: 1,             // share of tiles that get a building; the tile hash decides which
   // Weighted kinds. The complex is 190 m across, so it is the rare one.
   kinds: Object.freeze([
     ['atrium', 3], ['lobby', 3], ['pergola', 3], ['slotgarden', 2], ['pavilion', 3], ['complex', 1],
@@ -38,6 +39,7 @@ export function structuresForTile(seed, tx, tz, plan, params = {}) {
   if (tx === 0 && tz === 0) return [];
   const sites = sitesForTile(P.seed, tx, tz, plan, { spacing: P.spacing });
   if (sites == null) return null;
+  if (P.chance < 1 && hash2(tx, tz, (Math.floor(P.seed) ^ 0x33c1) | 0) >= P.chance) return [];
   return sites.map((site) => ({
     key: structureKey(tx, tz), tx, tz, x: site.x, z: site.z, tier: site.tier,
     kind: structureKindFor(P.seed, tx, tz, P),

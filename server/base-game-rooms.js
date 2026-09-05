@@ -68,6 +68,11 @@ export function formatBaseGameNpcProfStats(s, f = value => Number(value).toFixed
 // collision the browser renders; terrain rooms use the same pure source + heightfield provider
 // Solo uses (the heightfield is infinite, so nothing has to stream on the server). Built lazily
 // so tests that never create a room do not pay for the BVH bake.
+// The structure knobs a sanitized terrain config carries, in the collision module's terms.
+function structureCollisionOptions(config) {
+  return { seed: config.structureSeed, spacing: config.structureSpacing, chance: config.structureChance ?? 1,
+    scatter: { count: config.structureScatter ?? 5, reach: config.structureReach ?? 110 } };
+}
 async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
   const { createWorldQueryService } = await import('../world-query.js');
   const worldQuery = createWorldQueryService();
@@ -92,7 +97,7 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
       let volumeStructures = null;
       if (config.structures) {
         const { createStructureCollision } = await import('../base-game-structure-collision.js');
-        volumeStructures = createStructureCollision(source, { worldQuery, heightAt: surface, seaLevel, seed: config.structureSeed, spacing: config.structureSpacing });
+        volumeStructures = createStructureCollision(source, { worldQuery, heightAt: surface, seaLevel, ...structureCollisionOptions(config) });
       }
       return {
         worldQuery,
@@ -122,7 +127,7 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
     let structures = null;
     if (config.structures) {
       const { createStructureCollision } = await import('../base-game-structure-collision.js');
-      structures = createStructureCollision(source, { worldQuery, seaLevel, seed: config.structureSeed, spacing: config.structureSpacing });
+      structures = createStructureCollision(source, { worldQuery, seaLevel, ...structureCollisionOptions(config) });
     }
     return {
       worldQuery,

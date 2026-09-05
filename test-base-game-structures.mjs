@@ -28,6 +28,14 @@ ok(structuresForTile(7, 0, 0, plan).length === 0, 'the origin tile is left to th
 ok(structuresForTile(7, 4, 4, mockPlan({ water: true })).length === 0, 'open water yields nothing');
 ok(structuresForTile(7, 4, 4, mockPlan({ ready: false })) === null, 'a missing plan tile defers');
 ok(structuresForTile(8, 3, -2, plan)[0].seed !== a[0].seed, 'the world seed changes the building seed');
+{
+  let n = 0, all = 0;
+  for (let tx = 1; tx <= 20; tx++) for (let tz = 1; tz <= 20; tz++) { all += structuresForTile(7, tx, tz, plan).length; n += structuresForTile(7, tx, tz, plan, { chance: 0.3 }).length; }
+  ok(all === 400 && n > 80 && n < 160, `a 30% chance keeps about a third of the tiles (${n} of 400)`);
+  ok(structuresForTile(7, 3, -2, plan, { chance: 0 }).length === 0, 'chance 0 places nothing');
+  const kept = structuresForTile(7, 5, 5, plan, { chance: 0.3 });
+  ok(JSON.stringify(kept) === JSON.stringify(structuresForTile(7, 5, 5, plan, { chance: 0.3 })), 'the chance gate is deterministic');
+}
 
 // Kind mix over many tiles: every weighted kind appears, and the complex is the rare one.
 const counts = {};

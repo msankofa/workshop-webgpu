@@ -10,7 +10,7 @@ import { createStructureCollision } from './base-game-structure-collision.js';
 import { clearanceAgainstRects, structureStampPaths } from './base-game-structures.js';
 import { SPAWN_BUILDING_CHUNK, SPAWN_CONCRETE_WALL, SPAWN_CONCRETE_COVER } from './base-game-spawn-building.js';
 
-export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, renderer = null, camera = null, materials: shared = null, seaLevel = () => 0, seed = 1, spacing = 480, chunk = SPAWN_BUILDING_CHUNK, collision: collisionOptions = {} }) {
+export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, renderer = null, camera = null, materials: shared = null, seaLevel = () => 0, seed = 1, spacing = 480, chance = 1, scatter = { count: 5, reach: 110 }, chunk = SPAWN_BUILDING_CHUNK, collision: collisionOptions = {} }) {
   if (!scene?.add) throw new TypeError('structures require a Three.js scene');
   if (!worldQuery?.registerProvider) throw new TypeError('structures require a world-query service');
   if (!terrain?.acquirePlan) throw new TypeError('structures need the terrain plan window');
@@ -80,7 +80,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, re
     collision?.dispose();
     collision = createStructureCollision(
       { heightAt: (x, z) => terrain.groundHeight(x, z), descriptor: terrain.source?.descriptor ?? null },
-      { worldQuery, heightAt: (x, z) => terrain.groundHeight(x, z), seaLevel: seaLevel(), seed, spacing, plan: () => terrain.plan, ...collisionOptions },
+      { worldQuery, heightAt: (x, z) => terrain.groundHeight(x, z), seaLevel: seaLevel(), seed, spacing, chance, scatter: { ...scatter }, plan: () => terrain.plan, ...collisionOptions },
     );
     collision.provider.enabled = enabled;
     dressedVersion = -1;
@@ -145,6 +145,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, re
     warmup,
     stats,
     get collision() { return collision; },
+    get params() { return { seed, spacing, chance, scatter: { ...scatter } }; },
     get version() { return version; },
     clearanceAt,
     get enabled() { return enabled; },
@@ -160,8 +161,8 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, re
       collision.provider.enabled = enabled;
     },
     // A new source or a new seed: everything placed is wrong now.
-    reset({ seed: nextSeed = seed, spacing: nextSpacing = spacing } = {}) {
-      seed = nextSeed; spacing = nextSpacing;
+    reset({ seed: nextSeed = seed, spacing: nextSpacing = spacing, chance: nextChance = chance, scatter: nextScatter = scatter } = {}) {
+      seed = nextSeed; spacing = nextSpacing; chance = nextChance; scatter = { ...scatter, ...nextScatter };
       for (const key of [...groups.keys()]) undress(key);
       makeCollision();
       version++;

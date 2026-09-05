@@ -242,6 +242,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   structuresEnabled: true,        // eco-brutalist buildings at the plan sites (base-game-structures.js)
   structureSeed: 1,
   structureSpacing: 480,
+  structureChance: 1,             // share of tiles that get a building
+  structureScatter: 5,            // bot-viewer cover structures around each building
+  structureReach: 110,            // m they scatter within
   waterEnabled: true,
   // A planar mirror renders the visible world a second time. Keep it opt-in: at the old radius-6
   // terrain default that made every other frame submit roughly 169 extra chunk draws.
@@ -770,7 +773,8 @@ function pickRoomTerrainConfig() {
   // The spawn building rides on heightfield terrain only; volumetric rooms keep the bare spawn.
   // Scattered structures seat on groundHeight (the density surface when volumetric); seed and spacing are world identity.
   return { kind: 'terrain', descriptor, volumetric, spawnBuilding: !volumetric,
-    structures: settings.structuresEnabled, structureSeed: settings.structureSeed, structureSpacing: settings.structureSpacing };
+    structures: settings.structuresEnabled, structureSeed: settings.structureSeed, structureSpacing: settings.structureSpacing,
+    structureChance: settings.structureChance, structureScatter: settings.structureScatter, structureReach: settings.structureReach };
 }
 let roomTerrainConfig = null;   // the room's current terrain config while online (set on join and on owner changes)
 function connectOnlineSession({ mode, roomCode }) {
@@ -1299,8 +1303,13 @@ function structuresWanted() {
   return settings.structuresEnabled;
 }
 function structureParams() {
-  if (isOnline() && roomTerrainConfig?.structures) return { seed: roomTerrainConfig.structureSeed ?? 1, spacing: roomTerrainConfig.structureSpacing ?? 480 };
-  return { seed: settings.structureSeed, spacing: settings.structureSpacing };
+  const c = isOnline() && roomTerrainConfig?.structures ? roomTerrainConfig : null;
+  return {
+    seed: c ? c.structureSeed ?? 1 : settings.structureSeed,
+    spacing: c ? c.structureSpacing ?? 480 : settings.structureSpacing,
+    chance: c ? c.structureChance ?? 1 : settings.structureChance,
+    scatter: { count: c ? c.structureScatter ?? 5 : settings.structureScatter, reach: c ? c.structureReach ?? 110 : settings.structureReach },
+  };
 }
 // Reseats the building on the current source. Called after every setSource and from updateWorld.
 let floraForBuilding = null;   // set once the flora exists (it is created after the terrain)
@@ -1430,7 +1439,8 @@ function adoptRoomTerrain(config) {
   if (!config) return;
   if (config.kind === 'terrain') {
     const check = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: config.descriptor, volumetric: config.volumetric === true,
-      spawnBuilding: config.spawnBuilding === true, structures: config.structures === true, structureSeed: config.structureSeed, structureSpacing: config.structureSpacing });
+      spawnBuilding: config.spawnBuilding === true, structures: config.structures === true, structureSeed: config.structureSeed, structureSpacing: config.structureSpacing,
+      structureChance: config.structureChance, structureScatter: config.structureScatter, structureReach: config.structureReach });
     if (check.error) throw new Error(`room terrain rejected locally: ${check.error}`);
     if (check.config.worldVersion !== config.worldVersion) throw new Error(`room terrain version mismatch: ${check.config.worldVersion} vs ${config.worldVersion}`);
     const same = activeTerrainDescriptor.key === check.config.descriptor.key && activeTerrainDescriptor.sourceVersion === check.config.descriptor.sourceVersion;
@@ -3475,14 +3485,14 @@ function applyFloraSettings() {
   if (flora.occlusion) flora.occlusion.bias = settings.grassOcclusionBias;
 }
 
-const STRUCTURE_APPLY_KEYS = ['structuresEnabled', 'worldMode', 'structureSeed', 'structureSpacing'];
+const STRUCTURE_APPLY_KEYS = ['structuresEnabled', 'worldMode', 'structureSeed', 'structureSpacing', 'structureChance', 'structureScatter', 'structureReach'];
 const appliedStructures = {};
 function applyStructureSettings() {
   let dirty = false;
   for (const key of STRUCTURE_APPLY_KEYS) if (appliedStructures[key] !== settings[key]) { appliedStructures[key] = settings[key]; dirty = true; }
   if (!dirty) return;
   const p = structureParams();
-  if (p.seed !== structures.collision.seed || p.spacing !== structures.collision.spacing) structures.reset(p);
+  if (JSON.stringify(p) !== JSON.stringify(structures.params)) structures.reset(p);
   structures.setEnabled(structuresWanted());
   syncSpawnBuildingFlora();
 }
@@ -3996,7 +4006,7 @@ function registerControl(key, sync, element) {
 }
 // Structures are world identity (their seed and spacing fix every wall), so they change the
 // world the way the ground does: the owner asks for a new one, guests follow.
-const ROOM_OWNED_GROUND_KEYS = ['worldMode', 'terrainVolumetric', 'terrainSeaLevel', 'structuresEnabled', 'structureSeed', 'structureSpacing'];
+const ROOM_OWNED_GROUND_KEYS = ['worldMode', 'terrainVolumetric', 'terrainSeaLevel', 'structuresEnabled', 'structureSeed', 'structureSpacing', 'structureChance', 'structureScatter', 'structureReach'];
 // The analytic source carries the slider's sea level; a v5 project's is authored in the project.
 function applyLocalSeaLevel() {
   if (activeTerrainDescriptor.kind === 'analytic') {
@@ -4419,6 +4429,9 @@ const structuresSec = createSection(ctrlBody, 'Structures', { collapsed: true })
 addToggle(structuresSec, 'structuresEnabled', 'Eco-brutalist buildings at the plan sites');
 addRange(structuresSec, 'structureSeed', 'Structure seed', 0, 1e9, 1, value => value.toFixed(0));
 addRange(structuresSec, 'structureSpacing', 'Site spacing', 120, 1920, 30, value => `${value.toFixed(0)} m`);
+addRange(structuresSec, 'structureChance', 'Building chance per site', 0, 1, 0.05, value => `${(value * 100).toFixed(0)}%`);
+addRange(structuresSec, 'structureScatter', 'Cover structures per building', 0, 12, 1, value => value.toFixed(0));
+addRange(structuresSec, 'structureReach', 'Cover reach', 30, 240, 10, value => `${value.toFixed(0)} m`);
 const structureRuntimeLine = document.createElement('div');
 structureRuntimeLine.className = 'note';
 structuresSec.append(structureRuntimeLine);
@@ -4426,7 +4439,7 @@ function refreshStructureRuntimeLine() {
   const st = structures.stats;
   const here = playerController.getPosition();
   const near = structuresWanted() ? structures.nearest(here[0], here[2]) : null;
-  const fixed = isOnline() && roomTerrainConfig?.structures ? ` · room seed ${roomTerrainConfig.structureSeed} at ${roomTerrainConfig.structureSpacing} m` : '';
+  const fixed = isOnline() && roomTerrainConfig?.structures ? ` · room: seed ${roomTerrainConfig.structureSeed}, ${roomTerrainConfig.structureSpacing} m, ${Math.round((roomTerrainConfig.structureChance ?? 1) * 100)}%, ${roomTerrainConfig.structureScatter ?? 5} cover within ${roomTerrainConfig.structureReach ?? 110} m` : '';
   setTextIfChanged(structureRuntimeLine, !structuresWanted() ? (isOnline() ? 'Off in this room.' : 'Off.')
     : `${st.built} buildings and ${st.scattered} cover structures in ${st.tiles} settled tiles · ${st.meshes} meshes · ${st.collisionTriangles.toLocaleString()} collision tris · bake ${st.buildMs.toFixed(0)} ms${near ? ` · nearest ${near.tile.structure.kind} ${near.distance.toFixed(0)} m` : ''}${fixed}`);
 }
