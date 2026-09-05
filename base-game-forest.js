@@ -323,6 +323,17 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
   async function buildAsync() {
     const token = buildToken;
     const t0 = now();
+    // Per-build object: cancelled async work must not write into a replacement build's timings.
+    // Publication is scene readiness, NOT first pixels or GPU execution time.
+    const startup = stats.startup = {
+      setupMs: 0, installMs: 0, yieldMs: 0, yields: 0,
+      firstPublicationMs: null, totalMs: null, waves: 0,
+    };
+    const yieldStartup = async () => {
+      const started = now();
+      try { await yieldMain(); }
+      finally { startup.yieldMs += now() - started; startup.yields++; }
+    };
     const variantsPerSpecies = Math.max(1, Math.round(cfg.treeVariantsPerSpecies));
     const readyPaletteVariants = [];
     ensureTextureSet();
@@ -333,8 +344,10 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
 
     async function publishFamilyWave({ variants: wave, palette: progressPalette, total }) {
       if (token !== buildToken || !enabled) return false;
+      stats.paletteMs = progressPalette.bakeMs;
       gpuCanUpdate = false;
       if (!forestGPU) {
+        const setupStart = now();
         // The first wave contains variant zero from every family. Use each family's first geometry
         // as a hidden placeholder for its later slots so the fixed-size GPU buffers can be created
         // once; placeholders never draw and are replaced before their slot becomes ready.
@@ -364,14 +377,16 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
         syncOrigin();
         syncRenderState();
         if (trees.records.size) forestGPU.setChunks(trees.records);
+        startup.setupMs += now() - setupStart;
         const sharedStart = now();
-        await forestGPU.warmupComputeShared?.(yieldMain, () => token === buildToken && enabled);
+        await forestGPU.warmupComputeShared?.(yieldStartup, () => token === buildToken && enabled);
         stats.computeCompileMs += now() - sharedStart;
         if (token !== buildToken || !enabled || !forestGPU) return false;
       }
 
       const gpu = forestGPU;
       const indices = [];
+      const installStart = now();
       for (const variant of wave) {
         const g = variant.speciesIdx * variantsPerSpecies + variant.variant;
         indices.push(g);
@@ -379,6 +394,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
         palette.variants[g] = variant;
         gpu.installVariant(g, variant);
       }
+      startup.installMs += now() - installStart;
 
       // Compile one complete cross-family wave off-scene. Publication happens only after every
       // family in the wave is ready, so the forest never temporarily becomes a monoculture.
@@ -391,7 +407,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       if (token !== buildToken || !enabled || forestGPU !== gpu) return false;
       for (const g of indices) {
         const computeStart = now();
-        await gpu.warmupVariant?.(g, yieldMain, () => token === buildToken && enabled);
+        await gpu.warmupVariant?.(g, yieldStartup, () => token === buildToken && enabled);
         stats.computeCompileMs += now() - computeStart;
         if (token !== buildToken || !enabled || forestGPU !== gpu) return false;
       }
@@ -401,6 +417,8 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       scene.add(...waveMeshes);
       publishedMeshes.push(...waveMeshes);
       meshesCb?.(publishedMeshes);
+      startup.waves++;
+      startup.firstPublicationMs ??= now() - t0;
       rungTris = rungTriangles({ variants: readyPaletteVariants.filter(Boolean) });
       built = true;
       stats.built = true;
@@ -417,7 +435,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       variantsPerSpecies,
       texSet,
     }, {
-      yieldFn: yieldMain,
+      yieldFn: yieldStartup,
       shouldContinue: () => token === buildToken && enabled,
       onFamilyWave: publishFamilyWave,
     });
@@ -427,6 +445,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     rungTris = rungTriangles(palette);
     stats.variants = palette.variants.length;
     stats.readyVariants = palette.variants.length;
+    startup.totalMs = now() - t0;
     gpuCanUpdate = true;
     return true;
   }

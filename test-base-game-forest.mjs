@@ -407,6 +407,13 @@ section('shaders compile before the forest reaches the scene');
   await settle({ terrain, camera, forest, worldCoordinates: wc, scene }, 40);
   check('compileAsync ran once per cross-family variant wave',
     compiled.length === SMALL.treeVariantsPerSpecies, `${compiled.length} waves`);
+  const startup = forest.stats.startup;
+  check('startup reports completed waves and ordered publication/finish timings',
+    startup.waves === SMALL.treeVariantsPerSpecies && startup.firstPublicationMs >= 0
+    && startup.totalMs >= startup.firstPublicationMs);
+  check('startup separates setup, installation, and scheduler waits',
+    startup.setupMs >= 0 && startup.installMs >= 0 && startup.yieldMs >= 0
+    && startup.yields === 8);
   check('each wave contains one complete variant from every family',
     compiled.every(c => c.count === SMALL.treeSpecies * 9), compiled.map(c => c.count).join('/'));
   check('the first family wave was published before the second compiled',

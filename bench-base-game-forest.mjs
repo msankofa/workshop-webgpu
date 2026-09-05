@@ -44,6 +44,7 @@ async function run(label, settings) {
     await forest.update();
   }
   const s = forest.sampleDetail();   // per-rung counts are an on-demand scan, not a frame-loop read
+  console.log('   startup (headless; no GPU compilation):', JSON.stringify(s.startup));
   // One chunk mutation = one full rescan + full re-upload. Time it directly.
   const gpu = forest.forestGPU;
   const key = [...forest.trees.records.keys()][0];
