@@ -7,6 +7,7 @@ import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { instancedBoxes, clearBoxes } from './map-boxes.js';
 import { createConcreteMaterial } from './concrete-material.js';
 import { createStructureCollision } from './base-game-structure-collision.js';
+import { structureFloorRects, clearanceAgainstRects, structureStampPaths } from './base-game-structures.js';
 import { SPAWN_BUILDING_CHUNK, SPAWN_CONCRETE_WALL, SPAWN_CONCRETE_COVER } from './base-game-spawn-building.js';
 
 export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, seaLevel = () => 0, seed = 1, spacing = 480, chunk = SPAWN_BUILDING_CHUNK, collision: collisionOptions = {} }) {
@@ -29,12 +30,32 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
   // The plan window is held for as long as this exists: trails hold it too, but structures must
   // place without them.
   const releasePlan = terrain.acquirePlan();
+  // Cover keep-out: every resident building's floor rects, for the field derive (tiles arriving
+  // after a building) and for the stamp over resident posts (a building arriving after a tile).
+  const floorRects = new Map();    // tile key -> rects
+  const clearanceAt = (x, z) => {
+    let clear = 1;
+    for (const rects of floorRects.values()) { clear = Math.min(clear, clearanceAgainstRects(rects, x, z)); if (clear === 0) break; }
+    return clear;
+  };
+  terrain.setStructureClearance?.(clearanceAt);
+  let stampWrites = 0;
+  function stamp(model) {
+    const fields = terrain.fields;
+    if (!fields?.stampAlong) return 0;
+    let writes = 0;
+    for (const { path, reach } of structureStampPaths(model)) {
+      writes += fields.stampAlong(['coverGrass', 'coverPlant', 'coverTree'], path, reach, (x, z, value) => Math.round(value * clearanceAt(x, z)));
+    }
+    stampWrites += writes;
+    return writes;
+  }
   let collision = null;
   let enabled = true;
   let dressedVersion = -1;
   let version = 0;                 // bumps when a tile's meshes are added or removed
   const groups = new Map();        // tile key -> THREE.Group
-  const stats = { tiles: 0, built: 0, meshes: 0, collisionTriangles: 0, buildMs: 0 };
+  const stats = { tiles: 0, built: 0, meshes: 0, collisionTriangles: 0, buildMs: 0, stampWrites: 0 };
 
   function makeCollision() {
     collision?.dispose();
@@ -67,6 +88,8 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
     root.add(group);
     groups.set(key, group);
     stats.meshes += meshes;
+    floorRects.set(key, structureFloorRects(tile.model));
+    stamp(tile.model);
   }
   function undress(key) {
     const group = groups.get(key);
@@ -75,6 +98,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
     clearBoxes(group);
     root.remove(group);
     groups.delete(key);
+    floorRects.delete(key);   // resident posts keep their zero until their tile re-derives
   }
   // Meshes follow the collider's tiles: one dress per newly built tile, one teardown per drop.
   function reconcile() {
@@ -83,7 +107,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
     for (const [key, tile] of collision.tiles) if (!tile.empty && !groups.has(key)) dress(key, tile);
     for (const key of [...groups.keys()]) if (!collision.tiles.has(key) || collision.tiles.get(key).empty) undress(key);
     const s = collision.stats();
-    stats.tiles = s.tiles; stats.built = s.built; stats.collisionTriangles = s.triangles; stats.buildMs = s.buildMs;
+    stats.tiles = s.tiles; stats.built = s.built; stats.collisionTriangles = s.triangles; stats.buildMs = s.buildMs; stats.stampWrites = stampWrites;
     version++;
   }
 
@@ -93,6 +117,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
     stats,
     get collision() { return collision; },
     get version() { return version; },
+    clearanceAt,
     get enabled() { return enabled; },
     // Global positions ([x, y, z]); the plan window is driven by the terrain's own update.
     update(positions) {
@@ -125,6 +150,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, se
     dispose() {
       for (const key of [...groups.keys()]) undress(key);
       collision?.dispose();
+      terrain.setStructureClearance?.(null);
       releasePlan();
       for (const m of materials) m.dispose();
       scene.remove(root);

@@ -3625,5 +3625,18 @@ triangles, bake time, nearest building).
 check; before this it compared a version computed without `spawnBuilding` against the room's,
 which would have thrown on any spawn-building room.
 
-Not yet done: cover-channel stamps under the floors (trees still grow through walls), the
-shared-settings relay, and anything seen in a browser.
+**Step 4, cover keep-out.** A building zeroes the placement field's three cover channels under
+its floor slabs the way a trail does under its surface, so trees and compute grass stop at the
+concrete. `clearanceAgainstRects(rects, x, z)` in `base-game-structures.js` is 0 within
+`STRUCTURE_CLEAR.margin` (1.5 m) of a floor rect and rises to 1 over `fade` (6 m);
+`structureStampPaths(model)` gives one polyline per slab along its long axis with a reach that
+covers the clearance, which the test proves misses no post. Two routes, both through that one
+function: the page module registers `terrain.setStructureClearance(clearanceAt)`, which the
+terrain composes with the trails' clearance as a product for the tile derive (tiles arriving
+after a building), and it stamps the resident posts through `terrain.fields.stampAlong` when a
+tile is dressed (a building arriving after a tile). Unlike the trail hook this one does not clear
+the window. When a tile is dropped its resident posts keep their zero until their tile re-derives;
+the drop ring (two tiles, 960 m) is beyond the tree radius, so no tree is placed under a building
+that will come back. Planter grass at soil height is not carried over to scattered buildings.
+
+Not yet done: anything seen in a browser.

@@ -75,3 +75,41 @@ export function structureBounds(model, margin = 0) {
   const fp = model.site.footprint;
   return { minX: fp.minX - margin, maxX: fp.maxX + margin, minZ: fp.minZ - margin, maxZ: fp.maxZ + margin };
 }
+
+// ---- cover keep-out -------------------------------------------------------------------------
+// Grass and trees read the placement field's cover channels. A building zeroes them under its
+// floor slabs, the way a trail does under its surface: 0 within `margin` of a slab, rising to 1
+// over `fade`. Two callers: the field's derive (a tile arriving after the building) and a stamp
+// over resident posts (a building arriving after the tile). Both use this one function.
+export const STRUCTURE_CLEAR = Object.freeze({ margin: 1.5, fade: 6 });
+
+// The floor slabs of a seated model, in world space: the rects the plinths sit under.
+export function structureFloorRects(model) {
+  return model.layout.walls.filter((r) => r.y < 0).map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d }));
+}
+
+// 0..1 clearance at (x, z) against a list of floor rects.
+export function clearanceAgainstRects(rects, x, z, { margin = STRUCTURE_CLEAR.margin, fade = STRUCTURE_CLEAR.fade } = {}) {
+  let clear = 1;
+  for (const r of rects) {
+    const dx = Math.max(0, Math.abs(x - r.x) - r.w / 2), dz = Math.max(0, Math.abs(z - r.z) - r.d / 2);
+    const dist = Math.hypot(dx, dz) - margin;
+    const c = dist <= 0 ? 0 : fade > 0 ? Math.min(1, dist / fade) : 1;
+    if (c < clear) clear = c;
+    if (clear === 0) break;
+  }
+  return clear;
+}
+
+// Polylines that, stamped with radius `reach`, visit every post a slab's clearance touches: one
+// pass per slab along its long axis, so work scales with the building and not with its box.
+export function structureStampPaths(model, { margin = STRUCTURE_CLEAR.margin, fade = STRUCTURE_CLEAR.fade } = {}) {
+  return structureFloorRects(model).map((r) => {
+    const alongX = r.w >= r.d;
+    const half = (alongX ? r.w : r.d) / 2, shortHalf = (alongX ? r.d : r.w) / 2;
+    const reach = shortHalf + margin + fade;
+    const a = alongX ? { x: r.x - half, z: r.z } : { x: r.x, z: r.z - half };
+    const b = alongX ? { x: r.x + half, z: r.z } : { x: r.x, z: r.z + half };
+    return { path: [a, b], reach };
+  });
+}

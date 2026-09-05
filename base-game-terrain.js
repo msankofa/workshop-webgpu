@@ -368,6 +368,13 @@ export function createBaseGameTerrain({
   const tileCover = createTileCover({ seaLevel: system.source?.descriptor?.seaLevel ?? 0, biomeNames: BIOMES });
   const planWalk = createPlanWalkDerive({ seaLevel: system.source?.descriptor?.seaLevel ?? 0 });
   let trailSettledAt = null;
+  // Cover clearance is the product of every planner that clears ground: trails and structures.
+  let trailClearanceAt = null, structureClearanceAt = null;
+  function composedClearance() {
+    if (!trailClearanceAt) return structureClearanceAt;
+    if (!structureClearanceAt) return trailClearanceAt;
+    return (x, z) => trailClearanceAt(x, z) * structureClearanceAt(x, z);
+  }
   // Height rides along: grass past the contact window's reach plants on this instead, and 8 m
   // posts over 2 km cost one float per texel against a window that is already streaming.
   function placementFields() {
@@ -734,9 +741,16 @@ export function createBaseGameTerrain({
     biomeAt, biomeIdAt, moistureAt, treeDensityAt, surfaceFieldAt, coverAt,
     get tileCover() { return tileCover; },
     setTrailPlannerHooks({ clearanceAt = null, settledAt = null } = {}) {
-      tileCover.setClearance(clearanceAt);
+      trailClearanceAt = typeof clearanceAt === 'function' ? clearanceAt : null;
+      tileCover.setClearance(composedClearance());
       trailSettledAt = typeof settledAt === 'function' ? settledAt : null;
       fieldWindow()?.clear();
+    },
+    // Structures zero the cover under their floors. No window clear: a building arriving after a
+    // tile stamps the resident posts itself; this hook covers the tiles that derive after it.
+    setStructureClearance(clearanceAt = null) {
+      structureClearanceAt = typeof clearanceAt === 'function' ? clearanceAt : null;
+      tileCover.setClearance(composedClearance());
     },
     fieldSurfaceAt,
     // Kill plane follows the local surface so deep valleys never respawn a grounded player;
