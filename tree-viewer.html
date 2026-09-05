@@ -38,6 +38,7 @@ import { createTree } from './trees.js';
 import { createTextureSource } from './tree-textures.js';
 import { applyAge } from './tree-age.js';
 import { EZ_TREE_FAMILIES } from './tree-presets.js';
+import { createLodPreview, HOST_PRESETS } from './tree-lod-preview.js';
 
 const infoEl = document.getElementById('info');
 function showError(msg) { if (infoEl) { infoEl.innerHTML = '⚠ ' + msg; infoEl.style.color = '#ffb3b3'; } }
@@ -56,7 +57,8 @@ await renderer.init();
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1d23);
 
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 500);
+// Far enough for the environment-viewer LOD rings (billboards at 1.25 x 583 m).
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 3000);
 camera.position.set(18, 12, 18);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -73,10 +75,22 @@ rig.dirLight.shadow.mapSize.set(2048, 2048);
 rig.dirLight.shadow.camera.near = 1; rig.dirLight.shadow.camera.far = 120;
 rig.dirLight.shadow.camera.left = -30; rig.dirLight.shadow.camera.right = 30;
 rig.dirLight.shadow.camera.top = 30; rig.dirLight.shadow.camera.bottom = -30;
+const SHADOW_DEFAULT = { half: 30, far: 120 };
+// Solo/grid keep the tight 60 m box; LOD mode widens it to cover every cluster (blurrier, but present).
+let shadowBox = null;
+function fitShadowTo(box) {
+  shadowBox = box;
+  const sc = rig.dirLight.shadow.camera;
+  const half = box ? Math.max(SHADOW_DEFAULT.half, box.getBoundingSphere(new THREE.Sphere()).radius * 1.1) : SHADOW_DEFAULT.half;
+  sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half;
+  sc.far = box ? half * 4 : SHADOW_DEFAULT.far;
+  if (box) { box.getCenter(rig.dirLight.target.position); rig.dirLight.position.copy(rig.dirLight.target.position).addScaledVector(rig.dirLight.position.clone().normalize(), half * 2); }
+  sc.updateProjectionMatrix();
+}
 
 // ===================== ground =====================
 const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(200, 200),
+  new THREE.PlaneGeometry(3000, 3000),
   new THREE.MeshStandardMaterial({ color: 0x3a4a32, roughness: 1 }),
 );
 ground.rotation.x = -Math.PI / 2;
@@ -102,7 +116,7 @@ _genTree.dispose();
 // regardless of how far the live `opts` has drifted since.
 const DEFAULT_OPTS = structuredClone(opts);
 
-let mode = 'solo';        // 'solo' | 'grid'
+let mode = 'solo';        // 'solo' | 'grid' | 'lod'
 let gridSize = 3;
 let baseSeed = opts.seed;
 let texMode = 'authored';
@@ -111,6 +125,39 @@ let previewAge = 1;       // 0=sapling..1=mature; only Solo mode renders through
 
 let soloTree = null;
 let gridTrees = [];
+// LOD mode: clusters of n trees at every tier the game draws, baked by forest-palette.js itself.
+const lodPreview = createLodPreview({ renderer, scene, createTree });
+const lodSettings = {
+  n: 3, layout: 'rings', distance: 100, density: 120, preset: 'base game',
+  rings: [...HOST_PRESETS['base game'].rings], billboards: HOST_PRESETS['base game'].billboards,
+  branchLods: structuredClone(HOST_PRESETS['base game'].branchLods),
+  coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5, leafShadowPct: 0.3,
+};
+function applyHostPreset(name) {
+  const h = HOST_PRESETS[name];
+  lodSettings.preset = name;
+  lodSettings.rings = [...h.rings]; lodSettings.billboards = h.billboards;
+  lodSettings.branchLods = structuredClone(h.branchLods);
+  lodSettings.coarseLeafRatio = h.coarseLeafRatio; lodSettings.coarseLeafSizeMult = h.coarseLeafSizeMult;
+}
+let lodBuildPending = false;
+function buildLod(refit) {
+  const t0 = performance.now();
+  lodBuildPending = true;
+  lodPreview.build({ opts: applyAge(opts, previewAge), texSet, n: lodSettings.n, layout: lodSettings.layout,
+    distance: lodSettings.distance, density: lodSettings.density, leafShadowPct: lodSettings.leafShadowPct,
+    params: { branchLods: lodSettings.branchLods, coarseLeafRatio: lodSettings.coarseLeafRatio,
+      coarseLeafSizeMult: lodSettings.coarseLeafSizeMult, rings: lodSettings.rings, billboards: lodSettings.billboards } })
+    .then(() => { lodBuildPending = false; lastBuildMs = performance.now() - t0; fitShadowTo(lodPreview.bounds()); if (refit) fitCameraToLod(); });
+}
+// Eye at the origin, 1.7 m up, looking down +Z at the LOD1 cluster (or the compare distance).
+function fitCameraToLod() {
+  const z = lodSettings.layout === 'side' ? lodSettings.distance : lodSettings.rings[1];
+  const h = lodPreview.bounds().getSize(new THREE.Vector3()).y || 10;
+  camera.position.set(0, 1.7, 0);
+  controls.target.set(0, h * 0.4, z);
+  controls.update();
+}
 let refreshExport = () => {};   // reassigned once the Export section builds its textarea (Task 7)
 
 function disposeTree(t) { scene.remove(t); t.dispose(); }
@@ -118,7 +165,7 @@ function disposeTree(t) { scene.remove(t); t.dispose(); }
 // Debug panel state: build time of the last createTree, plus a frame-time EMA from the render loop.
 const dbgEl = document.getElementById('dbg');
 let lastBuildMs = 0, frameMs = 16.7, lastFrameAt = performance.now(), dbgFrames = 0;
-function liveTrees() { return mode === 'solo' ? (soloTree ? [soloTree] : []) : gridTrees; }
+function liveTrees() { return mode === 'solo' ? (soloTree ? [soloTree] : []) : mode === 'grid' ? gridTrees : []; }
 function refreshDebugPanel() {
   const trees = liveTrees();
   let branches = 0, leaves = 0;
@@ -133,6 +180,14 @@ function refreshDebugPanel() {
 ` +
     `height ${treeMetrics.height.toFixed(1)} m  width ${treeMetrics.width.toFixed(1)} m  ` +
     `footprint ${treeMetrics.area.toFixed(1)} m²  hull volume ${treeMetrics.volume.toFixed(0)} m³`;
+  if (mode === 'lod') {
+    const camZ = camera.position.z;
+    for (const st of lodPreview.stats) {
+      dbgEl.textContent += `\n${st.name} at ${(st.distance - camZ).toFixed(0)} m  ` + (st.count != null ? `trees ${st.count}  ` : '') + `tris ${st.tris}  leaves ${st.leaves}` +
+        (st.name === 'LOD0' ? '' : `  (${(100 * st.tris / Math.max(1, lodPreview.stats[0].tris)).toFixed(0)}% of LOD0)`);
+    }
+    if (lodBuildPending) dbgEl.textContent += '\nbaking…';
+  }
 }
 
 // Safeguards: a mutation whose result exceeds an enabled limit is rejected and the tree restored.
@@ -261,8 +316,12 @@ function rebuildView(refit = true) {
   clearTimeout(regenTimer);
   needsRefit = false;
   // Only the trees the current mode does not use are disposed; the rest rebuild in place.
-  if (mode === 'solo') { for (const t of gridTrees) disposeTree(t); gridTrees = []; regenerateSolo(refit); }
-  else { if (soloTree) { disposeTree(soloTree); soloTree = null; } buildGrid(refit); }
+  if (mode !== 'grid') { for (const t of gridTrees) disposeTree(t); gridTrees = []; }
+  if (mode !== 'solo' && soloTree) { disposeTree(soloTree); soloTree = null; }
+  if (mode === 'solo') regenerateSolo(refit);
+  else if (mode === 'grid') buildGrid(refit);
+  else buildLod(refit);
+  if (mode !== 'lod') { lodPreview.dispose(); fitShadowTo(null); }
   computeTreeMetrics(liveTrees());
   refreshExport();
 }
@@ -276,7 +335,8 @@ function scheduleRegenerate(refit = false) {
 }
 function regenerateAll() {
   if (mode === 'solo') regenerateSolo(needsRefit);
-  else buildGrid(needsRefit);
+  else if (mode === 'grid') buildGrid(needsRefit);
+  else buildLod(needsRefit);
   computeTreeMetrics(liveTrees());
   needsRefit = false;
   refreshExport();
@@ -633,7 +693,7 @@ let seedLabel;
 function refreshSeedLabel() { seedLabel.textContent = String(mode === 'solo' ? opts.seed : baseSeed); }
 refreshSeedLabel();
 
-selectControl('Mode', ['solo', 'grid'], () => mode, v => { mode = v; }, () => {
+selectControl('Mode', ['solo', 'grid', 'lod'], () => mode, v => { mode = v; }, () => {
   gridSizeWrap.style.display = mode === 'grid' ? '' : 'none';
   refreshSeedLabel();
   rebuildView();
@@ -660,6 +720,41 @@ for (const [k, label] of [['tris', 'triangles'], ['leaves', 'leaves'], ['branche
   numberControl('Max ' + label, 0, 1, () => safeguards[k].max, v => { safeguards[k].max = Math.max(0, Math.round(v)); }, () => {});
 }
 
+panelSection('lod', 'LOD', null);
+const lodRegen = () => { if (mode === 'lod') scheduleRegenerate(); };
+const lodRelayout = lodRegen;   // moving the rings rebuilds; the camera stays where it was put
+rangeControl('Cluster size', 1, 9, 1, () => lodSettings.n, v => { lodSettings.n = Math.round(v); }, fi, lodRegen);
+selectControl('Layout', ['rings', 'side', 'fill'], () => lodSettings.layout, v => { lodSettings.layout = v; }, lodRelayout);
+rangeControl('Fill density (trees/ha)', 5, 400, 5, () => lodSettings.density, v => { lodSettings.density = v; }, fi, lodRegen);
+rangeControl('Compare distance', 5, 900, 1, () => lodSettings.distance, v => { lodSettings.distance = v; }, fi, lodRelayout);
+selectControl('Host preset', Object.keys(HOST_PRESETS), () => lodSettings.preset, v => { applyHostPreset(v); refreshAllControls(); }, lodRelayout);
+rangeControl('LOD0 to 1 (m)', 5, 900, 1, () => lodSettings.rings[0], v => { lodSettings.rings[0] = v; }, fi, lodRelayout);
+rangeControl('LOD1 to 2 (m)', 5, 900, 1, () => lodSettings.rings[1], v => { lodSettings.rings[1] = v; }, fi, lodRelayout);
+rangeControl('LOD2 to billboard (m)', 5, 900, 1, () => lodSettings.rings[2], v => { lodSettings.rings[2] = v; }, fi, lodRelayout);
+toggleControl('Billboard tier', () => lodSettings.billboards, v => { lodSettings.billboards = v; }, lodRegen);
+rangeControl('LOD1 ring stride', 1, 6, 1, () => lodSettings.branchLods[0].sectionStride, v => { lodSettings.branchLods[0].sectionStride = Math.round(v); }, fi, lodRegen);
+rangeControl('LOD1 segment scale', 0.1, 1, 0.01, () => lodSettings.branchLods[0].segmentScale, v => { lodSettings.branchLods[0].segmentScale = v; }, f2, lodRegen);
+rangeControl('LOD2 ring stride', 1, 6, 1, () => lodSettings.branchLods[1].sectionStride, v => { lodSettings.branchLods[1].sectionStride = Math.round(v); }, fi, lodRegen);
+rangeControl('LOD2 segment scale', 0.1, 1, 0.01, () => lodSettings.branchLods[1].segmentScale, v => { lodSettings.branchLods[1].segmentScale = v; }, f2, lodRegen);
+rangeControl('Coarse leaf ratio', 0.05, 1, 0.01, () => lodSettings.coarseLeafRatio, v => { lodSettings.coarseLeafRatio = v; }, f2, lodRegen);
+rangeControl('Coarse leaf size x', 1, 5, 0.1, () => lodSettings.coarseLeafSizeMult, v => { lodSettings.coarseLeafSizeMult = v; }, f2, lodRegen);
+rangeControl('Shadow leaf fraction', 0, 1, 0.01, () => lodSettings.leafShadowPct, v => { lodSettings.leafShadowPct = v; }, pct, lodRegen);
+row('<span style="color:#8a93a3">Billboard</span>');
+const look = lodPreview.billLook;
+const lookLive = patch => lodPreview.setBillboardLook(patch);
+rangeControl('Brightness x', 0.1, 4, 0.05, () => look.gain, v => lookLive({ gain: v }), f2, () => {});
+rangeControl('Alpha cutoff', 0, 1, 0.01, () => look.alphaTest, v => lookLive({ alphaTest: v }), f2, () => {});
+rangeControl('Bake sun', 0, 4, 0.05, () => look.bakeSun, v => lookLive({ bakeSun: v }), f2, lodRegen);
+rangeControl('Bake ambient', 0, 2, 0.05, () => look.bakeAmbient, v => lookLive({ bakeAmbient: v }), f2, lodRegen);
+colorControl('Bake tint', () => look.bakeTint, v => lookLive({ bakeTint: v }), lodRegen);
+rangeControl('Capture pitch', -0.5, 1, 0.01, () => look.pitch, v => lookLive({ pitch: v }), f2, lodRegen);
+buttonControl('Copy LOD settings JSON', () => {
+  const out = { rings: lodSettings.rings, billboards: lodSettings.billboards, branchLods: lodSettings.branchLods,
+    coarseLeafRatio: lodSettings.coarseLeafRatio, coarseLeafSizeMult: lodSettings.coarseLeafSizeMult, leafShadowPct: lodSettings.leafShadowPct,
+    billboard: { ...lodPreview.billLook } };
+  navigator.clipboard?.writeText(JSON.stringify(out, null, 2)).catch(() => {});
+});
+
 panelSection('texture', 'Texture', null);
 selectControl('Texture mode', ['procedural', 'authored'], () => texMode, applyTextureMode, () => {});
 
@@ -670,10 +765,13 @@ selectControl('Texture mode', ['procedural', 'authored'], () => texMode, applyTe
 // rig.set*() calls on change.
 panelSection('lighting', 'Lighting', null);
 let sunColor = '#fff4e0', sunIntensity = 4, ambientColor = '#8ab4e8', ambientIntensity = 1.05;
-rangeControl('Elevation', 2, 88, 1, () => rig.elevation, v => rig.setElevation(v), fi, () => {});
-rangeControl('Azimuth', 0, 360, 1, () => rig.azimuth, v => rig.setAzimuth(v), fi, () => {});
-rangeControl('Sun intensity', 0, 4, 0.05, () => sunIntensity, v => { sunIntensity = v; rig.setSunIntensity(v); }, f2, () => {});
-rangeControl('Ambient intensity', 0, 2, 0.05, () => ambientIntensity, v => { ambientIntensity = v; rig.setAmbientIntensity(v); }, f2, () => {});
+// Billboards are baked unlit at sun 1.2 / ambient 0.4; scale them to the live rig like environment-viewer does.
+function syncBillboardBrightness() { lodPreview.setBillboardBrightness((sunIntensity + ambientIntensity * 0.5) / (1.2 + 0.4 * 0.5)); }
+syncBillboardBrightness();
+rangeControl('Elevation', 2, 88, 1, () => rig.elevation, v => rig.setElevation(v), fi, () => fitShadowTo(shadowBox));
+rangeControl('Azimuth', 0, 360, 1, () => rig.azimuth, v => rig.setAzimuth(v), fi, () => fitShadowTo(shadowBox));
+rangeControl('Sun intensity', 0, 4, 0.05, () => sunIntensity, v => { sunIntensity = v; rig.setSunIntensity(v); }, f2, syncBillboardBrightness);
+rangeControl('Ambient intensity', 0, 2, 0.05, () => ambientIntensity, v => { ambientIntensity = v; rig.setAmbientIntensity(v); }, f2, syncBillboardBrightness);
 colorControl('Sun color', () => parseInt(sunColor.slice(1), 16), v => { sunColor = '#' + v.toString(16).padStart(6, '0'); rig.setSunColor(sunColor); }, () => {});
 colorControl('Ambient color', () => parseInt(ambientColor.slice(1), 16), v => { ambientColor = '#' + v.toString(16).padStart(6, '0'); rig.setAmbientColor(ambientColor); }, () => {});
 
@@ -1310,6 +1408,7 @@ renderer.setAnimationLoop(() => {
   frameMs += (now - lastFrameAt - frameMs) * 0.1;
   lastFrameAt = now;
   controls.update();
+  if (mode === 'lod') lodPreview.update(camera);
   renderer.render(scene, camera);
   if (++dbgFrames % 10 === 0) refreshDebugPanel();
 });

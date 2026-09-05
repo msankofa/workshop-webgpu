@@ -1,0 +1,22 @@
+diff --git a/base-game.html b/base-game.html
+index 95ac973..37b4d91 100644
+--- a/base-game.html
++++ b/base-game.html
+@@ -1364,7 +1364,7 @@ const trails = createBaseGameTrails({ terrain, options: {
+   enabled: settings.trailsEnabled, seed: settings.trailSeed, spacing: settings.trailSpacing,
+   width: settings.trailWidth, maxGrade: settings.trailMaxGrade,
+ } });
+-structures = createBaseGameStructures({ THREE, scene, worldQuery, terrain, seaLevel: () => terrain.seaLevel, ...structureParams() });
++structures = createBaseGameStructures({ THREE, scene, worldQuery, terrain, renderer, camera, materials: spawnBuilding.bucketMaterials, seaLevel: () => terrain.seaLevel, ...structureParams() });
+ structures.setEnabled(structuresWanted());
+ // Use the exact 1.25 m contact field where it is resident, then the already-streamed plan height
+ // for the off-screen part of a leg. Requiring both endpoints to be inside the tiny contact window
+@@ -3607,7 +3607,7 @@ function labOccluderExtent() {
+ terrain.setSplatRain(rain.groundShade);
+ // The Traversal Lab has plain MeshStandardNodeMaterials, so it takes rain.js's own decorator
+ // rather than the splat bundle. Puddles on the floors, run-off streaks down the walls.
+-for (const material of [...spawnBuilding.materials, ...structures.materials]) {
++for (const material of new Set([...spawnBuilding.materials, ...structures.materials])) {   // shared materials, decorated once
+   applyWetSurface(material, rain.uniforms, { baseColor: material.colorNode ? undefined : materialColor, rippleScale: 2.6, puddleScale: 0.12 });
+ }
+ for (const material of traversalLab.materials) {
