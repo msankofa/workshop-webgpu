@@ -976,13 +976,18 @@ export function createForestGPU(opts) {
       // The widest XZ angle the view reaches, from the vertical fov, the aspect and the pitch.
       // cos(vfov/2) alone was narrower than a wide screen and much narrower than a camera looking
       // down, so trees at the sides were culled and popped in as the camera turned toward them.
+      // forward.y goes in unguarded: straight down is exactly the case the helper answers -1 for.
       const camFovCos = camera.isPerspectiveCamera
-        ? frustumConeCos(camera.fov, camera.aspect, fLenSq > 1e-8 ? _fwd3.y : 0)
+        ? frustumConeCos(camera.fov, camera.aspect, _fwd3.y)
         : uFovCos.value;
       const camMoved = (camX - lastCamX) ** 2 + (camZ - lastCamZ) ** 2
         > recullMoveDist * recullMoveDist;
-      const camTurned = camFx * lastCamFx + camFz * lastCamFz < recullHeadingCos
-        || camFovCos !== uFovCos.value;   // a pitch or zoom change widens or narrows the cone: recull
+      // A cone that WIDENED since the last recull re-culls at once: the stale narrower cone is
+      // hiding visible trees. A cone that narrowed waits for the ordinary thresholds, since a
+      // stale wide cone only passes extra trees. Pitch moves every mouse-look frame, so an
+      // unconditional compare would have re-culled every frame the way the old epsilon gate did.
+      const coneWidened = camFovCos < uFovCos.value - 1e-3;
+      const camTurned = camFx * lastCamFx + camFz * lastCamFz < recullHeadingCos || coneWidened;
       const firstRecull = !Number.isFinite(lastCamX) || !Number.isFinite(lastCamZ)
         || !Number.isFinite(lastCamFx) || !Number.isFinite(lastCamFz);
       if (!dirty && !firstRecull && !camMoved && !camTurned) {

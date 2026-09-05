@@ -112,7 +112,7 @@ is the usual cause of a "works in Node, wrong in the browser" bug.
 
 ## Patterns worth knowing
 
-- **CPU/GPU math twins**: `forest-cull.js`, `light-cluster.js`, and `post-grade.js` are hand-synced CPU reimplementations of TSL/GPU math that actually lives in `forest-gpu.js`, `clustered-lights.js`, and `post-fx.js` respectively. They exist only so that math is unit-testable in Node without a GPU â€” they are **not imported** by the production files they mirror, so keep them in sync manually when the GPU-side math changes.
+- **CPU/GPU math twins**: `forest-cull.js`, `light-cluster.js`, and `post-grade.js` are hand-synced CPU reimplementations of TSL/GPU math that actually lives in `forest-gpu.js`, `clustered-lights.js`, and `post-fx.js` respectively. They exist only so that math is unit-testable in Node without a GPU â€” they are **not imported** by the production files they mirror, so keep them in sync manually when the GPU-side math changes. (One exception: `frustumConeCos` in `forest-cull.js` is camera math, not kernel math, and `forest-gpu.js` imports it.)
 - **`environment-ui.js` is not where the sliders are.** It's a tabbed shell plus a read-only perf-stats HUD. The actual tuning sliders for every subsystem are built inline in `environment-viewer.html`.
 - **Mode flags pick lazy-import variants**, not both at once â€” e.g. `GRASS_MODE` selects `grass.js` (CPU) vs. `grass-compute.js` (GPU); check `environment-viewer.html` before assuming a given module's code path is live.
 - **Multiplayer is host-authoritative**: the host runs the real simulation and broadcasts state; guests render interpolated ghosts via `GhostRenderer` and don't currently send input back (see `docs/subsystems/multiplayer.md` for the gap).
