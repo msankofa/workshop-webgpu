@@ -237,5 +237,28 @@ for (const kind of ['ugv', 'buggy']) {
   ok((g.userData.wheels ?? []).length === 4, `${kind} built without dims still has four wheels`);
 }
 
+// Lights (2026-09-05). Each hull names where its switches' lights sit, so the view can hang a light
+// off the anchor and draw a lit lens there. High beams are a mode of the headlight, not a lamp.
+for (const kind of ['ugv', 'buggy']) {
+  const def = BASE_GAME_VEHICLE_DEFS[kind];
+  const g = buildCraftMesh(def.mesh, 0x8ea2b8, MATERIALS, def);
+  const lights = g.userData.lights ?? {};
+  for (const name of def.lights) {
+    if (name === 'high') continue;
+    const a = lights[name];
+    ok(!!a && Array.isArray(a.pos) && a.pos.length === 3 && a.pos.every(Number.isFinite), `${kind} names a ${name} anchor`);
+    if (!a) continue;
+    if (a.parent) ok(g.userData[a.parent]?.isObject3D, `${kind} ${name} hangs off a group the mesh exposes (${a.parent})`);
+  }
+  if (lights.head) {
+    ok(lights.head.pos[2] < -def.wheelbase / 2, `${kind} headlight is ahead of the front axle`);
+    ok(lights.head.pos[1] > 0, `${kind} headlight is above the hull origin`);
+    ok(lights.head.dir[2] < -0.9, `${kind} headlight points down the nose`);
+  }
+  if (kind === 'ugv') {
+    ok(lights.turretLight?.parent === 'elevation' && lights.turretLaser?.parent === 'elevation', 'the UGV turret light and laser ride the elevation cradle');
+  }
+}
+
 console.log(failed ? `\n${failed} assertion(s) failed` : '\nvehicle meshes: all assertions passed');
 process.exit(failed ? 1 : 0);

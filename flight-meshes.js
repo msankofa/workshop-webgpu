@@ -365,7 +365,25 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
     const railBar = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.05, 0.44), dark);
     railBar.position.set(sx * 0.115, ey(gunY - 0.10), -0.06); elevation.add(railBar);
   }
+  // A light and a laser module ride the rails either side of the optic, so they train with the gun.
+  for (const sx of [-1, 1]) {
+    const module = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.16), dark);
+    module.position.set(sx * 0.155, ey(gunY - 0.10), -0.30); elevation.add(module);
+    const face = new THREE.Mesh(new THREE.CylinderGeometry(sx > 0 ? 0.02 : 0.012, sx > 0 ? 0.02 : 0.012, 0.012, 10), lens);
+    face.rotation.x = Math.PI / 2;
+    face.position.set(sx * 0.155, ey(gunY - 0.10), -0.385); elevation.add(face);
+  }
   g.add(turret);
+
+  // Headlamps in the nose. The faces are dark glass; the view draws the lit disc when a switch is on.
+  for (const sx of [-1, 1]) {
+    const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.03, 12), dark);
+    cup.rotation.x = Math.PI / 2;
+    cup.position.set(sx * hullHalf * 0.32, deckY - 0.07, nose + 0.01); g.add(cup);
+    const face = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 0.012, 12), lens);
+    face.rotation.x = Math.PI / 2;
+    face.position.set(sx * hullHalf * 0.32, deckY - 0.07, nose - 0.008); g.add(face);
+  }
 
   // ── sensor mast: post at the rear, arm forward, camera, whips and dome ─────
   const mastX = hullHalf * 0.62, mastZ = tail - 0.20;
@@ -373,6 +391,10 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
   post.position.set(mastX, (railLow + mastPlateY) / 2, mastZ); g.add(post);
   const arm = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.03, 0.60), body);
   arm.position.set(mastX * 0.55, mastPlateY, mastZ - 0.29); g.add(arm);
+  const workLamp = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.05, 0.07), dark);
+  workLamp.position.set(mastX * 0.55, mastPlateY - 0.04, mastZ - 0.36); g.add(workLamp);
+  const workFace = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.035, 0.008), lens);
+  workFace.position.set(mastX * 0.55, mastPlateY - 0.045, mastZ - 0.40); g.add(workFace);
   const brace = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.19), body);
   brace.position.set(mastX, mastPlateY - 0.055, mastZ - 0.09);
   brace.rotation.x = 0.72; g.add(brace);
@@ -396,7 +418,16 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
     g.add(tube([sx * 0.10, pedTop - 0.06, 0.06], [sx * 0.20, deckY + 0.03, 0.30], 0.021, dark, 6));
   }
 
-  return finishVehicle(g, wheels, { turret, elevation });
+  const out = finishVehicle(g, wheels, { turret, elevation });
+  // Where each switch's light sits, in the mesh frame (nose down -Z), and the lit disc the view
+  // draws there. `parent` names the group a light hangs off so it trains with the gun.
+  out.userData.lights = {
+    head: { pos: [0, deckY - 0.07, nose - 0.02], dir: [0, -0.06, -1] },
+    lamp: { pos: [mastX * 0.55, mastPlateY - 0.08, mastZ - 0.40] },
+    turretLight: { pos: [0.155, ey(gunY - 0.10), -0.40], dir: [0, 0, -1], parent: 'elevation' },
+    turretLaser: { pos: [-0.155, ey(gunY - 0.10), -0.40], dir: [0, 0, -1], parent: 'elevation' },
+  };
+  return out;
 }
 
 const BUGGY_DIMS = { wheelbase: 2.4, track: 1.6, clearance: 0.4 };
@@ -471,6 +502,11 @@ export function buildBuggy(tint, m, dims = BUGGY_DIMS) {
     g.add(tube([x, clear * 1.3, aBase + 0.05], [x, clear * 1.1, bZ - 0.05], 0.04, dark));
   }
   g.add(tube([-cageX, roofY, aTop], [cageX, roofY, aTop], 0.05, dark));
+  // A work lamp clamped to the front roof rail, lensed down and forward over the bonnet.
+  const roofLamp = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.07, 0.09), dark);
+  roofLamp.position.set(0, roofY + 0.06, aTop - 0.02); g.add(roofLamp);
+  const roofFace = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 0.01), lamp);
+  roofFace.position.set(0, roofY + 0.06, aTop - 0.07); g.add(roofFace);
   g.add(tube([-cageX, roofY, bZ], [cageX, roofY, bZ], 0.05, dark));
   g.add(tube([-cageX, roofY - 0.06, bZ + 0.06], [cageX, clear * 1.0, braceZ - 0.05], 0.035, dark));
   g.add(tube([cageX, roofY - 0.06, bZ + 0.06], [-cageX, clear * 1.0, braceZ - 0.05], 0.035, dark));
@@ -518,7 +554,12 @@ export function buildBuggy(tint, m, dims = BUGGY_DIMS) {
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     g.add(vehicleWheel(sx * halfTrack, axleY, sz * halfWb, r, wheelW, mats, sz < 0, wheels));
   }
-  return finishVehicle(g, wheels, {});
+  const out = finishVehicle(g, wheels, {});
+  out.userData.lights = {
+    head: { pos: [0, guardY + 0.1, nose - 0.02], dir: [0, -0.05, -1] },
+    lamp: { pos: [0, roofY + 0.06, aTop - 0.10], dir: [0, -0.45, -1] },
+  };
+  return out;
 }
 
 // A real reconnaissance airframe rather than a shrunken fighter: the proportions below were measured
