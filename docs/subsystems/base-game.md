@@ -266,6 +266,8 @@ Four persistence paths share the exact same capture/apply functions:
    the room decides the ground. `?defaults=stock` skips the file. Nothing else changes: the
    autosave, the slots and the JSON import still layer on top through their buttons, and the
    built-in `DEFAULT_SETTINGS` stand wherever the file is absent or a key fails its checks.
+   The file also appears in the slot dropdown as a starred, read-only preset, so it can be
+   reloaded after the autosave or a slot has replaced it.
 
 State files use the Bot Viewer envelope shape:
 

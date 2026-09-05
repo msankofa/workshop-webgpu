@@ -5495,6 +5495,9 @@ function mirrorSlotToDisk(group, index, entry) {
 const slotUi = createSlotSection({
   group: 'base-game', label: 'base game', capture: captureAllState, apply: applyAllState,
   onSaved: mirrorSlotToDisk,
+  // The shipped default sits in the same dropdown as a starred, read-only preset, so it can be
+  // reloaded after the autosave or a slot has replaced it.
+  presets: shippedState?.data ? [{ id: 'shipped', name: `shipped default (${String(shippedState.savedAt || '').slice(0, 10)})`, isDefault: true, data: shippedState.data }] : [],
 });
 sessionSec.append(...slotUi.nodes);
 

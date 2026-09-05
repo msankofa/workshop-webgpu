@@ -1638,3 +1638,4 @@ date,subsystem,files,summary
 2026-09-05T20:30,base-game,"base-game.html;serve.py;docs/subsystems/base-game.md",Shipped default state: a Session card button writes base-game-default-state.json through serve.py and every load starts from it (settings and terrain project), skippable with ?defaults=stock.
 2026-09-05T20:45,base-game,"base-game-default-state.json",The shipped default state is the saved state from base-game-states (2026-08-26): every load starts from it.
 2026-09-05T20:55,base-game,"base-game-default-state.json",The shipped default is now the newest save in states/ (2026-09-05 23:03 UTC: terrain world with the v5 export project); the August file was the wrong folder.
+2026-09-05T21:05,base-game,"base-game.html;docs/subsystems/base-game.md",The shipped default state is a starred read-only preset in the Session slot dropdown.
