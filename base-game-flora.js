@@ -170,7 +170,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   const structDensityNode = texture(placeholderTex);
   const structHeightNode = texture(placeholderTex);
   // The occluder depth image the cull kernels test against; built on the first setOccluders.
-  let occlusion = null, occluderRoots = [];
+  let occlusion = null, occluderRoots = [], occlusionEnabled = true;
   function wrapStructure(samplers) {
     const originXZ = vec2(uRenderOrigin.x, uRenderOrigin.z);
     const inside = (g) => {
@@ -559,22 +559,26 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // grass exists is free; a later first call rebuilds the field.
     setOccluders(roots) {
       occluderRoots = (Array.isArray(roots) ? roots : [roots]).filter(Boolean).map((r) => (r.isObject3D ? { root: r, filter: null } : r));
+      occlusion?.clearOccluders();
       if (!occluderRoots.length) { if (occlusion) occlusion.setEnabled(false); return; }
       if (!occlusion) {
         occlusion = createFloraOcclusion({ renderer, scene, camera, cacheStatic: true });
         if (grass) rebuild();
       }
-      occlusion.setEnabled(true);
+      occlusion.setEnabled(occlusionEnabled);
       this.remarkOccluders();
     },
     // Re-marks every root: a streamed terrain grows new batches under an unmoved root.
     remarkOccluders() {
       if (!occlusion) return;
+      occlusion.clearOccluders();
       for (const { root, filter } of occluderRoots) occlusion.markOccluders(root, filter);
     },
     setOcclusionEnabled(on) {
-      if (occlusion && occlusion.state.enabled !== !!on) {
-        occlusion.setEnabled(!!on);
+      occlusionEnabled = !!on;
+      const effective = occlusionEnabled && occluderRoots.length > 0;
+      if (occlusion && occlusion.state.enabled !== effective) {
+        occlusion.setEnabled(effective);
         resetReadbacks(); // never label an in-flight count with the new occlusion mode
       }
     },

@@ -24,6 +24,13 @@ const ring = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial
 assert.equal(occ.markOccluders(root, (o) => !o.name.startsWith('terrain-clipmap')), 1);
 assert.ok(!ring.layers.isEnabled(OCCLUDER_LAYER)); root.remove(ring);
 assert.ok(wall.layers.isEnabled(OCCLUDER_LAYER));
+const external = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+external.layers.enable(OCCLUDER_LAYER); root.add(external);
+occ.markOccluders(root);
+occ.clearOccluders();
+assert.ok(!wall.layers.isEnabled(OCCLUDER_LAYER), 'clearing removes layer bits this occlusion instance added');
+assert.ok(external.layers.isEnabled(OCCLUDER_LAYER), 'clearing preserves a pre-existing layer bit');
+assert.equal(occ.markOccluders(root), 2);
 assert.equal(occ.update(), true);
 assert.equal(occ.state.revision, 1);
 for (let i = 0; i < 120; i++) assert.equal(occ.update(), false);
@@ -56,8 +63,10 @@ fail = false;
 assert.equal(occ.update(), true, 'a failed render is retried');
 assert.equal(occ.update(), false);
 occ.dispose();
+assert.ok(!wall.layers.isEnabled(OCCLUDER_LAYER), 'dispose removes owned occluder layer bits');
+assert.ok(external.layers.isEnabled(OCCLUDER_LAYER), 'dispose preserves external layer ownership');
 const dynamic = createFloraOcclusion({ scene, camera, renderer });
 assert.equal(dynamic.update(), true); assert.equal(dynamic.update(), true,
   'other hosts retain their per-frame behavior unless they opt into static caching');
-dynamic.dispose(); wall.geometry.dispose(); wall.material.dispose();
+dynamic.dispose(); wall.geometry.dispose(); wall.material.dispose(); external.geometry.dispose(); external.material.dispose();
 console.log('flora occlusion cache and failure-restoration checks passed');

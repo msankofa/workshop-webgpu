@@ -43,6 +43,9 @@ export function createFloraOcclusion({ renderer, scene, camera, size = 256, laye
   const stats = { renders: 0, skipped: 0, renderCpuMs: 0, lastRenderCpuMs: 0 };
   const nextViewProj = new THREE.Matrix4();
   const roots = new Map();
+  // Only undo layer bits this instance added. A mesh that was already on the layer may be owned
+  // by another depth consumer and must survive our root-list changes.
+  const ownedLayerMeshes = new Set();
   let dirty = true;
   // Static hosts call invalidate/markOccluders after editing children or geometry. Root motion
   // (including a floating-origin rebase) and visibility changes are detected automatically.
@@ -102,14 +105,22 @@ export function createFloraOcclusion({ renderer, scene, camera, size = 256, laye
     let n = 0;
     root.traverse((o) => {
       if (!o.isMesh || (o.material && o.material.transparent) || (filter && !filter(o))) return;
-      o.layers.enable(layer); n++;
+      if (!o.layers.isEnabled(layer)) { o.layers.enable(layer); ownedLayerMeshes.add(o); }
+      n++;
     });
     return n;
   }
 
+  function clearOccluders() {
+    for (const mesh of ownedLayerMeshes) mesh.layers.disable(layer);
+    ownedLayerMeshes.clear();
+    roots.clear();
+    invalidate();
+  }
+
   return {
-    state, stats, update, markOccluders, invalidate,
+    state, stats, update, markOccluders, clearOccluders, invalidate,
     setEnabled(on) { if (state.enabled !== !!on) invalidate(); state.enabled = !!on; },
-    dispose() { roots.clear(); rt.dispose(); depthMat.dispose(); },
+    dispose() { clearOccluders(); rt.dispose(); depthMat.dispose(); },
   };
 }

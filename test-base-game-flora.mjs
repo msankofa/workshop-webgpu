@@ -509,6 +509,27 @@ section('diagnostics are opt-in, sequential, and cannot publish retired results'
   terrain.dispose();
 }
 
+section('occlusion root refreshes preserve the requested toggle and retire old roots');
+{
+  const { terrain, flora } = rig();
+  const building = new THREE.Group(), terrainRoot = new THREE.Group();
+  const terrainMesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
+  terrainRoot.add(terrainMesh);
+  flora.setOccluders([building, terrainRoot]);
+  flora.setOcclusionEnabled(false);
+  flora.setOccluders([building, terrainRoot]);
+  check('refreshing roots cannot silently turn requested occlusion back on', flora.occlusion.enabled === false);
+  flora.setOccluders([building]);
+  check('removing terrain retires its occluder layer immediately', !terrainMesh.layers.isEnabled(2));
+  flora.setOcclusionEnabled(true);
+  check('the requested toggle can enable the remaining root set', flora.occlusion.enabled === true);
+  flora.setOccluders([]);
+  check('an empty root set disables the pass', flora.occlusion.enabled === false);
+  flora.setOccluders([building]);
+  check('adding roots restores the requested enabled state', flora.occlusion.enabled === true);
+  flora.dispose(); terrain.dispose(); terrainMesh.geometry.dispose(); terrainMesh.material.dispose();
+}
+
 section('settings-derived telemetry is reused until its inputs change');
 {
   const { terrain, flora } = builtRig();
