@@ -444,5 +444,56 @@ section('mesh subscribers release retired grass on every lifecycle path');
   terrain.dispose();
 }
 
+section('diagnostics are opt-in, sequential, and cannot publish retired results');
+{
+  const { terrain, flora } = builtRig();
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.load();
+  await flora.update(0);
+  stubRenderer.getArrayBufferAsync = async () => new ArrayBuffer(4);
+  const calls = [];
+  let finishCount, finishProbe;
+  flora.grass.readBladeCount = () => { calls.push('count'); return new Promise(resolve => { finishCount = resolve; }); };
+  flora.grass.readGroundProbe = (x, z) => {
+    calls.push([x, z]);
+    return new Promise(resolve => { finishProbe = resolve; });
+  };
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  const probeResult = r => ({ r, g: 0, b: 0, y: 1, density: 1, inCone: true, aboveWater: true });
+  await flora.update(2);
+  check('a hidden panel submits no GPU reads', calls.length === 0);
+  flora.setDiagnosticsEnabled(true);
+  await flora.update(3);
+  check('opting in starts the count read', calls.length === 1 && calls[0] === 'count');
+  finishCount(42);
+  await flush();
+  check('only the first probe is submitted', calls.length === 2);
+  await flora.update(5);
+  check('an in-flight sample prevents overlapping samples', calls.length === 2);
+  finishProbe(probeResult(0.25));
+  await flush();
+  check('the ring probe starts after the first readback', calls.length === 3 && calls[2][0] !== calls[1][0]);
+  finishProbe(probeResult(0.75));
+  await flush();
+  check('the camera probe keeps its own value', flora.stats.drawn === 42 && flora.stats.probe.r === 0.25);
+  await flora.update(6);
+  const oldCount = finishCount;
+  flora.apply({ grassBufferMB: 8 });
+  oldCount(999);
+  await flush();
+  check('a retired sample cannot update stats or submit more probes', flora.stats.drawn === null && calls.length === 4);
+  await flora.update(7);
+  flora.grass.readBladeCount = () => { calls.push('new count'); return new Promise(resolve => { finishCount = resolve; }); };
+  flora.setDiagnosticsEnabled(false);
+  await flora.update(9);
+  check('disabling stops subsequent readbacks', calls.length === 4);
+  delete stubRenderer.getArrayBufferAsync;
+  flora.dispose();
+  terrain.dispose();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -6400,6 +6400,7 @@ async function animate() {
     if (profileFrame) frameProfiler.mark('fx', performance.now() - passStart);
     // Elapsed seconds, not dt: this drives the wind phase, and a delta holds it still.
     passStart = profileFrame ? performance.now() : 0;
+    flora.setDiagnosticsEnabled(!!activePerformanceCapture || panelElementVisible(grassRuntimeLine));
     await flora.update(frameStart / 1000);
     if (profileFrame) frameProfiler.mark('grassGpu', performance.now() - passStart);
     passStart = profileFrame ? performance.now() : 0;

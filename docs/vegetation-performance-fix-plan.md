@@ -17,7 +17,7 @@ does not measure uploads, GPU execution, or browser frame pacing.
 - [x] 1. Release stale grass reflection exclusions on rebuild and disable. Publish removal
   as well as addition, replace the page's previous reference, and verify repeated lifecycle
   changes leave only the current mesh registered.
-- [ ] 2. Make diagnostic readbacks opt-in and race-free. Sample only for a visible panel or
+- [x] 2. Make diagnostic readbacks opt-in and race-free. Sample only for a visible panel or
   active capture; serialize probes sharing an output buffer; discard stale results after
   replacement/disposal. Verify hidden diagnostics submit no readbacks.
 - [ ] 3. Cache unchanged flora occlusion renders. Invalidate for camera/projection changes,
@@ -67,3 +67,7 @@ measurements completed yet.
 
 Fix 1: grass removal notifications now unregister disposed meshes from reflection exclusions.
 Validation: 95 flora checks passed, including rebuild, disable/re-enable, and repeated disposal.
+
+Fix 2: diagnostic sampling is opt-in, its shared-buffer probes run sequentially, and retired
+samples cannot publish or submit another probe. Validation: 103 flora checks and both panel
+and profiler gating checks passed. Fix 1 commit: `d6bdec9`.

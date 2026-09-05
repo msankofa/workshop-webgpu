@@ -329,6 +329,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     scene.remove(grass.mesh);
     grass.dispose();
     grass = null;
+    resetReadbacks();
     built = false;
     stats.built = false;
     stats.rebuilds++;
@@ -401,15 +402,27 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   // GPU readbacks for the panel, once a second: the blade count the last cull kept, and the ground
   // colour under the camera as the cull packs it, beside its CPU twin from the layer averages.
   let lastSample = -Infinity, sampling = false, lastReculls = 0, ringStep = 0;
+  let diagnosticsEnabled = false, diagnosticsRevision = 0;
   const ringResults = new Array(8).fill(null);
   const SAMPLE_EVERY = 1;
+  function resetReadbacks() {
+    diagnosticsRevision++;
+    sampling = false;
+    lastSample = -Infinity;
+    lastReculls = grass?.stats.reculls ?? 0;
+    ringStep = 0;
+    ringResults.fill(null);
+    stats.drawn = stats.probe = stats.ringProbe = stats.probeError = null;
+  }
   function sampleReadbacks(seconds) {
-    if (sampling || seconds - lastSample < SAMPLE_EVERY) return;
+    if (!diagnosticsEnabled || sampling || seconds - lastSample < SAMPLE_EVERY) return;
     // Reculls a second: the compute cost is per recull, so this says whether a spike is grass.
     stats.recullRate = (stats.reculls - lastReculls) / SAMPLE_EVERY;
     lastReculls = stats.reculls;
     if (typeof renderer?.getArrayBufferAsync !== 'function' || !grass?.readBladeCount) { lastSample = seconds; return; }
     sampling = true; lastSample = seconds;
+    const sampledGrass = grass, revision = diagnosticsRevision;
+    const current = () => diagnosticsEnabled && revision === diagnosticsRevision && grass === sampledGrass;
     const o = uRenderOrigin.value, ox = o.x, oy = o.y, oz = o.z;
     const x = camera.position.x, z = camera.position.z;
     stats.groundTwin = terrain.groundColorAt?.(x + ox, z + oz) ?? null;
@@ -430,9 +443,19 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // as a count rather than as a missing block you have to spot.
     const RING_R = 45, k = ringStep++ % 8, a = k * Math.PI / 4;
     const rx = x + Math.cos(a) * RING_R, rz = z + Math.sin(a) * RING_R;
-    Promise.all([grass.readBladeCount(), grass.readGroundProbe ? grass.readGroundProbe(x, z) : null,
-      grass.readGroundProbe ? grass.readGroundProbe(rx, rz) : null])
-      .then(([drawn, probe, ring]) => {
+    // Both probes share one uniform and output buffer. Submit the second only AFTER the first
+    // readback finishes; parallel dispatches overwrite that buffer before its first copy.
+    (async () => {
+      const drawn = await sampledGrass.readBladeCount();
+      if (!current()) return null;
+      const probe = sampledGrass.readGroundProbe ? await sampledGrass.readGroundProbe(x, z) : null;
+      if (!current()) return null;
+      const ring = sampledGrass.readGroundProbe ? await sampledGrass.readGroundProbe(rx, rz) : null;
+      return current() ? [drawn, probe, ring] : null;
+    })()
+      .then(result => {
+        if (!result || !current()) return;
+        const [drawn, probe, ring] = result;
         stats.drawn = drawn;
         // probeDelta: how far the height the cull used sits from the drawn ground there.
         const ground = terrain.groundHeight?.(x + ox, z + oz);
@@ -451,8 +474,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
         }
         stats.probeError = null;
       })
-      .catch(err => { stats.probeError = String(err?.message ?? err); })
-      .finally(() => { sampling = false; });
+      .catch(err => { if (current()) stats.probeError = String(err?.message ?? err); })
+      .finally(() => { if (revision === diagnosticsRevision) sampling = false; });
   }
 
   function setEnabled(value) {
@@ -490,6 +513,13 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       }
     },
     setEnabled,
+    // Hosts opt in for an open diagnostics panel or a capture. Disabling also cancels publication
+    // of in-flight samples; the GPU operation itself may already have been submitted.
+    setDiagnosticsEnabled(on) {
+      if (diagnosticsEnabled === !!on) return;
+      diagnosticsEnabled = !!on;
+      resetReadbacks();
+    },
     // Notify removal too: a mirror exclusion retaining a disposed mesh also retains its node
     // graph and CPU storage arrays. Arguments are (currentMesh, removedMesh).
     onMesh(fn) { onMeshCb = fn; if (grass) fn(grass.mesh, null); },
