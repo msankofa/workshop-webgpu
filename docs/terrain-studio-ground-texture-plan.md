@@ -1,6 +1,6 @@
 # Terrain studio decides which texture the ground gets
 
-STATUS: slices 1 to 3 shipped and seen working in the browser 2026-09-05. Slice 4 not started.
+STATUS: slices 1 to 3 shipped and seen working in the browser 2026-09-05. Slice 4 shipped 2026-09-05, Node-tested, unseen in a browser.
 
 ## The goal
 
@@ -115,11 +115,15 @@ draws its own biome/slope masks rather than the splat's height rules. Both are o
 
 ### Slice 4. Per-biome assignment (optional, later)
 
-Five slots cannot say "taiga gets this, desert gets that". Tiles already carry `biomeIds`, so a
-biome coverage texture beside the LOD coverage maps would let each biome remap slots, or pick
-its own texture from a larger array texture. This is the point where the shader changes shape
-(a `DataArrayTexture` of up to N layers, which is what shimmered in the old authored splat), so
-it is its own plan once slices 1 to 3 are in and a real need shows up.
+Shipped 2026-09-05. `material.biomes[name] = { slots?, rules? }`; the studio has an Add-biome select
+and a card per biome; the game packs the override folders into two mipmapped array textures
+(16 layers max, 1024 square each) and reads the biome id from the placement field window's
+texture through a biome x slot table and a biome x rule table (`docs/subsystems/terrain.md`).
+Things to look at in the browser, in order: whether the array textures shimmer at distance
+(the r184 backend mips array layers now, but nothing here had used that path), the hard
+one-texel biome edges, and the grass tint in an overridden biome, which still follows the
+project-wide texture. If the mips do shimmer, the fallback is a palette of up to ten separate
+textures with an unrolled branch each.
 
 ## What a moon also needs, outside this plan
 

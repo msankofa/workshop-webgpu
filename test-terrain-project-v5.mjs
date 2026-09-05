@@ -154,6 +154,11 @@ console.log('\n[material] ground texture slots: optional, validated, hash-neutra
   ok(!('rules' in normalizeProject(editorProject({ material: { slots: { grass: 'rock' }, rules: {} } })).project.material), 'empty rules are dropped');
   rejects(() => normalizeProject(editorProject({ material: { rules: { lavaTop: 1 } } })), 'material.rules.lavaTop', 'rejects an unknown rule');
   rejects(() => normalizeProject(editorProject({ material: { rules: { snowTop: 'high' } } })), 'material.rules.snowTop', 'rejects a non-numeric rule');
+  const perBiome = normalizeProject(editorProject({ material: { biomes: { taiga: { slots: { grass: 'library/Grass008' }, rules: { snowBottom: 40 } }, desert: { slots: {} } } } })).project;
+  ok(perBiome.material.biomes.taiga.slots.grass === 'library/Grass008' && perBiome.material.biomes.taiga.rules.snowBottom === 40, 'per-biome slots and rules round-trip');
+  ok(!('desert' in perBiome.material.biomes), 'an empty biome entry is dropped');
+  rejects(() => normalizeProject(editorProject({ material: { biomes: { lava: { slots: { grass: 'rock' } } } } })), 'material.biomes.lava', 'rejects an unknown biome');
+  rejects(() => normalizeProject(editorProject({ material: { biomes: { taiga: { slots: { grass: '../x' } } } } })), 'material.biomes.taiga.slots.grass', 'rejects a bad per-biome folder');
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);

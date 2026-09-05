@@ -132,7 +132,7 @@ const BASE_GAME_WATER_LOOKS = Object.freeze(Object.keys(WATER_PRESETS).filter(na
 import { connectBaseGameSession } from './base-game-session.mjs';
 import { createBaseGamePauseMenu, showBaseGameStartMenu } from './base-game-menu.mjs';
 import { createTerrainProjectStore, createBaseGameTerrainStudio } from './base-game-terrain-studio.js';
-import { loadStreamedSplatTextures, createStreamedSplatMaterial, updateStreamedSplat, splatSlotFolders, splatConfigFromProject, STREAMED_SPLAT_LAYERS } from './terrain-splat-streamed.js';
+import { loadStreamedSplatTextures, createStreamedSplatMaterial, updateStreamedSplat, splatSlotFolders, splatConfigFromProject, STREAMED_SPLAT_LAYERS, biomeLayerTable, biomeRuleTable, loadStreamedSplatBiomeArray } from './terrain-splat-streamed.js';
 import { sanitizeBaseGameTerrainConfig } from './base-game-protocol.mjs';
 import { createBaseGameTerrain, terrainSourceFromDescriptor, BASE_GAME_TERRAIN_DEFAULTS } from './base-game-terrain.js';
 import { createBaseGameTrails, BASE_GAME_TRAIL_DEFAULTS } from './base-game-trails.js';
@@ -1356,7 +1356,10 @@ roads.group.position.set(-trailOrigin[0], -trailOrigin[1], -trailOrigin[2]);
 // project's material slots pick the folders; a later project swaps the images in place.
 const groundTextureLoad = loadStreamedSplatTextures({ slots: terrainStore.activeProject?.material?.slots ?? null }).then(tex => {
   terrain.setSplatMaterial(createStreamedSplatMaterial(tex, { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade }), tex);
-  if (terrainStore.activeProject) terrain.updateSplat(splatConfigFromProject(terrainStore.activeProject));
+  if (terrainStore.activeProject) {
+    terrain.updateSplat(splatConfigFromProject(terrainStore.activeProject));
+    applyGroundBiomes(terrainStore.activeProject).catch(err => console.warn(`per-biome ground not applied: ${err.message}`));
+  }
   return tex;
 }).catch(err => { console.warn(`ground textures unavailable, keeping the tint: ${err.message}`); return null; });
 async function applyGroundTextureSlots(slots) {
@@ -1365,6 +1368,24 @@ async function applyGroundTextureSlots(slots) {
   const have = terrain.splatSlots;
   if (have && STREAMED_SPLAT_LAYERS.every(n => have[n] === wanted[n])) return false;
   return terrain.swapSplatTextures(await loadStreamedSplatTextures({ slots: wanted }));
+}
+// Per-biome textures and rules. The array is reloaded only when the folder list changes; a
+// project with no biome overrides drops the binding so the ground is the plain five-slot one.
+let groundBiomeEntries = '';
+let groundBiomeTextures = null;
+async function applyGroundBiomes(project) {
+  if (!(await groundTextureLoad)) return false;
+  const material = project?.material ?? null;
+  if (!material?.biomes || !Object.keys(material.biomes).length) { groundBiomeEntries = ''; groundBiomeTextures = null; terrain.setSplatBiomes(null); return true; }
+  const { entries, table } = biomeLayerTable(material);
+  const rules = biomeRuleTable(project);
+  const key = entries.join('|');
+  if (key !== groundBiomeEntries) {
+    groundBiomeTextures = entries.length ? await loadStreamedSplatBiomeArray(entries) : null;
+    groundBiomeEntries = key;
+  }
+  terrain.setSplatBiomes({ textures: groundBiomeTextures, table, rules });
+  return true;
 }
 let activeTerrainDescriptor = TERRAIN_SOURCE_DESCRIPTOR;
 // Make the local world match a room's terrain config exactly (same descriptor, same hash),
@@ -1425,6 +1446,7 @@ async function applyTerrainProjectAtRuntime(project) {
   activeTerrainDescriptor = descriptor;
   applyGroundTextureSlots(project.material?.slots ?? null).catch(err => console.warn(`ground texture slots not applied: ${err.message}`));
   terrain.updateSplat(splatConfigFromProject(project));
+  applyGroundBiomes(project).catch(err => console.warn(`per-biome ground not applied: ${err.message}`));
   settings.terrainSeaLevel = descriptor.seaLevel;
   if (settings.worldMode !== 'terrain') { settings.worldMode = 'terrain'; syncAllControls(); }
   updateWorld(0);

@@ -221,13 +221,29 @@ export function createBaseGameTerrain({
   const splatInstances = new Map();   // 0 = exact, 1..n = cascade levels
   let splatWater = null;              // the water module's groundShade (wet band + caustics)
   let splatRain = null;               // the rain module's groundShade (wetness, puddles, ripples)
+  // Per-biome ground (a project's material.biomes): the splat reads the biome id from the
+  // placement field window, indexed globally, so the instances carry the render origin.
+  const uSplatOriginXZ = tslUniform(new THREE.Vector2());
+  let splatBiomes = null;             // { textures, table, rules } once a project asks for them
+  let splatFieldRelease = null;       // the ground's own hold on the field window while biomes are on
+  function biomeBinding() {
+    if (!splatBiomes) return null;
+    const w = fieldWindow();
+    if (!w || !w.fields.includes('biomeIds')) return null;
+    const sampler = w.gpuSampler('biomeIds');
+    return { window: w, idNode: Fn(([xz]) => sampler(xz.add(uSplatOriginXZ), float(-1000))) };
+  }
   function splatFor(index) {
     if (!splatMaterial || !splatTextures) return null;
+    const binding = biomeBinding();
     let m = splatInstances.get(index);
+    if (m && m.userData.splatBiomeWindow !== (binding?.window ?? null)) { m.dispose(); splatInstances.delete(index); m = null; }
     if (!m) {
       const self = index === 0 ? coverExact : coverLevels[index - 1];
       const finer = index === 0 ? null : (index === 1 ? coverExact : coverLevels[index - 2]);
-      m = createStreamedSplatMaterial(splatTextures, splatMaterial.userData.streamedSplat.cfg, { lod: { self, finer }, water: splatWater, rain: splatRain });
+      m = createStreamedSplatMaterial(splatTextures, splatMaterial.userData.streamedSplat.cfg, { lod: { self, finer }, water: splatWater, rain: splatRain, biome: binding ? { idNode: binding.idNode } : null });
+      m.userData.splatBiomeWindow = binding?.window ?? null;
+      if (splatBiomes) updateStreamedSplat(m, { biomeTable: splatBiomes.table, biomeRules: splatBiomes.rules, biomeAverages: splatBiomes.textures?.averages ?? [] });
       splatInstances.set(index, m);
     }
     m.wireframe = wireframe;
@@ -323,7 +339,9 @@ export function createBaseGameTerrain({
   root.add(batcher.group);
   scene.add(root);
   if (farLod) { farLodMode = true; ensureFarLod(); }
-  const stopRebase = worldCoordinates.onRebase(event => { root.position.add(new THREE.Vector3().fromArray(event.delta)); });
+  const syncSplatOrigin = () => { const o = worldCoordinates.getOrigin(); uSplatOriginXZ.value.set(o[0], o[2]); };
+  syncSplatOrigin();
+  const stopRebase = worldCoordinates.onRebase(event => { root.position.add(new THREE.Vector3().fromArray(event.delta)); syncSplatOrigin(); });
 
   // Base Game readability tint: height/slope vertex colours (sea-level sand, grass, rock on
   // steep faces, snow up high). Biome/material masks from v5 are not streamed yet.
@@ -427,6 +445,8 @@ export function createBaseGameTerrain({
       for (const _ of previous) set.add(open());
       for (const handle of previous) handle.release();
     }
+    // the per-biome splat instances sample the old window's textures; rebuild them against the new one
+    if (splatBiomes && splatInstances.size) { for (const m of splatInstances.values()) m.dispose(); splatInstances.clear(); applyMaterials(); }
   }
   function fieldWindow() {
     for (const handle of fieldHandles) return handle.window;
@@ -736,6 +756,7 @@ export function createBaseGameTerrain({
     setSplatMaterial(material, textures = null) {
       splatMaterial = material ?? null;
       splatTextures = textures;
+      if (splatTextures && splatBiomes) splatTextures.biomes = splatBiomes.textures;
       // Averages come from the loaded textures; the placeholder set carries them too.
       syncGroundColor();
       tileCover.setSplatCfg(material?.userData?.streamedSplat?.cfg ?? null);
@@ -754,6 +775,28 @@ export function createBaseGameTerrain({
       return true;
     },
     get splatSlots() { return splatTextures?.slots ?? null; },
+    // Per-biome overrides: `textures` from loadStreamedSplatBiomeArray (or null for rules only),
+    // `table` from biomeLayerTable, `rules` from biomeRuleTable. Null drops the binding.
+    setSplatBiomes(next) {
+      const sameTextures = !!splatBiomes && !!next && splatBiomes.textures === (next.textures ?? null);
+      if (!next) {
+        splatBiomes = null;
+        if (splatTextures) splatTextures.biomes = null;
+        splatFieldRelease?.(); splatFieldRelease = null;
+      } else {
+        splatBiomes = { textures: next.textures ?? null, table: next.table, rules: next.rules };
+        if (splatTextures) splatTextures.biomes = splatBiomes.textures;
+        if (!splatFieldRelease) splatFieldRelease = acquireFields();
+      }
+      if (sameTextures) {
+        for (const m of splatInstances.values()) updateStreamedSplat(m, { biomeTable: next.table, biomeRules: next.rules, biomeAverages: next.textures?.averages ?? [] });
+        return;
+      }
+      for (const m of splatInstances.values()) m.dispose();
+      splatInstances.clear();
+      applyMaterials();
+    },
+    get splatBiomes() { return splatBiomes; },
     // Live tuning for every splat instance at once.
     updateSplat(patch) { if (splatMaterial) updateStreamedSplat(splatMaterial, patch); for (const m of splatInstances.values()) updateStreamedSplat(m, patch); },
     get lodCoverage() { return { exact: coverExact, levels: coverLevels }; },
@@ -1043,6 +1086,7 @@ export function createBaseGameTerrain({
 
     dispose() {
       stopRebase();
+      splatFieldRelease?.(); splatFieldRelease = null;
       for (const handle of fieldHandles) handle.release();
       fieldHandles.clear();
       for (const handle of contactHandles) handle.release();

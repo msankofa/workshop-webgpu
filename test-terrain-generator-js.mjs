@@ -164,6 +164,10 @@ ok(everyFieldHasDescription, '2: every FIELD_GROUPS field has a non-trivial fiel
     ok(moon === again, 'writes into the supplied buffer');
     let flat = true; for (let i = 0; i < moon.length; i += 4) if (moon[i] !== 120 || moon[i + 1] !== 120 || moon[i + 2] !== 120) flat = false;
     ok(flat, 'a grey table makes every cell grey');
+    const ids = new Uint8Array(n).fill(BIOME_INDEX.forest); ids[0] = BIOME_INDEX.taiga;
+    const tables = []; tables[BIOME_INDEX.taiga] = { ...MATERIAL_COLORS, grass: [200, 10, 10], forest: [200, 10, 10] };
+    const mixed = materialRgbaFromMasks(masks, MATERIAL_COLORS, null, { biomeIds: ids, tables });
+    ok(mixed[0] > 150 && mixed[4] < 150, 'a biome with its own table colours only its own cells');
   }
 
   let mostlyForest = true, dryWater = true;

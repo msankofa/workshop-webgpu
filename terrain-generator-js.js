@@ -467,15 +467,19 @@ export const MATERIAL_COLORS = Object.freeze({
 
 // Preview colour per cell from the masks and a 0..255 colour table (a page swaps the table for the
 // average colours of the ground textures a project chose, so the preview shows the same look).
-export function materialRgbaFromMasks(masks, colors = MATERIAL_COLORS, out = null) {
+// `perBiome`: optional { biomeIds: Uint8Array, tables: (colour table | null)[] } so a cell in a biome
+// with its own textures takes that biome's table (the game's per-biome overrides).
+export function materialRgbaFromMasks(masks, colors = MATERIAL_COLORS, out = null, perBiome = null) {
   const n = masks.water.length;
   const rgba = out && out.length === n * 4 ? out : new Uint8ClampedArray(n * 4);
   const water = colors.water ?? MATERIAL_COLORS.water;
+  const ids = perBiome?.biomeIds ?? null, tables = perBiome?.tables ?? null;
   for (let i = 0; i < n; i++) {
     let r = 0, g = 0, b = 0, total = 0;
+    const own = ids && tables ? tables[ids[i]] : null;
     for (const key of ['grass', 'forest', 'dirt', 'sand', 'rock', 'snow']) {
       const wgt = masks[key][i];
-      const [cr, cg, cb] = colors[key] ?? MATERIAL_COLORS[key];
+      const [cr, cg, cb] = own?.[key] ?? colors[key] ?? MATERIAL_COLORS[key];
       r += cr * wgt; g += cg * wgt; b += cb * wgt; total += wgt;
     }
     if (total > 1e-4) { r /= total; g /= total; b /= total; }

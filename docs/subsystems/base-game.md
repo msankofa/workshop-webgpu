@@ -2542,7 +2542,7 @@ with a hand-sync note; one import is better, because rain beading differently on
 the wall standing on it is exactly the drift that note would have been apologising for.
 
 **The rain bundle** is `{ uniforms, offset, puddleScale, rippleScale }` beside the existing `water`
-one, bound once at startup by `terrain.setSplatRain(rain.groundShade)` (the ground textures themselves come from the active project's `material.slots` at startup, and `applyTerrainProjectAtRuntime` swaps them in place through `terrain.swapSplatTextures` when a project with other slots is applied) — not on first rain, because
+one, bound once at startup by `terrain.setSplatRain(rain.groundShade)` (the ground textures themselves come from the active project's `material.slots` at startup, and `applyTerrainProjectAtRuntime` swaps them in place through `terrain.swapSplatTextures` when a project with other slots is applied; `applyGroundBiomes(project)` loads the per-biome array textures when the folder list changes and calls `terrain.setSplatBiomes`, or drops the binding for a project without overrides) — not on first rain, because
 the graph gates on the wetness uniform and rebuilding every splat instance mid-session is a visible
 hitch. `offset` is the render origin, so puddles are anchored to global XZ and stay with the ground
 across a rebase.

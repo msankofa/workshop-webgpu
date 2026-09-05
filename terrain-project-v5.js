@@ -8,6 +8,7 @@
 import { DEFAULT_CONFIG, DENSITY_DEFAULT_CONFIG } from './terrain-generator-js.js';
 import { LAYER_TYPES, MAX_LAYERS, normalizeStack, defaultStack, STREAMABLE_LAYER_TYPES } from './terrain-stack.js';
 import { base64ToBytes } from './terrain-paint.js';
+import { BIOMES } from './biome-classifier-js.js';
 
 export const PROJECT_APP = 'terrain-generator-v5';
 export const PROJECT_FORMAT_VERSION = 1;          // the editor's `version` field; unchanged for compatibility
@@ -88,27 +89,51 @@ function normalizePaint(raw) {
 function normalizeMaterial(raw) {
   if (raw == null) return null;
   if (typeof raw !== 'object' || Array.isArray(raw)) fail('material must be an object or null', 'material');
-  for (const k of Object.keys(raw)) if (k !== 'version' && k !== 'slots' && k !== 'rules') fail(`unknown material field ${k}`, `material.${k}`);
+  for (const k of Object.keys(raw)) if (k !== 'version' && k !== 'slots' && k !== 'rules' && k !== 'biomes') fail(`unknown material field ${k}`, `material.${k}`);
   if (raw.version != null && raw.version !== 1) fail(`unsupported material version ${raw.version}`, 'material.version');
+  const out = { version: 1, slots: normalizeSlots(raw.slots, 'material.slots') };
+  const rules = normalizeRules(raw.rules, 'material.rules');
+  if (Object.keys(rules).length) out.rules = rules;
+  // Per-biome overrides: { biomeName: { slots?, rules? } }, each the same shape as the top level.
+  if (raw.biomes != null) {
+    if (typeof raw.biomes !== 'object' || Array.isArray(raw.biomes)) fail('material.biomes must be an object', 'material.biomes');
+    const biomes = {};
+    for (const [name, v] of Object.entries(raw.biomes)) {
+      if (!BIOMES.includes(name)) fail(`unknown biome ${name}`, `material.biomes.${name}`);
+      if (!v || typeof v !== 'object' || Array.isArray(v)) fail(`material.biomes.${name} must be an object`, `material.biomes.${name}`);
+      for (const k of Object.keys(v)) if (k !== 'slots' && k !== 'rules') fail(`unknown field ${k} in material.biomes.${name}`, `material.biomes.${name}.${k}`);
+      const entry = {};
+      const s = normalizeSlots(v.slots, `material.biomes.${name}.slots`);
+      const r = normalizeRules(v.rules, `material.biomes.${name}.rules`);
+      if (Object.keys(s).length) entry.slots = s;
+      if (Object.keys(r).length) entry.rules = r;
+      if (Object.keys(entry).length) biomes[name] = entry;
+    }
+    if (Object.keys(biomes).length) out.biomes = biomes;
+  }
+  return out;
+}
+function normalizeSlots(src, field) {
   const slots = {};
-  const src = raw.slots ?? {};
-  if (typeof src !== 'object' || Array.isArray(src)) fail('material.slots must be an object', 'material.slots');
+  if (src == null) return slots;
+  if (typeof src !== 'object' || Array.isArray(src)) fail(`${field} must be an object`, field);
   for (const [k, v] of Object.entries(src)) {
-    if (!MATERIAL_SLOTS.includes(k)) fail(`unknown material slot ${k}`, `material.slots.${k}`);
-    if (typeof v !== 'string' || !SAFE_FOLDER.test(v)) fail(`material.slots.${k} must be a folder path of letters, digits, _ - and /`, `material.slots.${k}`);
+    if (!MATERIAL_SLOTS.includes(k)) fail(`unknown material slot ${k}`, `${field}.${k}`);
+    if (typeof v !== 'string' || !SAFE_FOLDER.test(v)) fail(`${field}.${k} must be a folder path of letters, digits, _ - and /`, `${field}.${k}`);
     slots[k] = v;
   }
+  return slots;
+}
+function normalizeRules(src, field) {
   const rules = {};
-  const rsrc = raw.rules ?? {};
-  if (typeof rsrc !== 'object' || Array.isArray(rsrc)) fail('material.rules must be an object', 'material.rules');
-  for (const [k, v] of Object.entries(rsrc)) {
-    if (!MATERIAL_RULES.includes(k)) fail(`unknown material rule ${k}`, `material.rules.${k}`);
-    if (typeof v !== 'number' || !Number.isFinite(v)) fail(`material.rules.${k} must be a finite number`, `material.rules.${k}`);
+  if (src == null) return rules;
+  if (typeof src !== 'object' || Array.isArray(src)) fail(`${field} must be an object`, field);
+  for (const [k, v] of Object.entries(src)) {
+    if (!MATERIAL_RULES.includes(k)) fail(`unknown material rule ${k}`, `${field}.${k}`);
+    if (typeof v !== 'number' || !Number.isFinite(v)) fail(`${field}.${k} must be a finite number`, `${field}.${k}`);
     rules[k] = v;
   }
-  const out = { version: 1, slots };
-  if (Object.keys(rules).length) out.rules = rules;
-  return out;
+  return rules;
 }
 
 function normalizeImports(raw, stack) {

@@ -2,7 +2,7 @@
 // Run: node test-terrain-splat-streamed.mjs
 import * as THREE from 'three';
 import { buildMaterial } from './tsl-build-check.mjs';
-import { createStreamedSplatMaterial, placeholderStreamedSplatTextures, splatWeights, detailFade, updateStreamedSplat, STREAMED_SPLAT_DEFAULTS, STREAMED_SPLAT_LAYERS, splatSlotFolders, replaceStreamedSplatImages, splatConfigFromProject } from './terrain-splat-streamed.js';
+import { createStreamedSplatMaterial, placeholderStreamedSplatTextures, splatWeights, detailFade, updateStreamedSplat, STREAMED_SPLAT_DEFAULTS, STREAMED_SPLAT_LAYERS, splatSlotFolders, replaceStreamedSplatImages, splatConfigFromProject, biomeLayerTable, biomeRuleTable, biomeRuleCfg, placeholderStreamedSplatBiomeArray } from './terrain-splat-streamed.js';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
@@ -143,6 +143,69 @@ console.log('\n[8] splatConfigFromProject: cfg rules in the splat frame, materia
   const mat = createStreamedSplatMaterial(placeholderStreamedSplatTextures());
   updateStreamedSplat(mat, q);
   ok(near(mat.userData.streamedSplat.cfg.snowBottom, 30) && near(mat.userData.streamedSplat.uniforms.rockSlope.value, p.rockSlope), 'the patch lands on a built material');
+}
+
+console.log('\n[9] per-biome overrides: tables, rule rows, and the array-texture shader path');
+{
+  const material = { slots: { grass: 'grass' }, biomes: {
+    taiga: { slots: { grass: 'library/Grass008', dirt: 'library/Ground023' }, rules: { snowBottom: 20, snowTop: 50 } },
+    desert: { slots: { grass: 'desert', dirt: 'library/Ground023' } },
+    plains: { rules: { grassTop: 300 } },
+  } };
+  const { entries, table } = biomeLayerTable(material);
+  ok(entries.length === 3 && entries[0] === 'library/Grass008' && entries[1] === 'library/Ground023' && entries[2] === 'desert', 'distinct folders in first-seen order');
+  const { BIOMES } = await import('./biome-classifier-js.js');
+  const taiga = BIOMES.indexOf('taiga'), desert = BIOMES.indexOf('desert'), plains = BIOMES.indexOf('plains');
+  ok(table[taiga * 5 + 1] === 0 && table[taiga * 5 + 2] === 1 && table[desert * 5 + 1] === 2 && table[desert * 5 + 2] === 1, 'biome x slot cells point at the shared layers');
+  ok(table[taiga * 5 + 0] === -1 && table[plains * 5 + 1] === -1, 'unset cells are -1');
+  const project = { cfg: { sea_level: 0, beach_width: 9, snow_height_start: 74, snow_height_full: 112 }, material };
+  const rules = biomeRuleTable(project);
+  ok(near(rules[taiga * 7 + 3], 20) && near(rules[desert * 7 + 3], 74) && near(rules[plains * 7 + 1], 300), 'rule rows: own value, else the project-wide one');
+  const cfgTaiga = biomeRuleCfg(rules, taiga);
+  ok(argmax(splatWeights(60, 1, cfgTaiga)) === 4 && argmax(splatWeights(60, 1, biomeRuleCfg(rules, desert))) === 1, 'CPU twin: taiga is snow at 60 m where desert is grass');
+  const tex = placeholderStreamedSplatTextures();
+  tex.biomes = placeholderStreamedSplatBiomeArray(entries, [[0.2, 0.3, 0.1], [0.4, 0.3, 0.2], [0.8, 0.7, 0.4]]);
+  const { Fn: F, float: fl } = await import('three/tsl');
+  const idNode = F(([xz]) => xz.x.mul(0).add(fl(taiga)));
+  const mat = createStreamedSplatMaterial(tex, {}, { biome: { idNode } });
+  ok(mat.userData.streamedSplat.biome === true && mat.userData.streamedSplat.biomeLayers === 3, 'material records the biome binding and layer count');
+  updateStreamedSplat(mat, { biomeTable: table, biomeRules: rules, biomeAverages: tex.biomes.averages });
+  const u = mat.userData.streamedSplat.uniforms;
+  ok(u.biomeTable.array[taiga * 5 + 1] === 0 && near(u.biomeRules.array[taiga * 7 + 3], 20) && near(u.biomeAverages.array[2].x, 0.8), 'tables land in the uniform arrays');
+  const geo = new THREE.PlaneGeometry(1, 1, 2, 2); geo.computeVertexNormals();
+  let built = null; try { built = await buildMaterial(mat, geo); } catch (e) { built = e; }
+  ok(built && built.fragment && /sampler2DArray|textureGrad|texture\(/.test(built.fragment), `builds headless with the array branch (${built?.message ?? 'ok'})`);
+  const plain = createStreamedSplatMaterial(placeholderStreamedSplatTextures());
+  ok(plain.userData.streamedSplat.biome === false, 'without a biome binding the material is the plain one');
+}
+
+console.log('\n[10] Base Game wiring: setSplatBiomes binds the field window and rebuilds the instances');
+{
+  const scene = new THREE.Scene(), worldQuery = createWorldQueryService(), worldCoordinates = createWorldCoordinateSpace();
+  const terrain = createBaseGameTerrain({ scene, worldQuery, worldCoordinates, source: analyticDescriptor({ key: 'splat-biomes', sourceVersion: '1' }), useWorker: false, params: { renderRadius: 1 } });
+  terrain.setActive(true);
+  for (let i = 0; i < 6; i++) terrain.update([0, 0, 0], 1 / 60);
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  const chunkMeshes = () => terrain.system.group.children.filter(c => c.isMesh && c.userData.terrainChunk);
+  const before = chunkMeshes()[0]?.material;
+  ok(before && before.userData.streamedSplat.biome === false, 'plain instance before any biome binding');
+  const material = { biomes: { taiga: { slots: { grass: 'library/Grass008' } } } };
+  const { entries, table } = biomeLayerTable(material);
+  const rules = biomeRuleTable({ cfg: { sea_level: 0 }, material });
+  const arrays = placeholderStreamedSplatBiomeArray(entries);
+  terrain.setSplatBiomes({ textures: arrays, table, rules });
+  const after = chunkMeshes()[0]?.material;
+  ok(after && after !== before && after.userData.streamedSplat.biome === true && after.userData.streamedSplat.biomeLayers === 1, 'instances rebuilt with the biome binding and one array layer');
+  ok(terrain.fields && terrain.fields.fields.includes('biomeIds'), 'the ground now holds the placement field window');
+  const geo = new THREE.PlaneGeometry(1, 1, 2, 2); geo.computeVertexNormals();
+  let built = null; try { built = await buildMaterial(after, geo); } catch (e) { built = e; }
+  ok(built && built.fragment, `the bound instance builds headless (${built?.message ?? 'ok'})`);
+  terrain.setSplatBiomes({ textures: arrays, table, rules });
+  ok(chunkMeshes()[0]?.material === after, 'same textures: tables update in place, no rebuild');
+  terrain.setSplatBiomes(null);
+  ok(chunkMeshes()[0]?.material.userData.streamedSplat.biome === false, 'null drops the binding');
+  terrain.dispose();
 }
 
 console.log('\n[7] texture slots: folder mapping and in-place image swap');
