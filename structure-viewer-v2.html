@@ -106,6 +106,7 @@ let SHADOW_SIZE = Math.max(256, parseInt(query.get('shadow'), 10) || 1024);
 let SHADOW_SOFT = query.get('pcf') !== 'hard';
 let GRASS_LIGHT = query.get('grassLight') === 'standard' ? 'standard' : 'lambert';
 let GRASS_SHADOW = query.get('grassShadow') !== '0';
+let GRASS_MODE = query.get('grassMode') === 'mesh' ? 'mesh' : 'compute';   // page-wide; every theme's flora block defaults to mesh
 let OCCLUSION = true;
 
 const renderer = new WebGPURenderer({ antialias: true });
@@ -283,6 +284,8 @@ function rebuildFlora() {
   const on = visuals.toggles.flora;
   flora.setEnabled(on);
   if (!on) return;
+  // A theme switch brings a fresh flora block with the module's mesh default; the page's choice wins.
+  if (visuals.theme.flora) visuals.theme.flora.grassMode = GRASS_MODE;
   flora.rebuild({
     bounds: activeBounds,
     wallBoxes: activeWallBoxes,
@@ -1032,7 +1035,7 @@ function setMode(v) {
     }), { hint: `A/B: rebuilds without ${name}, and the next click brings them back` });
   }
   dropdown(b, 'grass mode', [['mesh', 'mesh: built once, culled per tile'], ['compute', 'compute: culled per frame']],
-    () => floraFor(visuals.theme).grassMode || 'mesh', (v) => withFlora((f) => { f.grassMode = v; }),
+    () => GRASS_MODE, (v) => { GRASS_MODE = v; rebuildFlora(); },
     'mesh: every blade built once, culled per tile. compute: blades culled per frame from painted density and height textures.');
   slider(b, 'grass radius (m)', 4, 400, 1, 0, () => floraFor(visuals.theme).grassRadius ?? 60,
     (v) => withFlora((f) => { f.grassRadius = v; }),
@@ -1097,7 +1100,7 @@ function setMode(v) {
     eco: { ...ecoParams },
     wall: { WALL_H, WALL_T },
     terrain: { ...terrainSettings },
-    render: { SHADOW_SIZE, SHADOW_SOFT, GRASS_LIGHT, GRASS_SHADOW, OCCLUSION },
+    render: { SHADOW_SIZE, SHADOW_SOFT, GRASS_LIGHT, GRASS_SHADOW, GRASS_MODE, OCCLUSION },
     look: visuals.getLookState(),
     sections: readSectionStates(ctrl),
   });
@@ -1112,6 +1115,7 @@ function setMode(v) {
       SHADOW_SOFT = data.render.SHADOW_SOFT ?? SHADOW_SOFT;
       GRASS_LIGHT = data.render.GRASS_LIGHT ?? GRASS_LIGHT;
       GRASS_SHADOW = data.render.GRASS_SHADOW ?? GRASS_SHADOW;
+      GRASS_MODE = data.render.GRASS_MODE ?? GRASS_MODE;
       OCCLUSION = data.render.OCCLUSION ?? OCCLUSION;
       flora.setOcclusionEnabled(OCCLUSION);
       if (data.render.SHADOW_SIZE && data.render.SHADOW_SIZE !== SHADOW_SIZE) { SHADOW_SIZE = data.render.SHADOW_SIZE; applyShadowSize(); }
