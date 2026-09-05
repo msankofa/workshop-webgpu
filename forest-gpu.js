@@ -597,6 +597,7 @@ export function createForestGPU(opts) {
   let droppedInstances = 0;      // dropped by capPerVariant THIS rebuild, not once ever
   function rebuild() {
     countsArray.fill(0);
+    let changedStart = srcArray.length, changedEnd = 0;
     // NOTE: srcArray is intentionally NOT zeroed. The cull kernel only reads slots where
     // localSlot < srcCounts[g] (== countsArray[g]); every slot beyond a variant's live
     // count is never sampled, so stale data past the count can't leak into a draw. Skipping
@@ -616,8 +617,17 @@ export function createForestGPU(opts) {
         // the fallback, asked in global coordinates and answering in them.
         const ground = Number.isFinite(r.ground) ? r.ground : heightAt(r.x, r.z);
         const y = ground + treeBaseOffset - originY;
-        srcArray[base] = r.x - originX; srcArray[base + 1] = y; srcArray[base + 2] = r.z - originZ; srcArray[base + 3] = r.scale;
-        srcArray[base + 4] = r.yaw; srcArray[base + 5] = 0; srcArray[base + 6] = 0; srcArray[base + 7] = 0;
+        // Compare in storage precision: double-precision placement values otherwise look changed
+        // on every rebuild after their first Float32 write. Spare fields remain zero from allocation.
+        const x32 = Math.fround(r.x - originX), y32 = Math.fround(y), z32 = Math.fround(r.z - originZ);
+        const scale32 = Math.fround(r.scale), yaw32 = Math.fround(r.yaw);
+        if (srcArray[base] !== x32 || srcArray[base + 1] !== y32 || srcArray[base + 2] !== z32
+          || srcArray[base + 3] !== scale32 || srcArray[base + 4] !== yaw32) {
+          srcArray[base] = x32; srcArray[base + 1] = y32; srcArray[base + 2] = z32;
+          srcArray[base + 3] = scale32; srcArray[base + 4] = yaw32;
+          changedStart = Math.min(changedStart, base);
+          changedEnd = Math.max(changedEnd, base + 8);
+        }
         total++;
       }
     }
@@ -642,7 +652,17 @@ export function createForestGPU(opts) {
       overflowWarned = true;
       console.warn(`[forest-gpu] dropped ${dropped} instances this rebuild: a variant exceeded capPerVariant=${CAP}. Raise capPerVariant.`);
     }
-    srcAttr.needsUpdate = true;
+    if (changedEnd > changedStart) {
+      // Preserve any pending upload when a host rebuilds again before the renderer consumes it.
+      // One merged range also avoids turning small scattered edits into many queue submissions.
+      for (const range of srcAttr.updateRanges) {
+        changedStart = Math.min(changedStart, range.start);
+        changedEnd = Math.max(changedEnd, range.start + range.count);
+      }
+      srcAttr.clearUpdateRanges();
+      srcAttr.addUpdateRange(changedStart, changedEnd - changedStart);
+      srcAttr.needsUpdate = true;
+    }
     countsAttr.needsUpdate = true;
     markDirty();
   }
@@ -876,6 +896,7 @@ export function createForestGPU(opts) {
     // What the CPU last uploaded. Read-only, and read by the Node tests: without it the only way
     // to check that a rebase moved the instances is to look at the screen.
     get sourceArray() { return srcArray; },
+    get sourceAttribute() { return srcAttr; }, // read-only inspection of pending upload ranges
     get sourceCounts() { return countsArray; },
     get slotStride() { return CAP; },
     setTreeBaseOffset(v) {

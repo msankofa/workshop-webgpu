@@ -29,7 +29,7 @@ does not measure uploads, GPU execution, or browser frame pacing.
   occlusion and non-occlusion paths and run placement, wind, and fade checks.
 - [x] 5. Cache settings-derived grass telemetry calculations and objects rather than
   recomputing/allocating them each frame. Keep live counters accurate.
-- [ ] 6. Reduce forest source uploads with changed attribute ranges. Verify additions,
+- [x] 6. Reduce forest source uploads with changed attribute ranges. Verify additions,
   removals, rebases, overflow, and variant publication. Stable chunk slots are a larger
   follow-up, not a prerequisite for partial uploads.
 - [ ] 7. Share immutable tree geometry attributes while retaining separate indirect draw
@@ -90,3 +90,10 @@ Fix 5: tiered expected-count integration and tint/fade/handover objects now refr
 or effective-tier changes. Cone calculations reuse scratch storage, and skipped frames retain
 the actual last recull reason. Validation: 106 flora checks and 91 grass checks passed.
 Fix 4 commit: `a2522b1`.
+
+Fix 6: source records are compared in Float32 precision and only the changed span is scheduled
+for upload. Pending ranges survive additional rebuilds before renderer consumption. Unchanged
+chunks upload no source data; a one-tree edit uploads 32 bytes. The full CPU placement scan and
+insertion-order capacity policy remain. Validation: focused upload/precision/removal/rebase/
+overflow/publication checks and 99 forest checks passed. Headless rescan timings were
+0.04–0.09 ms; these are not GPU upload measurements. Fix 5 commit: `9d5ecf3`.
