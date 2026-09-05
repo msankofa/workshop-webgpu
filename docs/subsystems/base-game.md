@@ -334,6 +334,27 @@ display rate comes from the cap's own refresh EMA, rounded to whole hertz so its
 restart the grid. The plain cap stays available; the snap is recorded in `settingsAtStart` like
 the cap is.
 
+## The draw distance ceiling
+
+`drawDistance` (0 to 3000 m, 0 = no ceiling, in the Performance Capture section next to the frame
+cap) is one number every draw radius sits under. It is a ceiling, not a value: the grass, tree and
+terrain sliders keep their own numbers and `underCeiling()` clamps each on the way to its module,
+because grass lives at tens of metres and trees at hundreds, so one shared value would fit neither.
+What it clamps:
+
+- grass draw radius (`grassRadius`), through `applyFloraSettings`;
+- tree draw radius (`treeDrawRadius`), through `applyForestSettings`;
+- terrain draw radius, converted to chunks with the level-0 chunk size and floored at 1;
+- the camera far plane, to 1.5x the ceiling, clouds included (a wide deck clips rather than win);
+- the shadow box half-extent (`SHADOW_REACH`, 90 m) on both the sun and the moon, which is the
+  real shadow distance; the forest's `treeShadowReach` follows it so no LOD rung starts past the map.
+
+The ceiling floors at 40 m so a slider at the bottom cannot draw nothing. **Fog hides the far edge**
+(`drawDistanceFog`) raises the exp2 fog density to `2 / far`, where the fog reaches 98%, so the
+clipped world sits in haze instead of ending on a line; the weather fog still wins when it is denser.
+Both keys are local: they are not in `BASE_GAME_SHARED_KEYS`, so a low-end machine's ceiling never
+reaches the room. Nothing here has been seen in a browser yet.
+
 ## Performance captures
 
 The control panel has a small **Performance Capture** section, not an in-game history window. Choose

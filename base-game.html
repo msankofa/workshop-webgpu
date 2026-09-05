@@ -609,6 +609,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   shadowsEnabled: true,
   shadowUpdateEvery: 1,
   shadowFilter: 'soft',
+  // One ceiling under every draw radius, local to this machine. 0 means no ceiling.
+  drawDistance: 0,
+  drawDistanceFog: false,
   primaryBody: 'sun',
   todEnabled: false,
   todHour: 12,
@@ -649,7 +652,7 @@ const NUMBER_LIMITS = Object.freeze({
   laserBeamOpacity: [0, 1], laserBeamRadius: [0, 1], laserRange: [1, 300],
   npcNoticeMs: [0, 10000], npcAccuracy: [0, 1], npcSpawnDistance: [5, 2000],
   dofFocusDistance: [0.3, 80], dofAperture: [0.05, 3], dofMaxRadius: [2, 40], dofFarScale: [0.5, 4],
-  shadowUpdateEvery: [1, 8],
+  shadowUpdateEvery: [1, 8], drawDistance: [0, 3000],
   interpolationDelayMs: [0, 500], terrainDrawRadius: [1, 32], terrainTextureTile: [1, 16], terrainTextureFade: [200, 6000],
   armIdleBend: [0, 1.2], armWalkRaise: [-0.3, 0.8], armWalkSwing: [0, 1.5], armRunRaise: [-0.3, 1.0],
   armRunSwing: [0, 2], armRunPump: [0, 1], armJumpLift: [0, 2.5], armLandSwing: [0, 1.5],
@@ -984,7 +987,9 @@ function applyAtmosphereSettings() {
   // So the fog exists from startup at density 0 and only the number moves.
   // A thermal sensor sees through haze that stops the eye, so the fog thins under IR. applyVisor
   // calls back into here on every mode change, which is what makes the number move.
-  const density = (settings.weatherFogEnabled ? settings.weatherFogBase + settings.weatherRain * settings.weatherFogPerRain : 0)
+  // With the fog link on, the far plane sits at 2/density, where exp2 fog reaches 98%.
+  const linked = settings.drawDistanceFog && settings.drawDistance > 0 ? 2 / (drawCeiling() * 1.5) : 0;
+  const density = Math.max(linked, settings.weatherFogEnabled ? settings.weatherFogBase + settings.weatherRain * settings.weatherFogPerRain : 0)
     * (uIR.value ? BASE_GAME_IR_FOG_SCALE : 1);
   if (density !== appliedAtmosphere.density) { appliedAtmosphere.density = density; scene.fog.density = density; }
   if (settings.weatherFogSource === 'custom') {
@@ -1148,6 +1153,11 @@ scene.fog = new THREE.FogExp2(0x8a929c, 0);
 // 600 m covers the 16-chunk terrain draw radius (480 m); with far LOD on, updateWorld() pushes
 // the far plane out to the outermost clipmap ring.
 const CAMERA_FAR_NEAR_FIELD = 600;
+// Each subsystem keeps its own draw radius; the ceiling only clamps it, because grass lives at
+// tens of metres and trees at hundreds, so one shared value would fit neither.
+const DRAW_CEILING_FLOOR = 40;
+function drawCeiling() { return settings.drawDistance > 0 ? Math.max(DRAW_CEILING_FLOOR, settings.drawDistance) : Infinity; }
+function underCeiling(value) { return Math.min(value, drawCeiling()); }
 let skyRadiusApplied = false;
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, CAMERA_FAR_NEAR_FIELD);
 
@@ -3188,6 +3198,7 @@ function applyPlayerConfiguration() {
   controls.enabled = !gameplayPaused && settings.playerControlMode === 'orbit';
 }
 
+const SHADOW_REACH = 90;
 const rig = createLightingRig({ scene, ui: false });
 rig.dirLight.castShadow = true;
 scene.add(rig.dirLight.target);
@@ -3286,7 +3297,7 @@ const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRad
   'grassFadeEnd', 'grassFadeCurve', 'grassFadeHeight', 'grassFadeWidth', 'grassTintFadeStart', 'grassTintFadeEnd',
   'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade', 'grassHeightSource', 'grassResidencyGate',
   'grassCoverFloor', 'grassTierMid', 'grassMidDensity', 'grassTierFar', 'grassFarDensity',
-  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion', 'grassTerrainOccludes'];
+  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion', 'grassTerrainOccludes', 'drawDistance'];
 const appliedFlora = {};
 let floraLoading = false;
 function applyFloraSettings() {
@@ -3298,7 +3309,7 @@ function applyFloraSettings() {
   flora.setEnabled(on);
   flora.apply({
     grassDensity: settings.grassDensity,
-    grassRadius: settings.grassRadius,
+    grassRadius: underCeiling(settings.grassRadius),
     grassBladeHeight: settings.grassBladeHeight,
     grassBladeWidth: settings.grassBladeWidth,
     grassWind: settings.grassWind,
@@ -3375,7 +3386,7 @@ const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'tree
   'treeClusterSpread', 'treeShoreMargin', 'treeChunkSize', 'treeSeedOffset',
   'treeMaxSize', 'treeSizeVar', 'treeSkew', 'treeSpeciesSelection',
   'treeTexMode', 'treeVariantsPerSpecies', 'treeLeafSize', 'treeTrunkHeight', 'treeTrunkWidth',
-  'treeVerticalOffset', 'treeDrawRadius', 'treeLodR0', 'treeLodR1', 'treeLodR2',
+  'treeVerticalOffset', 'treeDrawRadius', 'drawDistance', 'treeLodR0', 'treeLodR1', 'treeLodR2',
   'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway',
   'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows'];
 const appliedForest = {};
@@ -3389,6 +3400,7 @@ function applyForestSettings() {
   forest.setEnabled(on);
   const next = {};
   for (const key of FOREST_APPLY_KEYS) if (key !== 'treesEnabled' && key !== 'worldMode') next[key] = settings[key];
+  next.treeDrawRadius = underCeiling(settings.treeDrawRadius);
   forest.apply(next);
 }
 // water-config.json (authored in demos/water-demo.html) is the look on load: adopt its foam and
@@ -3644,15 +3656,17 @@ function updateWorld(dt) {
   if (terrain.splatMaterial) terrain.updateSplat({ tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade, fadeNear: Math.min(settings.terrainTextureFade * 0.2, settings.terrainTextureFade - 50) });
   // The far plane follows the far rings: 1.5x the outer half-extent covers the ring's corners. A
   // cloud deck's own far corner (hypot(extent/2, height)) is the other term, or a wide deck clips.
-  const wantFar = Math.max(
+  // The ceiling wins over both, clouds included: a clipped deck sits in full fog when the fog link
+  // is on, and the ceiling is the user's call when it is off.
+  const wantFar = underCeiling(Math.max(
     terrain.farExtent > 0 ? Math.max(CAMERA_FAR_NEAR_FIELD, terrain.farExtent * 1.5) : CAMERA_FAR_NEAR_FIELD,
     clouds.farExtent,
-  );
+  ) / 1.5) * 1.5;
   // The sky (dome, stars, bodies) rides on the camera at a radius tied to the far plane: rescale
   // it with the far plane, or far terrain draws in front of the planets.
   if (camera.far !== wantFar || !skyRadiusApplied) { camera.far = wantFar; camera.updateProjectionMatrix(); sky.setRadius(wantFar * 0.88); skyRadiusApplied = true; }
   terrain.setVisible(settings.terrainVisible);
-  terrain.setDrawRadius(settings.terrainDrawRadius);
+  terrain.setDrawRadius(Math.min(settings.terrainDrawRadius, Math.max(1, Math.floor(drawCeiling() / terrain.system.params.chunkSize))));
   terrain.setWireframe(settings.terrainWireframe);
   terrain.setNormals(settings.terrainNormals);
   terrain.setTileBounds(settings.terrainTileBounds);
@@ -3686,6 +3700,16 @@ function updateWorld(dt) {
   if (renderer.shadowMap.type !== shadowType) renderer.shadowMap.type = shadowType;
   // Update rate: the ShadowNode redraws its map when autoUpdate or needsUpdate says so.
   const shadowEvery = Math.max(1, Math.round(settings.shadowUpdateEvery) || 1);
+  // The shadow box is the real shadow distance; the far plane along the light stays as it is.
+  const shadowReach = underCeiling(SHADOW_REACH);
+  if (rig.dirLight.shadow.camera.right !== shadowReach) {
+    for (const light of [rig.dirLight, moonLight]) {
+      const cam = light.shadow.camera;
+      cam.left = -shadowReach; cam.right = shadowReach; cam.top = shadowReach; cam.bottom = -shadowReach;
+      cam.updateProjectionMatrix();
+    }
+    forest.apply({ treeShadowReach: shadowReach });
+  }
   rig.dirLight.shadow.autoUpdate = shadowEvery === 1;
   if (shadowEvery > 1 && (shadowFrame++ % shadowEvery) === 0) rig.dirLight.shadow.needsUpdate = true;
 
@@ -4107,6 +4131,9 @@ const atmosphereSec = createSection(weatherSec, 'Atmosphere response', { collaps
 addSelect(captureSec, 'frameCap', 'Frame cap', ['unlimited', '60', '45', '30'],
   ['Unlimited', '60 fps', '45 fps', '30 fps']);
 addToggle(captureSec, 'frameCapSnap', 'Snap the cap to the display rate');
+addRange(captureSec, 'drawDistance', 'Draw distance ceiling', 0, 3000, 10,
+  value => value > 0 ? `${value.toFixed(0)} m` : 'no ceiling');
+addToggle(captureSec, 'drawDistanceFog', 'Fog hides the far edge');
 
 const captureLabelLabel = document.createElement('label');
 captureLabelLabel.textContent = 'Optional label';
