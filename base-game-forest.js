@@ -346,6 +346,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       if (token !== buildToken || !enabled) return false;
       stats.paletteMs = progressPalette.bakeMs;
       gpuCanUpdate = false;
+      const initialWave = !forestGPU;
       if (!forestGPU) {
         const setupStart = now();
         // The first wave contains variant zero from every family. Use each family's first geometry
@@ -392,7 +393,9 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
         indices.push(g);
         readyPaletteVariants[g] = variant;
         palette.variants[g] = variant;
-        gpu.installVariant(g, variant);
+        // Construction already installed the real first-wave geometries. Only later slots
+        // replace placeholders; rebuilding the first wave just allocates/disposes wrappers.
+        if (!initialWave) gpu.installVariant(g, variant);
       }
       startup.installMs += now() - installStart;
 

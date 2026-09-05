@@ -373,6 +373,7 @@ section('shaders compile before the forest reaches the scene');
   // permanently-disabled billboard material/rung.
   const compiled = [];
   let forest = null, warmComputeCalls = 0;
+  let initialGeometries = null, installs = 0;
   const expectedWarmComputeCalls = 2 + SMALL.treeSpecies * SMALL.treeVariantsPerSpecies * 2;
   const scene = new THREE.Scene();
   const wc = createWorldCoordinateSpace();
@@ -385,6 +386,12 @@ section('shaders compile before the forest reaches the scene');
   camera.position.set(0, 12, 0);
   const renderer = {
     computeAsync: async nodes => {
+      if (!initialGeometries) {
+        const gpu = forest.forestGPU;
+        initialGeometries = gpu.meshes.map(m => m.geometry);
+        const install = gpu.installVariant.bind(gpu);
+        gpu.installVariant = (...args) => { installs++; return install(...args); };
+      }
       if (!Array.isArray(nodes)) warmComputeCalls++;
     },
     compileAsync: async (warm, cam, target) => {
@@ -408,6 +415,14 @@ section('shaders compile before the forest reaches the scene');
   check('compileAsync ran once per cross-family variant wave',
     compiled.length === SMALL.treeVariantsPerSpecies, `${compiled.length} waves`);
   const startup = forest.stats.startup;
+  check('only later-wave placeholders need geometry installation',
+    installs === SMALL.treeSpecies * (SMALL.treeVariantsPerSpecies - 1));
+  check('first-wave geometry wrappers survive startup unchanged',
+    forest.forestGPU.meshes.every((m, i) => Math.floor(i / 9) % SMALL.treeVariantsPerSpecies !== 0
+      || m.geometry === initialGeometries[i]));
+  check('later waves replace every placeholder wrapper',
+    forest.forestGPU.meshes.every((m, i) => Math.floor(i / 9) % SMALL.treeVariantsPerSpecies === 0
+      || m.geometry !== initialGeometries[i]));
   check('startup reports completed waves and ordered publication/finish timings',
     startup.waves === SMALL.treeVariantsPerSpecies && startup.firstPublicationMs >= 0
     && startup.totalMs >= startup.firstPublicationMs);

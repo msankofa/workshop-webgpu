@@ -6,7 +6,7 @@ fix separately. Existing unrelated worktree edits remain untouched.
 - [x] Instrument Base Game setup, variant installation, scheduler wait count/time, first
   scene publication, total completion, and wave count. Existing palette/render/compute
   timings remain available in forest stats and performance captures.
-- [ ] Remove redundant first-wave geometry replacement; verify original wrappers survive
+- [x] Remove redundant first-wave geometry replacement; verify original wrappers survive
   through compilation and later placeholders still get replaced.
 - [ ] Compare matching species, seeds, texture mode, variants, and LOD geometry in the viewer
   and Base Game. Capture cold and warm browser runs, first rendered trees and complete forest.
@@ -31,3 +31,15 @@ Default content differs; comparing default wall times alone cannot attribute the
 
 No browser automation connection is available in this session. Browser measurements and
 visual verification remain pending; source-level work counts are not FPS claims.
+
+## Results
+
+Instrumentation commit: `d5bff78`; 101 forest checks passed. The initial headless benchmark
+reported 3.5-6.0 ms in variant installation across three scenarios, but asynchronous elapsed
+startup/warmup figures include terrain work interleaved by the harness, not GPU compilation.
+
+First-wave fix: the default three-species forest avoids 27 redundant draw-wrapper replacements
+and their disposal, plus redundant indirect-buffer dirtying, before its first publication.
+All later variants still replace their placeholders. Geometry, materials, wave composition,
+warmup ordering and final placement are unchanged. Regression checks count installations and
+verify wrapper identity for both initial and replacement waves.
