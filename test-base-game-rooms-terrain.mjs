@@ -389,7 +389,7 @@ console.log('\n[10] scattered structures: the room streams a building at a plan 
   ok(withStructs.worldVersion !== bare.worldVersion && withStructs.worldVersion.endsWith(':structs1:9:480'), 'structures are part of the world identity');
   ok(describeBaseGameTerrainConfig(withStructs).structures === true, 'the description carries them');
   const vol = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: JSON.parse(JSON.stringify(v5Descriptor(v5Project(7)))), volumetric: true, structures: true });
-  ok(vol.error?.includes('volumetric'), 'structures in a volumetric room are refused for now');
+  ok(!vol.error && vol.config.structures === true && vol.config.worldVersion.includes(':volume') && vol.config.worldVersion.endsWith(':structs1:1:480'), 'structures are accepted in a volumetric room');
 
   let clock = 1000;
   const service = createBaseGameRoomService({ now: () => clock });
@@ -435,6 +435,24 @@ console.log('\n[10] scattered structures: the room streams a building at a plan 
   for (let i = 0; i < 6; i++) room.sim.prepare([[720 + 480 * 6, 50, 720]]);
   ok(!structs.has(1, 1) && structs.tileCount < before + 9, `tiles far from the player are dropped (${before} tiles before, ${structs.tileCount} now)`);
   release(); pagePlan.dispose(); scheduler.dispose(); pageStructs.dispose();
+
+  // Volumetric: the same buildings, seated on the density surface like the plants and the spawn.
+  const caveDescriptor = v5Descriptor(v5Project(4242));
+  const caveWs = new FakeSocket();
+  service.handle(caveWs, { type: 'base:create', protocol: P, room: 'CAVEB', world: { waterEnabled: false }, terrain: { kind: 'terrain', descriptor: caveDescriptor, volumetric: true, structures: true, structureSeed: 9 } });
+  await service.ensureWorld();
+  const cave = service.rooms.get('CAVEB');
+  ok(cave.sim.volume && cave.sim.structures, 'a volumetric structures room streams both caves and buildings');
+  const caveAt = [[720, 80, 720]];
+  let caveRounds = 0;
+  while (caveRounds < 400 && cave.sim.structures.builtCount < 1) { cave.sim.prepare(caveAt); caveRounds++; }
+  const caveTile = [...cave.sim.structures.tiles.values()].find((t) => !t.empty);
+  ok(caveTile, `a building bakes in the volumetric room (${cave.sim.structures.builtCount} in ${caveRounds} calls)`);
+  if (caveTile) {
+    const caveSrc = createSource(caveDescriptor);
+    const s2 = caveTile.structure;
+    ok(caveTile.model.site.baseY >= caveSrc.surfaceYAt(s2.x, s2.z) - 1e-6, 'it seats on the density surface, not the heightfield');
+  }
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);

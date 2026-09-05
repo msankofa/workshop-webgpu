@@ -764,9 +764,9 @@ function pickRoomTerrainConfig() {
   const descriptor = simulationReady ? activeTerrainDescriptor : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
   const volumetric = simulationReady && settings.terrainVolumetric && !!terrain.source?.densityAt;
   // The spawn building rides on heightfield terrain only; volumetric rooms keep the bare spawn.
-  // Scattered structures are heightfield-only too, and their seed and spacing are world identity.
+  // Scattered structures seat on groundHeight (the density surface when volumetric); seed and spacing are world identity.
   return { kind: 'terrain', descriptor, volumetric, spawnBuilding: !volumetric,
-    structures: settings.structuresEnabled && !volumetric, structureSeed: settings.structureSeed, structureSpacing: settings.structureSpacing };
+    structures: settings.structuresEnabled, structureSeed: settings.structureSeed, structureSpacing: settings.structureSpacing };
 }
 let roomTerrainConfig = null;   // the room's current terrain config while online (set on join and on owner changes)
 function connectOnlineSession({ mode, roomCode }) {
@@ -1288,7 +1288,7 @@ let structures = null;         // created after the trails, below
 function structuresWanted() {
   if (settings.worldMode !== 'terrain') return false;
   if (isOnline()) return roomTerrainConfig?.structures === true;
-  return settings.structuresEnabled && !(settings.terrainVolumetric && !!terrain.source?.densityAt);
+  return settings.structuresEnabled;
 }
 function structureParams() {
   if (isOnline() && roomTerrainConfig?.structures) return { seed: roomTerrainConfig.structureSeed ?? 1, spacing: roomTerrainConfig.structureSpacing ?? 480 };
@@ -3406,7 +3406,7 @@ function applyFloraSettings() {
   if (flora.occlusion) flora.occlusion.bias = settings.grassOcclusionBias;
 }
 
-const STRUCTURE_APPLY_KEYS = ['structuresEnabled', 'worldMode', 'structureSeed', 'structureSpacing', 'terrainVolumetric'];
+const STRUCTURE_APPLY_KEYS = ['structuresEnabled', 'worldMode', 'structureSeed', 'structureSpacing'];
 const appliedStructures = {};
 function applyStructureSettings() {
   let dirty = false;

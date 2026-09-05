@@ -88,6 +88,12 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
       const volume = createVolumeCollision(source, { worldQuery });
       const surface = (x, z) => source.surfaceYAt(x, z);
       const floorY = source.project?.density?.y_min;
+      // Structures seat on the density surface, the height plants and the spawn use here.
+      let volumeStructures = null;
+      if (config.structures) {
+        const { createStructureCollision } = await import('../base-game-structure-collision.js');
+        volumeStructures = createStructureCollision(source, { worldQuery, heightAt: surface, seaLevel, seed: config.structureSeed, spacing: config.structureSpacing });
+      }
       return {
         worldQuery,
         spawn: [0, Math.max(surface(0, 0), seaLevel) + 1.5, 0],
@@ -97,7 +103,8 @@ async function defaultWorldFactory(config = { kind: 'traversalLab' }) {
         worldVersion: config.worldVersion,
         terrain: config,
         volume,
-        prepare: positions => volume.ensure(positions),
+        structures: volumeStructures,
+        prepare: positions => { volume.ensure(positions); volumeStructures?.ensure(positions); },
         covers: (x, z) => volume.covers(x, z),
       };
     }

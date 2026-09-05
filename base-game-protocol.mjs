@@ -329,7 +329,6 @@ export function sanitizeBaseGameTerrainConfig(input, { resolveProject = null } =
   // a v5 project's sea level is inside its hash already; the analytic source's is only here
   const seaTag = seaLevel !== 0 ? `:sea${seaLevel}` : '';
   const spawnTag = spawnBuilding ? ':spawnbld1' : '';
-  if (structures && volumetric) return { config: null, error: 'scattered structures are not built in volumetric rooms yet' };
   const structTag = structures ? `:structs1:${structureSeed}:${structureSpacing}` : '';
   const worldVersion = `terrain:${descriptor.kind}:${descriptor.key}@${descriptor.sourceVersion}:${descriptor.algorithmVersion}${volumetric ? ':volume' : ''}${seaTag}${spawnTag}${structTag}`;
   return { config: { kind: 'terrain', descriptor, projectHash, volumetric, spawnBuilding, structures, structureSeed, structureSpacing, worldVersion }, error: null };

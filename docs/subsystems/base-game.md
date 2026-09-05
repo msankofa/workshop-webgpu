@@ -3582,7 +3582,10 @@ and keep-out.
 `structures: true` in a room's terrain config opts the room in, with `structureSeed` (default 1)
 and `structureSpacing` (default 480, clamped 120..1920); they are world identity, tagged
 `:structs1:<seed>:<spacing>`, so two rooms never share a world with walls in different places.
-Volumetric rooms refuse the flag for now.
+Volumetric rooms take it too: the room seats structures on the density surface (`surfaceYAt`,
+the height the plants and the spawn use there) and runs the structure `ensure` after the volume
+chunks' in the same `prepare`; the page seats on `groundHeight`, which is that surface when
+volumetric. A site over a cave seats on the roof of the cave, the way a plant would.
 
 `createStructureCollision(source, { worldQuery, seaLevel, seed, spacing, plan })` is one
 world-query provider (`structures`, priority 100, `world-query-chunk-mesh-provider.js` with its
@@ -3647,6 +3650,5 @@ Solo they apply at once. The Structures runtime line shows the room's fixed seed
 while online.
 
 Nothing here has been seen in a browser yet. Known gaps: NPC bots do not climb to upper floors
-(no nav levels), planter grass at soil height is spawn-building only, volumetric rooms have no
-structures, and the private server plan window follows the players' centroid, so two players
+(no nav levels), planter grass at soil height is spawn-building only, and the private server plan window follows the players' centroid, so two players
 more than about 1.5 km apart leave one of them without buildings until they close up.
