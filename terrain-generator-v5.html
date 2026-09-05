@@ -30,6 +30,8 @@
   .control-row .control-desc { font-size: 0.8em; opacity: 0.6; margin: 0 0 2px; }
   .control-row select, .control-row input[type=text], .control-row input[type=number] { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--paper); color: var(--ink); }
   .row-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .biome-card { border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px; margin: 6px 0; background: var(--paper); }
+  .biome-card.on { padding: 10px 12px; background: var(--card); }
   .dropdown { position: relative; flex: 1 1 auto; min-width: 200px; }
   .dropdown-button { width: 100%; text-align: left; font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--paper); color: var(--ink); cursor: pointer; }
   .dropdown-list { position: absolute; top: 100%; left: 0; right: 0; max-height: 280px; overflow-y: auto; background: var(--paper); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px rgba(43,38,32,0.15); z-index: 20; }
@@ -915,7 +917,7 @@
     const fallback = projectWideRules();
     for (const name of BIOMES) {
       const b = materialBiomes[name] ?? null;
-      const card = document.createElement('div'); card.className = 'panel'; card.style.margin = '6px 0'; card.style.padding = b ? '10px 14px' : '4px 14px';
+      const card = document.createElement('div'); card.className = 'biome-card' + (b ? ' on' : '');
       const head = document.createElement('div'); head.className = 'control-row';
       const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = !!b; toggle.title = 'Own textures and rules for this biome';
       toggle.addEventListener('change', () => {
