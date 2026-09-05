@@ -141,6 +141,7 @@ export function createStadiumWalker({
   footContact = WALKER_DEFAULTS.footContact,
   footPatchScale = WALKER_DEFAULTS.footPatchScale,
   uprightSupport = null,
+  tuning: tuningOverrides = null,
   physics = WALKER_DEFAULTS.physics,
   roamRadius = 6,
   rng = Math.random,
@@ -255,6 +256,10 @@ export function createStadiumWalker({
     // kinematic gait does not simulate and prevents its support normal from shoving travel sideways.
     uprightSupport: uprightSupport ?? (map.legs.length <= 2 || gait.rowPairSteps ? 1 : 0.5),
   };
+  // Kept separately so an authoring UI can show geometry-derived baseline -> sparse override -> effective
+  // value. The override object has already been normalised by pokemon-movement-settings.js.
+  const derivedTuning = Object.freeze({ ...tuning });
+  if (tuningOverrides && typeof tuningOverrides === 'object') Object.assign(tuning, tuningOverrides);
 
   const state = {
     unitScale, legSpanWorld, restHeight, tuning,
@@ -1213,7 +1218,7 @@ export function createStadiumWalker({
     object: container,
     scene,
     body, legs, state,
-    unitScale,
+    unitScale, derivedTuning,
     update, fixedStep, applyPose, footContactError, diagnosticFrame, retune, tuning,
     setTarget(x, z) { _target.set(x, 0, z); haveTarget = true; },
     placeAt,

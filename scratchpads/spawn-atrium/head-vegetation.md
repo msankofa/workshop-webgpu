@@ -1580,63 +1580,6 @@ Structure/Force/Bark/Leaves's row-level "Mutate" buttons (and Structure's per-tr
 perturb that section's/trait's numeric sliders (independently per slider, clamped to each
 slider's own range) by up to the "Mutation degree" fraction of that slider's range — a targeted
 reroll, not a full regenerate; it works whether or not the corresponding floating panel is open.
-Integer sliders (step 1: children, sections, segments, leaf count) are rounded after the
-perturbation, and the force azimuth wraps around 360 instead of clamping. Until 2026-09-05 neither
-happened: a children count of 6.37 made `trees.js`'s `_shuffledSlots` index `arr[5.37]`, leaving
-most azimuth slots undefined and 86% of the vertex positions NaN — and every Auto-add species
-inherited that. `trees.js` now also rounds `children`/`sections`/`segments` itself (`whole()`), so a
-fractional value from any caller builds the nearest whole tree (`test-trees-integer-params.mjs`).
-
-Every slider range covers every stock preset. The 2026-08-13 ranges did not: 37 values across 12
-of the 16 ez-tree species fell outside them (Pine Large has 100 children, a 129° droop and a 65 m
-trunk; ten species have negative gnarliness), so the panel displayed the clamp while `opts` held
-the real value, and a Mutate on a pine collapsed it to ten children. `LEVEL_PARAMS` now runs to
-length 80, radius 4, children 120, angle 180, gnarliness −1..1, sections from 1; the non-level
-paths (force strength, bark, leaves) are declared once in `PATH_RANGES`, which both the slider
-(`rangedSlider`) and the Mutate entry (`rangedMutateEntry`) read, so the two can no longer drift.
-
-`applyAtlas()` always writes the grid from `texSet.leafAtlas` — both texture sets carry one. It used
-to write `null` in procedural mode (the default), so "Keep current tree" and Auto-add saved species
-with no pinned cell: reloaded in authored mode they drew a random cell per leaf, and in the game
-`forest-palette.js` fell back to `spIdx % cells`, handing pines broadleaves. The "Age preview"
-slider also now goes through the shared 130 ms `scheduleRegenerate()` debounce like every other
-slider instead of rebuilding the tree on every input event.
-
-Every regenerate rebuilds the existing trees in place through `Tree.rebuild(options)` (new in
-`trees.js`): it replaces `options` wholesale over `DEFAULTS`, runs `syncMaterials()` — colour,
-roughness and maps pushed onto the existing two materials, `needsUpdate` only when a
-shader-shaping property (a map's presence, flat shading, alpha test on/off) changed — and then
-`generate()`. Trees are created only when the count changes (mode switch, grid size) and disposed
-only then. This is what makes a 50 ms auto-mutate loop viable: before, every tick disposed the tree
-and built two fresh `MeshStandardMaterial`s, each a node-graph build and a pipeline lookup on the
-WebGPU side; the CPU geometry cost is unchanged (about 3 ms for the default tree in Node either
-way). `_commit()` now also calls `geometry.dispose()` before replacing attributes so the previous
-buffers are released — `regenerate()` used to leave them to the backend.
-
-A debug readout sits bottom-left: fps and frame ms (EMA over the render loop), the last
-`createTree` build time, live tree/branch/leaf counts, and `renderer.info.render` triangles and
-draw calls, plus shape metrics computed once per rebuild: height and width from the world bounds, footprint area from a monotone-chain hull of the XZ projection, and volume from a `ConvexHull` (three addon) over about 3000 subsampled vertices. Branch and leaf counts come from `tree.stats = { branches, leaves }`, which `trees.js`
-fills during `generate()` (one branch per queue entry, one leaf per placed leaf whether or not it
-lands in the shadow bucket). The page opens in authored texture mode with the sun at elevation 45,
-azimuth 100, intensity 4.
-The Mutation panel also has a "Fine (0..1%)" toggle that rescales the degree slider to 0..1% in
-0.01% steps, and an "Auto mutate" button that applies a "Mutate all" every "Auto interval" seconds
-(0..3 s, floored at 50 ms). A session pushes one undo snapshot when it starts and none per tick, so
-Undo returns to the tree before the session began; "Step back" walks the session's own per-tick
-history instead. Undo, Redo, loading a species and Restart all stop a running session and clear
-its step-back trail.
-
-A "Safeguards" panel (Tuning tab) holds three toggle + number pairs: max triangles, max leaves,
-max branches. The enabled limits are passed into `Tree.rebuild(options, limits)`, and `generate()`
-checks them after every branch of its queue walk; on a breach it empties the queue and returns before
-any `_commit`, so the meshes keep their previous geometry, nothing is uploaded, and `stats` reports
-the kept tree's counts with `aborted` naming the limit ('branches', 'leaves' or 'tris' — the full
-branch stream plus both leaf streams, LOD streams excluded). The viewer then restores the slider
-snapshot without rebuilding. An auto-mutate tick retries up to five times before keeping the last
-good tree; the debug readout counts rejections. Limits are per tree (each grid tree walks
-separately) and apply to every rebuild, so a slider drag past a limit also leaves the last good
-tree on screen.
-
 A 15-slot Undo/Redo history covers "big jump" actions only — any Mutate, Reroll seed, and loading
 a saved tree — not individual slider drags; a new action after an undo clears the redo stack.
 "Restart" resets to the tool's built-in default tree (captured once at startup), not a saved tree;

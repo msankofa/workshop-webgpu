@@ -80,11 +80,16 @@ check('Walking delegates to the existing ground controller', () => {
   assert(mapped.map, `Lab map failed: ${mapped.findings.map(f => f.code).join(', ')}`);
   const out = createPokemonMovement({
     locomotion: 'walker', THREE, scene: buildScene(json), map: mapped.map, worldHeight: 0.5, rng: () => 0.5,
+    tuning: { speedScale: 1.25, stepDurationScale: 1.5 },
   });
   assert(out.supported, `Walking was rejected: ${out.findings[0]?.message || 'unknown'}`);
   assert(out.label === 'Walking', `Walking label was ${out.label}`);
   assert(typeof out.controller.update === 'function' && typeof out.controller.diagnosticFrame === 'function',
     'facade did not return the existing ground controller');
+  assert(out.controller.tuning.speedScale === 1.25 && out.controller.tuning.stepDurationScale === 1.5,
+    'the facade did not pass sparse tuning into the walker');
+  assert(out.controller.derivedTuning.speedScale === 1 && out.controller.derivedTuning.stepDurationScale === 1,
+    'the walker did not preserve the geometry-derived baseline beside its overrides');
   out.controller.update(1 / 60, { walk: false });
   assert(out.controller.diagnosticFrame().legs.length === resolved.appendages.length,
     'the Lab-mapped legs did not reach the running controller');

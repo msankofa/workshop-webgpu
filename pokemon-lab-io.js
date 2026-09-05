@@ -9,6 +9,7 @@
 
 import { createDiskStore } from './disk-store.js';
 import { ANNOTATION_VERSION, emptyLibrary, isBlank, normaliseSegment, wholeClip } from './pokemon-annotation.js';
+import { normaliseWalkerMovement } from './pokemon-movement-settings.js';
 
 export const LAB_FILE = 'pokemon-lab.json';
 export const LAB_READ_URL = `/stadium-saves/${LAB_FILE}`;
@@ -72,6 +73,7 @@ export function migrateLibrary(raw) {
 function normaliseAnnotation(key, value, notes) {
   const parts = value.parts && typeof value.parts === 'object' ? value.parts : {};
   const neutral = value.neutral && typeof value.neutral === 'object' ? value.neutral : {};
+  const walker = normaliseWalkerMovement(value.movement?.walker);
   const list = (v) => (Array.isArray(v) ? v.filter(x => typeof x === 'string') : []);
   if (value.species && value.species !== key) {
     notes.push(`${key} calls itself ${value.species}; the key wins`);
@@ -96,6 +98,7 @@ function normaliseAnnotation(key, value, notes) {
       ground: typeof neutral.ground === 'boolean' ? neutral.ground : null,
       source: typeof neutral.source === 'string' ? neutral.source : null,
     },
+    movement: { walker },
     segments: readSegments(key, value, notes),
     done: !!value.done,
     notes: typeof value.notes === 'string' ? value.notes : '',

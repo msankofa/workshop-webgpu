@@ -87,6 +87,8 @@ function merge(base, over) {
 }
 
 const at = (arr, level) => arr[Math.min(level, arr.length - 1)];
+// Counts must be whole: a fractional children count leaves most of _shuffledSlots undefined (NaN geometry).
+const whole = (v, min) => Math.max(min, Math.round(v));
 const DEG = Math.PI / 180;
 const UP = new THREE.Vector3(0, 1, 0);
 const RIGHT = new THREE.Vector3(1, 0, 0);
@@ -190,6 +192,53 @@ export class Tree extends THREE.Group {
     this.generate();
   }
 
+  // Replace the options wholesale and rebuild in place, keeping meshes and materials, so a live
+  // tuning loop pays for geometry only and not for two new materials (and their pipelines) per tick.
+  // `limits` ({ branches, leaves, tris }, any subset) aborts the walk mid-generation: the meshes
+  // keep their previous geometry and stats.aborted names the limit that was crossed.
+  rebuild(options = {}, limits = null) {
+    this.options = merge(DEFAULTS, options);
+    this.syncMaterials();
+    this.generate(limits);
+    return this.stats;
+  }
+
+  _breached(limits) {
+    if (!limits) return null;
+    const st = this.stats;
+    if (limits.branches != null && st.branches > limits.branches) return 'branches';
+    if (limits.leaves != null && st.leaves > limits.leaves) return 'leaves';
+    if (limits.tris != null) {
+      const tris = (this.branch.indices.length + this.leaf.indices.length + this.leafShadow.indices.length) / 3;
+      if (tris > limits.tris) return 'tris';
+    }
+    return null;
+  }
+
+  // Push the material-facing options onto the existing materials; recompile only when a
+  // shader-shaping property (maps, flat shading, alpha test) actually changed.
+  syncMaterials() {
+    const bo = this.options.bark, lo = this.options.leaves;
+    const bm = this.branchMat, lm = this.leafMat;
+    let dirty = false;
+    const setTex = (mat, key, tex) => { if (mat[key] !== (tex || null)) { mat[key] = tex || null; dirty = true; } };
+    bm.color.set(bo.color);
+    bm.roughness = bo.roughness;
+    if (bm.flatShading !== !!bo.flatShading) { bm.flatShading = !!bo.flatShading; dirty = true; }
+    setTex(bm, 'map', bo.map); setTex(bm, 'normalMap', bo.normalMap);
+    for (const t of [bo.map, bo.normalMap]) if (t) t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    if (dirty) bm.needsUpdate = true;
+    dirty = false;
+    lm.color.set(lo.tint);
+    lm.roughness = lo.roughness;
+    setTex(lm, 'map', lo.map);
+    const alphaTest = lo.map ? lo.alphaTest : 0;
+    if ((lm.alphaTest > 0) !== (alphaTest > 0)) dirty = true;
+    lm.alphaTest = alphaTest;
+    if (lm.transparent !== !!lo.map) { lm.transparent = !!lo.map; dirty = true; }
+    if (dirty) lm.needsUpdate = true;
+  }
+
   regenerateLeaves(leafOpts) {
     if (leafOpts) this.options = merge(this.options, { leaves: leafOpts });
     const o = this.options;
@@ -203,7 +252,7 @@ export class Tree extends THREE.Group {
     this._commit(this.leavesShadowMesh.geometry, this.leafShadow);
   }
 
-  generate() {
+  generate(limits = null) {
     const o = this.options;
     this.rng = makeRNG(o.seed);
     this.branch = { verts: [], normals: [], uvs: [], indices: [] };
@@ -226,8 +275,14 @@ export class Tree extends THREE.Group {
     this.leafShadowRng = makeRNG((o.seed ^ 0x9e3779b9) >>> 0);
 
     // breadth-first queue, seeded with the trunk
+    const kept = this.stats;   // the counts of the geometry the meshes keep if this walk aborts
+    this.stats = { branches: 0, leaves: 0, aborted: null };
     this.queue = [this._trunkEntry()];
-    while (this.queue.length) this._generateBranch(this.queue.shift());
+    while (this.queue.length) {
+      this._generateBranch(this.queue.shift());
+      const hit = this._breached(limits);
+      if (hit) { this.stats = { ...kept, aborted: hit }; this.queue.length = 0; return; }
+    }
 
     this._commit(this.branchesMesh.geometry, this.branch);
     for (let i = 0; i < this._branchLodStreams.length; i++) {
@@ -245,14 +300,15 @@ export class Tree extends THREE.Group {
       length: at(o.length, 0),
       radius: at(o.radius, 0),
       level: 0,
-      sectionCount: at(o.sections, 0),
-      segmentCount: at(o.segments, 0),
+      sectionCount: whole(at(o.sections, 0), 1),
+      segmentCount: whole(at(o.segments, 0), 3),
     };
   }
 
   // ---- build one branch's tube, then spawn its children or leaves ----
   _generateBranch(branch, leavesOnly = false) {
     const o = this.options;
+    if (!leavesOnly) this.stats.branches++;
     // terminal = bears leaves instead of children; needed up here because its tip pinches shut
     const terminal = branch.level >= o.levels || at(o.children, branch.level) <= 0;
     // Every stream follows the same section/RNG walk. LOD streams merely skip emitted rings and
@@ -399,7 +455,7 @@ export class Tree extends THREE.Group {
   _spawnChildren(branch, sections) {
     const o = this.options;
     const childLevel = branch.level + 1;
-    const count = at(o.children, branch.level);
+    const count = whole(at(o.children, branch.level), 0);
     if (count <= 0) return;
 
     const startMin = at(o.branchStart, childLevel);
@@ -439,8 +495,8 @@ export class Tree extends THREE.Group {
         length: childLen * (o.evergreen ? 1 - frac : 1) * this.rng.range(0.8, 1.0),
         radius,
         level: childLevel,
-        sectionCount: at(o.sections, childLevel),
-        segmentCount: at(o.segments, childLevel),
+        sectionCount: whole(at(o.sections, childLevel), 1),
+        segmentCount: whole(at(o.segments, childLevel), 3),
       });
     }
   }
@@ -463,6 +519,7 @@ export class Tree extends THREE.Group {
         .multiply(_lqb.setFromAxisAngle(RIGHT, tilt));
 
       const size = lo.size * (1 + this.rng.range(-1, 1) * lo.sizeVariance);
+      this.stats.leaves++;
       // pick an atlas cell (sprite-sheet sub-rectangle) for this leaf, or the full sheet
       let uv = [0, 0, 1, 1];
       if (lo.atlas && lo.atlas.cols * lo.atlas.rows > 1) {
@@ -535,6 +592,7 @@ export class Tree extends THREE.Group {
   }
 
   _commit(geometry, data) {
+    geometry.dispose();   // free the previous attributes' GPU buffers before they are replaced
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.verts, 3));
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(data.uvs, 2));

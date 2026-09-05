@@ -42,10 +42,12 @@ inferred or eyeballed.
 | `pokemon-gates.js` | Per-class validation. | not started |
 | `pokemon-lab-runtime.js` | The `base-game.html` import contract. | shipped |
 | `test-pokemon-lab-runtime.mjs` | 10 checks: the import path end to end, in Node. | shipped |
+| `pokemon-movement-settings.js` | Sparse walker overrides, safe ranges and relationship clamps. | shipped |
+| `test-pokemon-movement-settings.mjs` | Pure checks for sparse settings, clamping and v1-to-v2 migration. | shipped |
 | `pokemon-stadium-phenomena.js` | ROM-selected texture swaps and embedded flame-frame playback. | shipped |
 | `scripts/extract-stadium-phenomena.mjs` | Generates the sidecar from a verified US Stadium ROM. | shipped |
 | `models/stadium/phenomena.json` | Generated auxiliary texture streams and effect attachments. | shipped |
-| `test-pokemon-phenomena.mjs` | 18 checks over parsing, timing, routing, teardown and real sidecar records. | shipped |
+| `test-pokemon-phenomena.mjs` | 20 checks over parsing, timing, routing, teardown and real sidecar records. | shipped |
 
 `ragdoll.js` is reused, and its 31 tests still pass untouched. Its cone solver gained an optional `min` and
 an optional per-cone `stiffness` for the bend limit below; both default to the old behaviour, so the bot
@@ -1172,6 +1174,26 @@ One of its checks is there because the selection box shipped invisible. Assignin
 though it works — right for `#stageMsg`, whose stylesheet value is `flex`, and wrong for the four ids
 hidden by default. The check reads the stylesheet for those ids and forbids showing them with `''`.
 
+## Advanced walker authoring
+
+Annotation version 2 adds `movement.walker`. Its gait and tuning object are sparse: the default walk gait
+and every tuning value equal to the walker baseline are omitted, so a saved species continues to receive
+later geometry-derived improvements. Version 1 files migrate with an empty walker record.
+
+The Movement tab builds Advanced movement and Foot safety sections from
+`pokemon-movement-settings.js`. That module owns the accepted fields, ranges, enum values and the two
+coupled safety rules: standing extension remains below maximum extension, and reach margin remains below
+reach stress. It has no DOM or THREE dependency, so the file migration, runtime facade and page all use
+the same contract.
+
+Each row reads `derived → override → effective`. Slider input calls the existing walker `retune()`
+seam immediately; the completed change writes the sparse override through the Lab's normal undo/save
+path. Compare mode calculates the effective patch separately over each walker's derived baseline while
+applying the same authored overrides. Reset species removes the gait and tuning overrides.
+
+The movement diagnostics retain foot slip, target gap, knee flips, ground error and support margin, and
+add airborne-leg count, step cadence, effective speed ceiling and stride-envelope utilization.
+
 ## Texture phenomena and persistent effects
 
 The Stadium GLBs contain more embedded textures than their static materials reference. Those are not
@@ -1201,10 +1223,11 @@ authored plane visible and cycles the seven visible animation frames at Stadium'
 matching `func_81000420`; the exporter's opaque-black fallback frame is excluded. It does not hide the
 plane or synthesize replacement sprites.
 
-The lab exposes live diagnostics in a bottom-left overlay and under the console prefix
-`[Pokemon phenomena]`. It reports the ROM selector, selected animation, rendered material-slot counts,
-current Stadium frame, blink state and texture, and each effect frame/texture. Zero bindings and a missing
-sidecar record are shown in red and logged as warnings.
+The Animation tab's Playback section can expose live diagnostics in a bottom-left overlay and under the
+console prefix `[Pokemon phenomena]`. It reports the ROM selector, selected ambient animation, rendered
+material-slot counts, current Stadium frame, ambient state and texture, and each effect frame/texture.
+Detailed output is off by default; zero bindings, missing sidecar records and other warnings still reach
+the console.
 
 Regenerate from a legally supplied matching ROM:
 

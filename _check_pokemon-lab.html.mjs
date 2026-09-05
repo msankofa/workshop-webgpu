@@ -1107,17 +1107,25 @@ check('Lab, guessed, and compare mappings reach one controller with shared comma
     'the unsupported guard and the mapped controller should be the only facade calls');
   assert(/movementDirection/.test(command) && /movementSpeed/.test(command),
     'comparison instances do not read the one shared command source');
-  assert(/GAITS\[\$\('movementGait'\)\.value\]/.test(start), 'comparison instances do not share one gait source');
+  assert(/const selectedGait = authoredMovement\.gait \|\| DEFAULT_WALKER_GAIT/.test(start)
+    && /gait: GAITS\[selectedGait\]/.test(start),
+  'comparison instances do not share one authored gait source');
 });
 
-check('movement diagnostics sample once per rendered frame and never write annotation data', () => {
+check('movement diagnostics sample once per rendered frame; only movement settings write annotation data', () => {
   const movement = code.slice(code.indexOf('let movementMode = false'), code.indexOf('// --- the map tab'));
   const step = code.match(/function applyMovementCommand\([\s\S]*?\n\}/)?.[0] ?? '';
+  const persist = code.match(/function persistMovementDraft\([\s\S]*?\n\}/)?.[0] ?? '';
+  const diagnostics = code.match(/function movementDiagnosticText\([\s\S]*?\n\}/)?.[0] ?? '';
   assert((step.match(/diagnosticFrame\(\)/g) || []).length === 1,
     'diagnosticFrame must be read exactly once for each walker update');
   assert(/entry\.monitor\.sample\(frame\)/.test(step), 'the one sampled frame does not reach diagnostics');
-  assert(!/\b(commit|putAnnotation|saveLibrary)\s*\(/.test(movement),
-    'movement comparison must never save or mark the annotation');
+  assert(!/\b(commit|putAnnotation|saveLibrary)\s*\(/.test(step + diagnostics),
+    'movement diagnostics must never save or mark the annotation');
+  assert(/setWalkerMovement/.test(persist) && /commit\(putAnnotation/.test(persist),
+    'authored movement settings do not reach the normal annotation save path');
+  assert((movement.match(/commit\(putAnnotation/g) || []).length === 1,
+    'something besides the explicit movement-settings path writes annotation data');
 });
 
 check('movement exposes literal controls, measurements, and overlays', () => {

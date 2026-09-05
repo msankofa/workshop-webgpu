@@ -7,7 +7,7 @@
 //
 // Every edit returns a NEW annotation rather than mutating, so undo is a stack of references.
 
-export const ANNOTATION_VERSION = 1;
+export const ANNOTATION_VERSION = 2;
 
 // `serpent` and `worm` are separate on purpose: Onix is a rigid segmented body that steers, Caterpie
 // inches by travelling a wave down itself, and a v2 solver cannot treat those as one thing.
@@ -31,6 +31,7 @@ export function emptyAnnotation(species, rig = null) {
     posture: null,
     parts: { root: null, spine: [], head: [], appendages: [], contacts: [] },
     neutral: { bones: {}, ground: null, source: null },
+    movement: { walker: { gait: null, tuning: {} } },
     segments: {},
     done: false,
     notes: '',
@@ -55,6 +56,12 @@ export function copyAnnotation(a) {
       ground: a.neutral?.ground ?? null,
       source: a.neutral?.source ?? null,
     },
+    movement: {
+      walker: {
+        gait: a.movement?.walker?.gait ?? null,
+        tuning: { ...(a.movement?.walker?.tuning || {}) },
+      },
+    },
     segments: Object.fromEntries(Object.entries(a.segments || {}).map(([k, v]) => [k, { ...v }])),
   };
 }
@@ -70,6 +77,7 @@ export function isBlank(a) {
   return !a.locomotion && !p.root && !p.spine?.length && !p.head?.length
     && !p.appendages?.length && !p.contacts?.length
     && !Object.keys(a.neutral?.bones || {}).length && !Object.keys(a.segments || {}).length
+    && !a.movement?.walker?.gait && !Object.keys(a.movement?.walker?.tuning || {}).length
     && !a.done && !a.notes;
 }
 
@@ -101,6 +109,16 @@ export function setLocomotion(a, locomotion, posture = null) {
   next.locomotion = locomotion || null;
   // Posture only means something for a walker; carrying a stale one would misreport the body plan.
   next.posture = locomotion === 'walker' ? (posture ?? next.posture ?? null) : null;
+  return next;
+}
+
+/** Replace the sparse walker authoring record without sharing its tuning object with undo history. */
+export function setWalkerMovement(a, movement = {}) {
+  const next = copyAnnotation(a);
+  next.movement.walker = {
+    gait: movement.gait ?? null,
+    tuning: { ...(movement.tuning || {}) },
+  };
   return next;
 }
 
@@ -657,6 +675,9 @@ export function annotationStamp(a) {
     feed(`${k}:${t.p.map(r)}:${t.q.map(r)}:${t.s.map(r)}|`);
   }
   feed(`${groundingOf(a)}|${segmentsOf(a).map(([k, v]) => `${k}=${v.clip}:${v.from}-${v.to}:${v.ends}`).join(',')}`);
+  const walker = a.movement?.walker || {};
+  feed(`|walker:${walker.gait || ''}:${Object.entries(walker.tuning || {})
+    .sort(([x], [y]) => x.localeCompare(y)).map(([k, v]) => `${k}=${v}`).join(',')}`);
   return h.toString(16).padStart(8, '0');
 }
 
@@ -674,6 +695,12 @@ export function resolveAnnotation(a, rig) {
     species: a?.species ?? null,
     locomotion: a?.locomotion ?? null,
     posture: a?.posture ?? null,
+    movement: {
+      walker: {
+        gait: a?.movement?.walker?.gait ?? null,
+        tuning: { ...(a?.movement?.walker?.tuning || {}) },
+      },
+    },
     root: p.root ? id(p.root) : null,
     spine: list(p.spine),
     head: list(p.head),

@@ -1,0 +1,1161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Structure Viewer v2</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1014; color: #d8d6d0; font: 13px system-ui, sans-serif; }
+  #main { display: grid; grid-template-columns: 1fr; height: 100vh; }
+  #main.refs { grid-template-columns: 360px 1fr; }
+  #refs { display: none; overflow: auto; background: #101114; align-content: start; gap: 6px; padding: 6px; }
+  #main.refs #refs { display: grid; }
+  #refs figure { margin: 0; }
+  #refs img { width: 100%; display: block; }
+  #refs figcaption { color: #8b93a0; padding: 2px 2px 6px; font: 11.5px ui-monospace, Consolas, monospace; }
+  #view { position: relative; min-height: 0; min-width: 0; }
+  #view canvas { display: block; width: 100%; height: 100%; }
+  #hud { position: absolute; left: 12px; bottom: 12px; z-index: 5; color: #9aa5b5;
+    font: 11.5px/1.6 ui-monospace, Consolas, monospace; user-select: none; pointer-events: none;
+    background: rgba(14,16,20,.62); border: 1px solid #262d38; border-radius: 6px; padding: 8px 11px; }
+  #hud b { color: #dbe4f0; font-weight: 600; }
+  #hud .warn { color: #ffc07a; }
+  #hud .bad { color: #ff9a9a; }
+  #err { position: absolute; left: 12px; top: 12px; z-index: 8; max-width: 60%; color: #ffb3b3;
+    font: 12px/1.5 ui-monospace, Consolas, monospace; display: none; white-space: pre-wrap; }
+  /* Gallery labels: projected each frame from the slot centres. Clickable, so a slot can be
+     rerolled where you are already looking rather than by counting to it in the panel. */
+  #labels { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+  #labels .lbl { position: absolute; transform: translate(-50%, 0); pointer-events: auto; cursor: pointer;
+    font: 11px/1.3 ui-monospace, Consolas, monospace; color: #cfd8e5; white-space: nowrap;
+    background: rgba(14,16,20,.72); border: 1px solid #313a47; border-radius: 4px; padding: 2px 6px; }
+  #labels .lbl:hover { border-color: #e66b1a; color: #ffd9bd; }
+  #labels .lbl small { color: #7f8a99; }
+  #panelToggle { position: fixed; top: 10px; right: 10px; z-index: 22; min-height: 26px; padding: 3px 10px;
+    background: #171b21; color: #c7d0dd; border: 1px solid #333c48; border-radius: 5px; cursor: pointer;
+    font: 12px ui-monospace, Consolas, monospace; }
+  #ctrl.hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="main">
+  <div id="refs">
+    <figure><img src="scratchpads/spawn-atrium/ref/01-atrium.png" alt="atrium"><figcaption>01 atrium: stacked slabs on columns under a space-frame roof, palms in planters</figcaption></figure>
+    <figure><img src="scratchpads/spawn-atrium/ref/02-lobby.png" alt="lobby"><figcaption>02 lobby: coffered ceiling, piers, mezzanine rails, stair wrapped in fern planters, sunken plaza</figcaption></figure>
+    <figure><img src="scratchpads/spawn-atrium/ref/03-pergola-court.png" alt="pergola court"><figcaption>03 pergola court: board-formed walls, slatted pergola, wide stair to a terrace, deep overhang, lawn and water</figcaption></figure>
+    <figure><img src="scratchpads/spawn-atrium/ref/05-slot-garden.png" alt="slot garden"><figcaption>05 slot garden: two tall walls, one walkway, pond left, ferns right</figcaption></figure>
+    <figure><img src="scratchpads/spawn-atrium/ref/06-pond-pavilion.png" alt="pond pavilion"><figcaption>06 pond pavilion: cantilevered roof over a deck, perforated screen, reflecting pond, slab bridge</figcaption></figure>
+  </div>
+  <div id="view"><div id="err"></div><div id="hud">booting…</div><div id="labels"></div></div>
+</div>
+<button id="panelToggle" title="P">panel</button>
+<div id="ctrl"></div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.min.js",
+    "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+// structure-viewer-v2.html -- structure-viewer.html and scratchpads/spawn-atrium/viewer.html in
+// one page. Two families of generator behind one panel:
+//   bot structures (bot-structures.js): FIELD scatters one set over a square map, as v3 renders it;
+//     GALLERY puts one specimen per grid slot, each on its own seed and individually rerollable.
+//   eco-brutalist rooms (base-game-spawn-layout.js): ECO shows one kind, ECO GALLERY all seven.
+// The atrium page's render controls (grass mode, occlusion, chunking, shadow map, camera presets,
+// wireframe, screenshot, reference strip, profiler HUD) apply to both families.
+//
+// Deliberately NOT built: the nav grid, visibility field, cover-corner bake and BVH collider.
+import * as THREE from 'three';
+import { WebGPURenderer, MeshStandardNodeMaterial } from 'three/webgpu';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createLightingRig } from './lights.js';
+import { createPostFX } from './post-fx.js';
+import { createVisualSystem } from './bot-viewer-visuals.js';
+import { floraFor, getTheme, cloneTheme } from './bot-viewer-visuals-style.js';
+import { createBotFlora } from './bot-flora.js';
+import { boxMesh, instancedBoxes as emitBoxes, clearBoxes, boxOnGround, slabOnGround } from './map-boxes.js';
+import { STRUCTURE_DEFAULTS, generateStructures, generateOne, rampBox } from './bot-structures.js';
+import { ECO_KINDS, ECO_DEFAULTS, generateEco, soilTopAt } from './base-game-spawn-layout.js';
+import { BOT_TERRAIN_DEFAULTS, createTerrainField, footprintRange, buildTerrainMeshArrays } from './bot-terrain.js';
+import { installPanelTheme, createSection, readSectionStates, applySectionStates } from './workshop-panel-theme.js';
+import { createSlotSection } from './bot-viewer-slots.js';
+import { createFrameProfiler } from './frame-profiler.js';
+
+window.__ready = false;
+window.__errors = [];
+const errEl = document.getElementById('err');
+function noteError(msg) {
+  window.__errors.push(String(msg));
+  errEl.textContent = '⚠ ' + msg;
+  errEl.style.display = 'block';
+}
+addEventListener('error', (e) => noteError(e.message || 'script error'));
+addEventListener('unhandledrejection', (e) => noteError((e.reason && e.reason.message) || String(e.reason)));
+
+// ===================== engine =====================
+const viewEl = document.getElementById('view');
+const mainEl = document.getElementById('main');
+const query = new URLSearchParams(location.search);
+let SHADOW_SIZE = Math.max(256, parseInt(query.get('shadow'), 10) || 1024);
+let SHADOW_SOFT = query.get('pcf') !== 'hard';
+let GRASS_LIGHT = query.get('grassLight') === 'standard' ? 'standard' : 'lambert';
+let GRASS_SHADOW = query.get('grassShadow') !== '0';
+let OCCLUSION = true;
+
+const renderer = new WebGPURenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = SHADOW_SOFT ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+viewEl.appendChild(renderer.domElement);
+await renderer.init();
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 900);
+camera.position.set(40, 32, 40);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.09;
+controls.minDistance = 1;
+controls.maxPolarAngle = Math.PI * 0.495;   // never under the ground plane
+
+function resize() {
+  const w = viewEl.clientWidth, h = viewEl.clientHeight;
+  if (!w || !h) return;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h, false);
+}
+new ResizeObserver(resize).observe(viewEl);
+resize();
+
+// ===================== lighting / visuals =====================
+// ui:false matters -- createLightingRig defaults to building its own panel, which would fight the
+// theme system for control of the same rig.
+const rig = createLightingRig({ scene, ui: false, elevation: 60, azimuth: 20 });
+rig.dirLight.castShadow = true;
+scene.add(rig.dirLight.target);
+rig.dirLight.shadow.mapSize.set(SHADOW_SIZE, SHADOW_SIZE);
+// Light direction and shadow frustum are owned by the theme via visuals.setBounds -> fitKeyLight.
+// Do not call rig.setAzimuth/setElevation after this point.
+
+const overheadLight = new THREE.PointLight(0xffffff, 0, 26, 2);
+overheadLight.position.set(6, 14, 0);
+scene.add(overheadLight);
+
+// 'grade' skips the bloom mip chain: at strength 0.10 the bloom paid six passes for a glow nobody could see.
+const postFX = createPostFX({ renderer, scene, camera, params: { mode: 'grade', tone: 'none' } });
+
+let flora = null;                    // built below; onLookChange can fire before it exists
+let syncFloraPanel = () => {};
+let syncFloraCounts = () => {};
+const visuals = createVisualSystem({
+  THREE, renderer, scene, camera, postFX, rig, overheadLight,
+  onLookChange: () => rebuildFlora(),
+});
+
+// The atrium page's day look: the bot viewer's eco-brutalism is a ruin going back to the ground,
+// the references are occupied buildings, so growth terms come down and the sky clears.
+function ecoDayTheme() {
+  const t = cloneTheme(getTheme('ecobrutal'));
+  Object.assign(t.mats.wall.concrete, { mossGain: 0.35, algaeGain: 0.3, algaeHeight: 0.18, stainGain: 0.3, mottleGain: 0.18, tieGain: 0.45 });
+  Object.assign(t.mats.cover.concrete, { mossGain: 0.7, algaeGain: 0.5, algaeHeight: 0.3, stainGain: 0.3 });
+  t.mats.wall.color = 0x9c9e9a;
+  t.mats.cover.color = 0x8f918c;
+  Object.assign(t.flora, {
+    grassDensity: 36, grassHeight: 0.32, plantDensity: 1.2, plantReach: 1.6, plantOpenFloor: 0.2,
+    plantCap: 160, plantCullRadius: 70,
+    grassLighting: GRASS_LIGHT,
+    plantClumpRadius: 1.0, vineDensity: 0.7, vineLength: 3.4, vineClump: 0.45, vineLeafiness: 1.3,
+    clearance: 0.15, grassTile: 24, vineChunk: 32,
+  });
+  t.fog = { color: 0xc9d7e2, density: 0.0006 };
+  t.bg = 0xa9c6e2;
+  Object.assign(t.sky, { horizon: 0xdbe7f1, zenith: 0x5d95d3, sunGain: 2.2 });
+  Object.assign(t.lights.key, { intensity: 4.2, elevation: 52, azimuth: 55, color: 0xfff6e6 });
+  Object.assign(t.lights.ambient, { color: 0xc4ced8, intensity: 1.35 });
+  Object.assign(t.lights.rim, { intensity: 0.6 });
+  return t;
+}
+function applyEcoDayLook() { visuals.setTheme(ecoDayTheme()); syncAll(); }
+// Every stock theme is tuned for a maze a few tens of metres across; over a 300 m field its fog
+// reads as distance darkening. The Visuals card's fog density slider is this same scale.
+{ const look = visuals.getLookState(); look.master.fogScale = 0.3; visuals.applyLookState(look); }
+
+// The look system keeps four accent points and the arena overhead resident; at intensity 0 they
+// still cost a per-fragment light evaluation each. Hidden once, before the first pipeline.
+overheadLight.visible = false;
+scene.traverse((o) => { if (o.isLight && /AccentLight/.test(o.name)) o.visible = false; });
+// The look system's sky dome is a 150 m sphere drawn last with depth test on, so it paints over
+// anything farther than that. It only depends on view direction, so it is scaled up once.
+const SKY_SCALE = 6;
+scene.traverse((o) => { if (o.isMesh && o.geometry?.type === 'SphereGeometry' && o.material?.side === THREE.BackSide) o.scale.setScalar(SKY_SCALE); });
+
+const mapRoot = new THREE.Group();
+scene.add(mapRoot);
+const wallMat = visuals.materials.wall;
+const floorMat = visuals.materials.floor;
+const terrainMat = visuals.materials.terrain;
+const coverMat = visuals.materials.cover;
+const barMat = new MeshStandardNodeMaterial({ color: 0xd6d9dc, roughness: 0.45, metalness: 0.5 });
+const soilMat = new MeshStandardNodeMaterial({ color: 0x2a2319, roughness: 1.0, metalness: 0.0 });
+const waterMat = new MeshStandardNodeMaterial({ color: 0x1b3a2e, roughness: 0.06, metalness: 0.6, transparent: true, opacity: 0.86 });
+const box = (mat, x, y, z, w, h, d) => boxMesh(mapRoot, mat, x, y, z, w, h, d);
+const instancedBoxes = (mat, boxes) => emitBoxes(mapRoot, mat, boxes);
+const toBox = (r) => ({ x: r.x, y: r.y + r.h / 2, z: r.z, w: r.w, h: r.h, d: r.d });
+
+// ===================== settings =====================
+const MODE = { FIELD: 'field', GALLERY: 'gallery', ECO: 'eco', ECO_GALLERY: 'ecoGallery' };
+const view = {
+  mode: MODE.FIELD,
+  fieldSize: 140,      // m, square map side in field mode
+  slotSize: 40,        // m, per-specimen cell in gallery mode
+  slotCount: 9,
+  gallerySeed: 1,
+  galleryKind: 'cycle',
+  ecoKind: 'complex',
+  ecoSeed: 1,
+  autoFrame: true,
+  preset: 'overview',  // overview | eye | low | top
+  wire: false,
+  chunk: 32,           // m, instanced-mesh cell so the renderer frustum-culls per cell; 0 = one mesh
+  drawDistance: 600,   // m, grass fade end, plant cull radius and the camera far plane follow it
+};
+const isEco = () => view.mode === MODE.ECO || view.mode === MODE.ECO_GALLERY;
+const isGallery = () => view.mode === MODE.GALLERY || view.mode === MODE.ECO_GALLERY;
+// The gallery does not reject-sample, so a specimen wider than its cell reaches into the neighbour.
+// Floored at the widest thing the defaults can build. test-structure-viewer-v2.mjs measures it.
+const SLOT_MIN = 36;
+const ECO_CELL = 90;   // the complex is 190 m across and gets its own row; the six rooms sit in a 3 by 2 grid
+
+const params = { ...STRUCTURE_DEFAULTS };
+const ecoParams = { ...ECO_DEFAULTS };
+let WALL_H = 3, WALL_T = 0.3;
+
+const terrainSettings = { ...BOT_TERRAIN_DEFAULTS };
+let terrainPads = [];
+let terrainField = createTerrainField(terrainSettings, terrainPads);
+let activeBounds = { minX: -70, maxX: 70, minZ: -70, maxZ: 70 };
+function rebuildTerrainField() {
+  terrainField = createTerrainField(terrainSettings, terrainPads,
+    activeBounds.maxX > activeBounds.minX ? { bounds: activeBounds } : {});
+}
+// Eco floor slabs span -0.3..0, so the flat ground outside them sits just under, and a terrain pad
+// under an eco specimen is levelled to the same height so the slab top stays the walking surface.
+const GROUND_TOP = -0.3;
+const OUTDOOR_BAND = 18;   // m of growth around an eco building; the bounds square beyond it stays bare
+let planters = [], footprints = [];
+const nearFootprint = (x, z, pad) => footprints.some((r) => Math.abs(x - r.x) <= r.w / 2 + pad && Math.abs(z - r.z) <= r.d / 2 + pad);
+const inFootprint = (x, z) => nearFootprint(x, z, 0.4);
+function groundHeight(x, z) {
+  const soil = soilTopAt(planters, x, z);
+  if (soil != null) return soil;
+  if (terrainSettings.enabled) return terrainField.heightAt(x, z);
+  return isEco() && !inFootprint(x, z) ? GROUND_TOP : 0;
+}
+function slabTransformOnTerrain(x, z, w, d, baseY, h) {
+  return slabOnGround(x, z, w, d, baseY, h,
+    terrainSettings.enabled ? footprintRange(terrainField, x, z, w, d, 4).max : 0);
+}
+function boxTransformOnTerrain(x, z, w, h, d) {
+  return boxOnGround(x, z, w, h, d,
+    terrainSettings.enabled ? footprintRange(terrainField, x, z, w, d, 4) : null);
+}
+
+// ===================== flora =====================
+flora = createBotFlora({
+  THREE, renderer, camera, parent: scene, seed: 1,
+  occluders: mapRoot,   // the concrete: drawn into a depth image the GPU culls test against
+  // Eco growth lives in planters and in a band around the building; bot maps grow everywhere.
+  clearFn: (x, z) => isEco() && soilTopAt(planters, x, z) == null && (inFootprint(x, z) || !nearFootprint(x, z, OUTDOOR_BAND)),
+  onStats: () => syncFloraCounts(),
+});
+function rebuildFlora() {
+  if (!flora) return;
+  syncFloraPanel();
+  if (activeBounds.maxX <= activeBounds.minX) return;
+  const on = visuals.toggles.flora;
+  flora.setEnabled(on);
+  if (!on) return;
+  flora.rebuild({
+    bounds: activeBounds,
+    wallBoxes: activeWallBoxes,
+    coverBoxes: activeCoverBoxes,
+    vineBoxes: activeVineBoxes,   // vines hang off canopy and deck edges; these are NOT ground keep-outs
+    pads: [],
+    groundHeight,
+    flora: floraFor(visuals.theme),
+  });
+  if (!GRASS_SHADOW) scene.traverse((o) => { if (o.isMesh && o.material?._uTime) o.receiveShadow = false; });
+  syncFloraCounts();
+}
+
+// ===================== the scene the panel drives =====================
+const TERRAIN_FLOOR_PAD = 3;
+let activeWallBoxes = [], activeCoverBoxes = [], activeVineBoxes = [], activeSlabs = [];
+let built = { walls: [], covers: [], slabs: [], bars: [], planters: [], water: [], pads: [], placed: [], spawn: null };
+let slots = [];               // gallery: { i, kind, x, z, seed, radius, counts }
+let terrainTriangleCount = 0;
+let chunkCount = 0;
+
+function buildFloorMesh() {
+  const cx = (activeBounds.minX + activeBounds.maxX) / 2;
+  const cz = (activeBounds.minZ + activeBounds.maxZ) / 2;
+  const w = activeBounds.maxX - activeBounds.minX, d = activeBounds.maxZ - activeBounds.minZ;
+  if (!terrainSettings.enabled) {
+    terrainTriangleCount = 0;
+    if (isEco()) box(floorMat, cx, GROUND_TOP - 0.05, cz, w + 40, 0.1, d + 40);
+    else box(floorMat, cx, -0.05, cz, w, 0.1, d);
+    return;
+  }
+  const padded = {
+    minX: activeBounds.minX - TERRAIN_FLOOR_PAD, maxX: activeBounds.maxX + TERRAIN_FLOOR_PAD,
+    minZ: activeBounds.minZ - TERRAIN_FLOOR_PAD, maxZ: activeBounds.maxZ + TERRAIN_FLOOR_PAD,
+  };
+  const m = buildTerrainMeshArrays(padded, terrainField);
+  terrainTriangleCount = m.triangleCount;
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
+  geom.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(m.colors, 3));
+  geom.setIndex(new THREE.BufferAttribute(m.indices, 1));
+  geom.computeBoundingSphere();
+  const mesh = new THREE.Mesh(geom, terrainMat);
+  mesh.receiveShadow = true;
+  mesh.matrixAutoUpdate = false; mesh.updateMatrix();
+  mapRoot.add(mesh);
+}
+
+// One instanced mesh per material per cell: the mesh's bounding sphere covers only its cell, so
+// the renderer's frustum test skips the rooms behind the camera in both the main and shadow pass.
+function chunked(mat, boxes) {
+  if (!boxes.length) return;
+  if (!(view.chunk > 0)) { instancedBoxes(mat, boxes); chunkCount++; return; }
+  const cells = new Map();
+  for (const b of boxes) {
+    const key = `${Math.floor(b.x / view.chunk)}:${Math.floor(b.z / view.chunk)}`;
+    let list = cells.get(key); if (!list) cells.set(key, (list = [])); list.push(b);
+  }
+  for (const list of cells.values()) { instancedBoxes(mat, list); chunkCount++; }
+}
+
+// Gallery grid: as square as the count allows, so 9 is 3x3 rather than 9x1.
+function galleryLayout() {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(view.slotCount)));
+  const rows = Math.max(1, Math.ceil(view.slotCount / cols));
+  const cell = Math.max(SLOT_MIN, view.slotSize);
+  const w = cols * cell, d = rows * cell;
+  return { cols, rows, cell, w, d };
+}
+
+const KINDS = ['building', 'pocket', 'obstacles', 'portal', 'colonnade', 'slot', 'rampart', 'corner', 'terrace', 'platform'];
+const ECO_LABELS = {
+  complex: 'complex: one building, slot-garden hallways', spawn: 'spawn area (three rooms)', atrium: 'atrium',
+  lobby: 'lobby', pergola: 'pergola court', slotgarden: 'slot garden', pavilion: 'pond pavilion',
+};
+// Per-slot reroll counters. A slot's seed is its own function of (base, index, its own counter), so
+// rerolling one slot cannot disturb another -- holding the others still is the point of a gallery.
+const slotSeedOffsets = {};
+const slotSeed = (base, i) => (base + i * 7919 + (slotSeedOffsets[i] || 0) * 104729) >>> 0;
+const emptyBuilt = () => ({ walls: [], covers: [], slabs: [], bars: [], planters: [], water: [], ramps: [], pads: [], placed: [], spawn: null });
+
+function buildGallery() {
+  const { cols, cell, w, d } = galleryLayout();
+  const out = emptyBuilt();
+  slots = [];
+  for (let i = 0; i < view.slotCount; i++) {
+    const c = i % cols, r = Math.floor(i / cols);
+    const x = -w / 2 + cell * (c + 0.5), z = -d / 2 + cell * (r + 0.5);
+    const kind = view.galleryKind === 'cycle' ? KINDS[i % KINDS.length] : view.galleryKind;
+    const seed = slotSeed(view.gallerySeed, i);
+    const one = generateOne(kind, { ...params, wallT: WALL_T, wallHeight: WALL_H }, seed, { x, z });
+    out.walls.push(...one.walls); out.covers.push(...one.covers); out.slabs.push(...one.slabs); out.ramps.push(...(one.ramps || []));
+    slots.push({ i, kind, x, z, seed, radius: one.radius,
+      counts: { walls: one.walls.length, covers: one.covers.length, slabs: one.slabs.length } });
+  }
+  out.placed = slots.map(s => ({ kind: s.kind, x: s.x, z: s.z, radius: s.radius }));
+  return out;
+}
+
+// Eco specimens: one kind at the origin, or the complex on its own row north of the six rooms.
+// Each specimen emits a terrain pad at its floor-slab base so uneven ground levels under it.
+function buildEco() {
+  const out = emptyBuilt();
+  slots = [];
+  const specs = [];
+  if (view.mode === MODE.ECO_GALLERY) {
+    const cols = 3, rooms = ECO_KINDS.filter((k) => k !== 'complex');
+    specs.push({ kind: 'complex', x: 0, z: -ECO_CELL });
+    rooms.forEach((kind, i) => {
+      const c = i % cols, r = Math.floor(i / cols);
+      specs.push({ kind, x: (c - (cols - 1) / 2) * ECO_CELL, z: (r + 0.5) * ECO_CELL });
+    });
+  } else {
+    specs.push({ kind: view.ecoKind, x: 0, z: 0 });
+  }
+  specs.forEach((s, i) => {
+    const seed = view.mode === MODE.ECO_GALLERY ? slotSeed(view.ecoSeed, i) : view.ecoSeed;
+    const g = generateEco(s.kind, ecoParams, seed, { x: s.x, z: s.z });
+    out.walls.push(...g.walls); out.covers.push(...g.covers); out.bars.push(...g.bars);
+    out.planters.push(...g.planters); out.water.push(...g.water);
+    out.pads.push({ x: s.x, z: s.z, radius: g.radius + 4, y: GROUND_TOP });
+    out.placed.push({ kind: s.kind, x: s.x, z: s.z, radius: g.radius });
+    if (!out.spawn) out.spawn = g.spawn;
+    slots.push({ i, kind: s.kind, x: s.x, z: s.z, seed, radius: g.radius,
+      counts: { walls: g.walls.length, covers: g.covers.length, slabs: g.bars.length } });
+  });
+  return out;
+}
+
+// The one rebuild. `frame` refits the camera; a slider tweak must leave the viewpoint alone.
+function rebuildScene({ frame = false } = {}) {
+  clearBoxes(mapRoot);
+  planters = []; footprints = [];
+  chunkCount = 0;
+
+  if (view.mode === MODE.GALLERY) {
+    const g = galleryLayout();
+    activeBounds = { minX: -g.w / 2, maxX: g.w / 2, minZ: -g.d / 2, maxZ: g.d / 2 };
+  } else if (view.mode === MODE.ECO_GALLERY) {
+    activeBounds = { minX: -ECO_CELL * 1.5, maxX: ECO_CELL * 1.5, minZ: -ECO_CELL * 2, maxZ: ECO_CELL * 2 };
+  } else if (view.mode === MODE.FIELD) {
+    const half = view.fieldSize / 2;
+    activeBounds = { minX: -half, maxX: half, minZ: -half, maxZ: half };
+    slots = [];
+  }
+
+  // Generation is terrain-independent, so it runs first and its pads feed the field. Order matters:
+  // every height read below (the mesh, the sunk walls, the lifted slabs) must see the same
+  // post-flatten field, or a building floats off the pad that was levelled for it.
+  if (isEco()) {
+    built = buildEco();
+    if (view.mode === MODE.ECO) {
+      const r = built.placed[0].radius + 14;
+      activeBounds = { minX: -r, maxX: r, minZ: -r, maxZ: r };
+    }
+  } else if (view.mode === MODE.GALLERY) {
+    built = buildGallery();
+  } else {
+    // wallHeight must be the live WALL_H: a lintel fills from its head to the wall top, so a stale
+    // value leaves a floating bar or a gap over every door. padTerrain keeps pad-only kinds out of
+    // Mixed when terrain is off, so no slot is burnt on an invisible structure.
+    built = { ...emptyBuilt(), ...generateStructures(activeBounds, { ...params, padTerrain: terrainSettings.enabled, wallT: WALL_T, wallHeight: WALL_H }, []) };
+  }
+  visuals.setBounds(activeBounds);   // floor grid, scan ring, accent lights and shadow box follow
+  applyDrawDistance();
+
+  terrainPads = terrainSettings.enabled ? built.pads.map(p => ({ ...p })) : [];
+  rebuildTerrainField();
+  buildFloorMesh();
+
+  if (isEco()) {
+    // Eco rects carry their own base height; the pad under them is level, so no terrain fitting.
+    planters = built.planters;
+    footprints = [...built.walls.filter((r) => r.y < 0), ...built.water];
+    chunked(wallMat, built.walls.map(toBox));
+    chunked(coverMat, built.covers.map(toBox));
+    chunked(barMat, built.bars.map(toBox));
+    chunked(soilMat, planters.map((q) => ({ x: q.x, y: q.y + q.depth / 2, z: q.z, w: q.w - 0.08, h: q.depth, d: q.d - 0.08 })));
+    chunked(waterMat, built.water.map((q) => ({ x: q.x, y: q.y, z: q.z, w: q.w, h: 0.04, d: q.d })));
+    // Flora keep-outs: standing walls and covers; floor slabs sit below grade and are skipped.
+    activeWallBoxes = built.walls.filter((r) => r.y >= -1e-6 && r.h >= 1.2).map(toBox);
+    activeCoverBoxes = built.covers.map(toBox);
+    activeVineBoxes = built.walls.filter((r) => r.y > 1.0 && r.h < 1.2 && r.w * r.d > 4).map(toBox);
+    activeSlabs = [];
+  } else {
+    activeWallBoxes = built.walls.map(w => boxTransformOnTerrain(w.x, w.z, w.w, WALL_H, w.d));
+    activeCoverBoxes = built.covers.map(cv => boxTransformOnTerrain(cv.x, cv.z, cv.w, cv.h, cv.d));
+    activeSlabs = built.slabs.map(s => slabTransformOnTerrain(s.x, s.z, s.w, s.d, s.y, s.h));
+    activeVineBoxes = activeSlabs;
+    chunked(wallMat, activeWallBoxes);
+    chunked(coverMat, activeCoverBoxes);
+    chunked(wallMat, activeSlabs);   // same concrete as the walls they span
+    // Ramps tilt, so they come through rampBox rather than the axis-aligned fitting above.
+    chunked(wallMat, (built.ramps || []).map((r) => rampBox({
+      ...r,
+      y0: r.y0 + groundHeight(r.x0, r.z0),
+      y1: r.y1 + groundHeight(r.x1, r.z1),
+    })));
+  }
+  flora.markOccluders(mapRoot);   // new meshes every rebuild
+  rebuildFlora();
+  applyWire();
+
+  if (frame || view.autoFrame) frameCamera();
+  syncLabels();
+  updateHud();
+}
+
+// ===================== camera presets =====================
+function setPreset(name) {
+  const cx = (activeBounds.minX + activeBounds.maxX) / 2, cz = (activeBounds.minZ + activeBounds.maxZ) / 2;
+  const span = Math.max(activeBounds.maxX - activeBounds.minX, activeBounds.maxZ - activeBounds.minZ);
+  const s = built.spawn || [cx, groundHeight(cx, cz), cz];
+  controls.maxDistance = span * 3;
+  if (name === 'eye') {
+    camera.position.set(s[0], s[1] + 1.7, s[2] + 0.01);
+    controls.target.set(s[0], s[1] + 1.6, s[2] - 6);
+  } else if (name === 'low') {
+    camera.position.set(s[0] + span * 0.28, s[1] + span * 0.12, s[2] + span * 0.3);
+    controls.target.set(s[0], s[1] + 2, s[2]);
+  } else if (name === 'top') {
+    camera.position.set(cx, span * 1.1, cz + 0.01);
+    controls.target.set(cx, 0, cz);
+  } else {
+    camera.position.set(cx + span * 0.52, span * 0.46, cz + span * 0.52);
+    controls.target.set(cx, 0, cz);
+  }
+  controls.update();
+}
+function frameCamera() { setPreset(view.preset); }
+// Draw distance: grass collapses over the last third of it and the far plane sits well beyond so
+// the sky dome is never clipped. Plants keep their own cull radius in the Flora card: they were the
+// largest flora cost on the atrium page, so they are not tied to how far the grass reaches.
+function applyDrawDistance() {
+  const d = view.drawDistance;
+  flora.setViewDistance(d);
+  camera.far = Math.max(150 * SKY_SCALE * 1.5, d * 3);
+  camera.updateProjectionMatrix();
+}
+
+// ===================== readouts =====================
+const hud = document.getElementById('hud');
+const STANDING = 1.8;   // a slab whose underside drops below this is a trap, not an overhang
+const frameProf = createFrameProfiler({ smoothing: 0.1 });
+const PROF_MAP = { visuals: 'vis', flora: 'flo', render: 'rnd' };
+let fpsAcc = 0, fpsN = 0, fps = 0;
+let cullLine = 'culling: …';
+function updateHud() {
+  const requested = isEco() ? built.placed.length : view.mode === MODE.GALLERY ? view.slotCount : params.count;
+  const placed = built.placed.length;
+  const dropped = requested - placed;
+  const kinds = {};
+  for (const s of built.placed) kinds[s.kind] = (kinds[s.kind] || 0) + 1;
+  const headroom = activeSlabs.length
+    ? Math.min(...activeSlabs.map(s => s.y - s.h / 2 - groundHeight(s.x, s.z)))
+    : null;
+  const footprint = built.placed.length ? Math.max(...built.placed.map(s => s.radius)) : 0;
+  const span = (activeBounds.maxX - activeBounds.minX).toFixed(0);
+  const flo = flora ? flora.stats : null;
+  const p = frameProf.snapshot(PROF_MAP, { smooth: true });
+  const info = renderer.info;
+  // Gallery slots do not reject-sample, so a specimen bigger than its cell silently reaches into
+  // the neighbour and reads as one messy structure rather than two clean ones. Say so.
+  const overhang = view.mode === MODE.GALLERY
+    ? slots.filter(s => s.radius > galleryLayout().cell / 2).length : 0;
+
+  const lines = [
+    `<b>${view.mode}</b>${isEco() && view.mode === MODE.ECO ? ` · <b>${view.ecoKind}</b> · seed ${view.ecoSeed}` : ''} · ${span}×${span} m`,
+    isEco() ? '' : dropped > 0
+      ? `placed <b>${placed}</b> of ${requested} <span class="warn">(${dropped} found no room)</span>`
+      : `placed <b>${placed}</b> of ${requested}`,
+    Object.keys(kinds).length ? `  ${Object.entries(kinds).map(([k, n]) => `${k} ${n}`).join(' · ')}` : '',
+    isEco()
+      ? `walls <b>${built.walls.length}</b> · covers <b>${built.covers.length}</b> · bars <b>${built.bars.length}</b> · planters <b>${built.planters.length}</b> · water <b>${built.water.length}</b>`
+      : `walls <b>${built.walls.length}</b> · covers <b>${built.covers.length}</b> · slabs <b>${built.slabs.length}</b>`,
+    isEco() ? '' : overhang > 0
+      ? `largest footprint <b>${footprint.toFixed(1)}</b> m radius <span class="warn">(${overhang} slot${overhang > 1 ? 's' : ''} outgrew the cell — raise slot size)</span>`
+      : `largest footprint <b>${footprint.toFixed(1)}</b> m radius`,
+    isEco() ? '' : headroom === null ? 'no slabs'
+      : `min slab headroom <b class="${headroom < STANDING ? 'bad' : ''}">${headroom.toFixed(2)}</b> m${headroom < STANDING ? ' — a bot cannot pass under this' : ''}`,
+    terrainSettings.enabled ? `terrain <b>${terrainTriangleCount.toLocaleString()}</b> tris` : 'terrain off',
+    flo && visuals.toggles.flora
+      ? `flora: ${flo.blades.toLocaleString()} blades${flo.capped ? ' <span class="warn">(capped)</span>' : ''} · ${flo.plants} plants · ${flo.vines} vines`
+      : 'flora off',
+    cullLine,
+    `<b>${fps.toFixed(0)}</b> fps · cpu ms: visuals ${p.vis.toFixed(2)} · flora ${p.flo.toFixed(2)} · render ${p.rnd.toFixed(2)}`,
+    `draws <b>${info.render.drawCalls}</b> · tris ${info.render.triangles.toLocaleString()} · geometries ${info.memory.geometries} · textures ${info.memory.textures} · concrete chunks ${chunkCount}${view.chunk > 0 ? ` (${view.chunk} m)` : ''}`,
+    `shadow ${SHADOW_SIZE} ${SHADOW_SOFT ? 'soft' : 'hard'} · grass ${GRASS_LIGHT}, ${GRASS_SHADOW ? 'shadowed' : 'unshadowed'}, ${flo ? flo.tiles ?? '?' : 0} tiles · occlusion ${OCCLUSION ? `on (${flora?.occlusion?.size ?? '?'}² depth, GPU paths only)` : 'off'}`,
+    built.spawn ? `spawn at ${built.spawn.map((v) => v.toFixed(1)).join(', ')}` : '',
+  ];
+  hud.innerHTML = lines.filter(Boolean).join('<br>');
+}
+// Culling readout: grass by frustum test on the tiles, plants by reading back the cull's
+// survivor counts (a GPU round trip, so on the half-second timer, never per frame).
+const pct = (hidden, total) => (total > 0 ? `${(100 * hidden / total).toFixed(0)}% hidden` : 'none');
+async function updateCullLine() {
+  if (!flora || !visuals.toggles.flora) { cullLine = 'culling: flora off'; return; }
+  const c = flora.cullStats(camera);
+  const plantsVisible = await flora.plantsVisible();
+  let grassPart;
+  if (c.mode === 'compute') {
+    const drawn = await flora.grassVisible();
+    const asked = flora.stats.blades;
+    grassPart = `grass ${drawn == null ? 'building' : `${drawn.toLocaleString()} drawn of ${asked.toLocaleString()} possible (${pct(asked - drawn, asked)})`}`;
+  } else {
+    grassPart = `grass ${pct(c.bladesTotal - c.bladesVisible, c.bladesTotal)} (${c.tilesVisible}/${c.tilesTotal} tiles)`;
+  }
+  cullLine = `culling: ${grassPart}`
+    + ` · plants ${pct(c.plantsTotal - plantsVisible, c.plantsTotal)} (${plantsVisible}/${c.plantsTotal})`
+    + (c.vineChunks > 1
+      ? ` · vines ${pct(c.vines - c.vinesVisible, c.vines)} (${c.vineChunksVisible}/${c.vineChunks} cells)`
+      : ` · vines 0% hidden (${c.vines}, one mesh)`);
+}
+setInterval(async () => { fps = fpsN ? fpsN / fpsAcc * 1000 : 0; fpsAcc = 0; fpsN = 0; await updateCullLine(); updateHud(); }, 500);
+function applyWire() { mapRoot.traverse((o) => { if (o.isMesh) o.material.wireframe = view.wire; }); }
+
+// ===================== gallery labels =====================
+const labelHost = document.getElementById('labels');
+let labelEls = [];
+function syncLabels() {
+  labelHost.textContent = '';
+  labelEls = [];
+  if (!isGallery()) return;
+  for (const s of slots) {
+    const el = document.createElement('div');
+    el.className = 'lbl';
+    el.innerHTML = `${s.kind} <small>#${s.i + 1} · seed ${s.seed}</small>`;
+    el.title = `${s.counts.walls} walls, ${s.counts.covers} covers, ${s.counts.slabs} ${isEco() ? 'bars' : 'slabs'}, `
+      + `${s.radius.toFixed(1)} m radius. Click to reroll just this slot.`;
+    el.addEventListener('click', () => rerollSlot(s.i));
+    labelHost.appendChild(el);
+    labelEls.push({ el, slot: s });
+  }
+}
+const labelPos = new THREE.Vector3();
+function placeLabels() {
+  if (!labelEls.length) return;
+  const w = viewEl.clientWidth, h = viewEl.clientHeight;
+  for (const { el, slot } of labelEls) {
+    labelPos.set(slot.x, groundHeight(slot.x, slot.z) + 0.2, slot.z).project(camera);
+    const behind = labelPos.z > 1;
+    el.style.display = behind ? 'none' : 'block';
+    if (behind) continue;
+    el.style.left = `${(labelPos.x * 0.5 + 0.5) * w}px`;
+    el.style.top = `${(-labelPos.y * 0.5 + 0.5) * h}px`;
+  }
+}
+function rerollSlot(i) {
+  if (!slots[i]) return;
+  slotSeedOffsets[i] = (slotSeedOffsets[i] || 0) + 1;
+  rebuildScene();
+}
+function clearSlotOffsets() { for (const k of Object.keys(slotSeedOffsets)) delete slotSeedOffsets[k]; }
+
+// ===================== shadows =====================
+// The shadow node resets itself when the renderer's type changes, and every material's cache key
+// carries the type, so one assignment rebuilds the pipelines. The reset frees the old depth
+// texture, so every material is flagged; otherwise the first object back in view binds a
+// destroyed texture.
+function rebuildAllMaterials() {
+  const seen = new Set();
+  scene.traverse((o) => { const m = o.material; if (!m || seen.has(m)) return; seen.add(m); m.needsUpdate = true; });
+}
+function setShadowType(type) { renderer.shadowMap.type = type; rebuildAllMaterials(); }
+function applyShadowType() { setShadowType(SHADOW_SOFT ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap); }
+// The map is only reallocated on that same reset, so flip the type for one frame and flip it back.
+function applyShadowSize() {
+  rig.dirLight.shadow.mapSize.set(SHADOW_SIZE, SHADOW_SIZE);
+  setShadowType(SHADOW_SOFT ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap);
+  requestAnimationFrame(() => requestAnimationFrame(applyShadowType));
+}
+
+// ===================== screenshot =====================
+let wantShot = false;
+function saveShot() {
+  renderer.domElement.toBlob((blob) => {
+    if (!blob) { noteError('screenshot failed'); return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const name = isEco() ? (view.mode === MODE.ECO ? view.ecoKind : 'eco-gallery') : view.mode;
+    a.download = `${name}-${view.preset}-${Date.now()}.png`;
+    a.click();
+  });
+}
+
+// ===================== panel =====================
+installPanelTheme('#ctrl');
+const ctrl = document.getElementById('ctrl');
+const el = (tag, props) => Object.assign(document.createElement(tag), props || {});
+const syncers = [];
+const syncAll = () => { for (const s of syncers) s(); };
+
+// The theme styles #ctrl as a fixed flex column that does not scroll; the scrolling region is
+// .panel-body. Sections go in there, not straight onto #ctrl, or a long panel clips its own tail.
+const panelHead = el('div', { className: 'panel-head' });
+panelHead.append(
+  el('div', { className: 'head-left', textContent: 'Structures v2' }),
+  el('span', { className: 'hint', textContent: 'P hides · F frames' }),
+);
+const panelBody = el('div', { className: 'panel-body' });
+ctrl.append(panelHead, panelBody);
+
+function head(title, collapsed = true) { return createSection(panelBody, title, { collapsed }); }
+
+function slider(host, label, min, max, step, dec, get, set, hint, { onRelease = false } = {}) {
+  const row = el('div', { className: 'row' });
+  const name = el('span', { textContent: label });
+  const val = el('span', { className: 'v' });
+  if (hint) row.title = hint;
+  row.append(name, val);
+  const input = el('input', { type: 'range', min: String(min), max: String(max), step: String(step) });
+  const sync = () => { const v = get(); input.value = String(v); val.textContent = Number(v).toFixed(dec); };
+  // Costly rebuilds commit on release; the readout still follows the thumb.
+  input.addEventListener('input', () => { if (onRelease) val.textContent = Number(input.value).toFixed(dec); else { set(parseFloat(input.value)); sync(); } });
+  if (onRelease) input.addEventListener('change', () => { set(parseFloat(input.value)); sync(); });
+  syncers.push(sync);
+  host.append(row, input);
+  return input;
+}
+
+function numberBox(host, label, get, set, hint) {
+  const row = el('div', { className: 'row' });
+  const input = el('input', { type: 'number' });
+  input.style.cssText = 'flex:0 0 90px;text-align:right';
+  if (hint) row.title = hint;
+  const sync = () => { input.value = String(get()); };
+  input.addEventListener('change', () => { const v = parseFloat(input.value); if (Number.isFinite(v)) set(v); sync(); });
+  syncers.push(sync);
+  row.append(el('span', { textContent: label }), input);
+  host.append(row);
+  return input;
+}
+
+function dropdown(host, label, options, get, set, hint) {
+  const row = el('div', { className: 'row' });
+  const sel = el('select');
+  sel.style.cssText = 'flex:1;margin-left:6px;min-width:0';
+  for (const o of options) {
+    const [value, text] = Array.isArray(o) ? o : [o, o];
+    sel.append(el('option', { value, textContent: text }));
+  }
+  if (hint) row.title = hint;
+  const sync = () => { sel.value = String(get()); };
+  sel.addEventListener('change', () => { set(sel.value); sync(); });
+  syncers.push(sync);
+  row.append(el('span', { textContent: label }), sel);
+  host.append(row);
+  return sel;
+}
+
+function checkbox(host, label, get, set, hint) {
+  const row = el('div', { className: 'row' });
+  const input = el('input', { type: 'checkbox' });
+  if (hint) row.title = hint;
+  const sync = () => { input.checked = !!get(); };
+  input.addEventListener('change', () => { set(input.checked); sync(); });
+  syncers.push(sync);
+  row.append(el('span', { textContent: label }), input);
+  host.append(row);
+  return input;
+}
+
+function button(host, label, onClick, { primary = false, hint } = {}) {
+  const b = el('button', { textContent: label });
+  if (primary) b.className = 'primary';
+  if (hint) b.title = hint;
+  b.addEventListener('click', onClick);
+  host.append(b);
+  return b;
+}
+
+function note(host, text) {
+  const d = el('div', { textContent: text });
+  d.style.cssText = 'color:var(--wui-muted);font-size:11px;margin:6px 0 2px';
+  host.append(d);
+  return d;
+}
+
+// A structure param slider: every one of these rebuilds, and none of them reframes the camera.
+const P = (host, label, key, min, max, step, dec, hint) =>
+  slider(host, label, min, max, step, dec, () => params[key], (v) => { params[key] = v; if (!isEco()) rebuildScene(); }, hint);
+const E = (host, label, key, min, max, step, dec, hint) =>
+  slider(host, label, min, max, step, dec, () => ecoParams[key], (v) => { ecoParams[key] = v; if (isEco()) rebuildScene(); }, hint);
+
+// Entering an eco mode from a non-eco theme applies the day look once; after that the Visuals
+// card is in charge, and the button in the Eco card brings the look back on demand.
+let ecoLookApplied = false;
+function setMode(v) {
+  const wasEco = isEco();
+  view.mode = v;
+  if (isEco() && !wasEco && !ecoLookApplied) { ecoLookApplied = true; applyEcoDayLook(); }
+  rebuildScene({ frame: true });
+  syncAll();
+}
+
+// ---- Mode ----
+{
+  const b = head('Mode', false);
+  dropdown(b, 'mode', [
+    [MODE.FIELD, 'Bot structures — field, one scattered map'], [MODE.GALLERY, 'Bot structures — gallery, one per slot'],
+    [MODE.ECO, 'Eco-brutalist — one kind'], [MODE.ECO_GALLERY, 'Eco-brutalist — all seven'],
+  ], () => view.mode, setMode,
+    'Field is what bot-viewer-v3 renders. Gallery isolates one specimen per slot so families of form are visible. The eco modes show the Base Game spawn generator.');
+  slider(b, 'field size (m)', 40, 300, 2, 0, () => view.fieldSize,
+    (v) => { view.fieldSize = v; if (view.mode === MODE.FIELD) rebuildScene(); },
+    'Square map side. Structure count is absolute, not per area, so a bigger map is a sparser one.');
+  slider(b, 'gallery slots', 1, 16, 1, 0, () => view.slotCount,
+    (v) => { view.slotCount = v; if (view.mode === MODE.GALLERY) rebuildScene({ frame: true }); });
+  slider(b, 'slot size (m)', SLOT_MIN, 70, 1, 0, () => view.slotSize,
+    (v) => { view.slotSize = v; if (view.mode === MODE.GALLERY) rebuildScene({ frame: true }); },
+    `Per-specimen cell. Floored at ${SLOT_MIN} m: below that a large building overhangs its neighbours.`);
+  dropdown(b, 'gallery kind', [['cycle', 'Cycle through every kind'], ...KINDS],
+    () => view.galleryKind, (v) => { view.galleryKind = v; if (view.mode === MODE.GALLERY) rebuildScene(); });
+  numberBox(b, 'gallery seed', () => view.gallerySeed, (v) => {
+    view.gallerySeed = v >>> 0;
+    clearSlotOffsets();
+    if (view.mode === MODE.GALLERY) rebuildScene();
+  });
+  button(b, '🎲 Reroll every gallery slot', () => {
+    if (isEco()) view.ecoSeed = (view.ecoSeed + 1) >>> 0; else view.gallerySeed = (view.gallerySeed + 1) >>> 0;
+    clearSlotOffsets();
+    rebuildScene();
+    syncAll();
+  }, { hint: 'Click a slot label in the scene to reroll just that one' });
+  dropdown(b, 'camera', [['overview', 'overview'], ['eye', 'eye level at spawn'], ['low', 'low three-quarter'], ['top', 'top']],
+    () => view.preset, (v) => { view.preset = v; frameCamera(); },
+    'Eye level stands at the eco spawn point, or at the map centre for bot structures.');
+  checkbox(b, 'refit camera on rebuild', () => view.autoFrame, (v) => { view.autoFrame = v; });
+  button(b, 'Frame the map', () => frameCamera());
+  checkbox(b, 'wireframe', () => view.wire, (v) => { view.wire = v; applyWire(); });
+  checkbox(b, 'reference photos', () => mainEl.classList.contains('refs'),
+    (v) => { mainEl.classList.toggle('refs', v); resize(); },
+    'The five photographs the eco-brutalist kinds were read from, in a strip on the left.');
+  button(b, 'Save screenshot', () => { wantShot = true; }, { hint: 'Saves a PNG of the canvas to your downloads folder' });
+}
+
+// ---- Structure ----
+{
+  const b = head('Structure', false);
+  numberBox(b, 'seed', () => params.seed, (v) => { params.seed = v >>> 0; if (!isEco()) rebuildScene(); });
+  button(b, '🎲 Reroll seed', () => { params.seed = (params.seed + 1) >>> 0; if (!isEco()) rebuildScene(); syncAll(); }, { primary: true });
+  P(b, 'count', 'count', 0, 40, 1, 0, 'How many to try to place. Absolute, not per area.');
+  dropdown(b, 'mix', ['mixed', 'buildings', 'pockets', 'obstacles', 'portals', 'colonnades', 'slots', 'ramparts', 'corners', 'terraces', 'platforms'],
+    () => params.mix, (v) => { params.mix = v; if (!isEco()) rebuildScene(); });
+  P(b, 'separation (m)', 'minSeparation', 0, 30, 0.5, 1, 'Gap between footprints. These gaps are the firing lanes.');
+  P(b, 'edge margin (m)', 'edgeMargin', 0, 20, 0.5, 1, 'Keeps structures clear of the map perimeter.');
+  P(b, 'attempts', 'attempts', 1, 120, 1, 0, 'Rejection-sampling tries before a structure is dropped.');
+  note(b, 'Changing a size parameter can still move later structures: placement is sampled against '
+    + 'what is already down. Probability parameters (window, canopy, obstacle height) hold the field still.');
+}
+
+// ---- Eco-brutalist ----
+{
+  const b = head('Eco-brutalist', false);
+  dropdown(b, 'kind', ECO_KINDS.map((k) => [k, ECO_LABELS[k]]),
+    () => view.ecoKind, (v) => { view.ecoKind = v; if (view.mode === MODE.ECO) rebuildScene({ frame: true }); });
+  numberBox(b, 'seed', () => view.ecoSeed, (v) => { view.ecoSeed = v >>> 0; clearSlotOffsets(); if (isEco()) rebuildScene(); });
+  button(b, '🎲 Reroll seed', () => { view.ecoSeed = (view.ecoSeed + 1) >>> 0; clearSlotOffsets(); if (isEco()) rebuildScene(); syncAll(); }, { primary: true });
+  button(b, 'Apply the eco day look', applyEcoDayLook,
+    { hint: 'The clear-day variant of the eco-brutalism theme the references were matched under. Applied once automatically the first time an eco mode is entered.' });
+  note(b, 'Sizes in metres. Rooms are built from these directly, so an extreme value is allowed to produce a strange room.');
+  E(b, 'wall thickness', 'wallT', 0.1, 2, 0.02, 2);
+  E(b, 'slab thickness', 'slabT', 0.1, 2, 0.02, 2);
+  E(b, 'planter rim thickness', 'rimT', 0.05, 1, 0.01, 2);
+  E(b, 'planter rim height', 'rimH', 0.1, 2, 0.01, 2);
+  E(b, 'door height', 'doorH', 2, 8, 0.1, 1);
+  note(b, 'Atrium');
+  E(b, 'well width', 'atriumWell', 8, 60, 0.5, 1);
+  E(b, 'ring depth', 'atriumRing', 1, 15, 0.5, 1);
+  E(b, 'levels', 'atriumLevels', 1, 10, 1, 0);
+  E(b, 'level pitch', 'atriumPitch', 2, 8, 0.1, 1);
+  E(b, 'lattice pitch', 'atriumLattice', 0.5, 6, 0.1, 1);
+  note(b, 'Lobby');
+  E(b, 'width', 'lobbyW', 10, 80, 1, 0);
+  E(b, 'depth', 'lobbyD', 10, 60, 1, 0);
+  E(b, 'height', 'lobbyH', 4, 30, 0.5, 1);
+  E(b, 'mezzanine height', 'lobbyMezz', 2, 12, 0.1, 1);
+  E(b, 'beam pitch', 'lobbyBeamPitch', 1, 8, 0.1, 1);
+  E(b, 'pier pitch', 'lobbyPierPitch', 3, 20, 0.5, 1);
+  E(b, 'floor level', 'lobbyFloor', 0, 2, 0.05, 2, 'The shared floor level every room plinth and hallway sits on.');
+  E(b, 'plaza width', 'lobbyPlaza', 2, 20, 0.5, 1);
+  note(b, 'Pergola court');
+  E(b, 'wall height', 'pergolaWallH', 3, 30, 0.5, 1);
+  E(b, 'pergola height', 'pergolaH', 2, 12, 0.1, 1);
+  E(b, 'slat pitch', 'pergolaSlatPitch', 0.15, 2, 0.05, 2);
+  E(b, 'fin pitch', 'pergolaFinPitch', 0.2, 3, 0.05, 2);
+  E(b, 'terrace rise', 'terraceRise', 0.3, 6, 0.1, 1);
+  note(b, 'Slot garden');
+  E(b, 'wall height', 'slotWallH', 3, 30, 0.5, 1);
+  E(b, 'gap', 'slotGap', 2, 20, 0.5, 1);
+  E(b, 'length', 'slotLen', 8, 60, 1, 0);
+  E(b, 'walkway width', 'slotWalk', 0.6, 4, 0.1, 1);
+  note(b, 'Pond pavilion');
+  E(b, 'deck width', 'pavDeckW', 6, 40, 0.5, 1);
+  E(b, 'deck depth', 'pavDeckD', 4, 30, 0.5, 1);
+  E(b, 'roof height', 'pavRoofH', 2.5, 10, 0.1, 1);
+  E(b, 'pond depth', 'pavPondD', 4, 30, 0.5, 1);
+  note(b, 'Complex hallways');
+  E(b, 'north hallway', 'hallNorth', 5, 50, 1, 0);
+  E(b, 'east hallway', 'hallEast', 5, 50, 1, 0);
+}
+
+// ---- Wall ----
+{
+  const b = head('Wall');
+  slider(b, 'wall height (m)', 1, 6, 0.05, 2, () => WALL_H, (v) => { WALL_H = v; if (!isEco()) rebuildScene(); },
+    'Bot structures only. Also the height lintels and portal decks are built up to.');
+  slider(b, 'wall thickness (m)', 0.1, 1.2, 0.02, 2, () => WALL_T, (v) => { WALL_T = v; if (!isEco()) rebuildScene(); });
+}
+
+// ---- Building ----
+{
+  const b = head('Building');
+  P(b, 'min side (m)', 'buildingMin', 3, 20, 0.5, 1);
+  P(b, 'max side (m)', 'buildingMax', 4, 30, 0.5, 1);
+  P(b, 'door width (m)', 'doorWidth', 0.8, 5, 0.05, 2);
+  P(b, 'door height (m)', 'doorHeight', 1.8, 4, 0.05, 2, 'Clear height; the wall above becomes a lintel.');
+  P(b, 'window sill (m)', 'windowSill', 0, 2, 0.05, 2, 'Emitted as cover: shoot over it, do not walk through it.');
+  P(b, 'window height (m)', 'windowHeight', 0.3, 3, 0.05, 2);
+  P(b, 'window chance', 'windowChance', 0, 1, 0.01, 2, 'Per non-door side.');
+  P(b, 'canopy chance', 'roofChance', 0, 1, 0.01, 2, 'A cantilevered soffit over one side.');
+  P(b, 'canopy overhang (m)', 'roofOverhang', 0, 4, 0.05, 2);
+  P(b, 'slab thickness (m)', 'slabT', 0.05, 1.2, 0.01, 2, 'Lintels and canopies. Portal decks are 2.2x this.');
+}
+
+// ---- Pocket ----
+{
+  const b = head('Pocket');
+  P(b, 'cells per side', 'pocketCells', 2, 10, 1, 0);
+  P(b, 'cell size (m)', 'pocketCell', 1.5, 8, 0.1, 1);
+}
+
+// ---- Obstacles ----
+{
+  const b = head('Obstacles');
+  P(b, 'min per field', 'clusterMin', 1, 20, 1, 0);
+  P(b, 'max per field', 'clusterMax', 1, 30, 1, 0);
+  P(b, 'field radius (m)', 'clusterRadius', 1, 20, 0.5, 1);
+  P(b, 'cover height (m)', 'coverHeight', 0.4, 2, 0.05, 2, 'Shoot-over height.');
+  P(b, 'tall height (m)', 'tallHeight', 1.2, 4, 0.05, 2, 'At or above 1.5 m these block sight and yield cover corners.');
+  P(b, 'tall share', 'tallShare', 0, 1, 0.01, 2);
+}
+
+// ---- Portal ----
+{
+  const b = head('Portal');
+  P(b, 'min span (m)', 'portalMin', 2, 20, 0.5, 1, 'Clear distance between the two piers.');
+  P(b, 'max span (m)', 'portalMax', 2, 30, 0.5, 1);
+}
+
+// ---- Colonnade ----
+{
+  const b = head('Colonnade');
+  note(b, 'Posts are covers, not walls, because only covers carry their own height. At tall height '
+    + 'they block sight and yield cover corners, so the grid is transparent at range and opaque up close.');
+  P(b, 'min posts per side', 'colonnadeMin', 2, 8, 1, 0);
+  P(b, 'max posts per side', 'colonnadeMax', 2, 10, 1, 0);
+  P(b, 'pitch (m)', 'colonnadePitch', 1.5, 7, 0.1, 1, 'Distance between post centres, jittered ±20%.');
+  P(b, 'post size (m)', 'colonnadePost', 0.3, 2.5, 0.05, 2, 'Jittered ±25%. Below about 0.5 m a post reads as a pole.');
+  P(b, 'soffit chance', 'colonnadeRoofChance', 0, 1, 0.01, 2, 'A deck carried on the posts, at wall height.');
+}
+
+// ---- Slot ----
+{
+  const b = head('Slot');
+  note(b, 'Two parallel walls and nothing else — a firing lane you commit to. The nav raster inflates '
+    + 'each wall by 0.55 m, so a gap under about 1.6 m seals shut and the slot becomes a solid block.');
+  P(b, 'min run (m)', 'slotMin', 3, 30, 0.5, 1);
+  P(b, 'max run (m)', 'slotMax', 3, 40, 0.5, 1);
+  P(b, 'min gap (m)', 'slotGapMin', 1.6, 10, 0.1, 1);
+  P(b, 'max gap (m)', 'slotGapMax', 1.6, 14, 0.1, 1);
+}
+
+// ---- Rampart ----
+{
+  const b = head('Rampart');
+  P(b, 'min length (m)', 'rampartMin', 4, 30, 0.5, 1);
+  P(b, 'max length (m)', 'rampartMax', 4, 40, 0.5, 1);
+  P(b, 'thickness (m)', 'rampartThickness', 0.2, 3, 0.05, 2, 'Jittered ±25%.');
+  P(b, 'soffit chance', 'rampartSoffitChance', 0, 1, 0.01, 2);
+  P(b, 'soffit reach (m)', 'rampartSoffitDepth', 0.5, 8, 0.1, 1, 'How far the soffit projects from the wall face.');
+}
+
+// ---- Corner ----
+{
+  const b = head('Corner');
+  P(b, 'min arm (m)', 'cornerMin', 2, 16, 0.5, 1);
+  P(b, 'max arm (m)', 'cornerMax', 2, 22, 0.5, 1);
+}
+
+// ---- Terrace ----
+{
+  const b = head('Terrace');
+  note(b, 'The only bot kind made of ground rather than geometry, so it needs uneven ground turned on to '
+    + 'show anything. Nav reads one height per cell, which is why a slab is something bots walk under '
+    + 'and never onto — a terrace raises the ground instead, so the top IS the walkable surface.');
+  P(b, 'rise (m)', 'terraceRise', 0.5, 8, 0.1, 1, 'How far the top stands above local ground.');
+  P(b, 'top radius (m)', 'terraceRadius', 2, 16, 0.5, 1);
+  P(b, 'rim falloff (m)', 'terraceRim', 0.2, 8, 0.1, 1,
+    'A smoothstep rim peaks at 1.5 x rise / falloff. Above the nav slope gate the sides exclude themselves and the ramp is the only way up; widen this far enough and it becomes a hill you can walk up anywhere.');
+  P(b, 'ramp steps', 'terraceRampSteps', 2, 12, 1, 0);
+  P(b, 'ramp grade', 'terraceRampSlope', 0.1, 0.8, 0.01, 2, 'Rise over run. Nav refuses ground above 0.85.');
+  P(b, 'ramp width (m)', 'terraceRampWidth', 0.8, 6, 0.1, 1);
+}
+
+// ---- Terrain ----
+{
+  const b = head('Terrain');
+  checkbox(b, 'uneven ground', () => terrainSettings.enabled, (v) => { terrainSettings.enabled = v; rebuildScene(); },
+    'Off = a flat slab. On = a displaced mesh; walls sink into it and slabs lift off it. Eco rooms level a pad under themselves.');
+  numberBox(b, 'terrain seed', () => terrainSettings.seed, (v) => { terrainSettings.seed = v >>> 0; rebuildScene(); });
+  const T = (label, key, min, max, step, dec, hint) =>
+    slider(b, label, min, max, step, dec, () => terrainSettings[key], (v) => { terrainSettings[key] = v; rebuildScene(); }, hint);
+  T('hill amplitude (m)', 'hillAmp', 0, 8, 0.05, 2);
+  T('hill wavelength (m)', 'hillScale', 4, 80, 0.5, 1);
+  T('hill octaves', 'hillOctaves', 1, 6, 1, 0);
+  dropdown(b, 'landform', ['rolling', 'ridged', 'billowy'],
+    () => terrainSettings.landform, (v) => { terrainSettings.landform = v; rebuildScene(); });
+  T('terrace steps', 'terraceSteps', 0, 12, 1, 0, 'Benches carved into the hills. 0 = off.');
+  T('ripple amplitude (m)', 'rippleAmp', 0, 1.5, 0.01, 2);
+  T('mesh cell (m)', 'meshCell', 0.2, 2, 0.05, 2, 'Triangle pitch. Lower is finer and much more expensive.');
+  T('max slope shading', 'shadeRock', 0, 1, 0.01, 2, 'Vertex-colour lift on steep faces.');
+}
+
+// ---- Flora ----
+{
+  const b = head('Flora');
+  note(b, 'Growth comes from the active theme. Only eco-brutalism ships a flora block; every other '
+    + 'theme grows nothing and pays nothing. The on/off toggle is in Visuals.');
+  const withFlora = (fn) => { const f = visuals.theme.flora; if (f) { fn(f); rebuildFlora(); } };
+  const F = (label, key, min, max, step, dec, hint, opts) =>
+    slider(b, label, min, max, step, dec, () => floraFor(visuals.theme)[key], (v) => withFlora((f) => { f[key] = v; }), hint, opts);
+  F('grass density (per m²)', 'grassDensity', 0, 200, 0.5, 1, 'Blades per square metre, before the blade cap binds. Rebuilds on release.', { onRelease: true });
+  F('grass height (m)', 'grassHeight', 0.05, 1.5, 0.01, 2);
+  F('plant density', 'plantDensity', 0, 3, 0.01, 2);
+  F('plant cull radius (m)', 'plantCullRadius', 0, 600, 5, 0, 'Plants farther than this from the camera are culled; 0 means the flora default of 90 m. Rebuilds on release.', { onRelease: true });
+  F('plant cap', 'plantCap', 0, 2000, 10, 0, 'Most plants the field may hold; 0 means the flora default. Rebuilds on release.', { onRelease: true });
+  F('vine density', 'vineDensity', 0, 3, 0.01, 2);
+  F('vine length (m)', 'vineLength', 0.2, 4, 0.05, 2);
+  // A/B buttons: zero one density in the live flora block and rebuild, restore on the next click.
+  const stashed = {};
+  for (const [key, name] of [['grassDensity', 'grass'], ['plantDensity', 'plants'], ['vineDensity', 'vines']]) {
+    const btn = button(b, `${name} off`, () => withFlora((f) => {
+      if (key in stashed) { f[key] = stashed[key]; delete stashed[key]; btn.textContent = `${name} off`; }
+      else { stashed[key] = f[key]; f[key] = 0; btn.textContent = `${name} on`; }
+    }), { hint: `A/B: rebuilds without ${name}, and the next click brings them back` });
+  }
+  dropdown(b, 'grass mode', [['mesh', 'mesh: built once, culled per tile'], ['compute', 'compute: culled per frame']],
+    () => floraFor(visuals.theme).grassMode || 'mesh', (v) => withFlora((f) => { f.grassMode = v; }),
+    'mesh: every blade built once, culled per tile. compute: blades culled per frame from painted density and height textures.');
+  slider(b, 'grass radius (m)', 4, 400, 1, 0, () => floraFor(visuals.theme).grassRadius ?? 60,
+    (v) => withFlora((f) => { f.grassRadius = v; }),
+    'Compute grass only: blades exist within this many metres of the camera. Rebuilds on release.', { onRelease: true });
+  dropdown(b, 'grass lighting', [['lambert', 'lambert'], ['standard', 'standard PBR']],
+    () => GRASS_LIGHT, (v) => { GRASS_LIGHT = v; withFlora((f) => { f.grassLighting = v; }); });
+  checkbox(b, 'grass receives shadows', () => GRASS_SHADOW, (v) => { GRASS_SHADOW = v; rebuildFlora(); });
+  checkbox(b, 'GPU occlusion', () => OCCLUSION, (v) => { OCCLUSION = v; flora.setOcclusionEnabled(v); updateHud(); },
+    'Culls compute blades and plants against a depth image of the concrete. Live; the kernels read the flag on their next cull.');
+  const counts = el('div');
+  counts.style.cssText = 'color:var(--wui-muted);font-size:11px;margin:6px 0 2px;min-height:14px';
+  b.append(counts);
+  syncFloraCounts = () => {
+    const s = flora ? flora.stats : null;
+    counts.textContent = !s || !visuals.toggles.flora ? 'flora off'
+      : `${s.blades.toLocaleString()} blades${s.capped ? ` (capped — asked ${s.askedDensity.toFixed(1)}/m², built ${s.builtDensity.toFixed(1)})` : ''}`
+        + ` · ${s.plants} plants · ${s.vines} vines`;
+    updateHud();
+  };
+  // A theme switch replaces the flora block wholesale, so the sliders must be pushed back from the
+  // new theme or they keep editing the old one's numbers.
+  syncFloraPanel = () => syncAll();
+}
+
+// ---- Render ----
+{
+  const b = head('Render');
+  dropdown(b, 'concrete chunks', [['0', 'off: one mesh per material'], ['16', '16 m cells'], ['32', '32 m cells'], ['64', '64 m cells']],
+    () => String(view.chunk), (v) => { view.chunk = parseFloat(v); withFloraBlock((f) => { f.vineChunk = view.chunk; }); rebuildScene(); },
+    'Instanced boxes and vines split into cells of this size so the renderer frustum-culls per cell.');
+  slider(b, 'draw distance (m)', 50, 2000, 10, 0, () => view.drawDistance,
+    (v) => { view.drawDistance = v; applyDrawDistance(); },
+    'Grass fades out over the last third of this and the far plane follows. Live.');
+  dropdown(b, 'shadow map', ['1024', '2048', '4096'],
+    () => String(SHADOW_SIZE), (v) => { SHADOW_SIZE = parseInt(v, 10); applyShadowSize(); });
+  dropdown(b, 'shadow filter', [['soft', 'pcf soft'], ['hard', 'pcf hard']],
+    () => (SHADOW_SOFT ? 'soft' : 'hard'), (v) => { SHADOW_SOFT = v === 'soft'; applyShadowType(); });
+  function withFloraBlock(fn) { const f = visuals.theme.flora; if (f) fn(f); }
+}
+
+// ---- Visuals ----
+// buildPanel() emits a flat list including a "Bot lighting" block, which is dead weight in a
+// bot-less viewer. Dropped host-side rather than by changing the module, so v2/v3 are untouched.
+{
+  const b = head('Visuals');
+  const nodes = visuals.buildPanel({ heading: false });
+  const titleOf = (n) => (n.classList && n.classList.contains('ttl') ? n.textContent : null);
+  const from = nodes.findIndex(n => titleOf(n) === 'Bot lighting');
+  const to = nodes.findIndex(n => titleOf(n) === 'Sky detail');
+  const keep = from >= 0 && to > from ? [...nodes.slice(0, from), ...nodes.slice(to)] : nodes;
+  b.append(...keep);
+}
+
+// ---- Presets ----
+// A distinct group name: bot-viewer-slots hardcodes its storage prefix and namespaces only by
+// group, so reusing 'maze', 'ui' or v1's 'structures' would share and corrupt those saved slots.
+{
+  const b = head('Presets');
+  const capture = () => ({
+    view: { ...view },
+    params: { ...params },
+    eco: { ...ecoParams },
+    wall: { WALL_H, WALL_T },
+    terrain: { ...terrainSettings },
+    render: { SHADOW_SIZE, SHADOW_SOFT, GRASS_LIGHT, GRASS_SHADOW, OCCLUSION },
+    look: visuals.getLookState(),
+    sections: readSectionStates(ctrl),
+  });
+  const apply = (data) => {
+    if (!data) return;
+    Object.assign(view, data.view || {});
+    Object.assign(params, data.params || {});
+    Object.assign(ecoParams, data.eco || {});
+    if (data.wall) { WALL_H = data.wall.WALL_H ?? WALL_H; WALL_T = data.wall.WALL_T ?? WALL_T; }
+    Object.assign(terrainSettings, data.terrain || {});
+    if (data.render) {
+      SHADOW_SOFT = data.render.SHADOW_SOFT ?? SHADOW_SOFT;
+      GRASS_LIGHT = data.render.GRASS_LIGHT ?? GRASS_LIGHT;
+      GRASS_SHADOW = data.render.GRASS_SHADOW ?? GRASS_SHADOW;
+      OCCLUSION = data.render.OCCLUSION ?? OCCLUSION;
+      flora.setOcclusionEnabled(OCCLUSION);
+      if (data.render.SHADOW_SIZE && data.render.SHADOW_SIZE !== SHADOW_SIZE) { SHADOW_SIZE = data.render.SHADOW_SIZE; applyShadowSize(); }
+      else applyShadowType();
+    }
+    if (data.look) visuals.applyLookState(data.look);
+    if (isEco()) ecoLookApplied = true;
+    applySectionStates(ctrl, data.sections);
+    rebuildScene({ frame: true });
+    syncAll();
+  };
+  const { nodes } = createSlotSection({ group: 'structures-v2', label: 'preset', capture, apply });
+  b.append(...nodes);
+}
+
+// panel show/hide
+const panelToggle = document.getElementById('panelToggle');
+panelToggle.addEventListener('click', () => ctrl.classList.toggle('hidden'));
+addEventListener('keydown', (e) => {
+  if (e.target.matches('input, select, textarea')) return;
+  if (e.key === 'p' || e.key === 'P') ctrl.classList.toggle('hidden');
+  if (e.key === 'f' || e.key === 'F') frameCamera();
+});
+
+// ===================== frame loop =====================
+let lastT = performance.now();
+let framesSinceBuild = 0;
+renderer.setAnimationLoop(async () => {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastT) / 1000);
+  lastT = now;
+  fpsAcc += dt * 1000; fpsN++;
+  frameProf.beginFrame();
+  controls.update();
+  frameProf.time('visuals', () => visuals.update(dt));
+  if (flora) await frameProf.timeAsync('flora', () => flora.update(dt, now / 1000));
+  placeLabels();
+  await frameProf.timeAsync('render', () => postFX.renderAsync());
+  if (wantShot) { wantShot = false; saveShot(); }
+  if (!window.__ready && ++framesSinceBuild > 2) window.__ready = true;
+});
+
+syncAll();
+rebuildScene({ frame: true });
+</script>
+</body>
+</html>

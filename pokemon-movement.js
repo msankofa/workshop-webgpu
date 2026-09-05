@@ -1,6 +1,7 @@
 // Class-aware movement entry point. The Lab uses this name; individual controllers keep narrower names.
 
 import { createStadiumWalker } from './stadium-walker.js';
+import { normaliseWalkerTuning } from './pokemon-movement-settings.js';
 
 export const MOVEMENT_LABELS = Object.freeze({
   walker: 'Walking',
@@ -43,10 +44,11 @@ export function createPokemonMovement({ locomotion, scene, map, ...options } = {
     };
   }
   try {
+    const tuning = normaliseWalkerTuning(options.tuning, { legCount: map.legs.length });
     return {
       supported: true,
       label,
-      controller: createStadiumWalker({ scene, map, ...options }),
+      controller: createStadiumWalker({ scene, map, ...options, tuning }),
       findings: [],
     };
   } catch (error) {

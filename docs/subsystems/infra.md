@@ -48,6 +48,7 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 |---|---|---|
 | `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 140 |
 | `gpu-pipeline-meter.js` | Wraps a `GPUDevice`'s four pipeline factories to report how much of a frame went into building WebGPU pipelines, and how many arrived. Node-tested against a fake device (`test-gpu-pipeline-meter.mjs`). | 55 |
+| `render-pass-recorder.js` | Wraps the renderer's inspector to name every whole scene render in a frame, shadow passes included (three renames the scene to `Shadow Map [ <light> ]` across one). Turns `renderCalls` from a count into a list. Node-tested (`test-render-pass-recorder.mjs`). | 57 |
 | `environment-ui.js` | Builds the six-destination `#workshop-ui` in-game inspector (World, Entities, Player, Assets, Audio, Tools), re-parents the existing live panels, and builds the performance, preset, and audio control content. | 1300 |
 | `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
 | `environment-audio.js` | Standalone Web Audio controller (`createEnvironmentAudio(options)`) extracted from the shooter (`html-game-v2/src/game/main.js`) with no `main.js` coupling: mixer + persistence, camera-listener positional SFX, `sound-map.json` folder loading, streamed `music_menu`/`music_game` with processing graph + pitch worklet, and a front/behind/orbit/above speaker orb. Backed by support modules `sound-events.js`, `music-pitch-processor.js` (AudioWorkletProcessor), `asset-paths.js`, `file-handles.js`, `live-updates.js`. | 1050 |
@@ -60,6 +61,31 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 | `tools/filesystem-map.html` (scope) | Takes an optional `?scope=<name>` that narrows the scan before anything is built from it, so every panel, filter and count is about that subsystem. `pokemon` loads `pokemon-map-scope.js` and adds a Groups panel filtered live through the existing `matchesFilter`, the way extensions already are. `pokemon-lab.html`'s Map tab is this page in an iframe with that parameter. Without it the page is unchanged. | +45 |
 
 ## Public API
+
+### `render-pass-recorder.js`
+
+`renderer.info.render.frameCalls` says how many whole scene renders a frame paid for; this says what
+they were. Three renames the scene to `Shadow Map [ <light> ]` for the length of a shadow render
+(`ShadowNode.renderShadow`), so the inspector hook it calls on every render context reads that name
+back and each shadow pass names its own light.
+
+```js
+const renderPasses = createRenderPassRecorder(renderer);   // after await renderer.init()
+renderPasses.summary();   // "base-game, Shadow Map [ sun ], Shadow Map [ weaponLaser ]"
+renderPasses.take();      // drain: the counts are per frame, not cumulative
+```
+
+It wraps the existing inspector rather than assigning `renderer.inspector`, whose setter tears the
+current inspector down; three ships one by default. `installed` is false when there is nothing to
+wrap, and every read is then empty rather than wrong.
+
+**The thing this was built to find.** `ShadowNode.updateBefore` gates only on
+`shadow.needsUpdate || shadow.autoUpdate`. It checks neither the light's `intensity` nor its
+`visible`, so a **resident light that switches off by ramping intensity to zero still renders a full
+shadow map every frame** for as long as `castShadow` is true. Both `weapon-light.js` and
+`weapon-laser.js` are resident lights of exactly that shape — deliberately, because flipping
+`.visible` feeds the lights hash and would recompile every material — so leaving their shadow
+toggle on costs a whole scene render per frame whether or not the lamp is lit.
 
 ### `gpu-pipeline-meter.js`
 

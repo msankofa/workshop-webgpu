@@ -412,7 +412,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   // GPU readbacks for the panel, once a second: the blade count the last cull kept, and the ground
   // colour under the camera as the cull packs it, beside its CPU twin from the layer averages.
   let lastSample = -Infinity, sampling = false, lastReculls = 0, ringStep = 0;
-  let diagnosticsEnabled = false, diagnosticsRevision = 0, diagnosticGroundProbes = true;
+  let diagnosticsEnabled = false, diagnosticsRevision = 0;
   const ringResults = new Array(8).fill(null);
   const SAMPLE_EVERY = 1;
   function resetReadbacks() {
@@ -423,7 +423,6 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     ringStep = 0;
     ringResults.fill(null);
     stats.drawn = stats.probe = stats.ringProbe = stats.probeError = null;
-    stats.drawnSample = null;
   }
   function sampleReadbacks(seconds) {
     if (!diagnosticsEnabled || sampling || seconds - lastSample < SAMPLE_EVERY) return;
@@ -433,8 +432,6 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     if (typeof renderer?.getArrayBufferAsync !== 'function' || !grass?.readBladeCount) { lastSample = seconds; return; }
     sampling = true; lastSample = seconds;
     const sampledGrass = grass, revision = diagnosticsRevision;
-    const sample = { atMs: performance.now(), occlusion: !!occlusion?.state.enabled,
-      view: [...camera.position.toArray(), ...camera.quaternion.toArray(), ...camera.projectionMatrix.elements] };
     const current = () => diagnosticsEnabled && revision === diagnosticsRevision && grass === sampledGrass;
     const o = uRenderOrigin.value, ox = o.x, oy = o.y, oz = o.z;
     const x = camera.position.x, z = camera.position.z;
@@ -461,16 +458,15 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     (async () => {
       const drawn = await sampledGrass.readBladeCount();
       if (!current()) return null;
-      const probe = diagnosticGroundProbes && sampledGrass.readGroundProbe ? await sampledGrass.readGroundProbe(x, z) : null;
+      const probe = sampledGrass.readGroundProbe ? await sampledGrass.readGroundProbe(x, z) : null;
       if (!current()) return null;
-      const ring = diagnosticGroundProbes && sampledGrass.readGroundProbe ? await sampledGrass.readGroundProbe(rx, rz) : null;
+      const ring = sampledGrass.readGroundProbe ? await sampledGrass.readGroundProbe(rx, rz) : null;
       return current() ? [drawn, probe, ring] : null;
     })()
       .then(result => {
         if (!result || !current()) return;
         const [drawn, probe, ring] = result;
         stats.drawn = drawn;
-        stats.drawnSample = sample;
         // probeDelta: how far the height the cull used sits from the drawn ground there.
         const ground = terrain.groundHeight?.(x + ox, z + oz);
         stats.probe = probe ? { r: probe.r, g: probe.g, b: probe.b, y: probe.y + oy,
@@ -529,10 +525,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     setEnabled,
     // Hosts opt in for an open diagnostics panel or a capture. Disabling also cancels publication
     // of in-flight samples; the GPU operation itself may already have been submitted.
-    setDiagnosticsEnabled(on, { groundProbes = true } = {}) {
-      if (diagnosticsEnabled === !!on && diagnosticGroundProbes === !!groundProbes) return;
+    setDiagnosticsEnabled(on) {
+      if (diagnosticsEnabled === !!on) return;
       diagnosticsEnabled = !!on;
-      diagnosticGroundProbes = !!groundProbes;
       resetReadbacks();
     },
     // Notify removal too: a mirror exclusion retaining a disposed mesh also retains its node
@@ -572,14 +567,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       if (!occlusion) return;
       for (const { root, filter } of occluderRoots) occlusion.markOccluders(root, filter);
     },
-    setOcclusionEnabled(on) {
-      if (occlusion && occlusion.state.enabled !== !!on) {
-        occlusion.setEnabled(!!on);
-        resetReadbacks(); // never label an in-flight count with the new occlusion mode
-      }
-    },
+    setOcclusionEnabled(on) { if (occlusion) occlusion.setEnabled(!!on); },
     get occlusion() { return occlusion ? occlusion.state : null; },
-    get occlusionStats() { return occlusion?.stats ?? null; },
     async update(seconds) {
       if (!enabled) return false;
       syncOrigin();

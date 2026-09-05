@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   ambientFrameAt, createPokemonPhenomena, textureIndexAt,
-} from './pokemon-phenomena.js';
+} from './pokemon-stadium-phenomena.js';
 import { parseAuxiliaryAnimation } from './scripts/extract-stadium-phenomena.mjs';
 
 let checks = 0;
@@ -71,8 +71,15 @@ assert.deepEqual(
   'preserves Charmander’s documented open/half/closed eye stream',
 ); checks += 1;
 check(charmander.textureAnimations[0].channels[0].materials.includes(2), 'routes that stream to Charmander material 2');
-check(charmander.effects[0].anchor.node === 23 && charmander.effects[0].replacesMaterials.includes(9),
-  'stores Charmander’s tail attachment and the placeholder material it replaces');
+check(charmander.effects[0].material === 9
+  && charmander.effects[0].primitive.mesh === 0
+  && charmander.effects[0].primitive.primitive === 9,
+  'routes Charmander’s authored tail plane by material and primitive');
+assert.deepEqual(
+  charmander.effects[0].textures,
+  [15, 16, 17, 18, 19, 20, 21],
+  'skips Charmander’s opaque-black fallback and preserves the seven visible flame frames',
+); checks += 1;
 check(sidecar.species['025'].textureAnimations.some(animation => animation.channels.length > 1), 'preserves Pikachu multi-channel face animation');
 
 console.log(`pokemon phenomena: ${checks} checks passed`);

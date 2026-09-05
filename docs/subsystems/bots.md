@@ -4005,6 +4005,43 @@ Things worth knowing before editing it:
 them fails silently in a browser, and separately checks the gallery sizing rule against the real
 `generateOne`.
 
+### `structure-viewer-v2.html` (checked by `test-structure-viewer-v2.mjs`)
+
+The merge of `structure-viewer.html` and `scratchpads/spawn-atrium/viewer.html`, built 2026-09-05.
+`structure-viewer.html` is left as it was. One panel drives two generator families:
+
+- **Bot structures** (`bot-structures.js`): the v1 Field and Gallery modes, unchanged, with every
+  per-kind card.
+- **Eco-brutalist rooms** (`base-game-spawn-layout.js`): an "Eco-brutalist — one kind" mode showing
+  one of the seven kinds at the origin, and an "all seven" gallery that puts the complex on its own
+  row north of a 3 by 2 grid of rooms (`ECO_CELL` 90 m; the test measures the widest room). Every
+  `ECO_DEFAULTS` number has a slider in the Eco-brutalist card. Eco gallery slots carry the same
+  per-slot reroll labels as the bot gallery.
+
+What came across from the atrium page and now applies to both families: camera presets (overview,
+eye level at spawn, low three-quarter, top), wireframe, a screenshot button, the five reference
+photographs as a strip on the left, the flora A/B buttons, mesh versus compute grass with density
+and radius, grass lighting and grass shadow switches, GPU occlusion (flora is created with
+`occluders: mapRoot` and re-marked every rebuild), per-cell instanced chunks, shadow map size and
+filter, and the profiler lines in the HUD.
+
+Ground rules that had to be reconciled:
+
+- Eco floor slabs span -0.3..0 m. With terrain off the flat ground sits at `GROUND_TOP` (-0.3);
+  with terrain on each eco specimen emits a pad `{x, z, radius, y: GROUND_TOP}` so the field levels
+  under it at the same height. Bot structures are fitted to the terrain as in v1.
+- `groundHeight` is planter soil first, then the terrain field, then the flat rule. The flora
+  `clearFn` only bites in eco modes (planters plus an `OUTDOOR_BAND` of 18 m around the building).
+- Entering an eco mode from a non-eco theme applies the atrium page's clear-day variant of
+  eco-brutalism once; a button in the Eco-brutalist card brings it back on demand, and the Visuals
+  card owns the look after that.
+- Presets use the slot group **`structures-v2`**, distinct from v1's `structures` and v3's groups.
+- Performance follows the atrium page, not v1: post-FX runs in `grade` mode (no bloom chain), the
+  overhead and accent lights are hidden, the shadow map defaults to 1024, and the theme fog scale
+  starts at 0.3 so a wide field does not darken with distance. The Render card's draw distance
+  (default 600 m) sets the grass fade and the far plane; plants keep their own cull radius and cap
+  in the Flora card because they were the largest flora cost on the atrium page.
+
 ### `map-boxes.js` (Node-tested via `test-map-boxes.mjs`)
 
 The box-mesh glue, lifted out of `bot-viewer-v3.html` on 2026-08-09 so `structure-viewer.html` shares

@@ -14,17 +14,17 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_1081Struct {
+struct NodeBuffer_1266Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_1081 : NodeBuffer_1081Struct;
+var<storage, read_write> NodeBuffer_1266 : NodeBuffer_1266Struct;
 
-struct NodeBuffer_1082Struct {
+struct NodeBuffer_1267Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_1082 : NodeBuffer_1082Struct;
+var<storage, read_write> NodeBuffer_1267 : NodeBuffer_1267Struct;
 
 struct objectStruct {
 	nodeUniform2 : u32,
@@ -60,12 +60,12 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform4 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_1081.value[ 0u ] );
-	NodeBuffer_1082.value[ 1u ] = nodeConst0;
+	let nodeConst0 = atomicLoad( &NodeBuffer_1266.value[ 0u ] );
+	NodeBuffer_1267.value[ 1u ] = nodeConst0;
 
 	if ( ( nodeConst0 > object.nodeUniform2 ) ) {
 
-		NodeBuffer_1082.value[ 1u ] = object.nodeUniform2;
+		NodeBuffer_1267.value[ 1u ] = object.nodeUniform2;
 		
 
 	}
@@ -73,7 +73,7 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( ( ( object.nodeUniform3 > 0u ) && ( nodeConst0 > object.nodeUniform3 ) ) ) {
 
-		NodeBuffer_1082.value[ 1u ] = object.nodeUniform3;
+		NodeBuffer_1267.value[ 1u ] = object.nodeUniform3;
 		
 
 	}

@@ -11,38 +11,59 @@ const DEBUG_PANEL_ID = 'pokemon-phenomena-debug';
 
 const positiveMod = (value, modulus) => ((value % modulus) + modulus) % modulus;
 
-function createDiagnosticsPanel(label) {
-  if (typeof document === 'undefined') return { set() {}, remove() {} };
-  document.getElementById(DEBUG_PANEL_ID)?.remove();
-  const panel = document.createElement('div');
-  panel.id = DEBUG_PANEL_ID;
-  Object.assign(panel.style, {
-    position: 'fixed',
-    left: '12px',
-    bottom: '12px',
-    zIndex: '10000',
-    minWidth: '310px',
-    maxWidth: 'min(520px, calc(100vw - 24px))',
-    padding: '10px 12px',
-    border: '1px solid #61d88a',
-    borderRadius: '6px',
-    background: 'rgba(4, 9, 13, .94)',
-    color: '#d8ffe4',
-    font: '12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace',
-    whiteSpace: 'pre-wrap',
-    pointerEvents: 'none',
-    boxShadow: '0 4px 24px rgba(0, 0, 0, .45)',
-  });
-  document.body.appendChild(panel);
+function createDiagnosticsPanel(label, enabled = false) {
+  if (typeof document === 'undefined') return { set() {}, setEnabled() {}, remove() {} };
+  let panel = null;
+  let lastLines = [];
+  let lastWarning = false;
+
+  function remove() {
+    if (panel?.isConnected) panel.remove();
+    panel = null;
+  }
+
+  function render() {
+    if (!enabled) return;
+    if (!panel) {
+      document.getElementById(DEBUG_PANEL_ID)?.remove();
+      panel = document.createElement('div');
+      panel.id = DEBUG_PANEL_ID;
+      Object.assign(panel.style, {
+        position: 'fixed',
+        left: '12px',
+        bottom: '12px',
+        zIndex: '10000',
+        minWidth: '310px',
+        maxWidth: 'min(520px, calc(100vw - 24px))',
+        padding: '10px 12px',
+        border: '1px solid #61d88a',
+        borderRadius: '6px',
+        background: 'rgba(4, 9, 13, .94)',
+        color: '#d8ffe4',
+        font: '12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace',
+        whiteSpace: 'pre-wrap',
+        pointerEvents: 'none',
+        boxShadow: '0 4px 24px rgba(0, 0, 0, .45)',
+      });
+      document.body.appendChild(panel);
+    }
+    panel.style.borderColor = lastWarning ? '#ff6b6b' : '#61d88a';
+    panel.style.color = lastWarning ? '#ffd6d6' : '#d8ffe4';
+    panel.textContent = ['POKEMON PHENOMENA DEBUG — ' + label, ...lastLines].join('\n');
+  }
+
   return {
     set(lines, warning = false) {
-      panel.style.borderColor = warning ? '#ff6b6b' : '#61d88a';
-      panel.style.color = warning ? '#ffd6d6' : '#d8ffe4';
-      panel.textContent = ['POKEMON PHENOMENA DEBUG — ' + label, ...lines].join('\n');
+      lastLines = lines;
+      lastWarning = warning;
+      render();
     },
-    remove() {
-      if (panel.isConnected) panel.remove();
+    setEnabled(next) {
+      enabled = !!next;
+      if (enabled) render();
+      else remove();
     },
+    remove,
   };
 }
 
@@ -177,10 +198,13 @@ export async function createPokemonPhenomena({
   species = null,
   name = null,
   startupError = null,
+  debug = false,
 }) {
   const label = name || (species == null ? 'unknown species' : '#' + String(species).padStart(3, '0'));
-  const diagnostics = createDiagnosticsPanel(label);
-  console.info('[Pokemon phenomena] initializing', { label, species, hasSpec: !!spec, spec });
+  let debugEnabled = !!debug;
+  const diagnostics = createDiagnosticsPanel(label, debugEnabled);
+  const debugInfo = (...args) => { if (debugEnabled) console.info(...args); };
+  debugInfo('[Pokemon phenomena] initializing', { label, species, hasSpec: !!spec, spec });
   if (!spec) {
     const message = startupError
       ? String(startupError.stack || startupError.message || startupError)
@@ -191,7 +215,7 @@ export async function createPokemonPhenomena({
       'See [Pokemon phenomena] and [lab] in the console.',
     ] : [
       'ERROR: no sidecar record was supplied',
-      'blink bindings: 0',
+      'ambient bindings: 0',
       'effect bindings: 0',
     ], true);
     if (startupError) {
@@ -202,6 +226,11 @@ export async function createPokemonPhenomena({
     return {
       update() {},
       setEnabled() {},
+      setDebug(next) {
+        debugEnabled = !!next;
+        diagnostics.setEnabled(debugEnabled);
+        debugInfo('[Pokemon phenomena] diagnostics enabled', { label, species, hasSpec: false });
+      },
       dispose() { diagnostics.remove(); },
       active: false,
     };
@@ -216,8 +245,8 @@ export async function createPokemonPhenomena({
   };
 
   const animation = spec.textureAnimations?.[spec.ambientTextureAnimation] || null;
-  const blinkBindings = [];
-  let missingBlinkBindings = 0;
+  const ambientBindings = [];
+  let missingAmbientBindings = 0;
   if (animation) {
     for (const channel of animation.channels || []) {
       for (const materialIndex of channel.materials || []) {
@@ -227,8 +256,8 @@ export async function createPokemonPhenomena({
           channel.textures,
           getTexture,
         );
-        if (sequence) blinkBindings.push({ channel, sequence });
-        else missingBlinkBindings += 1;
+        if (sequence) ambientBindings.push({ channel, sequence });
+        else missingAmbientBindings += 1;
       }
     }
   }
@@ -249,20 +278,20 @@ export async function createPokemonPhenomena({
 
   let enabled = true;
   let lastStadiumFrame = null;
-  let lastBlinkPlaying = false;
+  let lastAmbientPlaying = false;
   let lastConsoleSecond = -1;
 
   const bindingSummary = {
     selector: spec.ambientTextureAnimationSelector,
     ambientAnimation: spec.ambientTextureAnimation,
     ambientFrames: animation?.frameCount || 0,
-    blinkBindings: blinkBindings.map(binding => ({
+    ambientBindings: ambientBindings.map(binding => ({
       material: binding.sequence.materialIndex,
       materialName: binding.sequence.materialName,
       slots: binding.sequence.slotCount,
       textures: binding.channel.textures,
     })),
-    missingBlinkBindings,
+    missingAmbientBindings,
     effects: effectBindings.map(binding => ({
       role: binding.effect.role,
       material: binding.sequence.materialIndex,
@@ -272,19 +301,19 @@ export async function createPokemonPhenomena({
     })),
     missingEffectBindings,
   };
-  console.info('[Pokemon phenomena] ready', bindingSummary);
+  debugInfo('[Pokemon phenomena] ready', bindingSummary);
   if (!animation) console.warn('[Pokemon phenomena] ROM selector did not resolve to an animation', bindingSummary);
-  if (missingBlinkBindings || missingEffectBindings) {
+  if (missingAmbientBindings || missingEffectBindings) {
     console.warn('[Pokemon phenomena] one or more material bindings failed', bindingSummary);
   }
 
   function restoreAll() {
-    for (const binding of blinkBindings) binding.sequence.restore();
+    for (const binding of ambientBindings) binding.sequence.restore();
     for (const binding of effectBindings) binding.sequence.restore();
   }
 
   return {
-    active: !!(blinkBindings.length || effectBindings.length),
+    active: !!(ambientBindings.length || effectBindings.length),
     update(seconds) {
       if (!enabled) return;
       const stadiumFrame = Math.max(0, Math.floor((Number(seconds) || 0) * DEFAULT_FPS));
@@ -295,15 +324,15 @@ export async function createPokemonPhenomena({
         const triggerFrames = spec.ambientTriggerFrames || DEFAULT_TRIGGER_FRAMES;
         const phase = positiveMod(stadiumFrame, triggerFrames);
         const isPlaying = stadiumFrame >= triggerFrames && phase < animation.frameCount;
-        if (isPlaying !== lastBlinkPlaying) {
-          console.info('[Pokemon phenomena] blink ' + (isPlaying ? 'started' : 'ended'), {
+        if (isPlaying !== lastAmbientPlaying) {
+          debugInfo('[Pokemon phenomena] ambient texture animation ' + (isPlaying ? 'started' : 'ended'), {
             stadiumFrame,
             animation: spec.ambientTextureAnimation,
             phase,
           });
-          lastBlinkPlaying = isPlaying;
+          lastAmbientPlaying = isPlaying;
         }
-        for (const binding of blinkBindings) {
+        for (const binding of ambientBindings) {
           if (isPlaying) {
             binding.sequence.apply(textureIndexAt(binding.channel, phase));
           } else {
@@ -323,30 +352,30 @@ export async function createPokemonPhenomena({
       }
 
       const triggerFrames = spec.ambientTriggerFrames || DEFAULT_TRIGGER_FRAMES;
-      const blinkPhase = animation ? positiveMod(stadiumFrame, triggerFrames) : null;
-      const blinkPlaying = !!animation
+      const ambientPhase = animation ? positiveMod(stadiumFrame, triggerFrames) : null;
+      const ambientPlaying = !!animation
         && stadiumFrame >= triggerFrames
-        && blinkPhase < animation.frameCount;
-      const blinkTextures = blinkPlaying
-        ? blinkBindings.map(binding => textureIndexAt(binding.channel, blinkPhase)).join(', ')
+        && ambientPhase < animation.frameCount;
+      const ambientTextures = ambientPlaying
+        ? ambientBindings.map(binding => textureIndexAt(binding.channel, ambientPhase)).join(', ')
         : 'resting';
       diagnostics.set([
         'selector: ' + String(spec.ambientTextureAnimationSelector),
         'ambient animation: ' + String(spec.ambientTextureAnimation)
           + ' (' + String(animation?.frameCount || 0) + ' frames)',
-        'blink bindings: ' + blinkBindings.length + '  missing: ' + missingBlinkBindings,
+        'ambient bindings: ' + ambientBindings.length + '  missing: ' + missingAmbientBindings,
         'effect bindings: ' + effectBindings.length + '  missing: ' + missingEffectBindings,
         'stadium frame: ' + stadiumFrame,
-        'blink: ' + (blinkPlaying ? 'PLAY frame ' + blinkPhase + ' texture ' + blinkTextures : 'idle'),
+        'ambient: ' + (ambientPlaying ? 'PLAY frame ' + ambientPhase + ' texture ' + ambientTextures : 'idle'),
         ...(effectFrames.length ? effectFrames : ['effects: none']),
-      ], !blinkBindings.length && !effectBindings.length);
+      ], !ambientBindings.length && !effectBindings.length);
 
       const currentSecond = Math.floor(stadiumFrame / DEFAULT_FPS);
       if (currentSecond !== lastConsoleSecond) {
         lastConsoleSecond = currentSecond;
-        console.info('[Pokemon phenomena] heartbeat', {
+        debugInfo('[Pokemon phenomena] heartbeat', {
           stadiumFrame,
-          blink: blinkPlaying ? { frame: blinkPhase, textures: blinkTextures } : 'idle',
+          ambient: ambientPlaying ? { frame: ambientPhase, textures: ambientTextures } : 'idle',
           effects: effectFrames,
         });
       }
@@ -357,18 +386,23 @@ export async function createPokemonPhenomena({
       if (!enabled) {
         restoreAll();
         diagnostics.set(['disabled; original materials restored']);
-        console.info('[Pokemon phenomena] disabled; original materials restored');
+        debugInfo('[Pokemon phenomena] disabled; original materials restored');
       } else {
-        console.info('[Pokemon phenomena] enabled');
+        debugInfo('[Pokemon phenomena] enabled');
       }
     },
+    setDebug(next) {
+      debugEnabled = !!next;
+      diagnostics.setEnabled(debugEnabled);
+      debugInfo('[Pokemon phenomena] diagnostics enabled', bindingSummary);
+    },
     dispose() {
-      for (const binding of blinkBindings) binding.sequence.dispose();
+      for (const binding of ambientBindings) binding.sequence.dispose();
       for (const binding of effectBindings) binding.sequence.dispose();
-      blinkBindings.length = 0;
+      ambientBindings.length = 0;
       effectBindings.length = 0;
       diagnostics.remove();
-      console.info('[Pokemon phenomena] disposed', { label, species });
+      debugInfo('[Pokemon phenomena] disposed', { label, species });
     },
   };
 }

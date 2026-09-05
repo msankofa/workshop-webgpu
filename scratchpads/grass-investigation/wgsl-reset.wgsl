@@ -14,11 +14,11 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_1081Struct {
+struct NodeBuffer_1266Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_1081 : NodeBuffer_1081Struct;
+var<storage, read_write> NodeBuffer_1266 : NodeBuffer_1266Struct;
 
 struct objectStruct {
 	nodeUniform1 : u32
@@ -52,7 +52,7 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform1 ) { return; }
 
-	atomicStore( &NodeBuffer_1081.value[ 0u ], 0u );
+	atomicStore( &NodeBuffer_1266.value[ 0u ], 0u );
 
 	
 

@@ -775,7 +775,7 @@ import {
   LOCOMOTION, POSTURES, APPENDAGE_TYPES, SIDES, setLocomotion, setRoot, setSpine, setHead,
   setContacts, toggleContact, addAppendage, updateAppendage, removeAppendage, declareMirror,
   suggestMirror, suggestSide, flipSide, claimedBones, validateAnnotation, unaddressed, annotationStamp,
-  isBlank,
+  isBlank, setWalkerMovement,
 } from './pokemon-annotation.js';
 import { SUGGESTION_VERSION, suggestPokemonParts } from './pokemon-suggest.js';
 import { toggleKeys, chainKeysOf, selectionInfo, nearestPoint, pointsInRect } from './pokemon-select.js';
@@ -789,6 +789,10 @@ import { createEnvironmentAudio } from './environment-audio.js';
 import { rigFor, applyNeutral } from './pokemon-lab-runtime.js';
 import { mapLabRigForGroundMovement } from './pokemon-lab-ground-map.js';
 import { createPokemonMovement, movementLabel } from './pokemon-movement.js';
+import {
+  DEFAULT_WALKER_GAIT, WALKER_TUNING_FIELDS, normaliseWalkerMovement,
+  normaliseWalkerTuning, effectiveWalkerTuning, walkerTuningLabel,
+} from './pokemon-movement-settings.js';
 import { createPokemonPhenomena } from './pokemon-stadium-phenomena.js';
 import { mapStadiumRigFromGLB } from './stadium-rig-map.js';
 import { GAITS } from './creature-locomotion.js';
@@ -835,6 +839,20 @@ const panelChrome = document.createElement('div'); panelChrome.className = 'pane
 const panelTabs = document.createElement('div'); panelTabs.className = 'panel-tabs';
 const panelBody = document.createElement('div'); panelBody.className = 'panel-body';
 ctrlRoot.append(panelHead, panelChrome, panelTabs, panelBody);
+
+// Detailed Stadium texture-animation output is opt-in. Insert the control into the flat Playback markup
+// before buildSections moves that markup into its Animation-tab card.
+const phenomenaDebugControl = document.createElement('input');
+phenomenaDebugControl.type = 'checkbox';
+phenomenaDebugControl.id = 'phenomenaDebug';
+const phenomenaDebugLabel = document.createElement('label');
+phenomenaDebugLabel.dataset.tip =
+  'Show the live Stadium texture-animation overlay and detailed console messages. Warnings remain visible when this is off.';
+phenomenaDebugLabel.append(phenomenaDebugControl, document.createTextNode(' Texture diagnostics'));
+const phenomenaDebugRow = document.createElement('div');
+phenomenaDebugRow.className = 'row';
+phenomenaDebugRow.append(phenomenaDebugLabel);
+$('speedRead').closest('.row').after(phenomenaDebugRow);
 
 // A tab is a plain host div in the scroller; only the active one is shown. createSection already takes
 // an arbitrary host, so a tab body is just a different host and the theme needs no changes.
@@ -977,14 +995,14 @@ const history = { past: [], future: [], limit: 200 };
 // did" has to mean that whichever it was, so each entry records WHEN and one key press picks the newer.
 let editSeq = 0;
 
-function commit(next) {
+function commit(next, { movementOnly = false } = {}) {
   if (next === library) return;
   history.past.push({ seq: ++editSeq, library });
   if (history.past.length > history.limit) history.past.shift();
   history.future.length = 0;
   library = next;
   saveLibrary();
-  afterEdit();
+  afterEdit({ movementOnly });
 }
 
 function undo() {
@@ -1011,11 +1029,13 @@ const manifest = await loadManifest();
 const dex = dexEntries(manifest);
 const tiles = new Map();
 const phenomenaLibrary = await loadPhenomena();
-console.info('[Pokemon phenomena] sidecar loaded', {
-  version: phenomenaLibrary.version,
-  speciesRecords: Object.keys(phenomenaLibrary.species || {}).length,
-  hasCharmander: !!phenomenaLibrary.species?.['004'],
-});
+if (phenomenaDebugControl.checked) {
+  console.info('[Pokemon phenomena] sidecar loaded', {
+    version: phenomenaLibrary.version,
+    speciesRecords: Object.keys(phenomenaLibrary.species || {}).length,
+    hasCharmander: !!phenomenaLibrary.species?.['004'],
+  });
+}
 
 // --- the scene ------------------------------------------------------------------------------------
 const stage = $('stage');
@@ -1117,6 +1137,9 @@ let current = null;              // { entry, rig, gltf, root, mixer, rest, clips
 let currentClip = -1;
 let action = null;
 let currentPhenomena = null;
+phenomenaDebugControl.addEventListener('change', () => {
+  currentPhenomena?.setDebug(phenomenaDebugControl.checked);
+});
 
 async function assetsFor(entry) {
   const hit = cache.get(entry.species);
@@ -1207,16 +1230,18 @@ async function selectSpecies(species) {
   let phenomena;
   const phenomenaKey = String(entry.dex).padStart(3, '0');
   const phenomenaSpec = phenomenaLibrary.species?.[phenomenaKey];
-  console.info('[Pokemon phenomena] selection handoff', {
-    species: entry.dex,
-    model: species,
-    phenomenaKey,
-    name: entry.name,
-    hasSpec: !!phenomenaSpec,
-    selector: phenomenaSpec?.ambientTextureAnimationSelector,
-    ambientAnimation: phenomenaSpec?.ambientTextureAnimation,
-    effects: phenomenaSpec?.effects,
-  });
+  if (phenomenaDebugControl.checked) {
+    console.info('[Pokemon phenomena] selection handoff', {
+      species: entry.dex,
+      model: species,
+      phenomenaKey,
+      name: entry.name,
+      hasSpec: !!phenomenaSpec,
+      selector: phenomenaSpec?.ambientTextureAnimationSelector,
+      ambientAnimation: phenomenaSpec?.ambientTextureAnimation,
+      effects: phenomenaSpec?.effects,
+    });
+  }
   try {
     phenomena = await createPokemonPhenomena({
       THREE,
@@ -1224,6 +1249,7 @@ async function selectSpecies(species) {
       spec: phenomenaSpec,
       species: entry.dex,
       name: entry.name,
+      debug: phenomenaDebugControl.checked,
     });
   } catch (error) {
     console.warn(`[lab] ${entry.name} texture phenomena did not start:`, error);
@@ -1234,6 +1260,7 @@ async function selectSpecies(species) {
       species: entry.dex,
       name: entry.name,
       startupError: error,
+      debug: phenomenaDebugControl.checked,
     });
   }
   if (token !== loadToken) { phenomena.dispose(); return; }
@@ -3484,7 +3511,7 @@ $('saveSegBtn').addEventListener('click', () => {
   commit(putAnnotation(library, setSegment(annotationFor(current.entry.species), name, seg)));
 });
 
-function afterEdit() {
+function afterEdit({ movementOnly = false } = {}) {
   // Undo can be pressed before any species has finished loading, and the per-species panels would throw.
   if (current) { refreshSegments(); refreshParts(); buildClipList(); describeSpecies(); refreshPose(); }
   refreshBoard();
@@ -3492,7 +3519,8 @@ function afterEdit() {
   $('redoBtn').disabled = !history.future.length;
   // The adapter reads semantic parts and the neutral pose. Rebuild from the edited annotation rather than
   // letting a preview continue with stale decisions; this path never writes validation back to the file.
-  if (movementMode) rebuildMovementSession();
+  if (movementMode && !movementOnly) rebuildMovementSession();
+  else if (movementMode) refreshMovementPanel();
 }
 
 // --- the grid -------------------------------------------------------------------------------------
@@ -3602,6 +3630,169 @@ const movementPreview = {
   stepOnce: false,
   lastUiAt: 0,
 };
+const movementAdvanced = {
+  built: false,
+  species: null,
+  draft: {},
+  rows: new Map(),
+  summary: null,
+};
+
+function movementLegCount() {
+  return movementPreview.session?.entries?.[0]?.walker?.legs?.length ?? null;
+}
+
+function movementDerivedTuning() {
+  return movementPreview.session?.entries?.[0]?.walker?.derivedTuning || {};
+}
+
+function readMovementDraft() {
+  if (!current) return {};
+  return normaliseWalkerMovement(
+    annotationFor(current.entry.species).movement?.walker,
+    { legCount: movementLegCount() },
+  ).tuning;
+}
+
+function retuneMovementEntries() {
+  for (const entry of movementPreview.session?.entries || []) {
+    const tuning = effectiveWalkerTuning(
+      movementAdvanced.draft,
+      entry.walker.derivedTuning,
+      { legCount: entry.walker.legs.length },
+    );
+    entry.walker.retune(tuning);
+  }
+}
+
+function persistMovementDraft({ rebuild = false } = {}) {
+  if (!current) return;
+  const movement = normaliseWalkerMovement({
+    gait: $('movementGait').value,
+    tuning: movementAdvanced.draft,
+  }, { legCount: movementLegCount() });
+  const before = annotationFor(current.entry.species);
+  const after = setWalkerMovement(before, movement);
+  if (annotationStamp(after) === annotationStamp(before)) return;
+  commit(putAnnotation(library, after), { movementOnly: !rebuild });
+}
+
+function updateMovementTuning(key, value, { persist = false } = {}) {
+  const derived = movementDerivedTuning();
+  if (derived[key] != null && typeof value === 'number' && Math.abs(value - derived[key]) <= 1e-9) {
+    delete movementAdvanced.draft[key];
+  } else {
+    movementAdvanced.draft[key] = value;
+  }
+  movementAdvanced.draft = normaliseWalkerTuning(
+    movementAdvanced.draft,
+    { legCount: movementLegCount() },
+  );
+  retuneMovementEntries();
+  refreshMovementPanel();
+  if (persist) persistMovementDraft();
+}
+
+function buildMovementTuningSection(title, fields) {
+  const body = createSection(tabHosts.get('movement'), title, { collapsed: true });
+  let group = '';
+  for (const [key, spec] of fields) {
+    if (spec.group !== group) {
+      group = spec.group;
+      const heading = document.createElement('div');
+      heading.className = 'guide';
+      heading.textContent = group;
+      body.append(heading);
+    }
+    const row = document.createElement('label');
+    row.className = 'slider-row';
+    const label = document.createElement('span');
+    label.textContent = spec.label;
+    const control = spec.values ? document.createElement('select') : document.createElement('input');
+    if (spec.values) {
+      for (const value of spec.values) control.append(new Option(value, value));
+    } else {
+      control.type = 'range';
+      control.min = String(spec.min);
+      control.max = String(spec.max);
+      control.step = String(spec.step);
+    }
+    const read = document.createElement('span');
+    read.className = 'mono';
+    read.style.flex = 'none';
+    const value = () => spec.values ? control.value : Number(control.value);
+    control.addEventListener(spec.values ? 'change' : 'input',
+      () => updateMovementTuning(key, value(), { persist: !!spec.values }));
+    if (!spec.values) control.addEventListener('change',
+      () => updateMovementTuning(key, value(), { persist: true }));
+    row.append(label, control, read);
+    body.append(row);
+    movementAdvanced.rows.set(key, { control, read, spec });
+  }
+  return body;
+}
+
+function buildAdvancedMovementPanel() {
+  if (movementAdvanced.built) return;
+  movementAdvanced.built = true;
+  const fields = Object.entries(WALKER_TUNING_FIELDS);
+  const everyday = fields.filter(([, spec]) => spec.group !== 'Foot safety');
+  const expert = fields.filter(([, spec]) => spec.group === 'Foot safety');
+  const body = buildMovementTuningSection('Advanced movement', everyday);
+  const actions = document.createElement('div');
+  actions.className = 'buttons';
+  const reset = document.createElement('button');
+  reset.textContent = 'Reset species';
+  reset.addEventListener('click', () => {
+    if (!current) return;
+    movementAdvanced.draft = {};
+    $('movementGait').value = DEFAULT_WALKER_GAIT;
+    retuneMovementEntries();
+    persistMovementDraft({ rebuild: true });
+  });
+  actions.append(reset);
+  movementAdvanced.summary = document.createElement('div');
+  movementAdvanced.summary.className = 'mono';
+  body.append(actions, movementAdvanced.summary);
+  buildMovementTuningSection('Foot safety (expert)', expert);
+}
+
+function refreshAdvancedMovementPanel(resolved, ready) {
+  if (!movementAdvanced.built) return;
+  const species = current?.entry?.species || null;
+  if (movementAdvanced.species !== species) {
+    movementAdvanced.species = species;
+    movementAdvanced.draft = readMovementDraft();
+  }
+  const supported = resolved?.locomotion === 'walker';
+  const derived = movementDerivedTuning();
+  const effective = effectiveWalkerTuning(
+    movementAdvanced.draft,
+    derived,
+    { legCount: movementLegCount() },
+  );
+  for (const [key, row] of movementAdvanced.rows) {
+    const baseline = derived[key] ?? row.spec.default;
+    const override = movementAdvanced.draft[key];
+    const value = effective[key] ?? baseline;
+    row.control.disabled = !supported;
+    if (value != null) row.control.value = String(value);
+    row.read.textContent = [
+      walkerTuningLabel(baseline, row.spec),
+      override == null ? 'derived' : walkerTuningLabel(override, row.spec),
+      walkerTuningLabel(value, row.spec),
+    ].join(' → ');
+  }
+  const names = Object.keys(movementAdvanced.draft);
+  const frame = movementPreview.session?.entries?.[0]?.lastFrame;
+  movementAdvanced.summary.textContent = !supported
+    ? 'Walker settings apply only to walking species.'
+    : (names.length ? names.length + ' override(s): ' + names.join(', ') : 'Using geometry-derived settings.')
+      + (ready && frame
+        ? '\nEffective speed ceiling ' + frame.maxSpeed.toFixed(3) + ' m/s; step '
+          + frame.stepDuration.toFixed(3) + ' s; stride ' + frame.strideEnvelope.toFixed(3) + ' m.'
+        : '');
+}
 
 function seededMovementRandom(seed = 0x504f4b45) {
   let x = seed >>> 0;
@@ -3738,6 +3929,11 @@ function startMovementSession() {
     refreshMovementPanel();
     return;
   }
+  const authoredMovement = normaliseWalkerMovement(resolved.movement?.walker);
+  const selectedGait = authoredMovement.gait || DEFAULT_WALKER_GAIT;
+  $('movementGait').value = selectedGait;
+  movementAdvanced.species = current.entry.species;
+  movementAdvanced.draft = authoredMovement.tuning;
 
   const mapped = movementSources().map(source => movementMapFor(source, resolved));
   const blocking = mapped.flatMap(result => result.findings || []).filter(f => f.severity === 'error');
@@ -3769,13 +3965,18 @@ function startMovementSession() {
     const byNode = movementObjectsByNode(clone);
     applyMovementNeutral(resolved, byNode);
     clone.updateMatrixWorld(true);
+    const walkerMovement = normaliseWalkerMovement(
+      resolved.movement?.walker,
+      { legCount: result.map.legs.length },
+    );
     const created = createPokemonMovement({
       locomotion: resolved.locomotion,
       THREE,
       scene: clone,
       map: result.map,
       terrainHeight: () => 0,
-      gait: GAITS[$('movementGait').value] || GAITS.walk,
+      gait: GAITS[selectedGait] || GAITS.walk,
+      tuning: walkerMovement.tuning,
       worldHeight: 1,
       rng: seededMovementRandom(),
     });
@@ -3966,6 +4167,9 @@ function movementDiagnosticText(entry) {
   const percent = value => `${(100 * (Number.isFinite(value) ? value : 0)).toFixed(1)}%`;
   const number = value => Number.isFinite(value) ? value.toFixed(4) : 'n/a';
   const flips = frame.legs.filter(leg => Number.isFinite(leg.bendSign) && leg.bendSign <= 0).length;
+  const airborne = frame.legs.filter(leg => leg.stepping).length;
+  const cadence = frame.stepDuration > 0 ? 1 / frame.stepDuration : 0;
+  const utilization = frame.strideEnvelope > 0 ? frame.triggerH / frame.strideEnvelope : 0;
   return [
     entry.label,
     `  Foot slip       ${percent(report.dragging.worstStanceSkate)}`,
@@ -3973,6 +4177,10 @@ function movementDiagnosticText(entry) {
     `  Knee flip       ${flips}`,
     `  Ground error    ${number(report.retarget.plantedGroundErrorP95)}`,
     `  Support margin  ${number(frame.supportMargin)}`,
+    `  Airborne legs   ${airborne}/${frame.legs.length}`,
+    `  Step cadence    ${number(cadence)} Hz`,
+    `  Speed ceiling   ${number(frame.maxSpeed)} m/s`,
+    `  Stride use      ${percent(utilization)}`,
     `  Dropped time    ${number(frame.droppedTimeTotal)} s`,
   ].join('\n');
 }
@@ -3983,6 +4191,10 @@ function refreshMovementPanel() {
   const session = movementPreview.session;
   const ready = !!session?.entries?.length;
   $('movementClass').textContent = movementLabel(resolved?.locomotion);
+  if (!session) {
+    const saved = normaliseWalkerMovement(resolved?.movement?.walker);
+    $('movementGait').value = saved.gait || DEFAULT_WALKER_GAIT;
+  }
   $('movementGait').disabled = !supportedClass;
   $('movementStartBtn').disabled = !ready || (!movementPreview.paused && movementPreview.started);
   $('movementPauseBtn').disabled = !ready || movementPreview.paused;
@@ -4010,6 +4222,7 @@ function refreshMovementPanel() {
     ];
     $('movementWarnings').textContent = [...new Set(warnings)].join('\n');
   }
+  refreshAdvancedMovementPanel(resolved, ready);
 }
 
 function applyMovementCommand(entry, dt) {
@@ -4066,7 +4279,7 @@ $('movementStepBtn').addEventListener('click', () => {
 });
 $('movementResetBtn').addEventListener('click', startMovementSession);
 $('movementMap').addEventListener('change', rebuildMovementSession);
-$('movementGait').addEventListener('change', rebuildMovementSession);
+$('movementGait').addEventListener('change', () => persistMovementDraft({ rebuild: true }));
 $('movementSpeed').addEventListener('input', refreshMovementPanel);
 $('movementDirection').addEventListener('input', refreshMovementPanel);
 for (const id of [
@@ -4510,6 +4723,7 @@ renderer.setAnimationLoop(() => {
 // Controls whose look is written by script need one pass before the first click, or the button and the
 // state it stands for start out disagreeing.
 buildSections();
+buildAdvancedMovementPanel();
 setActiveTab('dex', { scroll: false });
   setSnap(play.snap);
   refreshGhostButtons();

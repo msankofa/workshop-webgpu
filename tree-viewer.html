@@ -6,12 +6,16 @@
 <title>Tree Viewer</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1d23; }
+  #dbg { position: fixed; bottom: 10px; left: 12px; color: #c4ccd6; background: rgba(20,24,30,.86);
+    border: 1px solid #333a45; border-radius: 8px; padding: 6px 10px; font: 11px/1.5 monospace;
+    white-space: pre; user-select: none; z-index: 5; }
   #info { position: fixed; top: 10px; left: 12px; color: #8a93a3;
     font: 12px/1.5 system-ui, sans-serif; user-select: none; pointer-events: none;
     max-width: calc(100vw - 280px); z-index: 5; }
 </style>
 </head>
 <body>
+<div id="dbg"></div>
 <div id="info">drag&nbsp;orbit &middot; scroll&nbsp;zoom &mdash; standalone procedural tree tuning tool</div>
 
 <!-- three@0.184.0: same CDN pins as environment-viewer.html -->
@@ -28,6 +32,7 @@
 import * as THREE from 'three';
 import { WebGPURenderer } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ConvexHull } from 'three/addons/math/ConvexHull.js';
 import { createLightingRig } from './lights.js';
 import { createTree } from './trees.js';
 import { createTextureSource } from './tree-textures.js';
@@ -61,7 +66,7 @@ controls.dampingFactor = 0.08;
 controls.update();
 
 // ===================== lighting =====================
-const rig = createLightingRig({ scene, ui: false, elevation: 66, azimuth: 9 });
+const rig = createLightingRig({ scene, ui: false, elevation: 45, azimuth: 100, sunIntensity: 4, ambientIntensity: 1.05 });
 rig.dirLight.castShadow = true;
 scene.add(rig.dirLight.target);
 rig.dirLight.shadow.mapSize.set(2048, 2048);
@@ -100,8 +105,8 @@ const DEFAULT_OPTS = structuredClone(opts);
 let mode = 'solo';        // 'solo' | 'grid'
 let gridSize = 3;
 let baseSeed = opts.seed;
-let texMode = 'procedural';
-let texSet = createTextureSource('procedural');
+let texMode = 'authored';
+let texSet = createTextureSource('authored', { onReady: () => scheduleRegenerate() });
 let previewAge = 1;       // 0=sapling..1=mature; only Solo mode renders through applyAge(opts, previewAge)
 
 let soloTree = null;
@@ -110,8 +115,89 @@ let refreshExport = () => {};   // reassigned once the Export section builds its
 
 function disposeTree(t) { scene.remove(t); t.dispose(); }
 
+// Debug panel state: build time of the last createTree, plus a frame-time EMA from the render loop.
+const dbgEl = document.getElementById('dbg');
+let lastBuildMs = 0, frameMs = 16.7, lastFrameAt = performance.now(), dbgFrames = 0;
+function liveTrees() { return mode === 'solo' ? (soloTree ? [soloTree] : []) : gridTrees; }
+function refreshDebugPanel() {
+  const trees = liveTrees();
+  let branches = 0, leaves = 0;
+  for (const t of trees) { branches += t.stats?.branches ?? 0; leaves += t.stats?.leaves ?? 0; }
+  const info = renderer.info.render;
+  dbgEl.textContent =
+    `fps ${(1000 / frameMs).toFixed(0)}  frame ${frameMs.toFixed(1)} ms  build ${lastBuildMs.toFixed(1)} ms
+` +
+    `trees ${trees.length}  branches ${branches}  leaves ${leaves}
+` +
+    `tris ${info.triangles}  draws ${info.drawCalls}  rejected ${rejectedMutations}
+` +
+    `height ${treeMetrics.height.toFixed(1)} m  width ${treeMetrics.width.toFixed(1)} m  ` +
+    `footprint ${treeMetrics.area.toFixed(1)} m²  hull volume ${treeMetrics.volume.toFixed(0)} m³`;
+}
+
+// Safeguards: a mutation whose result exceeds an enabled limit is rejected and the tree restored.
+const safeguards = {
+  tris: { on: false, max: 200000 }, leaves: { on: false, max: 5000 }, branches: { on: false, max: 2000 },
+};
+let rejectedMutations = 0;
+let lastAborted = null;   // set by rebuildTree when trees.js stopped the walk at a limit
+// Limits are per tree; in grid mode each tree walks separately and any one of them can abort.
+function activeLimits() {
+  const l = {};
+  for (const k of ['tris', 'leaves', 'branches']) if (safeguards[k].on) l[k] = safeguards[k].max;
+  return Object.keys(l).length ? l : null;
+}
+// Shape metrics, computed once per rebuild (not per frame): height and width from the bounds,
+// footprint area from a 2D hull of the XZ projection, volume from the 3D convex hull. Vertices are
+// subsampled to about 3000 points so the hull stays cheap at auto-mutate rates.
+let treeMetrics = { height: 0, width: 0, area: 0, volume: 0 };
+const _hull = new ConvexHull();
+function computeTreeMetrics(trees) {
+  const pts = [];
+  let total = 0;
+  for (const t of trees) t.traverse(o => { if (o.isMesh) total += o.geometry.getAttribute('position')?.count ?? 0; });
+  const stride = Math.max(1, Math.floor(total / 3000));
+  const box = new THREE.Box3();
+  for (const t of trees) {
+    t.updateWorldMatrix(true, false);
+    t.traverse(o => {
+      if (!o.isMesh) return;
+      const a = o.geometry.getAttribute('position'); if (!a) return;
+      for (let i = 0; i < a.count; i += stride) {
+        const v = new THREE.Vector3().fromBufferAttribute(a, i).applyMatrix4(o.matrixWorld);
+        pts.push(v); box.expandByPoint(v);
+      }
+    });
+  }
+  if (pts.length < 4) { treeMetrics = { height: 0, width: 0, area: 0, volume: 0 }; return; }
+  const size = box.getSize(new THREE.Vector3());
+  // 2D hull (monotone chain) of the XZ footprint, then the shoelace area
+  const flat = pts.map(p => [p.x, p.z]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const p of flat) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+  for (let i = flat.length - 1; i >= 0; i--) { const p = flat[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+  const ring = lower.slice(0, -1).concat(upper.slice(0, -1));
+  let area = 0;
+  for (let i = 0; i < ring.length; i++) { const a = ring[i], b = ring[(i + 1) % ring.length]; area += a[0] * b[1] - b[0] * a[1]; }
+  area = Math.abs(area) / 2;
+  // 3D hull volume: sum of tetrahedra from the origin over each face
+  let volume = 0;
+  try {
+    _hull.setFromPoints(pts);
+    for (const face of _hull.faces) {
+      const a = face.edge.head().point, b = face.edge.next.head().point, c = face.edge.next.next.head().point;
+      volume += a.dot(new THREE.Vector3().crossVectors(b, c)) / 6;
+    }
+  } catch { volume = 0; }
+  treeMetrics = { height: size.y, width: Math.max(size.x, size.z), area, volume: Math.abs(volume) };
+}
+function overLimit() { return lastAborted; }
+
 function makeTree(treeOpts) {
+  const t0 = performance.now();
   const t = createTree(treeOpts);
+  lastBuildMs = performance.now() - t0;
   t.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   return t;
 }
@@ -132,50 +218,52 @@ function fitCameraToGrid() {
   fitCameraToBox(box, 1.8, 10);
 }
 
-// Materials are built once in the Tree constructor (trees.js never updates them in
-// regenerate()), so any change — including bark/leaf color, roughness, or texture maps —
-// requires a full dispose+recreate, not just regenerate(). Solo and Grid both always fully
-// rebuild on every change; the 130ms debounce (below) keeps that cheap enough for live tuning.
+// Every change rebuilds the geometry in place through Tree.rebuild(), which also syncs the
+// materials (colour, roughness, maps) and only recompiles them when a shader-shaping property
+// changed. Trees are created once and disposed only when the count changes (mode, grid size).
 // Rendered through applyAge (Species tab's age-preview slider) rather than raw `opts` — a
 // no-op when `previewAge` is left at its default of 1, so this doesn't change anything until
 // the Species tab's age-preview control is actually used. Grid mode intentionally ignores
 // age preview (only Solo is a "look at one species closely" view).
-function buildSolo() {
-  soloTree = makeTree(applyAge(opts, previewAge));
-  scene.add(soloTree);
-  fitCameraTo(soloTree);
+// Rebuilds in place when a tree already exists: geometry only, no new materials or pipelines.
+// An aborted walk leaves the mesh holding its previous good geometry, so nothing is uploaded.
+function rebuildTree(t, treeOpts) {
+  const t0 = performance.now();
+  const st = t.rebuild(treeOpts, activeLimits());
+  lastBuildMs = performance.now() - t0;
+  if (st.aborted) lastAborted = st.aborted;
+  return t;
 }
 function regenerateSolo(refit) {
-  if (soloTree) disposeTree(soloTree);
-  soloTree = makeTree(applyAge(opts, previewAge));
-  scene.add(soloTree);
+  lastAborted = null;
+  if (soloTree) rebuildTree(soloTree, applyAge(opts, previewAge));
+  else { soloTree = makeTree(applyAge(opts, previewAge)); scene.add(soloTree); }
   if (refit) fitCameraTo(soloTree);
 }
-function buildGrid() {
-  for (const t of gridTrees) disposeTree(t);
-  gridTrees = [];
+function buildGrid(refit = true) {
+  lastAborted = null;
+  const n = gridSize * gridSize;
+  if (gridTrees.length !== n) { for (const t of gridTrees) disposeTree(t); gridTrees = []; }
   const spacing = Math.max(6, opts.length[0] * 2.5);
   const half = (gridSize - 1) / 2;
-  for (let i = 0; i < gridSize * gridSize; i++) {
-    const t = makeTree({ ...opts, seed: baseSeed + i });
+  for (let i = 0; i < n; i++) {
+    const treeOpts = { ...opts, seed: baseSeed + i };
+    let t = gridTrees[i];
+    if (t) rebuildTree(t, treeOpts);
+    else { t = makeTree(treeOpts); scene.add(t); gridTrees.push(t); }
     t.position.set(((i % gridSize) - half) * spacing, 0, (Math.floor(i / gridSize) - half) * spacing);
-    scene.add(t);
-    gridTrees.push(t);
   }
-  fitCameraToGrid();
-}
-function disposeCurrent() {
-  if (soloTree) { disposeTree(soloTree); soloTree = null; }
-  for (const t of gridTrees) disposeTree(t);
-  gridTrees = [];
+  if (refit) fitCameraToGrid();
 }
 // Used for mode switches, grid-size changes, and seed rerolls — anything that should rebuild
 // and refit the camera immediately, bypassing the debounce used for slider drags.
-function rebuildView() {
+function rebuildView(refit = true) {
   clearTimeout(regenTimer);
   needsRefit = false;
-  disposeCurrent();
-  if (mode === 'solo') buildSolo(); else buildGrid();
+  // Only the trees the current mode does not use are disposed; the rest rebuild in place.
+  if (mode === 'solo') { for (const t of gridTrees) disposeTree(t); gridTrees = []; regenerateSolo(refit); }
+  else { if (soloTree) { disposeTree(soloTree); soloTree = null; } buildGrid(refit); }
+  computeTreeMetrics(liveTrees());
   refreshExport();
 }
 
@@ -188,7 +276,8 @@ function scheduleRegenerate(refit = false) {
 }
 function regenerateAll() {
   if (mode === 'solo') regenerateSolo(needsRefit);
-  else buildGrid();
+  else buildGrid(needsRefit);
+  computeTreeMetrics(liveTrees());
   needsRefit = false;
   refreshExport();
 }
@@ -202,7 +291,8 @@ function regenerateAll() {
 let atlasPinned = true;
 let atlasCell = 0;
 function applyAtlas() {
-  const grid = texSet.leafMap ? texSet.leafAtlas : null;
+  // Both texture sets carry a grid; nulling it in procedural mode used to strip a species' pinned cell on save.
+  const grid = texSet.leafAtlas;
   opts.leaves.atlas = grid
     ? { cols: grid.cols, rows: grid.rows, ...(atlasPinned ? { cell: atlasCell } : {}) }
     : null;
@@ -230,6 +320,7 @@ function applyTextureMode(nextMode) {
   scheduleRegenerate();
 }
 
+applyTexSetToOpts();
 rebuildView();
 
 // ===================== controls panel =====================
@@ -477,6 +568,15 @@ function colorControl(label, get, set, onChange) {
   allControls.push({ el: inp, refresh: () => { inp.value = '#' + get().toString(16).padStart(6, '0'); } });
   return inp;
 }
+function numberControl(label, min, step, get, set, onChange) {
+  const r = row('<span style="color:#c4ccd6">' + label + '</span>');
+  const inp = document.createElement('input'); inp.type = 'number'; inp.min = min; inp.step = step; inp.value = get();
+  inp.style.cssText = 'width:80px;background:#222831;color:#c4ccd6;border:1px solid #3a434f;border-radius:4px;padding:2px 4px';
+  inp.addEventListener('change', () => { const v = parseFloat(inp.value); if (Number.isFinite(v)) { set(v); onChange(); } inp.value = get(); });
+  r.appendChild(inp);
+  allControls.push({ el: inp, refresh: () => { inp.value = get(); } });
+  return inp;
+}
 function buttonControl(label, onClick) {
   const btn = document.createElement('button'); btn.textContent = label;
   btn.addEventListener('click', onClick);
@@ -497,6 +597,18 @@ const pct = v => Math.round(v * 100) + '%';
 // Thin wrappers over the primitives above for the common case of a control bound directly
 // to a path inside `opts` (as opposed to View/Texture-section controls, which bind to
 // page-local state like `mode`/`gridSize`/`texMode`).
+// One declaration per path so the slider and its Mutate entry can never drift apart. Ranges
+// cover every stock preset (Ash Large leaves.size 4.62, Pine Medium force.strength -0.003).
+const PATH_RANGES = {
+  'force.strength': [-0.05, 0.2, 0.001],
+  'bark.roughness': [0, 1, 0.01], 'bark.vScale': [0.05, 2, 0.01],
+  'leaves.count': [0, 120, 1], 'leaves.size': [0.2, 6, 0.01], 'leaves.sizeVariance': [0, 1, 0.01],
+  'leaves.start': [0, 0.9, 0.01], 'leaves.spread': [0, 1, 0.01], 'leaves.angle': [0, 90, 1],
+  'leaves.shadowFraction': [0, 1, 0.01], 'leaves.roughness': [0, 1, 0.01], 'leaves.alphaTest': [0, 1, 0.01],
+};
+function rangedSlider(path, label, fmt) { return optsSlider(path, label, ...PATH_RANGES[path], fmt); }
+function rangedMutateEntry(path) { return optsMutateEntry(path, ...PATH_RANGES[path]); }
+
 function optsSlider(path, label, min, max, step, fmt, refit = false) {
   return rangeControl(label, min, max, step, () => getPath(opts, path), v => setPath(opts, path, v), fmt, () => scheduleRegenerate(refit));
 }
@@ -541,6 +653,12 @@ buttonControl('Reroll seed', () => {
   refreshSeedLabel();
   rebuildView();
 });
+
+panelSection('safeguards', 'Safeguards', null);
+for (const [k, label] of [['tris', 'triangles'], ['leaves', 'leaves'], ['branches', 'branches']]) {
+  toggleControl('Limit ' + label, () => safeguards[k].on, v => { safeguards[k].on = v; }, () => {});
+  numberControl('Max ' + label, 0, 1, () => safeguards[k].max, v => { safeguards[k].max = Math.max(0, Math.round(v)); }, () => {});
+}
 
 panelSection('texture', 'Texture', null);
 selectControl('Texture mode', ['procedural', 'authored'], () => texMode, applyTextureMode, () => {});
@@ -597,59 +715,108 @@ mutBar.addEventListener('pointerup', e => { mutDrag = null; mutBar.releasePointe
 // Reroll seed: immediate (bypasses the debounce) and refits the camera.
 current = mutBody;
 let mutationDegree = 0.2;
-rangeControl('Mutation degree', 0, 1, 0.01, () => mutationDegree, v => { mutationDegree = v; }, pct, () => {});
+// Fine mode narrows the slider to 0..1% in 0.01% steps for nudging a species that is nearly right.
+let fineDegree = false;
+const fmtDegree = v => fineDegree ? (v * 100).toFixed(2) + '%' : pct(v);
+const degreeInp = rangeControl('Mutation degree', 0, 1, 0.01, () => mutationDegree, v => { mutationDegree = v; }, fmtDegree, () => {});
+const degreeVal = degreeInp.previousElementSibling.lastChild;
+toggleControl('Fine (0..1%)', () => fineDegree, v => {
+  fineDegree = v;
+  degreeInp.max = fineDegree ? 0.01 : 1;
+  degreeInp.step = fineDegree ? 0.0001 : 0.01;
+  if (fineDegree && mutationDegree > 0.01) mutationDegree = 0.01;
+  degreeInp.value = mutationDegree;
+  degreeVal.textContent = fmtDegree(mutationDegree);
+}, () => {});
 
-function optsMutateEntry(path, min, max) {
-  return { min, max, get: () => getPath(opts, path), set: v => setPath(opts, path, v) };
+function optsMutateEntry(path, min, max, step = 0) {
+  return { min, max, step, get: () => getPath(opts, path), set: v => setPath(opts, path, v) };
 }
+// Integer sliders (step 1) round: a fractional children count is NaN geometry in trees.js.
+// Circular axes (wrap) go around instead of sticking at the ends.
 function mutateParams(list) {
   for (const p of list) {
     const range = p.max - p.min;
     const delta = (Math.random() * 2 - 1) * mutationDegree * range;
-    p.set(Math.max(p.min, Math.min(p.max, p.get() + delta)));
+    let v = p.get() + delta;
+    v = p.wrap ? ((v - p.min) % range + range) % range + p.min : Math.max(p.min, Math.min(p.max, v));
+    if (p.step === 1) v = Math.round(v);
+    p.set(v);
   }
 }
 function mutateSection(list) {
+  const before = snapshotState();
   pushUndo();
   mutateParams(list);
   refreshAllControls();
   rebuildView();
+  if (overLimit()) { rejectedMutations++; undoStack.pop(); updateUndoRedoButtons(); restoreState(before, { keepAutoHistory: true, refit: false, rebuild: false }); }
 }
 
 // Named so "Mutate all" (below) can reuse them without duplicating each section's list.
 function traitMutateList(p) {
   const list = [];
-  for (let level = 0; level <= opts.levels; level++) list.push(optsMutateEntry(`${p.key}.${level}`, p.min, p.max));
+  for (let level = 0; level <= opts.levels; level++) list.push(optsMutateEntry(`${p.key}.${level}`, p.min, p.max, p.step));
   return list;
 }
 function structureMutateList() { return LEVEL_PARAMS.flatMap(traitMutateList); }
 function forceMutateList() {
   return [
-    { min: 0, max: 360, get: () => forceAz, set: v => { forceAz = v; applyForceDirection(); } },
+    { min: 0, max: 360, wrap: true, get: () => forceAz, set: v => { forceAz = v; applyForceDirection(); } },
     { min: -90, max: 90, get: () => forceEl, set: v => { forceEl = v; applyForceDirection(); } },
-    optsMutateEntry('force.strength', 0, 0.2),
+    rangedMutateEntry('force.strength'),
   ];
 }
 function barkMutateList() {
-  return [optsMutateEntry('bark.roughness', 0, 1), optsMutateEntry('bark.vScale', 0.05, 2)];
+  return [rangedMutateEntry('bark.roughness'), rangedMutateEntry('bark.vScale')];
 }
 function leavesMutateList() {
-  return [
-    optsMutateEntry('leaves.count', 0, 40),
-    optsMutateEntry('leaves.size', 0.2, 3),
-    optsMutateEntry('leaves.sizeVariance', 0, 1),
-    optsMutateEntry('leaves.start', 0, 0.9),
-    optsMutateEntry('leaves.spread', 0, 1),
-    optsMutateEntry('leaves.angle', 0, 90),
-    optsMutateEntry('leaves.shadowFraction', 0, 1),
-    optsMutateEntry('leaves.roughness', 0, 1),
-    optsMutateEntry('leaves.alphaTest', 0, 1),
-  ];
+  return ['leaves.count', 'leaves.size', 'leaves.sizeVariance', 'leaves.start', 'leaves.spread',
+    'leaves.angle', 'leaves.shadowFraction', 'leaves.roughness', 'leaves.alphaTest'].map(rangedMutateEntry);
 }
 
-buttonControl('Mutate all', () => mutateSection([
-  ...structureMutateList(), ...forceMutateList(), ...barkMutateList(), ...leavesMutateList(),
-]));
+function allMutateList() {
+  return [...structureMutateList(), ...forceMutateList(), ...barkMutateList(), ...leavesMutateList()];
+}
+buttonControl('Mutate all', () => mutateSection(allMutateList()));
+
+// Auto mutate: one undo snapshot at session start, then a mutation every `autoIntervalS` seconds
+// with no undo push. Step back walks the session's own history one mutation at a time, so Undo
+// returns to the tree as it was before the session began.
+let autoTimer = null, autoIntervalS = 1;
+let autoHistory = [];
+function autoTick() {
+  const before = snapshotState();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    mutateParams(allMutateList());
+    refreshAllControls();
+    rebuildView(false);
+    if (!overLimit()) { autoHistory.push(before); stepBackBtn.disabled = false; return; }
+    rejectedMutations++;
+    restoreState(before, { keepAutoHistory: true, refit: false, rebuild: false });
+  }
+}
+function stopAuto() {
+  clearInterval(autoTimer); autoTimer = null;
+  autoBtn.textContent = 'Auto mutate';
+}
+function startAuto() {
+  pushUndo();
+  autoHistory = [];
+  autoTimer = setInterval(autoTick, Math.max(50, autoIntervalS * 1000));
+  autoBtn.textContent = 'Stop auto mutate';
+}
+rangeControl('Auto interval (s)', 0, 3, 0.05, () => autoIntervalS, v => {
+  autoIntervalS = v;
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = setInterval(autoTick, Math.max(50, autoIntervalS * 1000)); }
+}, f2, () => {});
+const autoBtn = buttonControl('Auto mutate', () => { if (autoTimer) stopAuto(); else startAuto(); });
+const stepBackBtn = buttonControl('Step back', () => {
+  if (!autoHistory.length) return;
+  restoreState(autoHistory.pop(), { keepAutoHistory: true, refit: false });
+  stepBackBtn.disabled = autoHistory.length === 0;
+});
+stepBackBtn.disabled = true;
 
 // ---- undo / redo / restart ----
 // Snapshots cover the tree (opts) plus the View-section state that describes it (mode,
@@ -673,21 +840,22 @@ function pushUndo() {
 // opts.force.direction — see resyncForceAngles() in the Force section below), rebuild each
 // trait's sliders, refresh every control's displayed value, refresh the seed label, and rebuild
 // the 3D view + Export text.
-function applyOptsAndRefresh() {
+function applyOptsAndRefresh(refit = true, rebuild = true) {
   resyncAtlasControls();   // before applyTexSetToOpts: it rebuilds opts.leaves.atlas from these
   applyTexSetToOpts();
   resyncForceAngles();
   rebuildTraitSliders();
   refreshAllControls();
   refreshSeedLabel();
-  rebuildView();
+  if (rebuild) rebuildView(refit); else refreshExport();
 }
-function restoreState(state) {
+function restoreState(state, { keepAutoHistory = false, refit = true, rebuild = true } = {}) {
+  if (!keepAutoHistory) { if (autoTimer) stopAuto(); autoHistory = []; stepBackBtn.disabled = true; }
   for (const k of Object.keys(opts)) delete opts[k];
   Object.assign(opts, structuredClone(state.opts));
   mode = state.mode; gridSize = state.gridSize; baseSeed = state.baseSeed;
   gridSizeWrap.style.display = mode === 'grid' ? '' : 'none';
-  applyOptsAndRefresh();
+  applyOptsAndRefresh(refit, rebuild);
 }
 function undo() {
   if (undoStack.length === 0) return;
@@ -716,21 +884,22 @@ updateUndoRedoButtons();
 
 // Restart reuses loadOpts() (defined in the Species tab section below), which already pushes
 // an undo snapshot, so Restart is itself undoable.
-buttonControl('Restart', () => loadOpts(DEFAULT_OPTS));
+buttonControl('Restart', () => loadOpts(DEFAULT_OPTS, { refit: true }));
 
 current = tuningPage; // restore before the remaining Tuning-tab sections continue building below
 
 // ===================== Structure section =====================
+// Ranges cover every stock preset: Pine Large has 100 children, a 129 degree droop and a 65 m trunk.
 const LEVEL_PARAMS = [
-  { key: 'length', label: 'Length', min: 1, max: 30, step: 0.5, fmt: f2 },
-  { key: 'radius', label: 'Radius', min: 0.05, max: 2, step: 0.01, fmt: f2 },
+  { key: 'length', label: 'Length', min: 0.1, max: 80, step: 0.1, fmt: f2 },
+  { key: 'radius', label: 'Radius', min: 0.05, max: 4, step: 0.01, fmt: f2 },
   { key: 'taper', label: 'Taper', min: 0, max: 1, step: 0.01, fmt: f2 },
-  { key: 'children', label: 'Children', min: 0, max: 10, step: 1, fmt: fi },
+  { key: 'children', label: 'Children', min: 0, max: 120, step: 1, fmt: fi },
   { key: 'branchStart', label: 'Branch start', min: 0, max: 1, step: 0.01, fmt: f2 },
-  { key: 'angle', label: 'Angle', min: 0, max: 90, step: 1, fmt: fi },
-  { key: 'gnarliness', label: 'Gnarliness', min: 0, max: 1, step: 0.01, fmt: f2 },
+  { key: 'angle', label: 'Angle', min: 0, max: 180, step: 1, fmt: fi },
+  { key: 'gnarliness', label: 'Gnarliness', min: -1, max: 1, step: 0.01, fmt: f2 },
   { key: 'twist', label: 'Twist', min: -1, max: 1, step: 0.01, fmt: f2 },
-  { key: 'sections', label: 'Sections', min: 3, max: 16, step: 1, fmt: fi },
+  { key: 'sections', label: 'Sections', min: 1, max: 16, step: 1, fmt: fi },
   { key: 'segments', label: 'Segments', min: 3, max: 16, step: 1, fmt: fi },
 ];
 
@@ -774,7 +943,7 @@ panelSection('force', 'Force', () => mutateSection(forceMutateList()));
 // Force sliders would silently keep showing the *previous* tree's angle.
 let forceAz, forceEl;
 function resyncForceAngles() {
-  forceAz = Math.atan2(opts.force.direction[0], opts.force.direction[2]) * 180 / Math.PI;
+  forceAz = (Math.atan2(opts.force.direction[0], opts.force.direction[2]) * 180 / Math.PI + 360) % 360;
   forceEl = Math.asin(Math.max(-1, Math.min(1, opts.force.direction[1]))) * 180 / Math.PI;
 }
 resyncForceAngles();
@@ -784,24 +953,24 @@ function applyForceDirection() {
 }
 rangeControl('Direction azimuth', 0, 360, 1, () => forceAz, v => { forceAz = v; applyForceDirection(); }, fi, () => scheduleRegenerate());
 rangeControl('Direction elevation', -90, 90, 1, () => forceEl, v => { forceEl = v; applyForceDirection(); }, fi, () => scheduleRegenerate());
-optsSlider('force.strength', 'Strength', 0, 0.2, 0.001, v => v.toFixed(3));
+rangedSlider('force.strength', 'Strength', v => v.toFixed(3));
 
 // ===================== Bark section =====================
 panelSection('bark', 'Bark', () => mutateSection(barkMutateList()));
 optsColor('bark.color', 'Color');
-optsSlider('bark.roughness', 'Roughness', 0, 1, 0.01, f2);
+rangedSlider('bark.roughness', 'Roughness', f2);
 optsToggle('bark.flatShading', 'Flat shading');
-optsSlider('bark.vScale', 'Texture V scale', 0.05, 2, 0.01, f2);
+rangedSlider('bark.vScale', 'Texture V scale', f2);
 
 // ===================== Leaves section =====================
 panelSection('leaves', 'Leaves', () => mutateSection(leavesMutateList()));
 optsToggle('leaves.enabled', 'Enabled');
-optsSlider('leaves.count', 'Count', 0, 40, 1, fi);
-optsSlider('leaves.size', 'Size', 0.2, 3, 0.01, f2);
-optsSlider('leaves.sizeVariance', 'Size variance', 0, 1, 0.01, f2);
-optsSlider('leaves.start', 'Start', 0, 0.9, 0.01, f2);
-optsSlider('leaves.spread', 'Spread', 0, 1, 0.01, f2);
-optsSlider('leaves.angle', 'Angle', 0, 90, 1, fi);
+rangedSlider('leaves.count', 'Count', fi);
+rangedSlider('leaves.size', 'Size', f2);
+rangedSlider('leaves.sizeVariance', 'Size variance', f2);
+rangedSlider('leaves.start', 'Start', f2);
+rangedSlider('leaves.spread', 'Spread', f2);
+rangedSlider('leaves.angle', 'Angle', fi);
 optsToggle('leaves.doubleBillboard', 'Double billboard');
 optsToggle('leaves.roundedNormals', 'Rounded normals');
 optsSelect('leaves.shape', 'Shape', ['quad', 'simple']);
@@ -813,10 +982,10 @@ optsSelect('leaves.shape', 'Shape', ['quad', 'simple']);
 toggleControl('Pin one leaf atlas cell', () => atlasPinned, v => { atlasPinned = v; applyAtlas(); }, () => scheduleRegenerate());
 rangeControl('Atlas cell', 0, 3, 1, () => atlasCell, v => { atlasCell = Math.round(v); applyAtlas(); }, fi, () => scheduleRegenerate());
 
-optsSlider('leaves.shadowFraction', 'Shadow fraction', 0, 1, 0.01, pct);
+rangedSlider('leaves.shadowFraction', 'Shadow fraction', pct);
 optsColor('leaves.tint', 'Tint');
-optsSlider('leaves.roughness', 'Roughness', 0, 1, 0.01, f2);
-optsSlider('leaves.alphaTest', 'Alpha test', 0, 1, 0.01, f2);
+rangedSlider('leaves.roughness', 'Roughness', f2);
+rangedSlider('leaves.alphaTest', 'Alpha test', f2);
 
 // ===================== Export section =====================
 panelSection('export', 'Export', null);
@@ -897,7 +1066,9 @@ let currentSpeciesId = null;
 // maps afterward, since species snapshots never include them (see snapshotOpts above). Resets
 // the age preview to fully mature, so switching species never carries over a scrubbed age from
 // whatever was previously loaded.
-function loadOpts(savedOpts) {
+function loadOpts(savedOpts, { refit = false, switchTab = false } = {}) {
+  if (autoTimer) stopAuto();
+  autoHistory = []; stepBackBtn.disabled = true;
   pushUndo();
   for (const k of Object.keys(opts)) delete opts[k];
   Object.assign(opts, structuredClone(savedOpts));
@@ -905,8 +1076,8 @@ function loadOpts(savedOpts) {
   mode = 'solo';
   previewAge = 1;
   gridSizeWrap.style.display = 'none';
-  applyOptsAndRefresh();
-  activateTab('tuning');
+  applyOptsAndRefresh(refit);
+  if (switchTab) activateTab('tuning');
 }
 // Like loadOpts's core, but no undo/tab-switch/render — an internal step used to reset `opts`
 // to a baseline between batch-generated mutations (see "Auto-add mutations" below), not a
@@ -1126,7 +1297,7 @@ function renderSpeciesEdit() {
     rangeControl('Size max', 0.1, 3, 0.05, () => sp.sizeRange[1], v => { sp.sizeRange[1] = Math.max(v, sp.sizeRange[0]); persistFamilies(); }, f2, () => {});
     rangeControl('Age min', 0, 1, 0.01, () => sp.ageRange[0], v => { sp.ageRange[0] = Math.min(v, sp.ageRange[1]); persistFamilies(); }, pct, () => {});
     rangeControl('Age max', 0, 1, 0.01, () => sp.ageRange[1], v => { sp.ageRange[1] = Math.max(v, sp.ageRange[0]); persistFamilies(); }, pct, () => {});
-    rangeControl('Age preview', 0, 1, 0.01, () => previewAge, v => { previewAge = v; regenerateSolo(false); }, pct, () => {});
+    rangeControl('Age preview', 0, 1, 0.01, () => previewAge, v => { previewAge = v; }, pct, () => scheduleRegenerate());
   });
 }
 
@@ -1135,8 +1306,12 @@ renderFamilyPanel();
 positionMutBoxInitial();
 
 renderer.setAnimationLoop(() => {
+  const now = performance.now();
+  frameMs += (now - lastFrameAt - frameMs) * 0.1;
+  lastFrameAt = now;
   controls.update();
   renderer.render(scene, camera);
+  if (++dbgFrames % 10 === 0) refreshDebugPanel();
 });
 </script>
 </body>

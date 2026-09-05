@@ -40,7 +40,7 @@ export function createFloraOcclusion({ renderer, scene, camera, size = 256, laye
     size,
     revision: 0,
   };
-  const stats = { renders: 0, skipped: 0, renderCpuMs: 0, lastRenderCpuMs: 0 };
+  const stats = { renders: 0, skipped: 0 };
   const nextViewProj = new THREE.Matrix4();
   const roots = new Map();
   let dirty = true;
@@ -76,10 +76,7 @@ export function createFloraOcclusion({ renderer, scene, camera, size = 256, laye
       scene.overrideMaterial = depthMat; scene.background = null; scene.fog = null;
       renderer.setRenderTarget(rt);
       renderer.setClearColor(clear, 1);
-      const started = performance.now();
       renderer.render(scene, occCam);
-      stats.lastRenderCpuMs = performance.now() - started;
-      stats.renderCpuMs += stats.lastRenderCpuMs;
     } finally {
       renderer.setRenderTarget(prevRT);
       renderer.setClearColor(prevClear, prevAlpha);
