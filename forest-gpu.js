@@ -21,6 +21,7 @@
 // here (forest-gpu.js has never imported forest-cull.js) — keep the two files' math in sync
 // manually when this kernel changes.
 import * as THREE from 'three';
+import { createSharedDrawGeometryPool } from './shared-draw-geometry.js';
 import {
   MeshBasicNodeMaterial, MeshStandardNodeMaterial, StorageInstancedBufferAttribute, StorageBufferAttribute,
   IndirectStorageBufferAttribute,
@@ -332,12 +333,8 @@ export function createForestGPU(opts) {
   function lodSlotOffset(g, l) {
     return g * SLOTS * CAP + l * CAP;
   }
-  function drawableGeometry(geom, indirectAttr) {
-    const g2 = geom.clone();
-    g2.instanceCount = CAP;
-    g2.indirect = indirectAttr;
-    return g2;
-  }
+  const geometryPool = createSharedDrawGeometryPool(renderer);
+  const drawableGeometry = (geom, indirectAttr) => geometryPool.acquire(geom, CAP, indirectAttr);
   function drawMesh(geom, mat, indirectAttr, castShadow, name = '') {
     const g2 = drawableGeometry(geom, indirectAttr);
     const mesh = new THREE.Mesh(g2, mat);
@@ -797,7 +794,7 @@ export function createForestGPU(opts) {
       for (let m = 0; m < 7; m++) {
         const old = meshes[start + m].geometry;
         meshes[start + m].geometry = drawableGeometry(geos[m], indirect[m]);
-        old.dispose();
+        geometryPool.release(old);
         indirect[m].array[0] = geos[m].index.count;
         indirect[m].needsUpdate = true;
       }
@@ -807,14 +804,14 @@ export function createForestGPU(opts) {
         billGeo.indirect = attrs.billboardL3;
         const old = meshes[start + 7].geometry;
         meshes[start + 7].geometry = billGeo;
-        old.dispose();
+        geometryPool.release(old);
       }
       if (SHADOW_LIST) {
         const pairs = [[MAIN_MESHES, variant.branchesLod2 ?? variant.branches, attrs.barkShadow], [MAIN_MESHES + 1, variant.shadow, attrs.leafShadow]];
         for (const [m, geo, attr] of pairs) {
           const old = meshes[start + m].geometry;
           meshes[start + m].geometry = drawableGeometry(geo, attr);
-          old.dispose();
+          geometryPool.release(old);
           attr.array[0] = geo.index.count;
           attr.needsUpdate = true;
         }
@@ -1080,7 +1077,7 @@ export function createForestGPU(opts) {
     dispose() {
       const mats = new Set();
       meshes.forEach(m => {
-        m.geometry.dispose();
+        geometryPool.release(m.geometry);
         if (Array.isArray(m.material)) m.material.forEach(mat => mats.add(mat));
         else mats.add(m.material);
       });

@@ -32,7 +32,7 @@ does not measure uploads, GPU execution, or browser frame pacing.
 - [x] 6. Reduce forest source uploads with changed attribute ranges. Verify additions,
   removals, rebases, overflow, and variant publication. Stable chunk slots are a larger
   follow-up, not a prerequisite for partial uploads.
-- [ ] 7. Share immutable tree geometry attributes while retaining separate indirect draw
+- [x] 7. Share immutable tree geometry attributes while retaining separate indirect draw
   state and explicit shared-resource ownership. Verify replacement/disposal and compare
   geometry bytes with the forest benchmark.
 
@@ -97,3 +97,19 @@ chunks upload no source data; a one-tree edit uploads 32 bytes. The full CPU pla
 insertion-order capacity policy remain. Validation: focused upload/precision/removal/rebase/
 overflow/publication checks and 99 forest checks passed. Headless rescan timings were
 0.04–0.09 ms; these are not GPU upload measurements. Fix 5 commit: `9d5ecf3`.
+
+Fix 7: draw wrappers share one private copy of each source geometry while keeping independent
+indirect arguments. Reference-counted disposal protects attributes still used by live wrappers
+through the renderer's existing private attribute-delete path; Three's mutable RenderObject
+disposal callbacks run immediately, not after replacement. Revalidate this integration when
+upgrading Three. Tests exercise the installed Three Geometries disposal code, replacement,
+idempotence, and exceptions. All 99 forest checks and source-upload checks pass.
+
+The benchmark now counts all unique draw attributes, including trunk LODs, and disposes its
+forest between runs. Geometry data is 4.19 MB unique versus 6.43 MB when duplicated (about 35%
+less) with identical tree counts, rung triangles, and draws. The older 3.53 MB distinct figure
+omitted trunk LOD geometries and should not be used as the achievable total. Fix 6: `2fcf0c7`.
+
+Items 8–10 remain profiling-led follow-ups. The camera-dependent grass regeneration has been
+made cheaper, but has not yet been separated into persistent generation and visibility passes.
+No browser frame-time or visual-equivalence claim has been made.

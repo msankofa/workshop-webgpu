@@ -65,21 +65,23 @@ async function run(label, settings) {
   const idleMs = (performance.now() - tIdle) / 200;
   console.log(`   idle update ${idleMs.toFixed(4)} ms/frame, instance scans over 200 frames ${gpu.summary.cullEstimates - scansBefore}`);
 
-  // Geometry actually uploaded. drawMesh clones per mesh, so branches ship three times a variant.
+  // Count attribute identities across ALL draw wrappers, including reduced trunks and shadows.
+  // The older palette-only distinct figure omitted branchesLod1/2 and understated the baseline.
   const drawn = gpu.meshes.reduce((a, m) => a + geoBytes(m.geometry), 0);
   const seen = new Set();
   let distinct = 0;
-  for (const v of forest.palette.variants) {
-    for (const g of [v.branches, v.leaves, v.shadow, v.leavesCoarse]) {
-      if (seen.has(g)) continue;
-      seen.add(g); distinct += geoBytes(g);
+  for (const mesh of gpu.meshes) {
+    for (const attribute of [mesh.geometry.index, ...Object.values(mesh.geometry.attributes)]) {
+      if (!attribute || seen.has(attribute)) continue;
+      seen.add(attribute); distinct += attribute.array.byteLength;
     }
   }
-  console.log(`   geometry uploaded ${(drawn / 1e6).toFixed(2)} MB across ${gpu.meshes.length} meshes, ${(distinct / 1e6).toFixed(2)} MB distinct`);
+  console.log(`   geometry attributes ${(distinct / 1e6).toFixed(2)} MB unique, ${(drawn / 1e6).toFixed(2)} MB if duplicated across ${gpu.meshes.length} meshes`);
   const tri = g => (g?.index ? g.index.count : g.attributes.position.count) / 3;
   const V = forest.palette.variants;
   const mean = f => V.reduce((a, v) => a + tri(f(v)), 0) / V.length;
   console.log(`   per variant: branches ${mean(v => v.branches).toFixed(0)}, leaves ${mean(v => v.leaves).toFixed(0)}, shadow ${mean(v => v.shadow).toFixed(0)}, coarse leaves ${mean(v => v.leavesCoarse).toFixed(0)}`);
+  forest.dispose();
   terrain.dispose();
 }
 
