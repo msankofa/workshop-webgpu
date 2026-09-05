@@ -3556,3 +3556,26 @@ frame, has not been measured; the flora HUD's occlusion render time is where to 
 entry has no visible effect yet, because the grass only runs in the terrain world.
 Grass, building meshes and the depth image all live in the render-local frame, so the kernel
 projection stays consistent across a rebase. Nothing is browser-verified yet.
+
+## Scattered structures (2026-09-05, in progress)
+
+Every structure placed in the world is eco-brutalist, from the same generator as the spawn
+building. Structures stand at the world plan's sites (`base-game-sites.js`: one per 480 m plan
+tile, snapped to the flattest walkable post), so the trails that already route between sites lead
+to buildings.
+
+**Step 1, the pure module** (`base-game-structures.js`, `test-base-game-structures.mjs`).
+`structuresForTile(seed, tx, tz, plan, params)` returns null while the plan tile is not resident,
+an empty list for the origin tile (the spawn building's) and for water, else one
+`{ key, kind, seed, x, z, tx, tz }`. The kind is a weighted hash of the tile (`STRUCTURE_DEFAULTS.kinds`:
+rooms three parts each, the slot garden two, the 190 m complex one), and the building seed is a
+second hash of the tile and the world seed, so a tile never depends on its neighbours or on visit
+order. `createStructureModel(structure, heightAt, { seaLevel })` seats it with the spawn building's
+own site rule (datum just above the highest ground, a plinth under each floor slab), so server
+and page agree to the sample. `structureNavRects(model)` is what the NPC zone bake gets: walls,
+covers and bars whose base is within 0.9 m of the floor, heights relative to the datum; slabs a
+bot walks under are left out. `structureBounds(model, margin)` is the footprint box for residency
+and keep-out.
+
+Not yet done: the room server's plan window, the streaming collider, the page's roots, cover
+stamps and occluders, and the shared settings.
