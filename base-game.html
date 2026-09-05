@@ -744,6 +744,19 @@ const ARM_SLIDER_KEYS = Object.freeze({
   armJumpLift: p => p.jumpLift, armLandSwing: p => p.landSwing,
   armFallLift: p => p.fallLift, armFallSpeedRef: p => p.fallSpeedRef, armFallTimeRef: p => p.fallTimeRef,
 });
+// The shipped default. base-game-default-state.json is saved from the Session card ("Save as
+// shipped default") and committed, so every load starts from it: its settings here, its terrain
+// project below once the store exists. ?defaults=stock skips it. The autosave and the slots still
+// layer on top through the Restore and Load buttons, as before.
+const SHIPPED_STATE_PATH = 'base-game-default-state.json';
+let shippedState = null;
+if (new URLSearchParams(location.search).get('defaults') !== 'stock') {
+  try {
+    const response = await fetch(`./${SHIPPED_STATE_PATH}?t=${Date.now()}`, { cache: 'no-store' });
+    if (response.ok) shippedState = await response.json();
+  } catch { /* no file, no server: the built-in defaults stand */ }
+}
+if (shippedState?.data?.settings) assignLoadedSettings(shippedState.data.settings);
 function applyArmPresetToSettings(name) {
   const preset = ARM_POSE_PRESETS[name] || ARM_POSE_PRESETS.relaxed;
   for (const [key, read] of Object.entries(ARM_SLIDER_KEYS)) settings[key] = read(preset);
@@ -1042,6 +1055,10 @@ const terrainStudio = createBaseGameTerrainStudio({
   onError: err => console.warn('[terrain studio]', err),
 });
 function scheduleAutosaveSafe() { if (simulationReady) scheduleAutosave(); }
+if (shippedState?.data?.terrain) {
+  try { terrainStore.restore(shippedState.data.terrain); }
+  catch (error) { console.warn(`shipped terrain not restored: ${error.message}`); }
+}
 
 async function chooseGameSession() {
   document.getElementById('boot-screen')?.remove();
@@ -5238,6 +5255,7 @@ const missingControls = Object.keys(DEFAULT_SETTINGS).filter(key => !controlRegi
 if (missingControls.length) throw new Error(`Unsaved/unconfigured settings: ${missingControls.join(', ')}`);
 
 loadShotSpread();   // the committed accuracy numbers; the built-in fallback stands until it lands
+if (shippedState?.data?.terrain && !isOnline()) syncTerrainSourceFromStore();   // the shipped project, like a Restore
 applyUnlimitedAmmo();   // restored from the autosave in Solo, replaced by the room's world online
 applyVisor();           // purely local, like the flashlight below: nothing about it is replicated
 applyFlashlight();      // purely local: the beam is not replicated, so it is never the room's to set
@@ -5499,7 +5517,9 @@ applyMusicSetting().catch(reportBaseGameError);
 const fileButtons = document.createElement('div'); fileButtons.className = 'button-row';
 const exportButton = document.createElement('button'); exportButton.textContent = 'Export JSON';
 const importButton = document.createElement('button'); importButton.textContent = 'Import JSON';
-fileButtons.append(exportButton, importButton); sessionSec.append(fileButtons);
+const shipButton = document.createElement('button'); shipButton.textContent = 'Save as shipped default';
+shipButton.title = 'Writes base-game-default-state.json next to the page (needs serve.py); commit it and every load starts from this state';
+fileButtons.append(exportButton, importButton, shipButton); sessionSec.append(fileButtons);
 const stateStatus = document.createElement('div'); stateStatus.className = 'state-status'; sessionSec.append(stateStatus);
 const fileInput = document.getElementById('state-file');
 exportButton.addEventListener('click', () => {
@@ -5507,6 +5527,16 @@ exportButton.addEventListener('click', () => {
   stateStatus.textContent = 'downloaded complete state JSON';
 });
 importButton.addEventListener('click', () => fileInput.click());
+shipButton.addEventListener('click', async () => {
+  shipButton.disabled = true;
+  try {
+    const response = await fetch('/api/save-base-game-default', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(stateEnvelope('shipped default'), null, 2) });
+    const result = response.ok ? await response.json() : null;
+    stateStatus.textContent = result?.ok ? `saved ${result.path}; commit it to ship this state` : `save failed: ${result?.error ?? response.status}`;
+  } catch (error) {
+    stateStatus.textContent = `save failed: ${error.message} (is serve.py running?)`;
+  } finally { shipButton.disabled = false; }
+});
 fileInput.addEventListener('change', async () => {
   const file = fileInput.files?.[0];
   if (!file) return;

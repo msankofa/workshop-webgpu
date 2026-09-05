@@ -355,6 +355,16 @@ def save_glass_plankton(body_bytes):
     return 'glass-plankton.json'
 
 
+def save_base_game_default(body_bytes):
+    # base-game.html's "Save as shipped default" in the Session card. The file is committed and
+    # every load of the page starts from it (settings and terrain project) unless ?defaults=stock.
+    json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
+    target = os.path.join(ROOT, 'base-game-default-state.json')
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return 'base-game-default-state.json'
+
+
 def save_shot_spread(body_bytes):
     # base-game.html's "Save as default" in the Weapon spread section. Tuned once and committed,
     # so the file IS the default the page and the relay both read; shot-spread.js only holds the
@@ -857,6 +867,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if self.path.startswith('/api/save-shot-spread'):
             return self._handle_save_shot_spread()
+        if self.path.startswith('/api/save-base-game-default'):
+            return self._handle_save_base_game_default()
         if self.path.startswith('/api/save-ordination'):
             self._handle_save_ordination()
             return
@@ -1153,6 +1165,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             rel_path = save_glass_plankton(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-base-game-default -- base-game.html's shipped default state, one file
+    # overwritten in place and committed with the page.
+    def _handle_save_base_game_default(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 5_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            rel_path = save_base_game_default(self.rfile.read(length))
             self._send_json({'ok': True, 'path': rel_path})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)

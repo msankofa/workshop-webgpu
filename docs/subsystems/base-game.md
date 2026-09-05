@@ -257,6 +257,15 @@ Four persistence paths share the exact same capture/apply functions:
 2. Slot mirroring to `bot-viewer-saves/` through `serve.py` when that server is available.
 3. Explicit JSON download and JSON file upload.
 4. Debounced local autosave with an explicit "Restore last session" action.
+5. The shipped default: "Save as shipped default" in the Session card POSTs the same envelope to
+   `serve.py`'s `/api/save-base-game-default`, which writes `base-game-default-state.json` next to
+   the page. Once committed, every load starts from that file: its settings are assigned through
+   `assignLoadedSettings` right after `DEFAULT_SETTINGS`, its terrain project is restored into the
+   terrain store as soon as the store exists (so the ground textures read its material slots), and
+   `syncTerrainSourceFromStore` swaps the project in once the simulation is up, Solo only; online
+   the room decides the ground. `?defaults=stock` skips the file. Nothing else changes: the
+   autosave, the slots and the JSON import still layer on top through their buttons, and the
+   built-in `DEFAULT_SETTINGS` stand wherever the file is absent or a key fails its checks.
 
 State files use the Bot Viewer envelope shape:
 
