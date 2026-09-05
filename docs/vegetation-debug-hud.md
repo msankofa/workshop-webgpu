@@ -1,6 +1,7 @@
 # Observable vegetation debugging
 
-The Base Game vegetation HUD starts expanded at the upper left. It refreshes twice a second.
+The Base Game vegetation HUD lives in the existing bottom debug dock, below the FPS line.
+Its scrollable details are capped at 20% of the viewport height. It refreshes twice a second.
 Press Esc to release the mouse, then use its buttons. Hide collapses the HUD and stops its
 sampling requests. An open grass settings panel or a performance capture can still request
 diagnostics independently. HUD-only sampling reads one survivor counter about once a second;

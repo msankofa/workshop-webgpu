@@ -34,15 +34,20 @@ class Element {
 }
 const document = { createElement: () => new Element(), body: new Element() };
 let sampled = 0, toggled = 0;
-const hud = createVegetationDebugHud({ document, sample: () => { sampled++; return base; }, toggleOcclusion: () => toggled++ });
+const host = new Element();
+const hud = createVegetationDebugHud({ document, host, sample: () => { sampled++; return base; }, toggleOcclusion: () => toggled++ });
 hud.refresh(); assert.equal(sampled, 1);
-const root = document.body.children[0], [toggle, body] = root.children;
+const root = host.children[0], [toggle, body] = root.children;
+assert.equal(document.body.children.length, 0, 'HUD mounts in the existing debug dock');
+assert.doesNotMatch(root.style.cssText, /position:fixed|top:70px/);
+assert.match(root.style.cssText, /max-height:20vh/);
 toggle.listeners.click(); assert.equal(hud.visible, false); assert.equal(body.hidden, true);
 hud.refresh(); assert.equal(sampled, 1, 'hidden HUD never requests stats');
 toggle.listeners.click(); hud.refresh(); assert.equal(sampled, 2);
 body.children[3].listeners.click(); assert.equal(toggled, 1);
 hud.dispose(); assert.ok(root.removed);
 const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
+assert.match(html, /host: document.getElementById\('debug-dock'\)/);
 assert.match(html, /if \(fpsElapsed < 500\) return;[\s\S]{0,250}vegetationDebugHud.refresh\(\)/);
 assert.match(html, /occlusion: flora.occlusion \? \{ ...flora.occlusionStats/);
 const script = html.match(/<script[^>]*type=[^>]*module[^>]*>([\s\S]*?)<\/script>/)[1];

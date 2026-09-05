@@ -38,10 +38,10 @@ export function vegetationDebugLines(s, previous = null) {
   ].filter(Boolean).join('\n');
 }
 
-export function createVegetationDebugHud({ document, sample, toggleOcclusion }) {
+export function createVegetationDebugHud({ document, host = document.body, sample, toggleOcclusion }) {
   const root = document.createElement('section');
   root.id = 'vegetation-debug-hud';
-  root.style.cssText = 'position:fixed;left:12px;top:70px;z-index:1000;max-width:min(620px,90vw);max-height:65vh;overflow:auto;background:#101820ed;color:#e2f0e8;padding:9px;font:12px/1.45 monospace;pointer-events:auto;border:1px solid #586b60;border-radius:6px';
+  root.style.cssText = 'max-height:20vh;overflow:auto;margin-top:4px;font:inherit;pointer-events:auto';
   const toggle = document.createElement('button'); toggle.textContent = 'Vegetation debug: hide';
   const body = document.createElement('div');
   const text = document.createElement('pre'); text.style.cssText = 'white-space:pre-wrap;margin:8px 0';
@@ -65,7 +65,7 @@ export function createVegetationDebugHud({ document, sample, toggleOcclusion }) 
   });
   button('Toggle grass occlusion', toggleOcclusion);
   button('Compare with pin', () => { result.textContent = compareVegetationSamples(pinned, sample()); });
-  body.append(result); root.append(toggle, body); document.body.append(root);
+  body.append(result); root.append(toggle, body); host.append(root);
   return {
     get visible() { return visible; },
     refresh() { if (!visible) return; const s = sample(); text.textContent = vegetationDebugLines(s, previous); previous = s; },
