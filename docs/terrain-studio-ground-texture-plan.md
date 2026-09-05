@@ -1,6 +1,6 @@
 # Terrain studio decides which texture the ground gets
 
-STATUS: slices 1 to 3 shipped 2026-09-05 (Node-tested, unseen in a browser). Slice 4 not started.
+STATUS: slices 1 to 3 shipped and seen working in the browser 2026-09-05. Slice 4 not started.
 
 ## The goal
 
