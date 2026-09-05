@@ -341,5 +341,23 @@ section('the wind gets a clock, not a frame delta');
   check('it hands it elapsed seconds', call && /\/\s*1000/.test(call[1]), call?.[1]);
 }
 
+section('occluder edits recull even when the camera is stationary');
+{
+  const occlusion = { enabled: true, texture: new THREE.DataTexture(new Float32Array(4), 1, 1),
+    viewProj: new THREE.Matrix4(), texel: new THREE.Vector2(1, 1), bias: 0.12, revision: 1 };
+  const { grass } = rig({ occlusion });
+  await grass.update(0);
+  const before = grass.stats.reculls;
+  await grass.update(1);
+  check('an unchanged image reuses the grass cull', grass.stats.reculls === before);
+  occlusion.revision++;
+  await grass.update(2);
+  check('a new depth image forces a cull', grass.stats.reculls === before + 1);
+  occlusion.bias = 0.2;
+  await grass.update(3);
+  check('a bias change also forces a cull', grass.stats.reculls === before + 2);
+  grass.dispose(); occlusion.texture.dispose();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

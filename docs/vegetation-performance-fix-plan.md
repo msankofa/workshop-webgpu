@@ -20,7 +20,7 @@ does not measure uploads, GPU execution, or browser frame pacing.
 - [x] 2. Make diagnostic readbacks opt-in and race-free. Sample only for a visible panel or
   active capture; serialize probes sharing an output buffer; discard stale results after
   replacement/disposal. Verify hidden diagnostics submit no readbacks.
-- [ ] 3. Cache unchanged flora occlusion renders. Invalidate for camera/projection changes,
+- [x] 3. Cache unchanged flora occlusion renders. Invalidate for camera/projection changes,
   occluder changes, and re-enabling. Restore scene/renderer state on exceptions. Verify
   stationary frames reuse the image and moving cameras update immediately.
 - [ ] 4. Reject grass candidates before expensive height/occlusion sampling. Use explicit
@@ -71,3 +71,9 @@ Validation: 95 flora checks passed, including rebuild, disable/re-enable, and re
 Fix 2: diagnostic sampling is opt-in, its shared-buffer probes run sequentially, and retired
 samples cannot publish or submit another probe. Validation: 103 flora checks and both panel
 and profiler gating checks passed. Fix 1 commit: `d6bdec9`.
+
+Fix 3: Base Game opts into static occlusion caching; other hosts retain dynamic behavior.
+Root transforms and visibility invalidate the image; child/geometry edits use markOccluders
+or invalidate. Depth revisions now invalidate both grass and plant culls, including edits
+with a stationary camera. Render failures restore scene state and retry. Validation: cache
+and failure-restoration checks, 90 grass checks, and 103 flora checks passed. Fix 2: `5152c82`.

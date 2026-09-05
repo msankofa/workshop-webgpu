@@ -545,7 +545,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       occluderRoot = root || null;
       if (!occluderRoot) { if (occlusion) occlusion.setEnabled(false); return; }
       if (!occlusion) {
-        occlusion = createFloraOcclusion({ renderer, scene, camera });
+        occlusion = createFloraOcclusion({ renderer, scene, camera, cacheStatic: true });
         if (grass) rebuild();
       }
       occlusion.setEnabled(true);
