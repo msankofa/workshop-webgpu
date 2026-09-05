@@ -30,6 +30,12 @@
   .control-row .control-desc { font-size: 0.8em; opacity: 0.6; margin: 0 0 2px; }
   .control-row select, .control-row input[type=text], .control-row input[type=number] { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--paper); color: var(--ink); }
   .row-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .dropdown { position: relative; flex: 1 1 auto; min-width: 200px; }
+  .dropdown-button { width: 100%; text-align: left; font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--paper); color: var(--ink); cursor: pointer; }
+  .dropdown-list { position: absolute; top: 100%; left: 0; right: 0; max-height: 280px; overflow-y: auto; background: var(--paper); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px rgba(43,38,32,0.15); z-index: 20; }
+  .dropdown-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; cursor: pointer; font-size: 0.9em; }
+  .dropdown-item img { width: 22px; height: 22px; border-radius: 3px; flex: none; }
+  .dropdown-item:hover, .dropdown-item.on { background: var(--accent-soft); }
   .tooltip { position: absolute; pointer-events: none; background: var(--ink); color: var(--paper); padding: 8px 10px; border-radius: 6px; font-size: 0.8em; line-height: 1.4; white-space: pre; z-index: 10; transform: translate(12px, 12px); }
   .tooltip.hidden, .hidden { display: none; }
   button.action { background: var(--accent); color: white; border: none; border-radius: 8px; padding: 7px 12px; cursor: pointer; font-size: 0.88em; }
@@ -799,7 +805,28 @@
   REDRAW_CALLBACKS.push(drawMaterialPanel);
   renderMaterialLegend();
 
-  // ---- ground texture slots: one select per runtime layer, folders listed by serve.py ----
+  // A drop-down that always opens downward (a native select opens upward near the bottom of the
+  // window, and inside the pan/zoom canvas that put the list over the row above it).
+  function dropDown(options, value, onChange) {
+    const wrap = document.createElement('div'); wrap.className = 'dropdown';
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'dropdown-button';
+    const current = options.find(o => o.folder === value) ?? options[0];
+    button.textContent = current.folder ? `${current.title} (${current.folder})` : current.title;
+    const list = document.createElement('div'); list.className = 'dropdown-list hidden';
+    for (const o of options) {
+      const item = document.createElement('div'); item.className = 'dropdown-item' + (o.folder === value ? ' on' : '');
+      item.textContent = o.folder ? `${o.title} (${o.folder})` : o.title;
+      if (o.folder) { const img = document.createElement('img'); img.src = `textures/ground/${o.folder}/color.jpg`; img.alt = ''; img.loading = 'lazy'; item.prepend(img); }
+      item.addEventListener('click', () => { list.classList.add('hidden'); onChange(o.folder); });
+      list.appendChild(item);
+    }
+    button.addEventListener('click', (ev) => { ev.stopPropagation(); for (const other of document.querySelectorAll('.dropdown-list')) if (other !== list) other.classList.add('hidden'); list.classList.toggle('hidden'); });
+    document.addEventListener('click', () => list.classList.add('hidden'));
+    wrap.append(button, list);
+    return wrap;
+  }
+
+  // ---- ground texture slots: one row per runtime layer, folders listed by serve.py ----
   let groundTextureFolders = null;   // [{ folder, title }] or null when the server is not there
   function renderMaterialSlots() {
     const rows = document.getElementById('material-slot-rows'); rows.innerHTML = '';
@@ -807,19 +834,15 @@
     for (const slot of MATERIAL_SLOTS) {
       const row = document.createElement('div'); row.className = 'control-row';
       const label = document.createElement('label'); label.textContent = slot; row.appendChild(label);
-      const select = document.createElement('select');
       const chosen = materialSlots[slot] ?? '';
       const options = [{ folder: '', title: `default (${slot})` }];
       if (groundTextureFolders) options.push(...groundTextureFolders);
       else if (chosen) options.push({ folder: chosen, title: chosen });
-      for (const o of options) { const opt = document.createElement('option'); opt.value = o.folder; opt.textContent = o.folder ? `${o.title} (${o.folder})` : o.title; select.appendChild(opt); }
-      select.value = chosen;
-      select.addEventListener('change', () => {
-        if (select.value) materialSlots[slot] = select.value; else delete materialSlots[slot];
+      row.appendChild(dropDown(options, chosen, (value) => {
+        if (value) materialSlots[slot] = value; else delete materialSlots[slot];
         history.record(`texture slot ${slot}`);
         renderMaterialSlots();
-      });
-      row.appendChild(select);
+      }));
       const swatch = document.createElement('img'); swatch.width = 28; swatch.height = 28; swatch.style.borderRadius = '4px'; swatch.alt = '';
       swatch.src = `textures/ground/${chosen || slot}/color.jpg`;
       row.appendChild(swatch);
