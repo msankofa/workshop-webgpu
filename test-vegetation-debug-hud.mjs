@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { vegetationDebugLines, freshVegetationCount, compareVegetationSamples, createVegetationDebugHud } from './vegetation-debug-hud.js';
 const base = { now: 1000, fps: 60, worstMs: 20, draws: 100, triangles: 10000,
   grass: { enabled: true, built: true, drawn: 120, capacity: 100, dispatch: 200, expected: 180,
-    drawnSample: { atMs: 900, occlusion: false, view: [0, 1] } },
+    drawnSample: { atMs: 900, occlusion: false, view: [0, 1] },
+    cull: { survivors: 120, planar: 40, density: 20, ground: 10, view: 5, occlusion: 5, overflow: 20 } },
   trees: { enabled: true, trees: 1000, instances: 900, dropped: 100, lod0: 10, lod1: 20, lod2: 30 },
   occlusion: { enabled: false, size: 512, renders: 10, skipped: 20, lastRenderCpuMs: 0.1 },
   configuration: 'same', view: [0, 1], gpuRequested: false, gpuResolved: 0 };
@@ -13,6 +14,10 @@ assert.match(lines, /100 drawn \/ 120 survivors/);
 assert.match(lines, /CAP REACHED/);
 assert.match(lines, /CPU estimates/);
 assert.match(lines, /NOT occlusion rejects/);
+assert.match(lines, /80 \/ 200 rejected \(40.0%\)/);
+assert.match(lines, /depth occlusion 5 \(2.5%\)/);
+assert.match(lines, /capacity overflow 20/);
+assert.match(lines, /can lower FPS/);
 assert.match(lines, /not GPU time/);
 assert.match(lines, /GPU timestamps OFF/);
 assert.match(vegetationDebugLines({ ...base, grass: { enabled: false }, trees: { enabled: false }, occlusion: null }), /Grass OFF[\s\S]*Trees OFF/);

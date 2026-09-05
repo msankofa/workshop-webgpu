@@ -394,6 +394,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     });
     builtWith = { bufferMB: cfg.grassBufferMB, kmax: cfg.grassKmax, fields: terrain.fields, contact: terrain.contactField };
     grass.setLook?.({ faceNormalMix: cfg.grassFaceNormalMix });
+    grass.setDiagnosticsEnabled?.(diagnosticsEnabled);
     grass.setReceiveShadow?.(cfg.grassReceiveShadow);
     grass.setWorldOrigin?.(readOrigin()[0], readOrigin()[2]);
     grass.mesh.frustumCulled = false;
@@ -422,7 +423,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     lastReculls = grass?.stats.reculls ?? 0;
     ringStep = 0;
     ringResults.fill(null);
-    stats.drawn = stats.probe = stats.ringProbe = stats.probeError = null;
+    stats.drawn = stats.cull = stats.probe = stats.ringProbe = stats.probeError = null;
     stats.drawnSample = null;
   }
   function sampleReadbacks(seconds) {
@@ -459,17 +460,21 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // Both probes share one uniform and output buffer. Submit the second only AFTER the first
     // readback finishes; parallel dispatches overwrite that buffer before its first copy.
     (async () => {
-      const drawn = await sampledGrass.readBladeCount();
+      const cull = sampledGrass.readCullCounts
+        ? await sampledGrass.readCullCounts()
+        : { survivors: await sampledGrass.readBladeCount() };
       if (!current()) return null;
       const probe = diagnosticGroundProbes && sampledGrass.readGroundProbe ? await sampledGrass.readGroundProbe(x, z) : null;
       if (!current()) return null;
       const ring = diagnosticGroundProbes && sampledGrass.readGroundProbe ? await sampledGrass.readGroundProbe(rx, rz) : null;
-      return current() ? [drawn, probe, ring] : null;
+      return current() ? [cull, probe, ring] : null;
     })()
       .then(result => {
         if (!result || !current()) return;
-        const [drawn, probe, ring] = result;
+        const [cull, probe, ring] = result;
+        const drawn = cull.survivors;
         stats.drawn = drawn;
+        stats.cull = cull;
         stats.drawnSample = sample;
         // probeDelta: how far the height the cull used sits from the drawn ground there.
         const ground = terrain.groundHeight?.(x + ox, z + oz);
@@ -533,6 +538,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       if (diagnosticsEnabled === !!on && diagnosticGroundProbes === !!groundProbes) return;
       diagnosticsEnabled = !!on;
       diagnosticGroundProbes = !!groundProbes;
+      grass?.setDiagnosticsEnabled?.(diagnosticsEnabled);
       resetReadbacks();
     },
     // Notify removal too: a mirror exclusion retaining a disposed mesh also retains its node

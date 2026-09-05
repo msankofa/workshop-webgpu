@@ -27,10 +27,15 @@ export function vegetationDebugLines(s, previous = null) {
   const elapsed = previous ? (s.now - previous.now) / 1000 : 0;
   const rate = key => elapsed > 0 && o && previous.occlusion ? n(Math.max(0, o[key] - previous.occlusion[key]) / elapsed) : '?';
   const sample = g.drawnSample;
+  const c = g.cull;
+  const rejected = c ? c.planar + c.density + c.ground + c.view + c.occlusion : null;
+  const tested = c ? c.survivors + rejected : null;
+  const pct = (part, total) => total > 0 ? (part * 100 / total).toFixed(1) : '0.0';
   return [
     `${ms(s.fps)} FPS | worst ${ms(s.worstMs)} ms | ${n(s.draws)} draws | ${n(s.triangles)} triangles`,
     !g.enabled ? 'Grass OFF' : !g.built ? 'Grass building / waiting for terrain' :
       `Grass GPU: ${n(g.drawn == null ? null : Math.min(g.drawn, g.capacity))} drawn / ${n(g.drawn)} survivors / ${n(g.capacity)} capacity${g.drawn >= g.capacity ? ' [CAP REACHED]' : ''}\n  ${n(g.dispatch)} candidate threads; ~${n(g.expected)} full-cover estimate (NOT occlusion rejects)\n  ${n(g.recullRate)} reculls/s; ${g.lastRecull || '?'}; sample ${sample ? ms(Math.max(0, s.now - sample.atMs) / 1000) + 's old' : 'pending'}${sample && !sameView(sample.view, s.view) ? ' (earlier view)' : ''}`,
+    c ? `Exact GPU cull: ${n(rejected)} / ${n(tested)} rejected (${pct(rejected, tested)}%); ${pct(c.survivors, tested)}% survived\n  planar/cone/fade ${n(c.planar)} (${pct(c.planar, tested)}%); density ${n(c.density)} (${pct(c.density, tested)}%); ground/water ${n(c.ground)} (${pct(c.ground, tested)}%)\n  off-screen ${n(c.view)} (${pct(c.view, tested)}%); depth occlusion ${n(c.occlusion)} (${pct(c.occlusion, tested)}%); capacity overflow ${n(c.overflow)}\n  Diagnostic rejection atomics are enabled and can lower FPS.` : 'Exact GPU cull: waiting for diagnostic counters.',
     !t.enabled ? 'Trees OFF' : `Trees: ${n(t.trees)} placed / ${n(t.instances)} uploaded / ${n(t.dropped)} dropped\n  CPU estimates LOD0/1/2: ${n(t.lod0)} / ${n(t.lod1)} / ${n(t.lod2)}; cone/far rejected ${n(t.rejectedCone)} / ${n(t.rejectedFar)}\n  ${n(t.draws)} main + ${n(t.shadowDraws)} shadow draws; variants ${n(t.readyVariants)}/${n(t.variants)}`,
     t.enabled ? `Tree startup: first published ${ms(t.startup?.firstPublicationMs == null ? null : t.startup.firstPublicationMs / 1000)}s; complete ${ms(t.startup?.totalMs == null ? null : t.startup.totalMs / 1000)}s\n  palette CPU ${ms(t.paletteMs)}ms; render warmup ${ms(t.compileMs / 1000)}s; compute warmup ${ms(t.computeCompileMs)}ms` : '',
     o ? `Grass occlusion ${o.enabled ? 'ON' : 'OFF'} (${o.size}² depth): ${rate('renders')} renders/s, ${rate('skipped')} cached skips/s\n  last depth-render CPU submission ${ms(o.lastRenderCpuMs)}ms (not GPU time)\n  No tree depth occlusion. Use A/B below for observed blade-count impact.` : 'No grass occlusion depth source.',

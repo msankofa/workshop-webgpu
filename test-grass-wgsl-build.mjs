@@ -125,7 +125,9 @@ check('as branches, not all evaluated', /if \(/.test(cull));
 // now asks its adapter for a higher limit and the flora drops the rings on a device without one.
 const sampled = count(cull, /var [A-Za-z_0-9]+ : texture_2d</g);
 check('the cull binds 15 sampled textures on its own, no more', sampled <= 15, `${sampled} bound`);
-check('survivors are compacted through one atomic counter', count(cull, /atomicAdd\(/g) === 1);
+const atomicAdds = count(cull, /atomicAdd\(/g);
+check('survivors retain one compaction atomic alongside gated diagnostic rejection counters',
+  atomicAdds === 7, `${atomicAdds} atomic adds`);
 check('the view cone is in the kernel', /dot\(\s*\(\s*vec2<f32>/.test(cull) || /dot\( vec2<f32>/.test(cull));
 check('the occlusion branch is compiled out without an occluder image', count(cull, /uOcc|occlusion/g) === 0 && !/textureSample\(/.test(cull));
 

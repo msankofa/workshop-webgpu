@@ -359,6 +359,24 @@ section('occluder edits recull even when the camera is stationary');
   grass.dispose(); occlusion.texture.dispose();
 }
 
+section('diagnostic rejection counters retain their stage identity');
+{
+  const camera = new THREE.PerspectiveCamera();
+  const values = new Uint32Array([11, 22, 33, 44, 55, 66, 7]);
+  const grass = createComputeGrass({
+    renderer: { computeAsync: async () => {}, getArrayBufferAsync: async () => values.buffer },
+    camera, radius: 20, maxRadius: 20, density: 4, Kmax: 64,
+  });
+  const counts = await grass.readCullCounts();
+  check('the readback names survivors and every rejection stage',
+    JSON.stringify(counts) === JSON.stringify({
+      survivors: 11, planar: 22, density: 33, ground: 44, view: 55, occlusion: 66, overflow: 7,
+    }));
+  grass.setDiagnosticsEnabled(true);
+  check('enabling counters forces one freshly instrumented recull', grass.stats.dirty === true);
+  grass.dispose();
+}
+
 section('skipped frames retain the actual last recull reason');
 {
   const { grass } = rig();

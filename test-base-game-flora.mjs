@@ -456,7 +456,13 @@ section('diagnostics are opt-in, sequential, and cannot publish retired results'
   stubRenderer.getArrayBufferAsync = async () => new ArrayBuffer(4);
   const calls = [];
   let finishCount, finishProbe;
-  flora.grass.readBladeCount = () => { calls.push('count'); return new Promise(resolve => { finishCount = resolve; }); };
+  const pendingCounts = () => {
+    calls.push('count');
+    return new Promise(resolve => { finishCount = survivors => resolve({
+      survivors, planar: 1, density: 2, ground: 3, view: 4, occlusion: 5, overflow: 0,
+    }); });
+  };
+  flora.grass.readCullCounts = pendingCounts;
   flora.grass.readGroundProbe = (x, z) => {
     calls.push([x, z]);
     return new Promise(resolve => { finishProbe = resolve; });
@@ -479,6 +485,8 @@ section('diagnostics are opt-in, sequential, and cannot publish retired results'
   finishProbe(probeResult(0.75));
   await flush();
   check('the camera probe keeps its own value', flora.stats.drawn === 42 && flora.stats.probe.r === 0.25);
+  check('the staged rejection counters publish with the survivor count',
+    flora.stats.cull.survivors === 42 && flora.stats.cull.occlusion === 5);
   await flora.update(6);
   const oldCount = finishCount;
   flora.apply({ grassBufferMB: 8 });
@@ -486,7 +494,9 @@ section('diagnostics are opt-in, sequential, and cannot publish retired results'
   await flush();
   check('a retired sample cannot update stats or submit more probes', flora.stats.drawn === null && calls.length === 4);
   await flora.update(7);
-  flora.grass.readBladeCount = () => { calls.push('new count'); return new Promise(resolve => { finishCount = resolve; }); };
+  flora.grass.readCullCounts = () => { calls.push('new count'); return new Promise(resolve => {
+    finishCount = survivors => resolve({ survivors, planar: 0, density: 0, ground: 0, view: 0, occlusion: 0, overflow: 0 });
+  }); };
   flora.setDiagnosticsEnabled(false);
   await flora.update(9);
   check('disabling stops subsequent readbacks', calls.length === 4);

@@ -19,6 +19,11 @@ survivors on/off, the difference, and FPS snapshots; these are not isolated GPU 
 Streaming and other dynamic rendering can still confound the result. The full-cover blade
 estimate is NOT the count before occlusion: cover, water, distance and cone culling also thin it.
 The HUD caps drawn blades at buffer capacity but shows the uncapped survivor counter separately.
+Its exact GPU-cull line partitions tested candidates into planar/cone/fade, density,
+ground/water, off-screen, depth-occlusion, and survivor totals, with capacity overflow separate.
+Those rejection atomics run only while diagnostics are requested and may reduce FPS; hide the
+HUD and close the grass panel when measuring normal play. Occlusion A/B FPS while the HUD is
+open includes this constant instrumentation overhead.
 Depth render and cache-skip rates expose the occlusion pass's activity; its CPU submission
 duration does not measure GPU depth rasterization. Trees currently have no depth-occlusion cull.
 

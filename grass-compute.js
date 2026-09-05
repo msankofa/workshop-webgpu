@@ -188,8 +188,10 @@ export function createComputeGrass(opts) {
   // per instance: 2x vec4 → [2i]=(x,y,z,h), [2i+1]=(yaw,_,_,_)
   const instAttr = new StorageInstancedBufferAttribute(new Float32Array(CAP * 8), 8);
   const inst = storage(instAttr, 'vec4', CAP * 2);
-  const counterAttr = new StorageBufferAttribute(new Uint32Array(1), 1);
-  const counter = storage(counterAttr, 'uint', 1).toAtomic();
+  // [survivors, planar/fade, density, ground/water, view, depth occlusion, capacity overflow].
+  // Rejection counters are opt-in: their atomics are useful diagnostics but are not free.
+  const counterAttr = new StorageBufferAttribute(new Uint32Array(7), 1);
+  const counter = storage(counterAttr, 'uint', 7).toAtomic();
   const indirectAttr = new IndirectStorageBufferAttribute(new Uint32Array([9, 0, 0, 0, 0]), 5);
   const indirect = storage(indirectAttr, 'uint', 5);
   // anchor mode: (x,y,z,rand01) per anchor, chunk-slot-strided + live count per slot
@@ -202,6 +204,7 @@ export function createComputeGrass(opts) {
 
   // ---- uniforms (live) ----
   const uCam      = uniform(new THREE.Vector2());
+  const uDiagnostics = uniform(0);
   // View cone in XZ, same law as plants-gpu.js: a blade survives inside the camera's horizontal
   // field of view plus a margin, or within nearKeep of it. uCosHalf -1 keeps everything (looking
   // nearly straight down, or a camera without fov). Rotation re-runs the cull like a cell change.
@@ -257,11 +260,12 @@ export function createComputeGrass(opts) {
   const occTex = occlusion ? texture(occlusion.texture) : null;
   const keepFn = occlusion
     ? Fn(([wx, wy, wz, h, dist]) => {
+        const visible = bool(true).toVar();
         const keep = bool(true).toVar();
         If(uOccOn.greaterThan(0.5), () => {
           const base = project(wx, wy, wz);
           const top = project(wx, wy.add(h), wz);
-          const visible = base.onScreen.or(top.onScreen).or(dist.lessThan(1.5));
+          visible.assign(base.onScreen.or(top.onScreen).or(dist.lessThan(1.5)));
           keep.assign(visible);
           // Off-screen points and disabled occlusion need no depth reads. Keep the same five
           // conservative taps and bias for points whose tops actually project into the image.
@@ -273,7 +277,7 @@ export function createComputeGrass(opts) {
             keep.assign(top.w.greaterThan(far.add(uOccBias).add(top.w.mul(0.01))).not());
           });
         });
-        return keep;
+        return vec2(select(visible, float(1), float(0)), select(keep, float(1), float(0)));
       })
     : null;
   let lastOccRevision = -1;
@@ -468,7 +472,24 @@ export function createComputeGrass(opts) {
       })
     : Fn(() => float(1));
   // ---- compute kernels (reset → generate+cull → finalize), per the spike ----
-  const reset = Fn(() => { atomicStore(counter.element(0), uint(0)); })().compute(1);
+  const reset = Fn(() => {
+    for (let i = 0; i < 7; i++) atomicStore(counter.element(i), uint(0));
+  })().compute(1);
+  const diagnosticAdd = index => {
+    If(uDiagnostics.greaterThan(0.5), () => { atomicAdd(counter.element(index), uint(1)); });
+  };
+  const appendBlade = (s, idx, wx, wy, wz, yawFn, heightFn2, groundFn) => {
+    const withinCap = s.lessThan(uHardCap)
+      .and(uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades)));
+    If(withinCap, () => {
+      const base2 = s.mul(uint(2));
+      const yaw = yawFn();
+      const bh = heightFn2();
+      const g = groundFn();
+      inst.element(base2).assign(vec4(wx, wy, wz, bh));
+      inst.element(base2.add(uint(1))).assign(vec4(yaw, g.x, g.y, g.z));
+    }).Else(() => { diagnosticAdd(6); });
+  };
 
   // Anchor-mode cull: each thread owns one anchor-buffer slot entry; live entries
   // (k < slotCounts[chunkSlot]) are distance/edge/water/density tested and appended.
@@ -486,29 +507,29 @@ export function createComputeGrass(opts) {
       const dist = length(vec2(wx.sub(uCam.x), wz.sub(uCam.y)));
       const edge = fadeEdgeFn(dist);
       const keepRand = anchorRandFn(idx, int(7));
-      const biomeDensity = densityFn(wx, wz).mul(uDensityScale);
-      const dry = hasHeightTex
-        ? wy.greaterThan(uWaterMin).or(heightFn(wx, wz).greaterThan(uWaterMin))
-        : wy.greaterThan(uWaterMin);
-      const live = dry
-        .and(dist.lessThan(uRadius))
+      const planarLive = dist.lessThan(uRadius)
         .and(inConeFn(wx, wz, dist))
-        .and(keepFn ? keepFn(wx, wy, wz, uBladeHeight.mul(1.2), dist) : float(1).greaterThan(0))
-        .and(keepRand.greaterThan(edge))
-        .and(a.w.lessThan(biomeDensity));
-      If(live, () => {
-        const s = atomicAdd(counter.element(0), uint(1));
-        const withinCap = s.lessThan(uHardCap)
-          .and(uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades)));
-        If(withinCap, () => {
-          const base2 = s.mul(uint(2));
-          const yaw = anchorRandFn(idx, int(3)).mul(6.2831853);
-          const bh = float(0.8).add(anchorRandFn(idx, int(5)).mul(0.6));
-          const g = injectedGround ? injectedGround(wx, wz, wy) : vec3(0);
-          inst.element(base2).assign(vec4(wx, wy, wz, bh));
-          inst.element(base2.add(uint(1))).assign(vec4(yaw, g.x, g.y, g.z));
-        });
-      });
+        .and(keepRand.greaterThan(edge));
+      If(planarLive, () => {
+        const biomeDensity = densityFn(wx, wz).mul(uDensityScale);
+        If(a.w.lessThan(biomeDensity), () => {
+          const dry = hasHeightTex
+            ? wy.greaterThan(uWaterMin).or(heightFn(wx, wz).greaterThan(uWaterMin))
+            : wy.greaterThan(uWaterMin);
+          If(dry, () => {
+            const visibility = keepFn ? keepFn(wx, wy, wz, uBladeHeight.mul(1.2), dist) : vec2(1, 1);
+            If(visibility.x.lessThan(0.5), () => { diagnosticAdd(4); })
+              .ElseIf(visibility.y.lessThan(0.5), () => { diagnosticAdd(5); })
+              .Else(() => {
+                const s = atomicAdd(counter.element(0), uint(1));
+                appendBlade(s, idx, wx, wy, wz,
+                  () => anchorRandFn(idx, int(3)).mul(6.2831853),
+                  () => float(0.8).add(anchorRandFn(idx, int(5)).mul(0.6)),
+                  () => injectedGround ? injectedGround(wx, wz, wy) : vec3(0));
+              });
+          }).Else(() => { diagnosticAdd(3); });
+        }).Else(() => { diagnosticAdd(2); });
+      }).Else(() => { diagnosticAdd(1); });
     });
   })().compute(anchorCap) : null;
 
@@ -566,22 +587,19 @@ export function createComputeGrass(opts) {
         If(densityRand.lessThan(biomeDensity), () => {
           const wy = heightFn(wx, wz);
           If(wy.greaterThan(uWaterMin), () => {
-            If(keepFn ? keepFn(wx, wy, wz, uBladeHeight.mul(1.2), dist) : bool(true), () => {
-              const s = atomicAdd(counter.element(0), uint(1));
-              const withinCap = s.lessThan(uHardCap)
-                .and(uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades)));
-              If(withinCap, () => {
-                const base2 = s.mul(uint(2));
-                const yaw = slotRandFn(hx, hz, slot, int(3)).mul(6.2831853);
-                const bh = float(0.8).add(slotRandFn(hx, hz, slot, int(5)).mul(0.6));
-                const g = injectedGround ? injectedGround(wx, wz, wy) : vec3(0);
-                inst.element(base2).assign(vec4(wx, wy, wz, bh));
-                inst.element(base2.add(uint(1))).assign(vec4(yaw, g.x, g.y, g.z));
+            const visibility = keepFn ? keepFn(wx, wy, wz, uBladeHeight.mul(1.2), dist) : vec2(1, 1);
+            If(visibility.x.lessThan(0.5), () => { diagnosticAdd(4); })
+              .ElseIf(visibility.y.lessThan(0.5), () => { diagnosticAdd(5); })
+              .Else(() => {
+                const s = atomicAdd(counter.element(0), uint(1));
+                appendBlade(s, idx, wx, wy, wz,
+                  () => slotRandFn(hx, hz, slot, int(3)).mul(6.2831853),
+                  () => float(0.8).add(slotRandFn(hx, hz, slot, int(5)).mul(0.6)),
+                  () => injectedGround ? injectedGround(wx, wz, wy) : vec3(0));
               });
-            });
-          });
-        });
-      });
+          }).Else(() => { diagnosticAdd(3); });
+        }).Else(() => { diagnosticAdd(2); });
+      }).Else(() => { diagnosticAdd(1); });
     });
   })().compute(CAP);
 
@@ -992,6 +1010,16 @@ export function createComputeGrass(opts) {
     async readBladeCount() {
       const buf = await renderer.getArrayBufferAsync(counterAttr);
       return new Uint32Array(buf)[0];
+    },
+    setDiagnosticsEnabled(on) {
+      const next = on ? 1 : 0;
+      if (uDiagnostics.value === next) return;
+      uDiagnostics.value = next;
+      markDirty('diagnostics');
+    },
+    async readCullCounts() {
+      const v = new Uint32Array(await renderer.getArrayBufferAsync(counterAttr));
+      return { survivors: v[0], planar: v[1], density: v[2], ground: v[3], view: v[4], occlusion: v[5], overflow: v[6] };
     },
     // The ground colour under a render-local (x, z) as the cull packs it, plus the render-local
     // height it stood on: { r, g, b, y }, or null without an injected ground node. Two GPU round

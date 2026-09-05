@@ -113,3 +113,10 @@ omitted trunk LOD geometries and should not be used as the achievable total. Fix
 Items 8–10 remain profiling-led follow-ups. The camera-dependent grass regeneration has been
 made cheaper, but has not yet been separated into persistent generation and visibility passes.
 No browser frame-time or visual-equivalence claim has been made.
+
+Observable diagnostics follow-up: exact opt-in GPU counters now partition every tested grass
+candidate into survivor, planar/cone/fade, density, ground/water, off-screen, or depth-occlusion
+outcomes, with buffer overflow reported separately. The bottom HUD shows total and per-stage
+percentages. These diagnostic atomics can affect FPS and are disabled when the HUD, grass panel,
+and performance capture are all closed. Occlusion root refreshes also preserve the requested
+toggle and remove stale owned layer bits when terrain or other roots leave the set.
