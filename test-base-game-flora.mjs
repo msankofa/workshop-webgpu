@@ -410,5 +410,39 @@ section('the ground colour probe and its CPU twin');
   terrain.dispose();
 }
 
+section('mesh subscribers release retired grass on every lifecycle path');
+{
+  const { terrain, flora } = builtRig();
+  const tex = placeholderStreamedSplatTextures();
+  terrain.setSplatMaterial(createStreamedSplatMaterial(tex), tex);
+  const registered = new Set();
+  const removed = [];
+  flora.onMesh((mesh, previous) => {
+    if (previous) { registered.delete(previous); removed.push(previous); }
+    if (mesh) registered.add(mesh);
+  });
+  await flora.load();
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.update(0);
+  const first = flora.grass.mesh;
+  check('the initial mesh is registered once', registered.size === 1 && registered.has(first));
+  flora.apply({ grassBufferMB: 8 });
+  check('a buffer rebuild unregisters the old mesh immediately', registered.size === 0 && removed.includes(first));
+  await flora.update(1);
+  check('only the rebuilt mesh is retained', registered.size === 1 && registered.has(flora.grass.mesh) && !registered.has(first));
+  flora.setEnabled(false);
+  check('disabling releases the replacement', registered.size === 0);
+  flora.setEnabled(true);
+  settle(terrain);
+  await flora.update(2);
+  check('re-enabling registers one new mesh', registered.size === 1);
+  flora.dispose();
+  check('disposal unregisters the final mesh', registered.size === 0 && removed.length === 3);
+  flora.dispose();
+  check('repeated disposal emits no duplicate removal', removed.length === 3);
+  terrain.dispose();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

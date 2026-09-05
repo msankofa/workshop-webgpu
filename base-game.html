@@ -3241,7 +3241,11 @@ terrain.setSplatWater(water.groundShade);
 const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, settings });
 floraForBuilding = flora;
 syncSpawnBuildingFlora();
-flora.onMesh(mesh => { if (mesh && !reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh); });
+flora.onMesh((mesh, previousMesh) => {
+  const at = reflectionExclusions.indexOf(previousMesh);
+  if (at >= 0) reflectionExclusions.splice(at, 1);
+  if (mesh && !reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh);
+});
 const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRadius', 'grassBladeHeight',
   'grassBladeWidth', 'grassWind', 'grassStyle', 'grassVerticalOffset', 'grassCoverGate',
   'grassGroundTint', 'grassGroundTintFar', 'grassGroundTintReach', 'grassGroundTintMip',

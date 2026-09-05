@@ -325,12 +325,14 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
   let builtWith = null;
   function rebuild() {
     if (!grass) return;
+    const previousMesh = grass.mesh;
     scene.remove(grass.mesh);
     grass.dispose();
     grass = null;
     built = false;
     stats.built = false;
     stats.rebuilds++;
+    onMeshCb?.(null, previousMesh);
   }
   async function build() {
     if (built || !grassModule) return false;
@@ -387,7 +389,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     grass.mesh.frustumCulled = false;
     grass.mesh.name = 'base-game-grass';
     scene.add(grass.mesh);
-    onMeshCb?.(grass.mesh);
+    onMeshCb?.(grass.mesh, null);
     grass.setWind?.(cfg.grassWind);
     grass.setBladeStyle?.(cfg.grassStyle);
     built = true;
@@ -488,8 +490,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       }
     },
     setEnabled,
-    // The host hears about the mesh once it exists, so it can keep it out of the water mirror.
-    onMesh(fn) { onMeshCb = fn; if (grass) fn(grass.mesh); },
+    // Notify removal too: a mirror exclusion retaining a disposed mesh also retains its node
+    // graph and CPU storage arrays. Arguments are (currentMesh, removedMesh).
+    onMesh(fn) { onMeshCb = fn; if (grass) fn(grass.mesh, null); },
     // { bounds: {minX, minZ, worldX, worldZ}, densityTex, heightTex } in GLOBAL metres, or null.
     // Live: the uniforms and texture nodes swap without a rebuild.
     setStructure(next) {
@@ -658,7 +661,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     setSunDir(v) { grass?.setSunDir?.(v); },
     dispose() {
       setEnabled(false);
-      if (grass) { scene.remove(grass.mesh); grass.dispose(); grass = null; }
+      rebuild();
       if (occlusion) { occlusion.dispose(); occlusion = null; }
       placeholderTex.dispose();
       built = false;

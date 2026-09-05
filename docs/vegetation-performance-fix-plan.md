@@ -14,7 +14,7 @@ does not measure uploads, GPU execution, or browser frame pacing.
 
 ## Bug-fixing checklist and sequence
 
-- [ ] 1. Release stale grass reflection exclusions on rebuild and disable. Publish removal
+- [x] 1. Release stale grass reflection exclusions on rebuild and disable. Publish removal
   as well as addition, replace the page's previous reference, and verify repeated lifecycle
   changes leave only the current mesh registered.
 - [ ] 2. Make diagnostic readbacks opt-in and race-free. Sample only for a visible panel or
@@ -61,4 +61,9 @@ reculls, readbacks, retained memory, and p50/p95/p99 frame time.
 
 ## Completed work
 
-Plan recorded before implementation. No fixes or browser measurements completed yet.
+Plan committed as `6dbfd35` before implementation. Baseline: 88 flora checks, 87 grass
+checks, 26 WGSL build checks, and the panel/profiler gating checks passed. No browser
+measurements completed yet.
+
+Fix 1: grass removal notifications now unregister disposed meshes from reflection exclusions.
+Validation: 95 flora checks passed, including rebuild, disable/re-enable, and repeated disposal.
