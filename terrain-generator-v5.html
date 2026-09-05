@@ -32,6 +32,8 @@
   .row-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .biome-card { border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px; margin: 6px 0; background: var(--paper); }
   .biome-card.on { padding: 10px 12px; background: var(--card); }
+  .biome-head { display: flex; align-items: center; gap: 8px; }
+  .biome-summary { font-size: 0.85em; opacity: 0.7; }
   .dropdown { position: relative; flex: 1 1 auto; min-width: 200px; }
   .dropdown-button { width: 100%; text-align: left; font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--paper); color: var(--ink); cursor: pointer; }
   .dropdown-list { position: absolute; top: 100%; left: 0; right: 0; max-height: 280px; overflow-y: auto; background: var(--paper); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px rgba(43,38,32,0.15); z-index: 20; }
@@ -912,24 +914,32 @@
     renderRuleRows(document.getElementById('material-rule-rows'), materialRules, { ...STREAMED_SPLAT_DEFAULTS, ...splatConfigFromProject({ cfg: genConfig }) }, 'rule', renderMaterialRules);
     renderMaterialBiomes();
   }
+  const expandedBiomes = new Set();   // which cards are open; page state, not saved
   function renderMaterialBiomes() {
     const cards = document.getElementById('material-biome-cards'); cards.innerHTML = '';
     const fallback = projectWideRules();
     for (const name of BIOMES) {
       const b = materialBiomes[name] ?? null;
-      const card = document.createElement('div'); card.className = 'biome-card' + (b ? ' on' : '');
-      const head = document.createElement('div'); head.className = 'control-row';
+      const open = expandedBiomes.has(name);
+      const card = document.createElement('div'); card.className = 'biome-card' + (b ? ' on' : '') + (open ? ' open' : '');
+      const head = document.createElement('div'); head.className = 'control-row biome-head';
       const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = !!b; toggle.title = 'Own textures and rules for this biome';
       toggle.addEventListener('change', () => {
-        if (toggle.checked) materialBiomes[name] = { slots: {}, rules: {} }; else delete materialBiomes[name];
+        if (toggle.checked) { materialBiomes[name] = { slots: {}, rules: {} }; expandedBiomes.add(name); } else delete materialBiomes[name];
         history.record(`biome ${name} ${toggle.checked ? 'on' : 'off'}`);
         renderMaterialBiomes(); refreshMaterialLook();
       });
-      const title = document.createElement('strong'); title.textContent = name;
+      const title = document.createElement('strong'); title.textContent = name; title.style.cursor = 'pointer'; title.title = open ? 'Collapse' : 'Expand';
       const [cr, cg, cb] = BIOME_COLORS[name]; const swatch = document.createElement('span'); swatch.className = 'swatch'; swatch.style.background = `rgb(${cr},${cg},${cb})`;
-      head.append(toggle, swatch, title); card.appendChild(head);
+      const summary = document.createElement('span'); summary.className = 'biome-summary';
+      summary.textContent = b ? `${Object.keys(b.slots).length} texture${Object.keys(b.slots).length === 1 ? '' : 's'}, ${Object.keys(b.rules).length} rule${Object.keys(b.rules).length === 1 ? '' : 's'}` : '';
+      const caret = document.createElement('span'); caret.textContent = open ? '▾' : '▸'; caret.style.marginLeft = 'auto';
+      title.addEventListener('click', () => { if (open) expandedBiomes.delete(name); else expandedBiomes.add(name); renderMaterialBiomes(); });
+      caret.addEventListener('click', () => { if (open) expandedBiomes.delete(name); else expandedBiomes.add(name); renderMaterialBiomes(); });
+      head.append(toggle, swatch, title, summary, caret); card.appendChild(head);
       cards.appendChild(card);
-      if (!b) continue;
+      if (!open) continue;
+      if (!b) { const hint = document.createElement('p'); hint.className = 'lede'; hint.textContent = 'Tick the box to give this biome its own textures and rules.'; card.appendChild(hint); continue; }
       for (const slot of MATERIAL_SLOTS) {
         const row = document.createElement('div'); row.className = 'control-row';
         const label = document.createElement('label'); label.textContent = slot; row.appendChild(label);
