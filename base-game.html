@@ -178,6 +178,8 @@ import { ProjectileEntity } from './entity-types/projectile.js';
 import { createPointLightPool } from './point-light-pool.js';
 import { createWeaponLight, WEAPON_LIGHT_DEFAULTS, rampToward } from './weapon-light.js';
 import { createWeaponLaser, WEAPON_LASER_DEFAULTS, tapKind } from './weapon-laser.js';
+import { createVehicleLights } from './base-game-vehicle-lights.js';
+import { BASE_GAME_VEHICLE_LIGHTS } from './base-game-protocol.mjs';
 import { createDebrisSim, TIER_DEBRIS_SCALE } from './blast-debris-sim.js';
 import { createProjectileManager } from './bot-projectiles.js';
 import { isSurfaceDetonation } from './entity-types/combat-projectile.js';
@@ -200,7 +202,7 @@ import { createWheelMenu } from './wheel-menu.js';
 import { createWindowedBake } from './base-game-world-map.js';
 import { createWorldMapOverlay } from './world-map.js';
 import { BIOME_COLORS } from './biome-classifier-js.js';
-import { VEHICLE_UGV, VEHICLE_BUGGY, BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_DEFS, createBaseGameVehicle, createSeatedController, stepBaseGameVehicle, sendVehicleTo, recallVehicle, takeOverVehicle, releaseVehicle, vehicleSeatPoint, fireVehicleTurret, vehicleHitVolumes, blastDamageOnVehicle, damageBaseGameVehicle, dueVehicleBlasts } from './base-game-vehicles.js';
+import { VEHICLE_UGV, VEHICLE_BUGGY, BASE_GAME_VEHICLE_KINDS, BASE_GAME_VEHICLE_DEFS, createBaseGameVehicle, createSeatedController, stepBaseGameVehicle, sendVehicleTo, recallVehicle, takeOverVehicle, releaseVehicle, vehicleSeatPoint, fireVehicleTurret, vehicleHitVolumes, blastDamageOnVehicle, damageBaseGameVehicle, dueVehicleBlasts, setVehicleLights } from './base-game-vehicles.js';
 import { createBaseGamePlayerBodies, BASE_GAME_BODY_MODES, BASE_GAME_MOVEMENT_DEFAULTS, BASE_GAME_BODY_DESIGNS } from './base-game-player-bodies.js';
 import { ARM_POSE_PRESETS, GAIT_MODELS } from './player-procedural-body.js';
 import {
@@ -1711,6 +1713,7 @@ function applyLocalVehicleControl(di) {
   if (!rec) return di;
   // Solo stores the aim and the trigger exactly as the server does; the station trains and fires
   // inside the vehicle's own fixed step, so both modes run the same code off the same fields.
+  if (Number.isInteger(di.lights) && di.mode === 1) setVehicleLights(rec, di.lights);
   if (rec.def.turret) {
     if (di.aim) rec.aim = di.aim;
     rec.firing = di.mode === 1 && di.fire === true;
@@ -1820,6 +1823,9 @@ function buildDroneInput() {
     const p = turretAimPoint();
     if (p) di.aim = p;
     di.fire = weaponState.firing;   // a machine gun is held down, not tapped like the missile release
+  }
+  if (droneCtl.active && BASE_GAME_VEHICLE_DEFS[droneView.drones.get(id)?.kind]) {
+    di.lights = vehicleSwitchMask(droneView.drones.get(id));   // absolute, so a dropped tick cannot invert a switch
   }
   droneCtl.fireEdge = false;
   return applyLocalVehicleControl(di);
@@ -1965,11 +1971,11 @@ function droneHudLine() {
   const seated = !!playerController.controlledVehicle;
   // What the keys do depends on where you are sitting, so the line says the seat you are in.
   const rack = seatHasRack();
-  const keys = seated ? '[E] get out'
+  const keys = seated ? '[E] get out · [L] lights'
     : !droneCtl.active ? '[F] take the wheel · [B] send · [N] recall'
     : rack && droneCtl.seat === 'missile' ? (missileCam.active ? '[F] back to the craft' : '[space] release · [wheel] zoom · [F] back to the craft · [X] get out')
     : rack ? '[F] the sensor · [X] get out · [B] send · [N] recall'
-    : atTurretStick() ? '[mouse] aim · [click] fire · [F] release · [B] send · [N] recall'
+    : atTurretStick() ? '[mouse] aim · [click] fire · [L] lights · [F] release · [B] send · [N] recall'
     : '[F] release · [B] send · [N] recall';
   const st = droneView.drones.get(droneCtl.id)?.latest;
   const station = atTurretStick() && Number.isFinite(st?.turretAmmo) ? `<br>station ${st.turretAmmo} rounds` : '';
@@ -2067,6 +2073,60 @@ const devWheel = createWheelMenu({
   getGroups: devWheelGroups,
   getActive: devWheelActive,
   onCommit: devWheelCommit,
+});
+// The light wheel (hold L): the switches for whatever you are in, each wedge a toggle. On foot
+// that is the flashlight and the laser; at a vehicle's stick it is the hull's own switches, kept
+// as a local mask that the stick sends every tick and the vehicle keeps when you get out.
+const LIGHT_SWITCH_LABELS = { head: 'Headlights', lamp: 'Lamp', high: 'High beams', turretLight: 'Turret light', turretLaser: 'Turret laser' };
+const vehicleSwitches = { forId: null, mask: 0 };
+function lightSwitchVehicle() {
+  if (!droneCtl.active) return null;
+  const rec = droneView.drones.get(droneCtl.id);
+  return rec && BASE_GAME_VEHICLE_DEFS[rec.kind] ? rec : null;
+}
+// The local mask starts from what the hull already has, so a vehicle left with its lights on is
+// taken over with them on rather than snapped dark by the first tick.
+function vehicleSwitchMask(rec) {
+  if (!rec) return 0;
+  if (vehicleSwitches.forId !== rec.id) { vehicleSwitches.forId = rec.id; vehicleSwitches.mask = rec.latest?.lights ?? 0; }
+  return vehicleSwitches.mask;
+}
+function lightWheelGroups() {
+  const rec = lightSwitchVehicle();
+  if (!rec) {
+    return [
+      { id: 'flashlight', label: 'Flashlight', sublabel: settings.flashlightOn ? 'on' : 'off' },
+      { id: 'laser', label: 'Laser', sublabel: settings.laserOn ? 'on' : 'off' },
+    ];
+  }
+  const def = BASE_GAME_VEHICLE_DEFS[rec.kind], mask = vehicleSwitchMask(rec);
+  return def.lights.map((name) => ({
+    id: name,
+    label: name === 'head' && def.kind === VEHICLE_UGV ? 'Headlight' : LIGHT_SWITCH_LABELS[name],
+    sublabel: mask & BASE_GAME_VEHICLE_LIGHTS[name] ? 'on' : 'off',
+  }));
+}
+function toggleLightSwitch(id) {
+  const rec = lightSwitchVehicle();
+  if (!rec) {
+    if (id === 'flashlight') settings.flashlightOn = !settings.flashlightOn;
+    else if (id === 'laser') settings.laserOn = !settings.laserOn;
+    else return;
+    // The key writes the SETTINGS, so the panel toggles and the key are one switch, not two.
+    syncAllControls();
+    changed(id === 'laser' ? 'laserOn' : 'flashlightOn');   // applies both
+    scheduleAutosaveSafe();
+    return;
+  }
+  const bit = BASE_GAME_VEHICLE_LIGHTS[id];
+  if (!bit) return;
+  vehicleSwitchMask(rec);
+  vehicleSwitches.mask ^= bit;
+}
+const lightWheel = createWheelMenu({
+  getGroups: lightWheelGroups,
+  getActive: () => ({ groupId: lightWheelGroups()[0]?.id ?? null, optionId: null }),   // a tap flips the first switch
+  onCommit: ({ groupId }) => { if (groupId) toggleLightSwitch(groupId); },
 });
 function devGunNote(text) { devGun.note = text; devGun.noteUntil = performance.now() + 1500; }
 function sentinelPreset() {
@@ -2360,6 +2420,8 @@ function applyVisor() {
 // query has no provider for (bodies, most of all) come out right for free. Only the beam in the air
 // is drawn, and depth testing clips that where it meets geometry.
 const weaponLaser = createWeaponLaser({ THREE, scene });
+// Vehicle lights: a resident pool handed to the nearest lit hulls, for the same WebGPU reason.
+const vehicleLights = createVehicleLights({ THREE, scene });
 function applyLaser() {
   weaponLaser.configure({
     hue: settings.laserHue,
@@ -3157,6 +3219,7 @@ function resetPlayer() {
 function clearPlayerInput() {
   playerKeys.clear();
   if (devWheel.isOpen) devWheel.close(false);
+  if (lightWheel.isOpen) lightWheel.close(false);
   pointerLook.clear();
   jumpEdgeQueued = false;
   playerController.clearJump();
@@ -5621,6 +5684,7 @@ addEventListener('keydown', event => {
 });
 
 let lastLightTapMs = null;   // the L key's double-tap clock
+let lightTap = null;         // what this press of L was, decided on the way down and spent on the way up
 addEventListener('keydown', event => {
   if (activeMode === 'menu' || gameplayPaused || settings.playerControlMode !== 'player') return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
@@ -5672,19 +5736,15 @@ addEventListener('keydown', event => {
   if (event.code === 'KeyB' && !event.repeat) droneCtl.sendEdge = true;
   if (event.code === 'KeyN' && !event.repeat) droneCtl.recallEdge = true;
   if (event.code === 'KeyL' && !event.repeat) {
-    // One key, two switches: a tap is the flashlight, a double tap is the laser. The first tap of a
-    // pair has already flipped the light by the time the second arrives, so a double tap flips it
-    // back — the light blinks for a fraction of a second rather than the tap waiting on a timer to
-    // find out what it was. A third tap starts a fresh pair instead of reading as a triple.
+    // Hold L for the light wheel; releasing it flips the wedge under the mouse. A tap that never
+    // moved flips the first switch (the flashlight on foot, the headlights in a vehicle). A double
+    // tap flips the laser as well: its first tap has already flipped the first switch by the time
+    // the second arrives, so the second flips it back and the light blinks rather than the tap
+    // waiting on a timer. A third tap starts a fresh pair instead of reading as a triple.
     const now = performance.now();
-    const kind = tapKind(lastLightTapMs, now);
-    lastLightTapMs = kind === 'double' ? null : now;
-    settings.flashlightOn = !settings.flashlightOn;
-    if (kind === 'double') settings.laserOn = !settings.laserOn;
-    // The key writes the SETTINGS, so the panel toggles and the key are one switch, not two.
-    syncAllControls();
-    changed(kind === 'double' ? 'laserOn' : 'flashlightOn');   // applies both
-    scheduleAutosaveSafe();
+    lightTap = tapKind(lastLightTapMs, now);
+    lastLightTapMs = lightTap === 'double' ? null : now;
+    lightWheel.open();
   }
   // Posture toggles, not holds: you do not hold a key to stay lying down. Pressing the key you are
   // already in stands you back up, and either key takes you straight there from the other.
@@ -5697,7 +5757,7 @@ addEventListener('keydown', event => {
 // Right mouse button aims while held (pointer-locked play only).
 renderer.domElement.addEventListener('mousedown', (event) => {
   if (event.button === 2) weaponState.aiming = true;
-  if (event.button === 0 && devWheel.isOpen) return;   // picking a tool is not placing one
+  if (event.button === 0 && (devWheel.isOpen || lightWheel.isOpen)) return;   // picking a tool is not placing one
   // Flying an aircraft the left button is not a trigger, since there is nothing in your hands: it
   // drags the view, and two clicks inside the double-click window put it back behind the nose. A
   // turret station keeps its trigger, because there the button really does fire something.
@@ -5726,7 +5786,7 @@ addEventListener('mouseup', (event) => {
 });
 document.addEventListener('pointerlockchange', () => {
   pointerLook.clear();
-  if (document.pointerLockElement !== renderer.domElement && devWheel.isOpen) devWheel.close(false);
+  if (document.pointerLockElement !== renderer.domElement) { if (devWheel.isOpen) devWheel.close(false); if (lightWheel.isOpen) lightWheel.close(false); }
   if (document.pointerLockElement !== renderer.domElement) { weaponState.firing = false; devGun.chargeStartMs = null; }
 });
 renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
@@ -5735,6 +5795,11 @@ addEventListener('keyup', event => {
   // Releasing 9 commits the wheel. A tap that never moved the mouse re-picks what was already there,
   // so the gesture is safe to abandon halfway.
   if (event.code === 'Digit9' && devWheel.isOpen) devWheel.close(true);
+  if (event.code === 'KeyL' && lightWheel.isOpen) {
+    lightWheel.close(true);
+    if (lightTap === 'double') { const rec = lightSwitchVehicle(); toggleLightSwitch(!rec ? 'laser' : rec.kind === VEHICLE_UGV ? 'turretLaser' : null); }
+    lightTap = null;
+  }
 });
 addEventListener('blur', clearPlayerInput);
 renderer.domElement.addEventListener('click', () => {
@@ -5745,6 +5810,7 @@ renderer.domElement.addEventListener('click', () => {
 // degrees a pixel is a third of what it is at 30, which is what makes a far target holdable.
 addEventListener('mousemove', event => {
   if (devWheel.isOpen) { devWheel.handleMouseMove(event); return; }   // the wheel wins the mouse
+  if (lightWheel.isOpen) { lightWheel.handleMouseMove(event); return; }
   if (!droneCtl.active || document.pointerLockElement !== renderer.domElement) return;
   // Flying an aircraft, a drag is free look: the view swings around the craft while it keeps flying
   // its heading. A turret station and the missile sensor both aim on the mouse, so neither is one.
@@ -5767,7 +5833,7 @@ addEventListener('mousemove', event => {
 }, { capture: true });
 
 addEventListener('mousemove', event => {
-  if (devWheel.isOpen) return;   // the capture-phase handler above is driving the wheel with it
+  if (devWheel.isOpen || lightWheel.isOpen) return;   // the capture-phase handler above is driving the wheel with it
   if (gameplayPaused || settings.playerControlMode !== 'player'
     || document.pointerLockElement !== renderer.domElement) return;
   if (droneCtl.active) return;   // at the stick the mouse is not the look: the flight sim's keys fly, the body's view stays put
@@ -6577,7 +6643,7 @@ async function animate() {
     if (settings.visorMode !== 'rgb' && (visorSweepTick += dt) >= 1) { visorSweepTick = 0; applyVisor(); }
     passStart = profileFrame ? performance.now() : 0;
     const fxNow = performance.now();
-    updateProjectiles(fxNow, dt); updateVehicleDamageFx(dt); updateShotEffects(fxNow); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt);
+    updateProjectiles(fxNow, dt); updateVehicleDamageFx(dt); vehicleLights.update(dt, droneView.drones, camera.position); updateShotEffects(fxNow); debrisSim.step(dt); debrisRenderer.sync(); flashLights.update(dt);
     devLightRegistry.tick(dt, { now: fxNow / 1000, terrainHeight: devLightGround }); devLightPool.sync(devLightRegistry.renderList(), devLightToLocal);
     const gunLight = weaponLightSource(canControl); weaponLight.update(dt, gunLight); weaponLaser.update(dt, gunLight); updateDevHeldLight(dt, gunLight);
     if (profileFrame) frameProfiler.mark('fx', performance.now() - passStart);

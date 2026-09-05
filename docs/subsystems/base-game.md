@@ -1725,6 +1725,27 @@ missing half of the same problem: `driveToward` plans an arrival speed from the 
 (`APPROACH_DECEL`) and brakes above it, where before it held a throttle floor to the cap and a UGV
 three metres from its station could not turn into it and orbited. Pinned in `test-base-game-vehicles.mjs`.
 
+**Lights (2026-09-05).** Hold L for the light wheel: the switches for whatever you are in, each wedge
+a toggle showing its state, released on to flip it. On foot that is the flashlight and the laser, the
+pair L already switched; a tap that never moved flips the first, and a double tap flips the laser as
+well, exactly as before. At a vehicle's stick the wheel is the hull's own switches: the buggy has
+headlights, a lamp and high beams, the UGV a headlight, a lamp, a turret light and a turret laser
+(`def.lights`, in wheel order). The switches are a bitmask (`BASE_GAME_VEHICLE_LIGHTS`) carried on the
+stick every tick as an absolute value, so a dropped tick cannot invert one, applied by the server only
+from the client holding the stick (`setVehicleLights`, clipped to the hull's switches), and echoed on
+the vehicle wire state, protocol 22. A vehicle keeps its lights as left when the driver gets out; the
+next driver's local mask starts from the wire, so it is not snapped dark; a wreck has none.
+
+Drawing them follows the page's WebGPU rule that the visible light set must not change:
+`base-game-vehicle-lights.js` keeps `VEHICLE_LIGHT_SETS` (two) resident sets, each a headlight cone that
+dresses as high beams when that bit is on (longer, narrower, brighter), a work-lamp point light, a
+turret-light cone and a weapon-laser instance, and hands them each frame to the lit vehicles nearest the
+camera (`rankLitVehicles`), keeping a set on its vehicle while that vehicle still ranks. Every lit
+switch on every vehicle shows an emissive lens disc, pool or no pool, parented into the mesh at the
+anchor the builder names in `userData.lights` (turret ones on the elevation cradle, so they train with
+the gun). The look numbers are `VEHICLE_LIGHT_LOOK`, unseen in a browser as of this writing.
+`test-base-game-vehicle-lights.mjs` runs the pool over the real meshes in Node.
+
 **Meshes (rebuilt 2026-09-02).** `flight-meshes.js` registers `ugv` and `buggy` builders with
 steerable/spinning wheels. The first pass stacked boxes and hand-authored the wheel positions, and
 they had drifted: the drawn wheelbase was 0.72 m against a simulated 1.1 m (UGV) and 1.52 m against
