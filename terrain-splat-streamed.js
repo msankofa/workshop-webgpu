@@ -211,6 +211,25 @@ export async function loadStreamedSplatTextures({ basePath = STREAMED_SPLAT_DEFA
   return { layers: out, slots: folders };
 }
 
+// The splat thresholds a project implies: its cfg's beach, rock and snow rules converted into the
+// splat's frame (rock slope is a gradient magnitude there, normal.y here), then material.rules on
+// top. Pure; the result is an updateStreamedSplat patch. Missing cfg fields keep the defaults.
+export function splatConfigFromProject(project, defaults = STREAMED_SPLAT_DEFAULTS) {
+  const cfg = project?.cfg ?? {};
+  const out = {};
+  const num = v => typeof v === 'number' && Number.isFinite(v);
+  const normalY = g => 1 / Math.sqrt(1 + g * g);
+  if (num(cfg.sea_level) && num(cfg.beach_width)) out.shoreTop = cfg.sea_level + 1 + Math.max(0, cfg.beach_width - 1) * 0.5;
+  else if (num(cfg.sea_level)) out.shoreTop = cfg.sea_level + defaults.shoreTop;
+  if (num(cfg.rock_slope_start)) out.rockSlope = normalY(cfg.rock_slope_start);
+  if (num(cfg.rock_slope_full)) out.rockFull = normalY(cfg.rock_slope_full);
+  if (num(cfg.snow_height_start)) out.snowBottom = cfg.snow_height_start;
+  if (num(cfg.snow_height_full)) out.snowTop = cfg.snow_height_full;
+  for (const [k, v] of Object.entries(project?.material?.rules ?? {})) if (num(v) && k in defaults) out[k] = v;
+  if (out.rockFull !== undefined && out.rockSlope !== undefined && out.rockFull > out.rockSlope) [out.rockFull, out.rockSlope] = [out.rockSlope, out.rockFull];
+  return out;
+}
+
 // Swap the pictures behind an already-bound texture set in place: every material that sampled
 // `current` (terrain instances, the grass ground node) keeps its graph and sees the new images.
 // Returns the averages patch for updateStreamedSplat. Disposes nothing the caller still holds.

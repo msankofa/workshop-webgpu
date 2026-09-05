@@ -149,6 +149,11 @@ console.log('\n[material] ground texture slots: optional, validated, hash-neutra
   rejects(() => normalizeProject(editorProject({ material: { slots: { grass: '../secret' } } })), 'material.slots.grass', 'rejects a path with ..');
   rejects(() => normalizeProject(editorProject({ material: { slots: { lava: 'rock' } } })), 'material.slots.lava', 'rejects an unknown slot');
   rejects(() => normalizeProject(editorProject({ material: { slots: {}, tint: 1 } })), 'material.tint', 'rejects an unknown material field');
+  const ruled = normalizeProject(editorProject({ material: { slots: {}, rules: { snowBottom: 30, rockSlope: 0.9 } } })).project;
+  ok(ruled.material.rules.snowBottom === 30 && ruled.material.rules.rockSlope === 0.9 && Object.keys(ruled.material.slots).length === 0, 'rules round-trip without slots');
+  ok(!('rules' in normalizeProject(editorProject({ material: { slots: { grass: 'rock' }, rules: {} } })).project.material), 'empty rules are dropped');
+  rejects(() => normalizeProject(editorProject({ material: { rules: { lavaTop: 1 } } })), 'material.rules.lavaTop', 'rejects an unknown rule');
+  rejects(() => normalizeProject(editorProject({ material: { rules: { snowTop: 'high' } } })), 'material.rules.snowTop', 'rejects a non-numeric rule');
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);

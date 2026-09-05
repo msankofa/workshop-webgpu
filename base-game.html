@@ -132,7 +132,7 @@ const BASE_GAME_WATER_LOOKS = Object.freeze(Object.keys(WATER_PRESETS).filter(na
 import { connectBaseGameSession } from './base-game-session.mjs';
 import { createBaseGamePauseMenu, showBaseGameStartMenu } from './base-game-menu.mjs';
 import { createTerrainProjectStore, createBaseGameTerrainStudio } from './base-game-terrain-studio.js';
-import { loadStreamedSplatTextures, createStreamedSplatMaterial, updateStreamedSplat, splatSlotFolders, STREAMED_SPLAT_LAYERS } from './terrain-splat-streamed.js';
+import { loadStreamedSplatTextures, createStreamedSplatMaterial, updateStreamedSplat, splatSlotFolders, splatConfigFromProject, STREAMED_SPLAT_LAYERS } from './terrain-splat-streamed.js';
 import { sanitizeBaseGameTerrainConfig } from './base-game-protocol.mjs';
 import { createBaseGameTerrain, terrainSourceFromDescriptor, BASE_GAME_TERRAIN_DEFAULTS } from './base-game-terrain.js';
 import { createBaseGameTrails, BASE_GAME_TRAIL_DEFAULTS } from './base-game-trails.js';
@@ -1329,6 +1329,7 @@ roads.group.position.set(-trailOrigin[0], -trailOrigin[1], -trailOrigin[2]);
 // project's material slots pick the folders; a later project swaps the images in place.
 const groundTextureLoad = loadStreamedSplatTextures({ slots: terrainStore.activeProject?.material?.slots ?? null }).then(tex => {
   terrain.setSplatMaterial(createStreamedSplatMaterial(tex, { tileMeters: settings.terrainTextureTile, fadeFar: settings.terrainTextureFade }), tex);
+  if (terrainStore.activeProject) terrain.updateSplat(splatConfigFromProject(terrainStore.activeProject));
   return tex;
 }).catch(err => { console.warn(`ground textures unavailable, keeping the tint: ${err.message}`); return null; });
 async function applyGroundTextureSlots(slots) {
@@ -1396,6 +1397,7 @@ async function applyTerrainProjectAtRuntime(project) {
   syncSpawnBuilding();
   activeTerrainDescriptor = descriptor;
   applyGroundTextureSlots(project.material?.slots ?? null).catch(err => console.warn(`ground texture slots not applied: ${err.message}`));
+  terrain.updateSplat(splatConfigFromProject(project));
   settings.terrainSeaLevel = descriptor.seaLevel;
   if (settings.worldMode !== 'terrain') { settings.worldMode = 'terrain'; syncAllControls(); }
   updateWorld(0);

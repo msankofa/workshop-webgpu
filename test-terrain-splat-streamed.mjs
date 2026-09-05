@@ -2,7 +2,7 @@
 // Run: node test-terrain-splat-streamed.mjs
 import * as THREE from 'three';
 import { buildMaterial } from './tsl-build-check.mjs';
-import { createStreamedSplatMaterial, placeholderStreamedSplatTextures, splatWeights, detailFade, updateStreamedSplat, STREAMED_SPLAT_DEFAULTS, STREAMED_SPLAT_LAYERS, splatSlotFolders, replaceStreamedSplatImages } from './terrain-splat-streamed.js';
+import { createStreamedSplatMaterial, placeholderStreamedSplatTextures, splatWeights, detailFade, updateStreamedSplat, STREAMED_SPLAT_DEFAULTS, STREAMED_SPLAT_LAYERS, splatSlotFolders, replaceStreamedSplatImages, splatConfigFromProject } from './terrain-splat-streamed.js';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
@@ -126,6 +126,23 @@ console.log('\n[5] LOD dissolve: coverage maps ramp per chunk; fine levels disso
   const meshes = terrain.system.group.children.filter(c => c.isMesh && c.userData.terrainChunk);
   ok(meshes.every(m => m.material === m0), 'exact chunks use the exact instance');
   terrain.dispose();
+}
+
+console.log('\n[8] splatConfigFromProject: cfg rules in the splat frame, material.rules on top');
+{
+  const cfg = { sea_level: 10, beach_width: 9, rock_slope_start: 0.34, rock_slope_full: 0.72, snow_height_start: 74, snow_height_full: 112 };
+  const p = splatConfigFromProject({ cfg });
+  ok(near(p.shoreTop, 15), 'shore top sits mid-way up the beach band above sea level');
+  ok(near(p.snowBottom, 74) && near(p.snowTop, 112), 'snow heights pass through');
+  ok(near(p.rockSlope, 1 / Math.sqrt(1 + 0.34 * 0.34)) && near(p.rockFull, 1 / Math.sqrt(1 + 0.72 * 0.72)), 'gradient slopes become normal.y');
+  ok(p.rockFull < p.rockSlope, 'full rock is the steeper (lower normal.y) threshold');
+  ok(p.grassTop === undefined && p.dirtTop === undefined, 'rules the studio lacks stay unset');
+  const q = splatConfigFromProject({ cfg, material: { rules: { snowBottom: 30, grassTop: 20, bogus: 5 } } });
+  ok(near(q.snowBottom, 30) && near(q.grassTop, 20) && !('bogus' in q), 'material.rules override and unknown keys are ignored');
+  ok(Object.keys(splatConfigFromProject({})).length === 0, 'no cfg -> empty patch');
+  const mat = createStreamedSplatMaterial(placeholderStreamedSplatTextures());
+  updateStreamedSplat(mat, q);
+  ok(near(mat.userData.streamedSplat.cfg.snowBottom, 30) && near(mat.userData.streamedSplat.uniforms.rockSlope.value, p.rockSlope), 'the patch lands on a built material');
 }
 
 console.log('\n[7] texture slots: folder mapping and in-place image swap');

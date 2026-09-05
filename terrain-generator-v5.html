@@ -215,6 +215,7 @@
       </div>
       <div class="controls" id="material-legend"></div>
       <div class="controls" id="material-slots"><p class="lede">Ground texture slots</p><div id="material-slot-rows"></div><p id="material-slot-status" class="lede"></p></div>
+      <div class="controls" id="material-rules"><p class="lede">Where each slot appears in the game. Heights are world metres, slopes are the surface normal's Y (1 is flat). Unchecked rules follow the World group's beach, rock and snow settings.</p><div id="material-rule-rows"></div></div>
     </div>
   </section>
 
@@ -350,7 +351,8 @@
   import { LAYER_TYPES, LAYER_TYPE_ORDER, BLEND_MODES, makeLayer, defaultStack, normalizeStack, STACK_PRESETS, MAX_LAYERS } from './terrain-stack.js';
   import { PaintLayers, PAINT_TOOLS, BRUSH_SHAPES, DEFAULT_BRUSH, NO_OVERRIDE, bytesToBase64, base64ToBytes } from './terrain-paint.js';
   import { History } from './terrain-history.js';
-  import { normalizeProject, hashProject, canonicalProjectJson, classifyProject, PROJECT_ALGORITHM_VERSION, PROJECT_ALGORITHM_UNBOUNDED, MATERIAL_SLOTS } from './terrain-project-v5.js';
+  import { normalizeProject, hashProject, canonicalProjectJson, classifyProject, PROJECT_ALGORITHM_VERSION, PROJECT_ALGORITHM_UNBOUNDED, MATERIAL_SLOTS, MATERIAL_RULES } from './terrain-project-v5.js';
+  import { splatConfigFromProject, STREAMED_SPLAT_DEFAULTS } from './terrain-splat-streamed.js';
   import { createBridgeEditor, isEmbedded } from './terrain-editor-bridge.js';
   import { imageFileToGrid, fetchTerrariumGrid, quantizeHeights, packRaw16, heightsToPngBlob, CURATED_LOCATIONS } from './terrain-heightmap-io.js';
   import * as THREE from 'three';
@@ -368,8 +370,17 @@
   const imports = {};            // layerId -> { data: Float32Array, resolution, source }
   // Ground texture slots (terrain-project-v5.js MATERIAL_SLOTS). Empty means the runtime's default folders.
   const materialSlots = {};
-  const materialBlock = () => Object.keys(materialSlots).length ? { version: 1, slots: { ...materialSlots } } : null;
-  function setMaterialSlots(next) { for (const k of Object.keys(materialSlots)) delete materialSlots[k]; Object.assign(materialSlots, next?.slots ?? {}); }
+  const materialRules = {};       // splat threshold overrides; unset ones derive from cfg in the game
+  const materialBlock = () => {
+    if (!Object.keys(materialSlots).length && !Object.keys(materialRules).length) return null;
+    const block = { version: 1, slots: { ...materialSlots } };
+    if (Object.keys(materialRules).length) block.rules = { ...materialRules };
+    return block;
+  };
+  function setMaterialSlots(next) {
+    for (const k of Object.keys(materialSlots)) delete materialSlots[k]; Object.assign(materialSlots, next?.slots ?? {});
+    for (const k of Object.keys(materialRules)) delete materialRules[k]; Object.assign(materialRules, next?.rules ?? {});
+  }
   const densityConfig = { ...DENSITY_DEFAULT_CONFIG };
   let lastGrid = null;           // latest worker result (+ grassDensity, paintUsed)
   const REDRAW_CALLBACKS = [];
@@ -438,7 +449,7 @@
     getState: () => ({ cfg: { ...genConfig }, stack: JSON.parse(JSON.stringify(stack)), paint: paint.serialize(), density: { ...densityConfig }, material: materialBlock() }),
     restoreState: (s) => {
       Object.assign(genConfig, s.cfg);
-      setMaterialSlots(s.material); renderMaterialSlots();
+      setMaterialSlots(s.material); renderMaterialSlots(); renderMaterialRules();
       stack = normalizeStack(s.stack);
       Object.assign(densityConfig, s.density || {});
       const p = s.paint ? PaintLayers.deserialize(s.paint, genConfig.world_x, genConfig.world_z) : null;
@@ -819,6 +830,32 @@
     status.textContent = groundTextureFolders ? `${groundTextureFolders.length} texture folders on disk.` : 'Texture list needs serve.py; the saved choice still applies in the game.';
   }
   renderMaterialSlots();
+  // ---- splat rules: each row is a checkbox (override on) plus a slider; off means derived from cfg ----
+  const RULE_META = {
+    shoreTop: ['shore top (m)', -40, 240, 0.5], grassTop: ['grass top (m)', -40, 400, 1], dirtTop: ['dirt top (m)', -40, 400, 1],
+    snowBottom: ['snow bottom (m)', -40, 400, 1], snowTop: ['snow top (m)', -40, 400, 1],
+    rockSlope: ['rock starts (normal y)', 0, 1, 0.01], rockFull: ['rock full (normal y)', 0, 1, 0.01],
+  };
+  function renderMaterialRules() {
+    const host = document.getElementById('material-rule-rows'); host.innerHTML = '';
+    const derived = { ...STREAMED_SPLAT_DEFAULTS, ...splatConfigFromProject({ cfg: genConfig }) };
+    for (const rule of MATERIAL_RULES) {
+      const [label, min, max, step] = RULE_META[rule];
+      const on = rule in materialRules;
+      const row = document.createElement('div'); row.className = 'control-row';
+      const check = document.createElement('input'); check.type = 'checkbox'; check.checked = on; check.title = 'Override this rule';
+      const lab = document.createElement('label'); const span = document.createElement('span');
+      const value = on ? materialRules[rule] : derived[rule];
+      span.textContent = Number(value).toFixed(step < 1 ? 2 : 1); lab.textContent = label + ' '; lab.appendChild(span);
+      const input = document.createElement('input'); input.type = 'range'; input.min = min; input.max = max; input.step = step; input.value = value; input.disabled = !on;
+      input.addEventListener('input', () => { materialRules[rule] = Number(input.value); span.textContent = Number(input.value).toFixed(step < 1 ? 2 : 1); });
+      input.addEventListener('change', () => history.record(`rule ${rule}`));
+      check.addEventListener('change', () => { if (check.checked) materialRules[rule] = Number(input.value); else delete materialRules[rule]; history.record(`rule ${rule}`); renderMaterialRules(); });
+      row.append(check, lab, input); host.appendChild(row);
+    }
+  }
+  renderMaterialRules();
+  REDRAW_CALLBACKS.push(() => renderMaterialRules());
   fetch('/api/list-ground-textures').then(r => r.ok ? r.json() : null).then(body => {
     if (body?.ok) { groundTextureFolders = body.folders; renderMaterialSlots(); }
   }).catch(() => {});
@@ -1189,7 +1226,7 @@
     for (const k of Object.keys(imports)) delete imports[k];
     for (const [k, v] of Object.entries(project.imports)) imports[k] = { resolution: v.resolution, source: v.source, data: new Float32Array(base64ToBytes(v.data).buffer) };
     paint = (project.paint && PaintLayers.deserialize(project.paint, genConfig.world_x, genConfig.world_z)) || new PaintLayers(genConfig.preview_resolution, genConfig.world_x, genConfig.world_z);
-    setMaterialSlots(project.material); renderMaterialSlots();
+    setMaterialSlots(project.material); renderMaterialSlots(); renderMaterialRules();
     if (project.name) document.getElementById('export-name').value = project.name;
     rebuildAllControls(); requestGrid('grid'); history.record(`load ${label}`);
     const filled = report.filledDefaults.length ? ` ${report.filledDefaults.length} missing field(s) filled from defaults.` : '';

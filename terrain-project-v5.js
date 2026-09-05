@@ -17,6 +17,9 @@ export const PROJECT_ALGORITHM_VERSIONS = Object.freeze([PROJECT_ALGORITHM_VERSI
 const TOP_KEYS = new Set(['app', 'version', 'savedAt', 'name', 'algorithmVersion', 'cfg', 'density', 'stack', 'paint', 'imports', 'material']);
 // Ground texture slots the streamed splat blends (terrain-splat-streamed.js); a slot names a folder under textures/ground/.
 export const MATERIAL_SLOTS = Object.freeze(['sand', 'grass', 'dirt', 'rock', 'snow']);
+// Where each slot appears: the splat's own uniform names (terrain-splat-streamed.js). Heights are
+// world metres, slopes are normal.y. Unset means derived from cfg (splatConfigFromProject).
+export const MATERIAL_RULES = Object.freeze(['shoreTop', 'grassTop', 'dirtTop', 'snowBottom', 'snowTop', 'rockSlope', 'rockFull']);
 const SAFE_FOLDER = /^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*$/;
 const SAFE_NAME = /^[A-Za-z0-9 _-]+$/;
 
@@ -85,7 +88,7 @@ function normalizePaint(raw) {
 function normalizeMaterial(raw) {
   if (raw == null) return null;
   if (typeof raw !== 'object' || Array.isArray(raw)) fail('material must be an object or null', 'material');
-  for (const k of Object.keys(raw)) if (k !== 'version' && k !== 'slots') fail(`unknown material field ${k}`, `material.${k}`);
+  for (const k of Object.keys(raw)) if (k !== 'version' && k !== 'slots' && k !== 'rules') fail(`unknown material field ${k}`, `material.${k}`);
   if (raw.version != null && raw.version !== 1) fail(`unsupported material version ${raw.version}`, 'material.version');
   const slots = {};
   const src = raw.slots ?? {};
@@ -95,7 +98,17 @@ function normalizeMaterial(raw) {
     if (typeof v !== 'string' || !SAFE_FOLDER.test(v)) fail(`material.slots.${k} must be a folder path of letters, digits, _ - and /`, `material.slots.${k}`);
     slots[k] = v;
   }
-  return { version: 1, slots };
+  const rules = {};
+  const rsrc = raw.rules ?? {};
+  if (typeof rsrc !== 'object' || Array.isArray(rsrc)) fail('material.rules must be an object', 'material.rules');
+  for (const [k, v] of Object.entries(rsrc)) {
+    if (!MATERIAL_RULES.includes(k)) fail(`unknown material rule ${k}`, `material.rules.${k}`);
+    if (typeof v !== 'number' || !Number.isFinite(v)) fail(`material.rules.${k} must be a finite number`, `material.rules.${k}`);
+    rules[k] = v;
+  }
+  const out = { version: 1, slots };
+  if (Object.keys(rules).length) out.rules = rules;
+  return out;
 }
 
 function normalizeImports(raw, stack) {

@@ -1,6 +1,6 @@
 # Terrain studio decides which texture the ground gets
 
-STATUS: slices 1 and 2 shipped 2026-09-05 (Node-tested, unseen in a browser). Slice 3 in progress, 4 not started.
+STATUS: slices 1 to 3 shipped 2026-09-05 (Node-tested, unseen in a browser). Slice 4 not started.
 
 ## The goal
 
@@ -108,7 +108,10 @@ one conversion, gradient magnitude to `normal.y`.
 Files: `terrain-splat-streamed.js` (`splatConfigFromProject`, pure), both pages (sliders),
 `terrain-generator-js.js` (preview honours `grassTop`/`dirtTop`), the CPU twin test.
 
-Mechanical except slider ranges. Keep them wide.
+Shipped 2026-09-05 with two narrowings from the text above: the sliders live in the studio only
+(the Base Game applies the project's rules but has no sliders for them yet, since a project is a
+hashed record and a write-back would need a draft flow), and the studio's material canvas still
+draws its own biome/slope masks rather than the splat's height rules. Both are open follow-ups.
 
 ### Slice 4. Per-biome assignment (optional, later)
 
