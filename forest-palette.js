@@ -52,23 +52,27 @@ function leafOptsFor(sp, params, texSet, spIdx) {
 // the active texture set (or null) — drives leaf shape (quad vs simple) and bark vScale,
 // so the palette must be rebaked when texMode changes.
 function createPaletteState({ createTree, params, masterSeed, variantsPerSpecies = 4, texSet = null }) {
-  const gen = createTree({ seed: 1 });
   // An authored species table (from buildSpeciesFromFamilies) takes over when present;
   // its entries are full trees.js opts objects too, so nothing else below needs to change.
   const species = params.speciesTable || buildSpecies(params, rngFrom(masterSeed));
   const variants = [];
-  return { gen, species, variants, params, masterSeed, variantsPerSpecies, texSet, bakeMs: 0 };
+  return { gen: null, createTree, species, variants, params, masterSeed, variantsPerSpecies, texSet, bakeMs: 0 };
 }
 
 function bakeVariant(state, s, v) {
   const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  const { gen, species, variants, params, masterSeed, texSet } = state;
+  const { species, variants, params, masterSeed, texSet } = state;
   const sp = species[s];
   const leafOpts = leafOptsFor(sp, params, texSet, s);
   const barkOpts = { ...sp.bark };
   if (texSet && texSet.barkVScale !== undefined) barkOpts.vScale = texSet.barkVScale;
   const seed = Math.floor(rngFrom(masterSeed + s * 977 + v * 131).next() * 0xffffffff) >>> 0;
-  gen.regenerate({ ...sp, seed, leaves: leafOpts, bark: barkOpts, branchLods: params.branchLods ?? [] });
+  const options = { ...sp, seed, leaves: leafOpts, bark: barkOpts, branchLods: params.branchLods ?? [] };
+  // Tree's constructor generates immediately. Start with the first real variant instead of
+  // generating a seed-1 default tree whose geometry would be overwritten without ever used.
+  if (!state.gen) state.gen = state.createTree(options);
+  else state.gen.regenerate(options);
+  const gen = state.gen;
   const branchesGeo = bakeFlatColor(gen.branchesMesh.geometry, sp.bark.color);
   const branchesLod1Geo = gen.branchLodGeometries[0]
     ? bakeFlatColor(gen.branchLodGeometries[0], sp.bark.color) : null;

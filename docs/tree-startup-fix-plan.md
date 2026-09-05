@@ -8,6 +8,8 @@ fix separately. Existing unrelated worktree edits remain untouched.
   timings remain available in forest stats and performance captures.
 - [x] Remove redundant first-wave geometry replacement; verify original wrappers survive
   through compilation and later placeholders still get replaced.
+- [x] Remove discarded default-tree generation from the shared palette baker; compare all
+  output geometry bytes against the former constructor/regenerate sequence.
 - [ ] Compare matching species, seeds, texture mode, variants, and LOD geometry in the viewer
   and Base Game. Capture cold and warm browser runs, first rendered trees and complete forest.
 - [ ] Target measured compilation/generation bottlenecks; evaluate pipeline consolidation,
@@ -22,8 +24,8 @@ loading before buildAsync and terrain streaming after publication. `totalMs` rem
 until all waves finish. `yieldMs` includes other work scheduled during waits and overlaps
 the existing compute warmup elapsed time: do not add these fields as disjoint stages.
 Setup is CPU construction/binding, not actual GPU buffer upload time. Headless benchmark
-renderers cannot measure shader compilation or GPU execution. Palette CPU timing currently
-excludes generator construction, so it is not all generation cost.
+renderers cannot measure shader compilation or GPU execution. Palette CPU timing now includes
+the generator constructor inside the first variant bake; older timings excluded that work.
 
 Both environment viewers use the same palette/GPU modules but publish without Base Game's
 explicit per-wave warmup. Their initial forest promise also runs behind the loading screen.
@@ -43,3 +45,10 @@ and their disposal, plus redundant indirect-buffer dirtying, before its first pu
 All later variants still replace their placeholders. Geometry, materials, wave composition,
 warmup ordering and final placement are unchanged. Regression checks count installations and
 verify wrapper identity for both initial and replacement waves.
+
+First-wave fix commit: `c82540c`; 104 forest checks and shared-geometry lifecycle checks pass.
+The palette baker now constructs its generator with the first real variant, avoiding one full
+discarded default-tree generation per palette. This benefits both viewers and Base Game; it
+is shared waste, not an explanation for their entire latency difference. Tests verify byte-identical
+indices, attributes, and bounding spheres for procedural and authored palettes, trunk LODs,
+sync/async ordering, and no generator work when already cancelled.
