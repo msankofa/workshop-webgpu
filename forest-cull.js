@@ -111,3 +111,21 @@ export function shouldRecull(prev, next, thresholds = {}) {
 }
 
 function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+// The cosine of the widest XZ angle between the camera's forward and any corner of its view,
+// which is what the cone test above compares against. cos(vfov/2) alone is the top and bottom
+// edge of a square screen looking level: a wide screen sees further to the sides, and a camera
+// pitched down sees the ground over a wider XZ angle still (straight down sees all of it).
+// Corner rays in a yaw-free frame are (±a·t, ±t·sin p − cos p) on the ground, t = tan(vfov/2),
+// a = aspect, p = pitch; the widest one has −Z = cos p − t·|sin p|. When that is not positive a
+// corner points behind the camera and the cone must open to everything: −1.
+export function frustumConeCos(fovDeg, aspect = 1, forwardY = 0) {
+  if (!Number.isFinite(fovDeg) || fovDeg <= 0) return -1;
+  const t = Math.tan((fovDeg * Math.PI / 180) / 2);
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  const sinP = Math.max(-1, Math.min(1, forwardY || 0));
+  const cosP = Math.sqrt(Math.max(0, 1 - sinP * sinP));
+  const ahead = cosP - t * Math.abs(sinP);
+  if (ahead <= 1e-6) return -1;
+  return ahead / Math.hypot(a * t, ahead);
+}

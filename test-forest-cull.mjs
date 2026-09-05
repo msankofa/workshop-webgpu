@@ -1,4 +1,4 @@
-import { cullInstance, classifyInstance, shouldRecull } from './forest-cull.js';
+import { cullInstance, classifyInstance, shouldRecull, frustumConeCos } from './forest-cull.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL:', m); } };
@@ -129,6 +129,21 @@ const baseParams = {
   ok(none.shadowLive === false, 'g: without a reach there is no shadow list');
   const edge = classifyInstance({ x: 0, z: 90 }, cam, p);
   ok(edge.shadowLive === true, 'g: the reach is inclusive at the edge');
+}
+
+// ---- frustumConeCos: the cone follows the whole view, not the vertical fov ----
+{
+  const deg = (c) => Math.acos(Math.max(-1, Math.min(1, c))) * 180 / Math.PI;
+  const square = frustumConeCos(50, 1, 0);
+  ok(Math.abs(deg(square) - 25) < 1e-9, `h: a square level view is half the vertical fov (${deg(square).toFixed(2)} deg)`);
+  const wide = frustumConeCos(50, 16 / 9, 0);
+  ok(Math.abs(deg(wide) - Math.atan(16 / 9 * Math.tan(25 * Math.PI / 180)) * 180 / Math.PI) < 1e-9 && deg(wide) > 39, `h: a 16:9 view reaches further to the sides (${deg(wide).toFixed(1)} deg)`);
+  const down = frustumConeCos(50, 16 / 9, -Math.sin(45 * Math.PI / 180));
+  ok(deg(down) > deg(wide), `h: pitching down widens the ground cone (${deg(down).toFixed(1)} deg)`);
+  ok(frustumConeCos(50, 16 / 9, -Math.sin(80 * Math.PI / 180)) === -1, 'h: looking nearly straight down opens the cone to everything');
+  ok(frustumConeCos(50, 16 / 9, Math.sin(45 * Math.PI / 180)) === frustumConeCos(50, 16 / 9, -Math.sin(45 * Math.PI / 180)), 'h: up and down pitch are symmetric');
+  ok(frustumConeCos(110, 16 / 9, 0) < frustumConeCos(50, 16 / 9, 0), 'h: a wider fov gives a wider cone');
+  ok(frustumConeCos(NaN, 16 / 9, 0) === -1 && frustumConeCos(50, 0, 0) > 0, 'h: bad inputs fall back safely');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

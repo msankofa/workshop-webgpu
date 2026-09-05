@@ -22,6 +22,7 @@
 // manually when this kernel changes.
 import * as THREE from 'three';
 import { createSharedDrawGeometryPool } from './shared-draw-geometry.js';
+import { frustumConeCos } from './forest-cull.js';   // camera math only; the cull kernel stays a hand-synced twin
 import {
   MeshBasicNodeMaterial, MeshStandardNodeMaterial, StorageInstancedBufferAttribute, StorageBufferAttribute,
   IndirectStorageBufferAttribute,
@@ -972,12 +973,16 @@ export function createForestGPU(opts) {
         const fLen = Math.sqrt(fLenSq);
         camFx = _fwd3.x / fLen; camFz = _fwd3.z / fLen;
       }
+      // The widest XZ angle the view reaches, from the vertical fov, the aspect and the pitch.
+      // cos(vfov/2) alone was narrower than a wide screen and much narrower than a camera looking
+      // down, so trees at the sides were culled and popped in as the camera turned toward them.
       const camFovCos = camera.isPerspectiveCamera
-        ? Math.cos((camera.fov * Math.PI / 180) / 2)
+        ? frustumConeCos(camera.fov, camera.aspect, fLenSq > 1e-8 ? _fwd3.y : 0)
         : uFovCos.value;
       const camMoved = (camX - lastCamX) ** 2 + (camZ - lastCamZ) ** 2
         > recullMoveDist * recullMoveDist;
-      const camTurned = camFx * lastCamFx + camFz * lastCamFz < recullHeadingCos;
+      const camTurned = camFx * lastCamFx + camFz * lastCamFz < recullHeadingCos
+        || camFovCos !== uFovCos.value;   // a pitch or zoom change widens or narrows the cone: recull
       const firstRecull = !Number.isFinite(lastCamX) || !Number.isFinite(lastCamZ)
         || !Number.isFinite(lastCamFx) || !Number.isFinite(lastCamFz);
       if (!dirty && !firstRecull && !camMoved && !camTurned) {
