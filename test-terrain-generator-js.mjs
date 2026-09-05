@@ -1,6 +1,6 @@
 import {
   DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription, BIOME_INDEX, BIOMES,
-  gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps, buildMaterialMasks,
+  gradientMagnitude, flowAccumulation, simulateErosion, buildDerivedMaps, buildMaterialMasks, materialRgbaFromMasks, MATERIAL_COLORS,
   generateFullGrid, gradientColor, divergingColor, heightColor, maskColor,
   buildHeightfieldMesh,
   createDensityNoiseSampler,
@@ -155,6 +155,16 @@ ok(everyFieldHasDescription, '2: every FIELD_GROUPS field has a non-trivial fiel
   };
   const biomeIds = new Uint8Array(n).fill(BIOME_INDEX.forest);
   const { masks, rgba } = buildMaterialMasks(height, derived, biomeIds, cfg, res);
+  {
+    const again = materialRgbaFromMasks(masks);
+    let same = again.length === rgba.length; for (let i = 0; i < rgba.length && same; i++) if (again[i] !== rgba[i]) same = false;
+    ok(same, 'materialRgbaFromMasks with the default table reproduces buildMaterialMasks');
+    const grey = Object.fromEntries(Object.keys(MATERIAL_COLORS).map(k => [k, [120, 120, 120]]));
+    const moon = materialRgbaFromMasks(masks, grey, again);
+    ok(moon === again, 'writes into the supplied buffer');
+    let flat = true; for (let i = 0; i < moon.length; i += 4) if (moon[i] !== 120 || moon[i + 1] !== 120 || moon[i + 2] !== 120) flat = false;
+    ok(flat, 'a grey table makes every cell grey');
+  }
 
   let mostlyForest = true, dryWater = true;
   for (let i = 0; i < n; i++) {

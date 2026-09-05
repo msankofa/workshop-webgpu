@@ -460,10 +460,33 @@ export function buildDerivedMaps(height, resolution, cfg, flowNorm, receiverIn =
 }
 
 // ---- material masks (port of material_masks.py) ----
-const MATERIAL_COLORS = {
+export const MATERIAL_COLORS = Object.freeze({
   grass: [92, 156, 72], forest: [50, 104, 54], dirt: [128, 94, 62],
-  sand: [210, 190, 122], rock: [126, 126, 132], snow: [235, 241, 246],
-};
+  sand: [210, 190, 122], rock: [126, 126, 132], snow: [235, 241, 246], water: [28, 66, 130],
+});
+
+// Preview colour per cell from the masks and a 0..255 colour table (a page swaps the table for the
+// average colours of the ground textures a project chose, so the preview shows the same look).
+export function materialRgbaFromMasks(masks, colors = MATERIAL_COLORS, out = null) {
+  const n = masks.water.length;
+  const rgba = out && out.length === n * 4 ? out : new Uint8ClampedArray(n * 4);
+  const water = colors.water ?? MATERIAL_COLORS.water;
+  for (let i = 0; i < n; i++) {
+    let r = 0, g = 0, b = 0, total = 0;
+    for (const key of ['grass', 'forest', 'dirt', 'sand', 'rock', 'snow']) {
+      const wgt = masks[key][i];
+      const [cr, cg, cb] = colors[key] ?? MATERIAL_COLORS[key];
+      r += cr * wgt; g += cg * wgt; b += cb * wgt; total += wgt;
+    }
+    if (total > 1e-4) { r /= total; g /= total; b /= total; }
+    const wv = masks.water[i];
+    rgba[i * 4] = r * (1 - wv) + water[0] * wv;
+    rgba[i * 4 + 1] = g * (1 - wv) + water[1] * wv;
+    rgba[i * 4 + 2] = b * (1 - wv) + water[2] * wv;
+    rgba[i * 4 + 3] = 255;
+  }
+  return rgba;
+}
 const FOREST_BIOME_IDS = new Set(
   ['forest', 'dark_forest', 'jungle', 'taiga', 'swamp'].map((name) => BIOME_INDEX[name]),
 );
@@ -497,23 +520,7 @@ export function buildMaterialMasks(height, derived, biomeIds, cfg, resolution) {
   }
 
   const masks = { grass, forest, dirt, sand, rock, snow, water };
-  const rgba = new Uint8ClampedArray(n * 4);
-  for (let i = 0; i < n; i++) {
-    let r = 0, g = 0, b = 0, total = 0;
-    for (const key of ['grass', 'forest', 'dirt', 'sand', 'rock', 'snow']) {
-      const wgt = masks[key][i];
-      const [cr, cg, cb] = MATERIAL_COLORS[key];
-      r += cr * wgt; g += cg * wgt; b += cb * wgt; total += wgt;
-    }
-    if (total > 1e-4) { r /= total; g /= total; b /= total; }
-    const wv = water[i];
-    r = r * (1 - wv) + 28 * wv;
-    g = g * (1 - wv) + 66 * wv;
-    b = b * (1 - wv) + 130 * wv;
-    rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = 255;
-  }
-
-  return { masks, rgba };
+  return { masks, rgba: materialRgbaFromMasks(masks) };
 }
 
 // ---- full pipeline orchestration ----

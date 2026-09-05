@@ -344,7 +344,7 @@
 <script type="module">
   import {
     BIOMES, BIOME_COLORS, DEFAULT_CONFIG, FIELD_GROUPS, FIELD_RANGES, fieldLabel, fieldDescription,
-    buildHeightfieldMesh, divergingColor, signedColor, heightColor, flowColor, slopeColor, maskColor,
+    buildHeightfieldMesh, divergingColor, signedColor, heightColor, flowColor, slopeColor, maskColor, materialRgbaFromMasks, MATERIAL_COLORS,
     DENSITY_DEFAULT_CONFIG, DENSITY_FIELD_GROUPS, DENSITY_FIELD_RANGES, densityFieldLabel, densityFieldDescription,
   } from './terrain-generator-js.js';
   import { LAYER_TYPES, LAYER_TYPE_ORDER, BLEND_MODES, makeLayer, defaultStack, normalizeStack, STACK_PRESETS, MAX_LAYERS } from './terrain-stack.js';
@@ -424,6 +424,7 @@
       r.grid.grassDensity = r.grassDensity;
       r.grid.paintUsed = job.paintUsed;
       lastGrid = r.grid;
+      recolourMaterial(lastGrid);
       statusEl.textContent = `Grid ${r.grid.resolution}×${r.grid.resolution} in ${r.ms.toFixed(0)} ms (worker)`;
       for (const cb of REDRAW_CALLBACKS) cb(lastGrid);
     }
@@ -729,7 +730,47 @@
   }
   REDRAW_CALLBACKS.push(drawBiomePanel);
 
-  const MATERIAL_LEGEND_COLORS = { grass: [92, 156, 72], forest: [50, 104, 54], dirt: [128, 94, 62], sand: [210, 190, 122], rock: [126, 126, 132], snow: [235, 241, 246], water: [28, 66, 130] };
+  // Preview colours: the average of each chosen ground texture, so a moon project looks grey here
+  // too. Forest has no runtime slot; the game draws it with the grass texture, so it is grass darkened.
+  const textureAverages = {};       // folder -> [r, g, b] 0..255, filled as images load
+  function materialColorTable() {
+    const t = { ...MATERIAL_COLORS };
+    for (const slot of MATERIAL_SLOTS) {
+      const avg = textureAverages[materialSlots[slot] ?? slot];
+      if (avg) t[slot] = avg;
+    }
+    t.forest = t.grass.map(v => v * 0.62);
+    return t;
+  }
+  function recolourMaterial(grid) {
+    if (!grid?.materialMasks) return;
+    materialRgbaFromMasks(grid.materialMasks, materialColorTable(), grid.materialRgba);
+  }
+  function averageOfImage(img) {
+    const c = document.createElement('canvas'); c.width = 8; c.height = 8;
+    const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(img, 0, 0, 8, 8);
+    const d = ctx.getImageData(0, 0, 8, 8).data; let r = 0, g = 0, b = 0;
+    for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
+    return [r / 64, g / 64, b / 64];
+  }
+  function loadTextureAverage(folder) {
+    if (textureAverages[folder] !== undefined) return;
+    textureAverages[folder] = null;
+    const img = new Image();
+    img.onload = () => { try { textureAverages[folder] = averageOfImage(img); } catch { return; } refreshMaterialLook(); };
+    img.src = `textures/ground/${folder}/color.jpg`;
+  }
+  function refreshMaterialLook() {
+    renderMaterialLegend();
+    if (!lastGrid) return;
+    recolourMaterial(lastGrid);
+    drawMaterialPanel(lastGrid);
+    if (hfState.mode === 'heightfield' && hfModeSelect.value === 'material') applyHeightfieldColors(lastGrid);
+  }
+  function renderMaterialLegend() {
+    const t = materialColorTable();
+    document.getElementById('material-legend').innerHTML = Object.entries(t).map(([n, [r, g, b]]) => `<p><span class="swatch" style="background:rgb(${r | 0},${g | 0},${b | 0})"></span>${n}</p>`).join('');
+  }
   function drawMaterialPanel(grid) {
     const canvas = document.getElementById('material-canvas'), tooltip = document.getElementById('material-tooltip');
     const res = grid.resolution; canvas.width = res; canvas.height = res;
@@ -745,7 +786,7 @@
     canvas.onmouseleave = () => tooltip.classList.add('hidden');
   }
   REDRAW_CALLBACKS.push(drawMaterialPanel);
-  document.getElementById('material-legend').innerHTML = Object.entries(MATERIAL_LEGEND_COLORS).map(([n, [r, g, b]]) => `<p><span class="swatch" style="background:rgb(${r},${g},${b})"></span>${n}</p>`).join('');
+  renderMaterialLegend();
 
   // ---- ground texture slots: one select per runtime layer, folders listed by serve.py ----
   let groundTextureFolders = null;   // [{ folder, title }] or null when the server is not there
@@ -772,7 +813,9 @@
       swatch.src = `textures/ground/${chosen || slot}/color.jpg`;
       row.appendChild(swatch);
       rows.appendChild(row);
+      loadTextureAverage(chosen || slot);
     }
+    refreshMaterialLook();
     status.textContent = groundTextureFolders ? `${groundTextureFolders.length} texture folders on disk.` : 'Texture list needs serve.py; the saved choice still applies in the game.';
   }
   renderMaterialSlots();

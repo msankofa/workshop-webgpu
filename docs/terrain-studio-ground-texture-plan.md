@@ -1,6 +1,6 @@
 # Terrain studio decides which texture the ground gets
 
-STATUS: slice 1 shipped 2026-09-05 (Node-tested, unseen in a browser). Slices 2 to 4 not started.
+STATUS: slices 1 and 2 shipped 2026-09-05 (Node-tested, unseen in a browser). Slice 3 in progress, 4 not started.
 
 ## The goal
 
@@ -91,7 +91,8 @@ Files: `terrain-generator-v5.html` (legend colours from the loaded averages, abo
 `terrain-generator-js.js` (`buildMaterialMasks` takes a colour table instead of the fixed
 `MATERIAL_LEGEND_COLORS`).
 
-Mechanical.
+Shipped 2026-09-05: `materialRgbaFromMasks(masks, table, out)` recolours the worker's masks on the
+page; the averages come from an 8x8 canvas downsample of each chosen `color.jpg`.
 
 ### Slice 3. Where each slot appears
 
