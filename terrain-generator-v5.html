@@ -222,7 +222,7 @@
       <div class="controls" id="material-legend"></div>
       <div class="controls" id="material-slots"><p class="lede">Ground texture slots</p><div id="material-slot-rows"></div><p id="material-slot-status" class="lede"></p></div>
       <div class="controls" id="material-rules"><p class="lede">Where each slot appears in the game. Heights are world metres, slopes are the surface normal's Y (1 is flat). Unchecked rules follow the World group's beach, rock and snow settings.</p><div id="material-rule-rows"></div></div>
-      <div class="controls" id="material-biomes" style="flex-basis:100%;"><p class="lede">Per-biome overrides. A biome listed here draws its own textures for the slots you set and follows its own rules for the ones you tick; everything else falls back to the project-wide choice above.</p><div class="control-row"><label for="material-biome-add">Add biome</label><select id="material-biome-add"></select></div><div id="material-biome-cards"></div></div>
+      <div class="controls" id="material-biomes" style="flex-basis:100%;"><p class="lede">Per-biome overrides. Tick a biome to give it its own textures and rules; anything you leave unset falls back to the project-wide choice above.</p><div id="material-biome-cards"></div></div>
     </div>
   </section>
 
@@ -911,20 +911,23 @@
     renderMaterialBiomes();
   }
   function renderMaterialBiomes() {
-    const add = document.getElementById('material-biome-add');
-    const free = BIOMES.filter(name => !materialBiomes[name]);
-    add.innerHTML = '<option value="">choose a biome</option>' + free.map(name => `<option value="${name}">${name}</option>`).join('');
-    add.onchange = () => { if (!add.value) return; materialBiomes[add.value] = { slots: {}, rules: {} }; history.record(`biome ${add.value} added`); renderMaterialBiomes(); };
     const cards = document.getElementById('material-biome-cards'); cards.innerHTML = '';
     const fallback = projectWideRules();
     for (const name of BIOMES) {
-      const b = materialBiomes[name]; if (!b) continue;
-      const card = document.createElement('div'); card.className = 'panel'; card.style.margin = '8px 0'; card.style.padding = '10px 14px';
+      const b = materialBiomes[name] ?? null;
+      const card = document.createElement('div'); card.className = 'panel'; card.style.margin = '6px 0'; card.style.padding = b ? '10px 14px' : '4px 14px';
       const head = document.createElement('div'); head.className = 'control-row';
+      const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = !!b; toggle.title = 'Own textures and rules for this biome';
+      toggle.addEventListener('change', () => {
+        if (toggle.checked) materialBiomes[name] = { slots: {}, rules: {} }; else delete materialBiomes[name];
+        history.record(`biome ${name} ${toggle.checked ? 'on' : 'off'}`);
+        renderMaterialBiomes(); refreshMaterialLook();
+      });
       const title = document.createElement('strong'); title.textContent = name;
-      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'small'; remove.textContent = 'Remove';
-      remove.addEventListener('click', () => { delete materialBiomes[name]; history.record(`biome ${name} removed`); renderMaterialBiomes(); refreshMaterialLook(); });
-      head.append(title, remove); card.appendChild(head);
+      const [cr, cg, cb] = BIOME_COLORS[name]; const swatch = document.createElement('span'); swatch.className = 'swatch'; swatch.style.background = `rgb(${cr},${cg},${cb})`;
+      head.append(toggle, swatch, title); card.appendChild(head);
+      cards.appendChild(card);
+      if (!b) continue;
       for (const slot of MATERIAL_SLOTS) {
         const row = document.createElement('div'); row.className = 'control-row';
         const label = document.createElement('label'); label.textContent = slot; row.appendChild(label);
@@ -943,7 +946,6 @@
       const rulesHost = document.createElement('div');
       renderRuleRows(rulesHost, b.rules, fallback, `biome ${name}`, renderMaterialBiomes);
       card.appendChild(rulesHost);
-      cards.appendChild(card);
     }
   }
   renderMaterialRules();
