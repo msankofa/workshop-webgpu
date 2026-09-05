@@ -3639,4 +3639,14 @@ the window. When a tile is dropped its resident posts keep their zero until thei
 the drop ring (two tiles, 960 m) is beyond the tree radius, so no tree is placed under a building
 that will come back. Planter grass at soil height is not carried over to scattered buildings.
 
-Not yet done: anything seen in a browser.
+**Step 5, settings.** No protocol change: the structure seed and spacing are world identity, not
+runtime shared keys, so they travel in the room's terrain config like the spawn building flag.
+The three settings join `ROOM_OWNED_GROUND_KEYS`: online the owner's change re-requests the world
+(everyone respawns into the new one, as for a world-mode change) and guests' controls are locked;
+Solo they apply at once. The Structures runtime line shows the room's fixed seed and spacing
+while online.
+
+Nothing here has been seen in a browser yet. Known gaps: NPC bots do not climb to upper floors
+(no nav levels), planter grass at soil height is spawn-building only, volumetric rooms have no
+structures, and the private server plan window follows the players' centroid, so two players
+more than about 1.5 km apart leave one of them without buildings until they close up.

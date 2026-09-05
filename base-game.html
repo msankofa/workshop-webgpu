@@ -3922,7 +3922,9 @@ function registerControl(key, sync, element) {
   if (controlRegistry.has(key)) throw new Error(`Duplicate control: ${key}`);
   controlRegistry.set(key, { sync, element, shared: sharedSettingKeys.has(key) });
 }
-const ROOM_OWNED_GROUND_KEYS = ['worldMode', 'terrainVolumetric', 'terrainSeaLevel'];
+// Structures are world identity (their seed and spacing fix every wall), so they change the
+// world the way the ground does: the owner asks for a new one, guests follow.
+const ROOM_OWNED_GROUND_KEYS = ['worldMode', 'terrainVolumetric', 'terrainSeaLevel', 'structuresEnabled', 'structureSeed', 'structureSpacing'];
 // The analytic source carries the slider's sea level; a v5 project's is authored in the project.
 function applyLocalSeaLevel() {
   if (activeTerrainDescriptor.kind === 'analytic') {
@@ -4352,8 +4354,9 @@ function refreshStructureRuntimeLine() {
   const st = structures.stats;
   const here = playerController.getPosition();
   const near = structuresWanted() ? structures.nearest(here[0], here[2]) : null;
+  const fixed = isOnline() && roomTerrainConfig?.structures ? ` · room seed ${roomTerrainConfig.structureSeed} at ${roomTerrainConfig.structureSpacing} m` : '';
   setTextIfChanged(structureRuntimeLine, !structuresWanted() ? (isOnline() ? 'Off in this room.' : 'Off.')
-    : `${st.built} buildings in ${st.tiles} settled tiles · ${st.meshes} meshes · ${st.collisionTriangles.toLocaleString()} collision tris · bake ${st.buildMs.toFixed(0)} ms${near ? ` · nearest ${near.tile.structure.kind} ${near.distance.toFixed(0)} m` : ''}`);
+    : `${st.built} buildings in ${st.tiles} settled tiles · ${st.meshes} meshes · ${st.collisionTriangles.toLocaleString()} collision tris · bake ${st.buildMs.toFixed(0)} ms${near ? ` · nearest ${near.tile.structure.kind} ${near.distance.toFixed(0)} m` : ''}${fixed}`);
 }
 refreshStructureRuntimeLine();
 const labSummary = document.createElement('div');
