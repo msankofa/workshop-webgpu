@@ -411,16 +411,51 @@ encoded.
 Three walks the whole scene's world matrices once per frame. `?matrixauto=0` hands that walk to
 `render-matrix-walk.js`, which skips it for the roots that do not move: the terrain root, the
 structures root, the spawn building, the trail roads, the Traversal Lab and every published forest
-mesh. Everything else -- bodies, weapons, vehicles, drones, projectiles, lights and the sky dome
+mesh. With `?bundles=1` also on, the two `BundleGroup`s are what is declared static instead of the
+roots inside them: `skip()` only takes effect on direct scene children, and the forest meshes and
+the structures root are one level deeper then. Everything else -- bodies, weapons, vehicles, drones, projectiles, lights and the sky dome
 that rides the camera -- is walked every frame as before, because the list is of what stands still,
 not of what moves.
 
 An origin rebase shifts the static roots too, so the rebase handler calls `touchAll()` and the next
 frame walks everything once. A chunk streamed into a static subtree dirties its root through the
 wrapped `add`, and each static root is re-walked on its own roughly every 60 frames as insurance.
+The hypothesis the captures test is not that one walk is expensive but that the frame pays for
+three: three walks the scene inside every `render()` call, and a frame with the planar mirror and
+a shadow map redraw makes three of them. The flag replaces all three with one. Against that,
+while the player walks the terrain streams chunks nearly every frame and each `add` dirties the
+terrain root, so a moving capture re-walks it on most frames and should show less saving than a
+standing one -- `context.render.matrixWalk.walkedStatics` says how often that happened.
+
 The walk costs `passMatrixWalkMs`, which is a frame slot like the passes -- the point of the spike
 is the total frame CPU, not `passPostMs` -- and `context.render.matrixWalk` records how many roots
 the frame actually walked.
+
+### The render-bundle spike (`?bundles=1`)
+
+Three r184's `BundleGroup` records the GPU commands for its subtree once and replays them while
+nothing invalidates. It does **not** skip traversal: `_projectObject` still recurses into the
+group's children and rebuilds its render list every frame (three.webgpu.js:60913), and the bundle
+is keyed by (group, camera), so the main camera, the shadow camera and the planar mirror each keep
+their own recording. `?bundles=1` puts the forest's published meshes (through
+`createBaseGameForest`'s `meshParent`) and the structures root into one bundle group each.
+
+`static` is set to **false** on both groups on purpose. A static bundle also freezes
+`needsRefresh` for every object in it (three.webgpu.js:711), which would stop leaf sway and leave a
+rebased structure drawing at its old matrix; with `static = false` the recorded commands are still
+replayed but per-object uniforms and bindings are refreshed as usual. `?bundles=static` measures
+that other arm, and is expected to look wrong on screen -- it is a measurement, not an option.
+
+What must invalidate a recording is what changes *which* objects are in it, and nothing else.
+`syncBundleGroups()` samples the forest's published mesh count and per-mesh visibility, and the
+structures root's tile and child counts, once per frame at the same point, and sets `needsUpdate`
+when either changes: a palette wave publishing meshes, a LOD rung switching off, a structure tile
+streaming in. The planar mirror hides the trees for its own pass and restores them immediately
+(`water.js`), so sampling at one fixed point in the frame does not read that as a change. Plain
+buffer-content and indirect-count writes never invalidate, which is the point: the forest's cull
+writes its counts into the same GPU buffers the recorded commands already reference.
+`context.render.bundles` records the invalidation counts, so a capture says whether the forest
+settled or is re-recording every frame.
 
 The browser sends one completed entry to `serve.py`, which atomically prepends it to
 `research/stats/base-game-performance-log.json`; newest results therefore appear first and an old

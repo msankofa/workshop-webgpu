@@ -100,7 +100,7 @@ window.addEventListener('unhandledrejection', event => reportBaseGameError(event
 
 <script type="module">
 import * as THREE from 'three';
-import { WebGPURenderer, RenderPipeline, TimestampQuery } from 'three/webgpu';
+import { WebGPURenderer, RenderPipeline, TimestampQuery, BundleGroup } from 'three/webgpu';
 import { pass, renderOutput } from 'three/tsl';
 import { createDepthOfField } from './depth-of-field.js';
 import { createHiZ } from './hiz-pyramid.js';
@@ -1095,6 +1095,14 @@ function readFlagDefaultTrue(name) {
   }
   return true;
 }
+// A flag that carries a value: ?bundles=static. Returns null when absent, '' when bare.
+function readFlagValue(name) {
+  for (const source of [location.search, location.hash.replace(/^#/, '?')]) {
+    const params = new URLSearchParams(source.startsWith('?') ? source : `?${source}`);
+    for (const [k, v] of params) if (k.toLowerCase().replace(/[^a-z]/g, '') === name) return v ?? '';
+  }
+  return null;
+}
 function readFlag(name) {
   const truthy = v => v === '' || v === null || ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase());
   for (const source of [location.search, location.hash.replace(/^#/, '?')]) {
@@ -1223,6 +1231,43 @@ scene.background = new THREE.Color(0x0b1430);
 // the density and colour are free to move at runtime, but going from no fog to fog changes every
 // material's cache key -- which would recompile the world on the first drop of rain.
 scene.fog = new THREE.FogExp2(0x8a929c, 0);
+// ?bundles=1 records the forest's and the structures' draw commands once and replays them.
+// `static = false` on purpose: a static bundle also freezes every per-object refresh, which would
+// stop leaf sway and leave a rebased structure at its old matrix. ?bundles=static measures that arm.
+const BUNDLE_FLAG = readFlagValue('bundles');
+const BUNDLES = BUNDLE_FLAG !== null && BUNDLE_FLAG !== '0' && BUNDLE_FLAG !== 'off';
+const BUNDLES_STATIC = BUNDLE_FLAG === 'static';
+function makeBundleGroup(name) {
+  const group = new BundleGroup();
+  group.name = name;
+  group.static = BUNDLES_STATIC;
+  scene.add(group);
+  return group;
+}
+const forestBundle = BUNDLES ? makeBundleGroup('forest-bundle') : null;
+const structuresBundle = BUNDLES ? makeBundleGroup('structures-bundle') : null;
+const bundleStats = { enabled: BUNDLES, static: BUNDLES_STATIC, forestInvalidations: 0, structureInvalidations: 0,
+  forestMeshes: 0, structureObjects: 0, frames: 0 };
+let forestBundleSig = '', structureBundleSig = '';
+// A replayed bundle draws what it recorded, so anything that changes WHICH objects are in it -- a
+// palette wave publishing meshes, a LOD rung switching off, a structure tile streaming in -- has to
+// bump the version. Sampled at the same point every frame, so the mirror pass hiding the trees for
+// its own render (water.js restores them straight after) does not read as a change.
+function syncBundleGroups() {
+  if (!BUNDLES) return;
+  bundleStats.frames++;
+  const meshes = forest.meshes;
+  let sig = `${meshes.length}:`;
+  for (const mesh of meshes) sig += mesh.visible ? '1' : '0';
+  bundleStats.forestMeshes = meshes.length;
+  if (sig !== forestBundleSig) { forestBundleSig = sig; forestBundle.needsUpdate = true; bundleStats.forestInvalidations++; }
+  let count = 0;
+  let structureSig = structures.root.visible ? 'v' : '-';
+  for (const child of structures.root.children) { count += 1 + child.children.length; structureSig += child.visible ? '1' : '0'; }
+  structureSig += `:${count}`;
+  bundleStats.structureObjects = count;
+  if (structureSig !== structureBundleSig) { structureBundleSig = structureSig; structuresBundle.needsUpdate = true; bundleStats.structureInvalidations++; }
+}
 // ?matrixauto=0 takes the per-frame world-matrix walk off three and skips it for the roots that do
 // not move (terrain, forest, structures). Default on, so the page behaves as before without it.
 const matrixWalk = createMatrixWalk({ enabled: !readFlagDefaultTrue('matrixauto') });
@@ -1415,6 +1460,7 @@ const trails = createBaseGameTrails({ terrain, options: {
 } });
 structures = createBaseGameStructures({ THREE, scene, worldQuery, terrain, renderer, camera, materials: spawnBuilding.bucketMaterials, seaLevel: () => terrain.seaLevel, ...structureParams() });
 structures.setEnabled(structuresWanted());
+if (structuresBundle) structuresBundle.add(structures.root);   // ?bundles=1: the same root, one level deeper
 // Use the exact 1.25 m contact field where it is resident, then the already-streamed plan height
 // for the off-screen part of a leg. Requiring both endpoints to be inside the tiny contact window
 // left every 480 m trail edge permanently queued and rendered only its centre junction patch.
@@ -3253,7 +3299,8 @@ const stopRebasePresentation = worldCoordinates.onRebase(event => {
 // What ?matrixauto=0 stops walking every frame. Everything else -- bodies, weapons, vehicles,
 // lights, drones, projectiles, the sky dome that rides the camera -- keeps its per-frame walk,
 // because declaring the movers instead would freeze whatever the list missed.
-matrixWalk.skip(terrain.root, structures.root, spawnBuilding.root, roads.group, traversalLab.root);
+matrixWalk.skip(terrain.root, structuresBundle ?? structures.root, spawnBuilding.root, roads.group, traversalLab.root);
+if (forestBundle) matrixWalk.skip(forestBundle);
 
 let soloTriggerTick = 0;
 function resetPlayer() {
@@ -3558,7 +3605,7 @@ function applyTrailSettings() {
 // Trees over the same streamed fields (base-game-forest.js + base-game-trees.js). Placement reads
 // the 8 m window's coverTree channel; the trunks sit on the collision surface, so a trunk and the
 // player's feet cannot disagree about the ground.
-const forest = createBaseGameForest({ scene, renderer, camera, terrain, worldCoordinates, hiz: hiz.state, settings });
+const forest = createBaseGameForest({ scene, renderer, camera, terrain, worldCoordinates, hiz: hiz.state, settings, meshParent: forestBundle });
 // Read from the light, not copied from it: a LOD rung starting past the shadow camera rasterises
 // into a map it cannot appear in.
 forest.apply({ treeShadowReach: rig.dirLight.shadow.camera.right });
@@ -3572,7 +3619,7 @@ forest.onMeshes(meshes => {
   }
   forestMirrorMeshes = meshes.slice();
   for (const mesh of forestMirrorMeshes) if (!reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh);
-  matrixWalk.skip(...meshes);   // published tree meshes sit at the render origin and never move
+  if (!forestBundle) matrixWalk.skip(...meshes);   // published tree meshes sit at the render origin and never move
 });
 const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'treePlacement', 'treeClusterSize',
   'treeClusterSpread', 'treeShoreMargin', 'treeChunkSize', 'treeSeedOffset',
@@ -6223,6 +6270,8 @@ function captureContext() {
       trace: { ...traceSummary, attached: renderTrace.attached, missingHooks: renderTrace.missingHooks },
       // ?matrixauto=0 only: how much of the scene the frame's matrix walk still covered.
       matrixWalk: { ...matrixWalk.stats },
+      // ?bundles=1 only: how often each recorded bundle had to be thrown away and re-recorded.
+      bundles: { ...bundleStats },
     },
     world: {
       mode: settings.worldMode,
@@ -6808,6 +6857,7 @@ async function animate() {
     passStart = profileFrame ? performance.now() : 0;
     updateRainOccluders();
     if (profileFrame) frameProfiler.mark('rainBake', performance.now() - passStart);
+    if (BUNDLES) syncBundleGroups();
     // Before the render, and only when ?matrixauto=0 asked for it: three's own scene walk is off,
     // so this is the frame's world matrices.
     if (matrixWalk.enabled) {

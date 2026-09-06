@@ -338,6 +338,35 @@ section('the defaults are the ones the plan argued for');
 
 section('a rebuild frees the GPU storage, not only the meshes');
 {
+  // meshParent: a host measuring render bundles publishes the trees into a BundleGroup that is
+  // itself in the scene, and a teardown must take them out of that parent, not out of the scene.
+  const scene = new THREE.Scene();
+  const parent = new THREE.Group();
+  scene.add(parent);
+  const wc = createWorldCoordinateSpace();
+  const terrain = createBaseGameTerrain({
+    scene, worldQuery: createWorldQueryService(), worldCoordinates: wc,
+    source: analyticDescriptor({ key: 'forest-mesh-parent', seaLevel: 0 }), useWorker: false,
+  });
+  terrain.setActive(true);
+  const camera = new THREE.PerspectiveCamera(70, 16 / 9, 0.1, 2000);
+  camera.position.set(0, 12, 0);
+  const renderer = { computeAsync: async () => {}, _attributes: { delete: () => {} } };
+  const forest = createBaseGameForest({ renderer, scene, camera, terrain, worldCoordinates: wc,
+    settings: { ...SMALL }, yieldTask: async () => {}, meshParent: parent });
+  await forest.load();
+  forest.setEnabled(true);
+  await settle({ terrain, camera, forest, worldCoordinates: wc, scene }, 30);
+  const published = forest.meshes.length;
+  check('published meshes hang from meshParent, not from the scene', published > 0 && parent.children.length === published,
+    `${parent.children.length} under the parent, ${published} published`);
+  check('and none of them went to the scene', !scene.children.some(child => forest.meshes.includes(child)));
+  forest.dispose();
+  check('teardown empties the parent', parent.children.length === 0, `${parent.children.length} left`);
+  terrain.dispose();
+}
+
+{
   // Storage attributes have no dispose event and ComputeNode.dispose() does not free their buffers,
   // so a palette rebuild used to leak the source, draw, count, atomic and per-mesh indirect
   // buffers every time. renderer._attributes.delete is the path that actually frees them.

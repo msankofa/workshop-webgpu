@@ -415,6 +415,12 @@ which does not.
 
 ### The renderer in Base Game (`base-game-forest.js`)
 
+`createBaseGameForest` takes an optional `meshParent`. Published meshes are added to it instead of
+to the scene, and a teardown removes them from it; the scene is still required (compiles, terrain,
+placement all read it). It exists so a host can wrap the forest in a `BundleGroup` to measure
+render bundles -- Base Game's `?bundles=1` -- without the forest knowing anything about bundles.
+The parent must already be in the scene.
+
 `forest-gpu.js` is reused unchanged in spirit, with four additive changes that default to the
 donor's behaviour so `environment-viewer.html` is untouched:
 

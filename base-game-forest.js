@@ -134,8 +134,11 @@ export function bindTreeMaterials(branchMat, leafMat, set) {
 // nowhere else, so the main pass never draws them; the rain occluder bake uses layer 3.
 export const BASE_GAME_FOREST_SHADOW_LAYER = 4;
 
-export function createBaseGameForest({ renderer, scene, camera, terrain, worldCoordinates, hiz = null, settings = {}, yieldTask = null, createTextureSource = null, shadowLayer = BASE_GAME_FOREST_SHADOW_LAYER } = {}) {
+export function createBaseGameForest({ renderer, scene, camera, terrain, worldCoordinates, hiz = null, settings = {}, yieldTask = null, createTextureSource = null, shadowLayer = BASE_GAME_FOREST_SHADOW_LAYER, meshParent = null } = {}) {
   if (!scene?.add) throw new TypeError('the forest needs a scene');
+  // Where published meshes hang. The scene by default; a host measuring render bundles passes a
+  // BundleGroup, which must already be in the scene -- compiling and culling are unchanged either way.
+  const meshRoot = meshParent ?? scene;
   if (!terrain?.acquireFields) throw new TypeError('the forest needs the Base Game terrain facade');
   const cfg = { ...BASE_GAME_TREE_DEFAULTS, ...BASE_GAME_FOREST_DEFAULTS, ...settings };
   // The placement window is derived from the draw radius, never set beside it: reconciled here as
@@ -301,7 +304,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
   function teardownRenderer() {
     buildToken++;
     if (forestGPU) {
-      scene.remove(...publishedMeshes);
+      meshRoot.remove(...publishedMeshes);
       forestGPU.dispose();
       forestGPU = null;
       publishedMeshes = [];
@@ -453,7 +456,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
 
       for (const g of indices) gpu.setVariantReady(g, true);
       gpu.refreshVisibility();
-      scene.add(...waveMeshes);
+      meshRoot.add(...waveMeshes);
       publishedMeshes.push(...waveMeshes);
       meshesCb?.(publishedMeshes);
       startup.waves++;
