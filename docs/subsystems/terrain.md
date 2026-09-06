@@ -456,6 +456,27 @@ noise. The real effect is read from `passTerrainFoldMs` in a browser capture.
 | `test-cdlod-select.mjs` | `levelRanges`, `nodeSize`, `minDistToCell`, `selectNodes`, `nodeCountForViewDistance` | Range/size formulas match the geometric definition; `minDistToCell` is exact inside/outside a cell; **coverage partition** — every sampled point near the camera lands in exactly one selected node, across several camera positions; the camera's own cell is always a level-0 (finest) node; **bounded cost** — node count never exceeds `levels*windowCells²` and adding levels grows by bounded rings, not quadratically, with view distance; sub-leaf camera moves leave coarse node origins stable (no shimmer). |
 | `test-cdlod-morph.mjs` | `morphGridCoord`, `nodeSize` (cross-checked against `grassHeightRef`) | `morphK=0` is the identity; `morphK=1` snaps every grid vertex onto the parent (even) lattice; a fully-morphed fine node's boundary heights exactly match the coarser neighbor's lattice points (crack-free seam proof). |
 
+### Coverage while work is queued
+
+`test-terrain-coverage.mjs` is the standing proof that deferring work never opens a hole:
+
+- Walking 360 m with a 0.5 ms budget, the world query answers the ground under the body on every
+  one of 600 frames; the same across a 15 km teleport, where the heightfield answers until the
+  destination chunk streams in.
+- A queued replacement never removes what is there: under `restream({ drop: false })` the original
+  chunk object stays resident, its geometry undisposed and its ground answerable, until the
+  replacement is committed.
+- `residencyRevision` and the coverage maps read COMMITTED residency: a result merely arriving
+  moves neither.
+- A source swap empties the inbox and bumps the epoch, and replies built from the old source that
+  arrive afterwards are refused and counted as stale drops rather than becoming ground.
+- A deferred fold costs a draw call, never a hole: over 500 walking frames no resident chunk was
+  ever invisible in both its own mesh and its batch, and none was ever drawn twice.
+
+Not covered headless: a **late volumetric collider**. A real BVH needs a source with a density
+field and the analytic test source has none, so no test in this repo exercises a collider under
+the budget. The handoff logic it would exercise is covered by `test-base-game-terrain-handoff.mjs`.
+
 ### One scheduler, one deadline
 
 `base-game-terrain.js` runs a single scheduler each frame over the near system, every cascade
