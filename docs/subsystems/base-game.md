@@ -3387,6 +3387,17 @@ passes still count missing frames as 0, which is the honest per-frame average fo
 consequence for the un-split number: with the mirror on alternate frames, `passPostMs.p50` lands on
 a plain frame and hides the mirror entirely.
 
+**Spike attribution (2026-09-06).** Every capture sample also carries `events`, this frame's counts of
+things that happen on some frames and not others: `terrainInstalls` and `terrainFoldMs` (from
+`terrain.frameCost`), `forestReculls` and `forestRebuilds` (deltas of `forestGPU.summary`),
+`grassReculls` and `grassFullRecull` (deltas of `flora.stats`, the latter when the recull was a
+`dirty:` full-field one), and `pipelinesBuilt`. `summarizeSpikeEvents()` takes the frames at or above
+the p95 frame time and reports, per event, how many spike frames and how many ordinary frames carried
+it (`spikeShare` vs `otherShare`) plus `quietSpikeFrames`, the spikes nothing recorded explains. It
+lands in `performance.spikes`. This exists because the walking captures of 2026-09-06 had p95 frames
+of 110 ms against a p50 of 26 with the GPU flat at ~1 ms, and the pass averages could not say which
+of terrain streaming, forest rebuilds or grass reculls the slow frames belonged to.
+
 **What the first GPU-timed captures showed (2026-08-25):** `gpuRenderMs` p50 **1.0-1.2 ms**, max
 3.8 ms, against a CPU `passPostMs` of 3.2-12.5 ms. The GPU is nearly idle and `postRender` is CPU
 encode time — so scene-graph size and draw count matter, and an earlier reading of this page as

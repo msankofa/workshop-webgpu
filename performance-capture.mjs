@@ -64,6 +64,34 @@ export function changedPerformanceSettings(before = {}, after = {}) {
   return changed;
 }
 
+// Which per-frame events the slow frames carried. `events` on a sample is { name: count } for
+// things that happen some frames and not others (terrain tile installs, forest rebuilds, grass
+// reculls...). Spikes are frames at or above the p95 frame time; for every event the result says
+// how many spike frames and how many ordinary frames had it, so a cause reads as "present in 90% of
+// spikes, 5% of the rest" rather than as a guess from averages.
+export function summarizeSpikeEvents(samples, { percentile: fraction = 0.95 } = {}) {
+  const usable = samples.filter(s => Number.isFinite(s?.frameMs) && s.frameMs > 0);
+  const names = new Set();
+  for (const s of usable) if (s.events) for (const k of Object.keys(s.events)) names.add(k);
+  if (!names.size || usable.length < 4) return null;
+  const sorted = usable.map(s => s.frameMs).sort((a, b) => a - b);
+  const threshold = percentile(sorted, fraction);
+  const spikes = usable.filter(s => s.frameMs >= threshold), rest = usable.filter(s => s.frameMs < threshold);
+  const events = {};
+  for (const name of [...names].sort()) {
+    const inSpikes = spikes.filter(s => (Number(s.events?.[name]) || 0) > 0).length;
+    const inRest = rest.filter(s => (Number(s.events?.[name]) || 0) > 0).length;
+    const spikeTotal = spikes.reduce((n, s) => n + (Number(s.events?.[name]) || 0), 0);
+    events[name] = {
+      spikeFrames: inSpikes, spikeShare: round(spikes.length ? inSpikes / spikes.length : 0),
+      otherFrames: inRest, otherShare: round(rest.length ? inRest / rest.length : 0),
+      spikeTotal: round(spikeTotal),
+    };
+  }
+  const quiet = spikes.filter(s => ![...names].some(n => (Number(s.events?.[n]) || 0) > 0)).length;
+  return { thresholdMs: round(threshold), spikeFrames: spikes.length, quietSpikeFrames: quiet, events };
+}
+
 export function buildPerformanceMeasurement(samples, {
   requestedWindowSeconds = 0,
   startedAt,
@@ -99,6 +127,8 @@ export function buildPerformanceMeasurement(samples, {
     // Per-pass CPU time, when the caller sampled it. A frame total says nothing about which pass
     // owns it; this is what turns "high ms" into a name.
     passes: summarizePasses(usable),
+    // Slow frames and the per-frame events they carried; null when no sample recorded events.
+    spikes: summarizeSpikeEvents(usable),
     droppedFrames: {
       start: Math.max(0, Math.round(droppedFramesStart || 0)),
       end: Math.max(0, Math.round(droppedFramesEnd || 0)),

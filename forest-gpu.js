@@ -657,7 +657,9 @@ export function createForestGPU(opts) {
 
   let overflowWarned = false;
   let droppedInstances = 0;      // dropped by capPerVariant THIS rebuild, not once ever
+  let rebuilds = 0;
   function rebuild() {
+    rebuilds++;
     countsArray.fill(0);
     let changedStart = srcArray.length, changedEnd = 0;
     // NOTE: srcArray is intentionally NOT zeroed. The cull kernel only reads slots where
@@ -1118,6 +1120,7 @@ export function createForestGPU(opts) {
         shadowDraws: submittedShadowDraws,
         rungMeshesHidden,
         rungGate: RUNG_GATE,
+        rebuilds,
         visibleVariants,
         readyVariants: readyVariantCount,
         variants: V,

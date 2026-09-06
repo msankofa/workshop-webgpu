@@ -6109,6 +6109,24 @@ let shownFps = 0;
 let worstPeak = 0;
 let shownWorst = 0;
 let lastRenderInfo = { drawCalls: 0, triangles: 0, renderCalls: 0, pipelinesBuilt: 0, pipelineMs: 0 };
+// Cumulative counters read last frame, so a capture sample can carry this frame's deltas.
+const eventCounters = { forestReculls: 0, forestRebuilds: 0, grassReculls: 0 };
+function frameEvents() {
+  const gpu = forest.forestGPU?.summary;
+  const grassStats = flora.stats;
+  const next = { forestReculls: gpu?.reculls ?? 0, forestRebuilds: gpu?.rebuilds ?? 0, grassReculls: grassStats?.reculls ?? 0 };
+  const events = {
+    terrainInstalls: terrain.frameCost?.installCount ?? 0,
+    terrainFoldMs: terrain.frameCost?.foldMs ?? 0,
+    forestReculls: Math.max(0, next.forestReculls - eventCounters.forestReculls),
+    forestRebuilds: Math.max(0, next.forestRebuilds - eventCounters.forestRebuilds),
+    grassReculls: Math.max(0, next.grassReculls - eventCounters.grassReculls),
+    grassFullRecull: next.grassReculls !== eventCounters.grassReculls && /^dirty/.test(grassStats?.lastRecull ?? '') ? 1 : 0,
+    pipelinesBuilt: lastRenderInfo.pipelinesBuilt,
+  };
+  Object.assign(eventCounters, next);
+  return events;
+}
 // Pipelines built since the HUD last flushed. Shown only when non-zero: a warm session must not
 // carry a permanent "0 pipelines" on the line, and a walk that keeps compiling should be visible
 // without having to run a capture first.
@@ -6265,6 +6283,7 @@ function recordPerformanceFrame(frameStart, frameMs) {
     renderCalls: lastRenderInfo.renderCalls,
     pipelinesBuilt: lastRenderInfo.pipelinesBuilt,
     passes: frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES),
+    events: frameEvents(),
   };
   // Not a measurement: frame-profiler defines it as a sum that degenerates to passPostMs here.
   delete sample.passes.passGpuAwaitMs;

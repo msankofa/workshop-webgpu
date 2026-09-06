@@ -60,3 +60,25 @@ assert.equal(buckets.passes.passPostShadowMs.frames, 1);
 assert.equal(buckets.passes.passPostNoShadowMs.average, 10);
 
 console.log('Performance capture statistics tests passed.');
+
+// Spike attribution: the slow frames and what they carried.
+{
+  const { summarizeSpikeEvents } = await import('./performance-capture.mjs');
+  const samples = [];
+  for (let i = 0; i < 40; i++) samples.push({ frameMs: 16, drawCalls: 1, triangles: 1, events: { terrainInstalls: 0, grassReculls: i % 2 } });
+  samples.push({ frameMs: 90, drawCalls: 1, triangles: 1, events: { terrainInstalls: 3, grassReculls: 1 } });
+  samples.push({ frameMs: 80, drawCalls: 1, triangles: 1, events: { terrainInstalls: 1, grassReculls: 0 } });
+  samples.push({ frameMs: 70, drawCalls: 1, triangles: 1, events: { terrainInstalls: 0, grassReculls: 0 } });
+  const spikes = summarizeSpikeEvents(samples);
+  assert.ok(spikes.thresholdMs >= 16 && spikes.spikeFrames >= 3, `threshold ${spikes.thresholdMs}, ${spikes.spikeFrames} spikes`);
+  assert.equal(spikes.events.terrainInstalls.spikeFrames, 2);
+  assert.equal(spikes.events.terrainInstalls.otherFrames, 0);
+  assert.equal(spikes.events.terrainInstalls.spikeTotal, 4);
+  assert.ok(spikes.events.grassReculls.otherShare > 0.4 && spikes.events.grassReculls.otherShare < 0.6, 'grass reculls are a background event, half of ordinary frames');
+  assert.equal(spikes.quietSpikeFrames, 1, 'one spike had no recorded event');
+  assert.equal(summarizeSpikeEvents([{ frameMs: 16 }, { frameMs: 17 }]), null, 'no events, no attribution');
+  const withEvents = buildPerformanceMeasurement(samples, {});
+  assert.ok(withEvents.spikes && withEvents.spikes.events.terrainInstalls, 'the measurement carries the spike table');
+  assert.equal(buildPerformanceMeasurement([{ frameMs: 16, drawCalls: 1, triangles: 1 }], {}).spikes, null);
+  console.log('spike attribution: slow frames name the events they carried');
+}
