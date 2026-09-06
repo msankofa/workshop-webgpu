@@ -435,7 +435,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     if (typeof renderer?.getArrayBufferAsync !== 'function' || !grass?.readBladeCount) { lastSample = seconds; return; }
     sampling = true; lastSample = seconds;
     const sampledGrass = grass, revision = diagnosticsRevision;
-    const sample = { atMs: performance.now(), occlusion: !!occlusion?.state.enabled,
+    const sample = { atMs: performance.now(), occlusion: !!(occlusion ? occlusion.state.enabled : hiz?.enabled),
       view: [...camera.position.toArray(), ...camera.quaternion.toArray(), ...camera.projectionMatrix.elements] };
     const current = () => diagnosticsEnabled && revision === diagnosticsRevision && grass === sampledGrass;
     const o = uRenderOrigin.value, ox = o.x, oy = o.y, oz = o.z;
