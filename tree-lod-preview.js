@@ -13,12 +13,12 @@ export const HOST_PRESETS = Object.freeze({
   'base game': Object.freeze({
     rings: [60, 140, 260], billboards: false,
     branchLods: [{ sectionStride: 2, segmentScale: 0.67 }, { sectionStride: 3, segmentScale: 0.5 }],
-    coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5,
+    coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5, midLeafRatio: 1, midLeafSizeMult: 1,
   }),
   'environment viewer': Object.freeze({
     rings: [258, 400, 583], billboards: true,
     branchLods: [{ sectionStride: 1, segmentScale: 1 }, { sectionStride: 1, segmentScale: 1 }],
-    coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5,
+    coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5, midLeafRatio: 1, midLeafSizeMult: 1,
   }),
 });
 
@@ -64,7 +64,7 @@ export function createLodPreview({ renderer, scene, createTree }) {
     root.clear();
     if (palette) {
       for (const v of palette.variants) {
-        for (const g of [v.branches, v.branchesLod1, v.branchesLod2, v.leaves, v.shadow, v.leavesCoarse]) g?.dispose();
+        for (const g of [v.branches, v.branchesLod1, v.branchesLod2, v.leaves, v.shadow, v.leavesCoarse, v.leavesMid]) g?.dispose();
       }
       palette = null;
     }
@@ -195,6 +195,7 @@ function billboardGeo(size, center) {
       params: {
         speciesTable: species, leafShadowPct, branchLods: params.branchLods,
         coarseLeafRatio: params.coarseLeafRatio, coarseLeafSizeMult: params.coarseLeafSizeMult,
+        midLeafRatio: params.midLeafRatio, midLeafSizeMult: params.midLeafSizeMult,
       },
     });
     if (layout === 'fill') return buildFill({ opts, texSet, params, density, token });
@@ -227,13 +228,13 @@ function billboardGeo(size, center) {
       place(new THREE.Mesh(v.leaves, leafL0), groups[0]);
       place(new THREE.Mesh(v.shadow, leafL0), groups[0]);
       place(new THREE.Mesh(v.branchesLod1 ?? v.branches, barkL1), groups[1]);
-      place(new THREE.Mesh(v.leaves, leafL1), groups[1]);
+      place(new THREE.Mesh(v.leavesMid ?? v.leaves, leafL1), groups[1]);
       place(new THREE.Mesh(v.branchesLod2 ?? v.branches, barkL2), groups[2]);
       place(new THREE.Mesh(v.leavesCoarse, leafL2), groups[2]);
       stats[0].tris += tris(v.branches) + tris(v.leaves) + tris(v.shadow);
       stats[0].leaves += leafCount(v.leaves) + leafCount(v.shadow);
-      stats[1].tris += tris(v.branchesLod1 ?? v.branches) + tris(v.leaves);
-      stats[1].leaves += leafCount(v.leaves);
+      stats[1].tris += tris(v.branchesLod1 ?? v.branches) + tris(v.leavesMid ?? v.leaves);
+      stats[1].leaves += leafCount(v.leavesMid ?? v.leaves);
       stats[2].tris += tris(v.branchesLod2 ?? v.branches) + tris(v.leavesCoarse);
       stats[2].leaves += leafCount(v.leavesCoarse);
     });
@@ -301,7 +302,7 @@ function billboardGeo(size, center) {
       const b = buckets[vi];
       const parts = [
         [0, v.branches, barkL0, true], [0, v.leaves, leafL0, false], [0, v.shadow, leafL0, true],
-        [1, v.branchesLod1 ?? v.branches, barkL1, true], [1, v.leaves, leafL1, false],
+        [1, v.branchesLod1 ?? v.branches, barkL1, true], [1, v.leavesMid ?? v.leaves, leafL1, false],
         [2, v.branchesLod2 ?? v.branches, barkL2, true], [2, v.leavesCoarse, leafL2, false],
       ];
       for (const [k, geo, mat, cast] of parts) {

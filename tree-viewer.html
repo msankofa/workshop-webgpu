@@ -131,7 +131,7 @@ const lodSettings = {
   n: 3, layout: 'rings', distance: 100, density: 120, preset: 'base game',
   rings: [...HOST_PRESETS['base game'].rings], billboards: HOST_PRESETS['base game'].billboards,
   branchLods: structuredClone(HOST_PRESETS['base game'].branchLods),
-  coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5, leafShadowPct: 0.3,
+  coarseLeafRatio: 0.25, coarseLeafSizeMult: 2.5, midLeafRatio: 1, midLeafSizeMult: 1, leafShadowPct: 0.3,
 };
 function applyHostPreset(name) {
   const h = HOST_PRESETS[name];
@@ -139,6 +139,7 @@ function applyHostPreset(name) {
   lodSettings.rings = [...h.rings]; lodSettings.billboards = h.billboards;
   lodSettings.branchLods = structuredClone(h.branchLods);
   lodSettings.coarseLeafRatio = h.coarseLeafRatio; lodSettings.coarseLeafSizeMult = h.coarseLeafSizeMult;
+  lodSettings.midLeafRatio = h.midLeafRatio; lodSettings.midLeafSizeMult = h.midLeafSizeMult;
 }
 let lodBuildPending = false;
 function buildLod(refit) {
@@ -147,7 +148,8 @@ function buildLod(refit) {
   lodPreview.build({ opts: applyAge(opts, previewAge), texSet, n: lodSettings.n, layout: lodSettings.layout,
     distance: lodSettings.distance, density: lodSettings.density, leafShadowPct: lodSettings.leafShadowPct,
     params: { branchLods: lodSettings.branchLods, coarseLeafRatio: lodSettings.coarseLeafRatio,
-      coarseLeafSizeMult: lodSettings.coarseLeafSizeMult, rings: lodSettings.rings, billboards: lodSettings.billboards } })
+      coarseLeafSizeMult: lodSettings.coarseLeafSizeMult, midLeafRatio: lodSettings.midLeafRatio, midLeafSizeMult: lodSettings.midLeafSizeMult,
+      rings: lodSettings.rings, billboards: lodSettings.billboards } })
     .then(() => { lodBuildPending = false; lastBuildMs = performance.now() - t0; fitShadowTo(lodPreview.bounds()); if (refit) fitCameraToLod(); });
 }
 // Eye at the origin, 1.7 m up, looking down +Z at the LOD1 cluster (or the compare distance).
@@ -736,6 +738,8 @@ rangeControl('LOD1 ring stride', 1, 6, 1, () => lodSettings.branchLods[0].sectio
 rangeControl('LOD1 segment scale', 0.1, 1, 0.01, () => lodSettings.branchLods[0].segmentScale, v => { lodSettings.branchLods[0].segmentScale = v; }, f2, lodRegen);
 rangeControl('LOD2 ring stride', 1, 6, 1, () => lodSettings.branchLods[1].sectionStride, v => { lodSettings.branchLods[1].sectionStride = Math.round(v); }, fi, lodRegen);
 rangeControl('LOD2 segment scale', 0.1, 1, 0.01, () => lodSettings.branchLods[1].segmentScale, v => { lodSettings.branchLods[1].segmentScale = v; }, f2, lodRegen);
+rangeControl('LOD1 leaf ratio', 0.05, 1, 0.01, () => lodSettings.midLeafRatio, v => { lodSettings.midLeafRatio = v; }, f2, lodRegen);
+rangeControl('LOD1 leaf size x', 1, 5, 0.1, () => lodSettings.midLeafSizeMult, v => { lodSettings.midLeafSizeMult = v; }, f2, lodRegen);
 rangeControl('Coarse leaf ratio', 0.05, 1, 0.01, () => lodSettings.coarseLeafRatio, v => { lodSettings.coarseLeafRatio = v; }, f2, lodRegen);
 rangeControl('Coarse leaf size x', 1, 5, 0.1, () => lodSettings.coarseLeafSizeMult, v => { lodSettings.coarseLeafSizeMult = v; }, f2, lodRegen);
 rangeControl('Shadow leaf fraction', 0, 1, 0.01, () => lodSettings.leafShadowPct, v => { lodSettings.leafShadowPct = v; }, pct, lodRegen);
@@ -750,7 +754,8 @@ colorControl('Bake tint', () => look.bakeTint, v => lookLive({ bakeTint: v }), l
 rangeControl('Capture pitch', -0.5, 1, 0.01, () => look.pitch, v => lookLive({ pitch: v }), f2, lodRegen);
 buttonControl('Copy LOD settings JSON', () => {
   const out = { rings: lodSettings.rings, billboards: lodSettings.billboards, branchLods: lodSettings.branchLods,
-    coarseLeafRatio: lodSettings.coarseLeafRatio, coarseLeafSizeMult: lodSettings.coarseLeafSizeMult, leafShadowPct: lodSettings.leafShadowPct,
+    coarseLeafRatio: lodSettings.coarseLeafRatio, coarseLeafSizeMult: lodSettings.coarseLeafSizeMult,
+    midLeafRatio: lodSettings.midLeafRatio, midLeafSizeMult: lodSettings.midLeafSizeMult, leafShadowPct: lodSettings.leafShadowPct,
     billboard: { ...lodPreview.billLook } };
   navigator.clipboard?.writeText(JSON.stringify(out, null, 2)).catch(() => {});
 });
