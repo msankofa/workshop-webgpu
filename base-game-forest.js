@@ -155,7 +155,8 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     enabled: false, built: false, loading: false, lastError: null,
     draws: 0, shadowDraws: 0, triangles: 0, instances: 0, capacity: 0, dropped: 0, truncating: false,
     textureMode: 'procedural', texturesReady: false,
-    variants: 0, readyVariants: 0, visibleVariants: 0, paletteMs: 0, paletteWorker: false, compileMs: 0, computeCompileMs: 0, updateMs: 0,
+    variants: 0, readyVariants: 0, visibleVariants: 0, paletteMs: 0, paletteWorker: false,
+    paletteLoadMs: 0, paletteBakeMs: 0, paletteSource: 'none', paletteKey: null, paletteStored: null, compileMs: 0, computeCompileMs: 0, updateMs: 0,
     lod0: 0, lod1: 0, lod2: 0, rejectedCone: 0, rejectedFar: 0,
     reculls: 0, skippedReculls: 0, cullEstimates: 0,
     // Placement, mirrored up so one readout answers "what did the density slider actually buy".
@@ -454,19 +455,69 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       return true;
     }
 
-    // Baked in a module worker when the page can make one; otherwise the same bake in-thread.
-    const completePalette = await mods.paletteWorker.bake({
-      createTree: mods.createTree,
-      params: paletteParams(),
-      masterSeed: trees.seed,
-      variantsPerSpecies,
-      texSet,
-    }, {
-      yieldFn: yieldStartup,
-      shouldContinue: () => token === buildToken && enabled,
-      onFamilyWave: publishFamilyWave,
+    // A palette baked before with these exact inputs is loaded (disk, then IndexedDB) and published
+    // wave by wave as a bake would be; otherwise it bakes in a module worker (in-thread fallback)
+    // and the result is written back so the next run anywhere is a load.
+    const bakeParams = paletteParams();
+    const speciesTable = mods.paletteSpeciesTable({ params: bakeParams, masterSeed: trees.seed });
+    const key = await mods.io.paletteKey({
+      species: speciesTable, params: bakeParams, masterSeed: trees.seed, speciesIdx: null, variantsPerSpecies,
+      texMode: texSet?.mode, leafAtlas: texSet?.leafAtlas, barkVScale: texSet?.barkVScale, treesVersion: mods.TREES_VERSION,
     });
-    if (!completePalette || token !== buildToken) return false;
+    stats.paletteKey = key;
+    stats.paletteLoadMs = 0; stats.paletteBakeMs = 0; stats.paletteSource = 'none'; stats.paletteStored = null;
+    startupStage('loading palette');
+    const loadStart = now();
+    const cached = await mods.io.loadCachedPalette(key);
+    if (token !== buildToken || !enabled) return false;
+    const total = speciesTable.length * variantsPerSpecies;
+    let loaded = null;
+    if (cached) {
+      try { loaded = mods.io.deserializePalette(cached.buffer).variants; } catch { loaded = null; }
+      if (loaded && loaded.length !== total) loaded = null;
+    }
+    stats.paletteLoadMs = now() - loadStart;
+    let completePalette = null;
+    if (loaded) {
+      stats.paletteSource = cached.source;
+      const progress = { variants: [], variantsPerSpecies, speciesCount: speciesTable.length, bakeMs: 0 };
+      for (let v = 0; v < variantsPerSpecies; v++) {
+        const wave = [];
+        for (let s = 0; s < speciesTable.length; s++) {
+          const g = s * variantsPerSpecies + v;
+          progress.variants[g] = loaded[g];
+          wave.push(loaded[g]);
+        }
+        const keepGoing = await publishFamilyWave({
+          variant: v, variants: wave, palette: { ...progress, variants: [...progress.variants] },
+          built: (v + 1) * speciesTable.length, total,
+        });
+        if (keepGoing === false || token !== buildToken) return false;
+        if (v + 1 < variantsPerSpecies) await yieldStartup();
+      }
+      completePalette = { ...progress, variants: loaded };
+    } else {
+      const bakeStart = now();
+      completePalette = await mods.paletteWorker.bake({
+        createTree: mods.createTree,
+        params: bakeParams,
+        masterSeed: trees.seed,
+        variantsPerSpecies,
+        texSet,
+      }, {
+        yieldFn: yieldStartup,
+        shouldContinue: () => token === buildToken && enabled,
+        onFamilyWave: publishFamilyWave,
+      });
+      if (!completePalette || token !== buildToken) return false;
+      stats.paletteBakeMs = now() - bakeStart;
+      stats.paletteSource = mods.paletteWorker.available ? 'worker' : 'thread';
+      const buffer = mods.io.serializePalette(completePalette.variants, {
+        key, treesVersion: mods.TREES_VERSION, masterSeed: trees.seed, variantsPerSpecies,
+        speciesCount: speciesTable.length, texMode: texSet?.mode ?? 'procedural', bakedAt: new Date().toISOString(),
+      });
+      mods.io.storeCachedPalette(key, buffer).then(stored => { if (token === buildToken) stats.paletteStored = stored; });
+    }
     palette = completePalette;
     stats.paletteMs = completePalette.bakeMs ?? (now() - t0);
     stats.paletteWorker = mods.paletteWorker.available;
@@ -568,9 +619,9 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       if (mods) return true;
       stats.loading = true;
       try {
-        const [treesMod, paletteMod, gpuMod, texMod] = await Promise.all([
+        const [treesMod, paletteMod, gpuMod, texMod, ioMod] = await Promise.all([
           import('./trees.js'), import('./forest-palette.js'), import('./forest-gpu.js'),
-          import('./tree-textures.js'),
+          import('./tree-textures.js'), import('./forest-palette-io.js'),
         ]);
         mods = {
           createTextureSource: texMod.createTextureSource,
@@ -578,6 +629,9 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
           createForestPalette: paletteMod.createForestPalette,
           createForestPaletteAsync: paletteMod.createForestPaletteAsync,
           paletteWorker: paletteMod.createForestPaletteWorker(),
+          paletteSpeciesTable: paletteMod.paletteSpeciesTable,
+          io: ioMod,
+          TREES_VERSION: treesMod.TREES_VERSION,
           createForestGPU: gpuMod.createForestGPU,
           TREE_DEFAULTS: treesMod.TREE_DEFAULTS,
         };

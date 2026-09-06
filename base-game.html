@@ -5067,7 +5067,7 @@ function refreshForestRuntimeLine() {
     + `${f.draws} main + ${f.shadowDraws} shadow mesh submissions, ~${(f.triangles / 1000).toFixed(0)}k triangles, `
     + `${f.lod0}/${f.lod1}/${f.lod2} at LOD0/1/2, ${f.visibleVariants} visible, `
     + `${f.readyVariants} of ${f.variants} variants ready, textures ${f.textureMode}${f.textureMode === 'authored' && !f.texturesReady ? ' (loading)' : ''}, `
-    + `palette ${f.paletteMs.toFixed(0)} ms ${f.paletteWorker ? 'in a worker' : 'on the main thread'}, render warmup ${f.compileMs.toFixed(0)} ms, `
+    + `palette ${f.paletteSource === 'disk' || f.paletteSource === 'indexeddb' ? `loaded from ${f.paletteSource} in ${f.paletteLoadMs.toFixed(0)} ms` : `baked ${f.paletteSource === 'worker' ? 'in a worker' : 'on the main thread'} in ${f.paletteBakeMs.toFixed(0)} ms`}, render warmup ${f.compileMs.toFixed(0)} ms, `
     + `compute warmup ${f.computeCompileMs.toFixed(0)} ms, placing ${f.placeMs.toFixed(2)} ms.${over}`);
 }
 
