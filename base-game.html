@@ -113,6 +113,7 @@ import { lerpHex } from './sky-field.js';
 import { createFrameProfiler } from './frame-profiler.js';
 import { createPipelineMeter } from './gpu-pipeline-meter.js';
 import { createRenderPassRecorder } from './render-pass-recorder.js';
+import { createRenderTrace } from './render-trace.js';
 import { buildPerformanceMeasurement, changedPerformanceSettings } from './performance-capture.mjs';
 import { createSlotSection } from './bot-viewer-slots.js';
 import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld, BASE_GAME_TEAMS, BASE_GAME_NPC_ROLE_IDS } from './base-game-protocol.mjs';
@@ -1159,6 +1160,38 @@ const pipelineMeter = createPipelineMeter(renderer.backend?.device);
 // renames the scene to `Shadow Map [ <light> ]` across a shadow pass, so each one names its light.
 const renderPasses = createRenderPassRecorder(renderer);
 let lastRenderPassSummary = '';
+// ?trace=1 splits the render encode into scene walk, list sort and per-object encode. Off by
+// default and its slots are separate from passPost*, so a warm capture with the flag is still
+// comparable with one without it -- the hooks themselves cost a call per drawn object.
+const RENDER_TRACE = readFlag('trace');
+const renderTrace = createRenderTrace();
+if (RENDER_TRACE && !renderTrace.attach(renderer)) console.warn('[base-game] ?trace=1 found none of the renderer hooks:', renderTrace.missingHooks);
+else if (RENDER_TRACE) console.warn('[base-game] ?trace=1 is on: the encode is instrumented per object, so frame times are not comparable with an untraced capture.');
+// The last traced frame, plus the mean over the traced frames so far: the per-frame slots below
+// carry the milliseconds, this carries the object counts the renderer's own render lists reported.
+const traceSummary = { enabled: RENDER_TRACE, attached: renderTrace.attached, missingHooks: renderTrace.missingHooks,
+  frames: 0, lastFrame: null, meanObjects: 0, meanDraws: 0, meanScenes: 0 };
+const traceTotals = { objects: 0, draws: 0, scenes: 0 };
+// Drained every traced frame, profiling or not: the totals reset on take, so skipping a frame would
+// hand the next one two frames of encode.
+function recordRenderTrace() {
+  const t = renderTrace.take();
+  frameProfiler.mark('traceScene', t.sceneMs);
+  frameProfiler.mark('traceProject', t.projectMs);
+  frameProfiler.mark('traceSort', t.sortMs);
+  frameProfiler.mark('traceObjects', t.objectsMs);
+  frameProfiler.mark('traceEncode', t.encodeMs);
+  frameProfiler.mark('traceBundle', t.bundleMs);
+  traceSummary.frames++;
+  traceTotals.objects += t.encodedObjects;
+  traceTotals.draws += t.encodeCalls;
+  traceTotals.scenes += t.sceneRenders;
+  traceSummary.lastFrame = { sceneRenders: t.sceneRenders, encodedObjects: t.encodedObjects,
+    encodeCalls: t.encodeCalls, bundleGroups: t.bundleGroups, scenes: t.scenes };
+  traceSummary.meanObjects = +(traceTotals.objects / traceSummary.frames).toFixed(1);
+  traceSummary.meanDraws = +(traceTotals.draws / traceSummary.frames).toFixed(1);
+  traceSummary.meanScenes = +(traceTotals.scenes / traceSummary.frames).toFixed(2);
+}
 if (GPU_TIMESTAMPS && gpuDeviceSupportsTimestamps === false) {
   console.warn('[base-game] ?gputime requested but this GPU/browser exposes no timestamp-query. '
     + 'Chrome gates it behind chrome://flags/#enable-webgpu-developer-features.');
@@ -3660,6 +3693,10 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
   // The fold, split again: which of the three is left after the budget.
   terrainColorize: 'passTerrainColorizeMs', terrainBatch: 'passTerrainBatchMs',
   terrainCollider: 'passTerrainColliderMs',
+  // ?trace=1 only, and never folded into postRender: the encode split into the renderer's own
+  // phases. traceScene is every whole scene render; it contains the other four.
+  traceScene: 'passTraceSceneMs', traceProject: 'passTraceProjectMs', traceSort: 'passTraceSortMs',
+  traceObjects: 'passTraceObjectsMs', traceEncode: 'passTraceEncodeMs', traceBundle: 'passTraceBundleMs',
   // Everything in the frame that no slot above covers.
   frameOther: 'passOtherMs',
 });
@@ -6167,6 +6204,9 @@ function captureContext() {
       passes: lastRenderPassSummary,
       pipelineMeterInstalled: pipelineMeter.installed,
       passRecorderInstalled: renderPasses.installed,
+      // ?trace=1 only. The milliseconds are per-frame slots in `passes`; these are the counts the
+      // renderer's own render lists reported, per whole scene render.
+      trace: { ...traceSummary, attached: renderTrace.attached, missingHooks: renderTrace.missingHooks },
     },
     world: {
       mode: settings.worldMode,
@@ -6784,6 +6824,7 @@ async function animate() {
         frameProfiler.mark(shadowRedrew ? 'postShadow' : 'postNoShadow', encodeMs);
         frameProfiler.mark(chained ? 'postChain' : 'postDirect', encodeMs);
       }
+      if (RENDER_TRACE) recordRenderTrace();
     }
     // The pyramid reduces the frame just drawn; the culls test against it next frame.
     if (hiz.state.enabled) {

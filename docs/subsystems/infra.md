@@ -48,6 +48,7 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 |---|---|---|
 | `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 140 |
 | `gpu-pipeline-meter.js` | Wraps a `GPUDevice`'s four pipeline factories to report how much of a frame went into building WebGPU pipelines, and how many arrived. Node-tested against a fake device (`test-gpu-pipeline-meter.mjs`). | 55 |
+| `render-trace.js` | Wraps five private renderer methods (`_renderScene`, `_projectObject`, `_renderObjects`, `_renderObjectDirect`, `_renderBundle`) and each render list's `sort` to split one frame of `renderer.render` into scene walk, list sort, per-object encode and bundle replay, with an entry per whole scene render carrying that pass's object count. Node-tested (`test-render-trace.mjs`). | 110 |
 | `render-pass-recorder.js` | Wraps the renderer's inspector to name every whole scene render in a frame, shadow passes included (three renames the scene to `Shadow Map [ <light> ]` across one). Turns `renderCalls` from a count into a list. Node-tested (`test-render-pass-recorder.mjs`). | 57 |
 | `environment-ui.js` | Builds the six-destination `#workshop-ui` in-game inspector (World, Entities, Player, Assets, Audio, Tools), re-parents the existing live panels, and builds the performance, preset, and audio control content. | 1300 |
 | `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
@@ -86,6 +87,31 @@ shadow map every frame** for as long as `castShadow` is true. Both `weapon-light
 `weapon-laser.js` are resident lights of exactly that shape — deliberately, because flipping
 `.visible` feeds the lights hash and would recompile every material — so leaving their shadow
 toggle on costs a whole scene render per frame whether or not the lamp is lit.
+
+### `render-trace.js`
+
+`passPostMs` is one timer around `renderer.render`, so it can say the encode is expensive but not
+which phase is. This attributes it:
+
+```js
+const renderTrace = createRenderTrace();
+renderTrace.attach(renderer);      // false when none of the private hooks exist
+renderTrace.take();                // per-frame totals, then reset
+// { sceneRenders, sceneMs, projectCalls, projectMs, sortCalls, sortMs,
+//   objectListCalls, objectsMs, encodedObjects, encodeCalls, encodeMs,
+//   bundleGroups, bundleMs, scenes: [{ ms, objects, draws, bundles }] }
+```
+
+Milliseconds nest: `sceneMs` contains `projectMs`, `sortMs`, `objectsMs` and `bundleMs`;
+`objectsMs` and `bundleMs` contain `encodeMs`. Each hooked method re-enters (projection recurses,
+a scene render encodes objects), so only the outermost call of each is timed. `scenes` has one
+entry per whole scene render in the order they ran -- main, shadow map, planar mirror -- and its
+object count is the length of the render list that pass encoded, not a scene census.
+
+Three's private methods are the only seam here, so `attach` reports `missingHooks` when a Three
+upgrade renames one, and the caller records that beside the numbers rather than reporting zeros.
+The hooks cost a wrapped call per drawn object, so this is a flagged diagnostic, never on by
+default. Base Game turns it on with `?trace=1`; see `docs/subsystems/base-game.md`.
 
 ### `gpu-pipeline-meter.js`
 

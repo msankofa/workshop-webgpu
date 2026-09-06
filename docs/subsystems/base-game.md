@@ -388,6 +388,24 @@ deviation, sample count, effective FPS, and dropped-frame totals. If configurati
 the window, `configurationStable` is false and the changed values are listed. Normal `todHour`
 movement while the clock remains running is listed separately as an expected dynamic change.
 
+### The render trace (`?trace=1`)
+
+`passPostMs` is one timer around `renderer.render`, and the 2026-09-06 captures put the frame's
+spikes inside it. `?trace=1` attaches `render-trace.js` to the renderer and splits that encode into
+its own capture slots: `passTraceSceneMs` (every whole scene render, containing the rest),
+`passTraceProjectMs` (the scene walk and render-list build), `passTraceSortMs`,
+`passTraceObjectsMs` (the per-object encode loop) and `passTraceEncodeMs` (the per-object work
+inside it), plus `passTraceBundleMs` for render-bundle replay. They are never folded into
+`passPostMs` or into the frame residual, so a capture with the flag and one without stay
+comparable -- except that the hooks themselves cost a wrapped call per drawn object, which is why
+the flag is off by default and logs a warning when it is on.
+
+`context.render.trace` in the saved entry carries the counts rather than the times: `lastFrame`
+(the last traced frame's scene renders, encoded objects, draw calls, bundle groups, and one entry
+per whole scene render) and the means over every traced frame. The object counts come from the
+renderer's own render lists, not from `sceneCensus()`, so they say what each pass actually
+encoded.
+
 The browser sends one completed entry to `serve.py`, which atomically prepends it to
 `research/stats/base-game-performance-log.json`; newest results therefore appear first and an old
 browser tab never sends an old copy of the log back to the server. The file uses the
