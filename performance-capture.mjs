@@ -88,8 +88,11 @@ export function summarizeSpikeEvents(samples, { percentile: fraction = 0.95 } = 
       spikeTotal: round(spikeTotal),
     };
   }
-  const quiet = spikes.filter(s => ![...names].some(n => (Number(s.events?.[n]) || 0) > 0)).length;
-  return { thresholdMs: round(threshold), spikeFrames: spikes.length, quietSpikeFrames: quiet, events };
+  // An event present on nearly every frame (the near-tier grass recull) explains nothing; only events
+  // that are rare on ordinary frames count toward an explained spike.
+  const telling = [...names].filter(n => events[n].otherShare < 0.5);
+  const quiet = spikes.filter(s => !telling.some(n => (Number(s.events?.[n]) || 0) > 0)).length;
+  return { thresholdMs: round(threshold), spikeFrames: spikes.length, quietSpikeFrames: quiet, tellingEvents: telling, events };
 }
 
 export function buildPerformanceMeasurement(samples, {
