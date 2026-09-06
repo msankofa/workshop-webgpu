@@ -597,6 +597,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     },
     get occlusion() { return occlusion ? occlusion.state : null; },
     get occlusionStats() { return occlusion?.stats ?? null; },
+    get occluderRootCount() { return occluderRoots.length; },
     async update(seconds) {
       if (!enabled) return false;
       syncOrigin();

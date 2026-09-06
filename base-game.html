@@ -6391,6 +6391,7 @@ const vegetationDebugHud = createVegetationDebugHud({
     draws: lastRenderInfo.drawCalls, triangles: lastRenderInfo.triangles,
     grass: { ...flora.stats }, trees: { ...forest.sampleDetail() },
     occlusion: flora.occlusion ? { ...flora.occlusionStats, enabled: flora.occlusion.enabled, size: flora.occlusion.size } : null,
+    occlusionRequested: settings.grassOcclusion, occluderRoots: flora.occluderRootCount,
     view: vegetationView(camera), gpuRequested: GPU_TIMESTAMPS, gpuResolved: gpuTimestampState.resolved,
     configuration: JSON.stringify([Object.fromEntries(Object.entries(settings).filter(([key]) => key !== 'grassOcclusion')),
       worldCoordinates.getOrigin(), terrain.fields?.coverage, terrain.contactField?.coverage]),

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { vegetationDebugLines, freshVegetationCount, compareVegetationSamples, createVegetationDebugHud } from './vegetation-debug-hud.js';
+import { vegetationDebugLines, freshVegetationCount, compareVegetationSamples, createVegetationDebugHud,
+  vegetationOcclusionAvailability } from './vegetation-debug-hud.js';
 const base = { now: 1000, fps: 60, worstMs: 20, draws: 100, triangles: 10000,
   grass: { enabled: true, built: true, drawn: 120, capacity: 100, dispatch: 200, expected: 180,
     drawnSample: { atMs: 900, occlusion: false, view: [0, 1] },
@@ -21,6 +22,12 @@ assert.match(lines, /can lower FPS/);
 assert.match(lines, /not GPU time/);
 assert.match(lines, /GPU timestamps OFF/);
 assert.match(vegetationDebugLines({ ...base, grass: { enabled: false }, trees: { enabled: false }, occlusion: null }), /Grass OFF[\s\S]*Trees OFF/);
+const unavailable = { ...base, occlusion: null, occlusionRequested: true, occluderRoots: 0,
+  grass: { ...base.grass, terrainOcclusion: { requested: true, marked: false, reason: 'volumetric terrain has no matching drawn-height field' } } };
+assert.deepEqual(vegetationOcclusionAvailability(unavailable), {
+  available: false, roots: 0, requested: true, reason: 'volumetric terrain has no matching drawn-height field',
+});
+assert.match(vegetationDebugLines(unavailable), /requested but UNAVAILABLE[\s\S]*volumetric terrain/);
 const on = structuredClone(base);
 on.now = 4000; on.grass.drawn = 60; on.occlusion.enabled = true;
 on.grass.drawnSample = { atMs: 3900, occlusion: true, view: [0, 1] };
@@ -51,10 +58,23 @@ hud.refresh(); assert.equal(sampled, 1, 'hidden HUD never requests stats');
 toggle.listeners.click(); hud.refresh(); assert.equal(sampled, 2);
 body.children[3].listeners.click(); assert.equal(toggled, 1);
 hud.dispose(); assert.ok(root.removed);
+let unavailableToggles = 0;
+const unavailableHost = new Element();
+const unavailableHud = createVegetationDebugHud({ document, host: unavailableHost, sample: () => unavailable,
+  toggleOcclusion: () => unavailableToggles++ });
+unavailableHud.refresh();
+const unavailableBody = unavailableHost.children[0].children[1], unavailableButton = unavailableBody.children[3];
+assert.equal(unavailableButton.disabled, true);
+assert.match(unavailableButton.textContent, /unavailable/);
+unavailableButton.listeners.click();
+assert.equal(unavailableToggles, 0, 'an unavailable toggle cannot pretend to change effective occlusion');
+assert.match(unavailableBody.children[5].textContent, /Cannot toggle[\s\S]*volumetric terrain/);
+unavailableHud.dispose();
 const html = readFileSync(new URL('./base-game.html', import.meta.url), 'utf8');
 assert.match(html, /host: document.getElementById\('debug-dock'\)/);
 assert.match(html, /if \(fpsElapsed < 500\) return;[\s\S]{0,250}vegetationDebugHud.refresh\(\)/);
 assert.match(html, /occlusion: flora.occlusion \? \{ ...flora.occlusionStats/);
+assert.match(html, /occlusionRequested: settings\.grassOcclusion, occluderRoots: flora\.occluderRootCount/);
 const script = html.match(/<script[^>]*type=[^>]*module[^>]*>([\s\S]*?)<\/script>/)[1];
 const { spawnSync } = await import('node:child_process');
 const syntax = spawnSync(process.execPath, ['--input-type=module', '--check'], { input: script, encoding: 'utf8' });

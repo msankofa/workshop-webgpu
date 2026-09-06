@@ -6,6 +6,9 @@ Press Esc to release the mouse, then use its buttons. Hide collapses the HUD and
 sampling requests. An open grass settings panel or a performance capture can still request
 diagnostics independently. HUD-only sampling reads one survivor counter about once a second;
 it does not dispatch the two ground probes. Tree LOD counts are CPU estimates, not GPU reads.
+The occlusion button reports the effective state, not just the saved preference. It is disabled
+with a reason when there are no active building, structure, or compatible terrain occluders, so
+a volumetric world cannot present a toggle that silently changes nothing.
 
 ## Occlusion comparison
 
