@@ -406,6 +406,22 @@ per whole scene render) and the means over every traced frame. The object counts
 renderer's own render lists, not from `sceneCensus()`, so they say what each pass actually
 encoded.
 
+### The matrix-walk spike (`?matrixauto=0`)
+
+Three walks the whole scene's world matrices once per frame. `?matrixauto=0` hands that walk to
+`render-matrix-walk.js`, which skips it for the roots that do not move: the terrain root, the
+structures root, the spawn building, the trail roads, the Traversal Lab and every published forest
+mesh. Everything else -- bodies, weapons, vehicles, drones, projectiles, lights and the sky dome
+that rides the camera -- is walked every frame as before, because the list is of what stands still,
+not of what moves.
+
+An origin rebase shifts the static roots too, so the rebase handler calls `touchAll()` and the next
+frame walks everything once. A chunk streamed into a static subtree dirties its root through the
+wrapped `add`, and each static root is re-walked on its own roughly every 60 frames as insurance.
+The walk costs `passMatrixWalkMs`, which is a frame slot like the passes -- the point of the spike
+is the total frame CPU, not `passPostMs` -- and `context.render.matrixWalk` records how many roots
+the frame actually walked.
+
 The browser sends one completed entry to `serve.py`, which atomically prepends it to
 `research/stats/base-game-performance-log.json`; newest results therefore appear first and an old
 browser tab never sends an old copy of the log back to the server. The file uses the

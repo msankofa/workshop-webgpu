@@ -114,6 +114,7 @@ import { createFrameProfiler } from './frame-profiler.js';
 import { createPipelineMeter } from './gpu-pipeline-meter.js';
 import { createRenderPassRecorder } from './render-pass-recorder.js';
 import { createRenderTrace } from './render-trace.js';
+import { createMatrixWalk } from './render-matrix-walk.js';
 import { buildPerformanceMeasurement, changedPerformanceSettings } from './performance-capture.mjs';
 import { createSlotSection } from './bot-viewer-slots.js';
 import { BASE_GAME_SHARED_KEYS, pickBaseGameSharedWorld, sanitizeBaseGameWorldPatch, waveOptionsFromWorld, BASE_GAME_TEAMS, BASE_GAME_NPC_ROLE_IDS } from './base-game-protocol.mjs';
@@ -1222,6 +1223,10 @@ scene.background = new THREE.Color(0x0b1430);
 // the density and colour are free to move at runtime, but going from no fog to fog changes every
 // material's cache key -- which would recompile the world on the first drop of rain.
 scene.fog = new THREE.FogExp2(0x8a929c, 0);
+// ?matrixauto=0 takes the per-frame world-matrix walk off three and skips it for the roots that do
+// not move (terrain, forest, structures). Default on, so the page behaves as before without it.
+const matrixWalk = createMatrixWalk({ enabled: !readFlagDefaultTrue('matrixauto') });
+matrixWalk.attach(scene);
 
 // 600 m covers the 16-chunk terrain draw radius (480 m); with far LOD on, updateWorld() pushes
 // the far plane out to the outermost clipmap ring.
@@ -3239,11 +3244,16 @@ const stopRebasePresentation = worldCoordinates.onRebase(event => {
   spawnBuilding.root.position.add(rebaseShift);
   structures.root.position.add(rebaseShift);
   roads.group.position.add(rebaseShift);
+  matrixWalk.touchAll();   // the static roots just moved, so they need one walk
   if (settings.playerControlMode === 'orbit') {
     camera.position.add(rebaseShift);
     controls.target.add(rebaseShift);
   }
 });
+// What ?matrixauto=0 stops walking every frame. Everything else -- bodies, weapons, vehicles,
+// lights, drones, projectiles, the sky dome that rides the camera -- keeps its per-frame walk,
+// because declaring the movers instead would freeze whatever the list missed.
+matrixWalk.skip(terrain.root, structures.root, spawnBuilding.root, roads.group, traversalLab.root);
 
 let soloTriggerTick = 0;
 function resetPlayer() {
@@ -3562,6 +3572,7 @@ forest.onMeshes(meshes => {
   }
   forestMirrorMeshes = meshes.slice();
   for (const mesh of forestMirrorMeshes) if (!reflectionExclusions.includes(mesh)) reflectionExclusions.push(mesh);
+  matrixWalk.skip(...meshes);   // published tree meshes sit at the render origin and never move
 });
 const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'treePlacement', 'treeClusterSize',
   'treeClusterSpread', 'treeShoreMargin', 'treeChunkSize', 'treeSeedOffset',
@@ -3697,6 +3708,9 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
   // phases. traceScene is every whole scene render; it contains the other four.
   traceScene: 'passTraceSceneMs', traceProject: 'passTraceProjectMs', traceSort: 'passTraceSortMs',
   traceObjects: 'passTraceObjectsMs', traceEncode: 'passTraceEncodeMs', traceBundle: 'passTraceBundleMs',
+  // ?matrixauto=0 only: the explicit world-matrix walk that replaces three's. It is outside the
+  // render call, so unlike the trace slots it is a real frame cost and joins the residual's peers.
+  matrixWalk: 'passMatrixWalkMs',
   // Everything in the frame that no slot above covers.
   frameOther: 'passOtherMs',
 });
@@ -3705,7 +3719,7 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
 // outside the frame entirely (install), and reflect/post*/pipeline* are all inside postRender or
 // overlap it.
 const BASE_GAME_FRAME_SLOTS = ['terrain', 'water', 'fx', 'grassGpu', 'forestGpu', 'sky', 'weather', 'rainBake',
-  'playerSim', 'playerView', 'bodies', 'audio', 'postRender'];
+  'playerSim', 'playerView', 'bodies', 'audio', 'postRender', 'matrixWalk'];
 function profiledMs() {
   const snap = frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES);
   let total = 0;
@@ -6207,6 +6221,8 @@ function captureContext() {
       // ?trace=1 only. The milliseconds are per-frame slots in `passes`; these are the counts the
       // renderer's own render lists reported, per whole scene render.
       trace: { ...traceSummary, attached: renderTrace.attached, missingHooks: renderTrace.missingHooks },
+      // ?matrixauto=0 only: how much of the scene the frame's matrix walk still covered.
+      matrixWalk: { ...matrixWalk.stats },
     },
     world: {
       mode: settings.worldMode,
@@ -6792,6 +6808,13 @@ async function animate() {
     passStart = profileFrame ? performance.now() : 0;
     updateRainOccluders();
     if (profileFrame) frameProfiler.mark('rainBake', performance.now() - passStart);
+    // Before the render, and only when ?matrixauto=0 asked for it: three's own scene walk is off,
+    // so this is the frame's world matrices.
+    if (matrixWalk.enabled) {
+      const walkStart = profileFrame ? performance.now() : 0;
+      matrixWalk.update();
+      if (profileFrame) frameProfiler.mark('matrixWalk', performance.now() - walkStart);
+    }
     if (!terrainStudio.open) {
       // postRender is one timer around four different things: the shadow map redraw, the planar
       // mirror's whole extra scene render, the post chain, and the main pass. Each of the marks
