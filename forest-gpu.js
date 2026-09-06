@@ -32,7 +32,7 @@ import {
   Fn, If, instanceIndex, storage, uniform, int, uint, float,
   vec2, vec3, vec4, cos, sin, atan, acos, clamp, length, modInt, positionLocal, normalLocal,
   atomicAdd, atomicStore, atomicLoad,
-  normalize, cross, cameraPosition, texture, time,
+  normalize, cross, cameraPosition, texture, time, userData,
 } from 'three/tsl';
 
 export function createForestGPU(opts) {
@@ -312,11 +312,11 @@ export function createForestGPU(opts) {
       p.z.add(sin(time.mul(0.9).add(p.x.mul(0.3))).mul(lift)),
     );
   }
-  // The slot offset is a uniform, not a constant: a constant made every variant its own WGSL program
-  // (V x 8 materials x main + depth, ~224 compiles for 16 variants); identical source lets the
-  // renderer's program cache share ~14 compiles across all of them.
-  function instanceNodes(offset, scaleMultiplier = uTreeScale, sway = false) {
-    const recBase = uniform(offset, 'uint').add(instanceIndex).mul(uint(2));
+  // The slot offset is read from the MESH being drawn (userData, refreshed per object, depth pass
+  // included), so one material per role serves every variant: a per-material constant made ~224
+  // WGSL programs for 16 variants, a per-material uniform still made ~256 pipelines.
+  function instanceNodes(scaleMultiplier = uTreeScale, sway = false) {
+    const recBase = userData('slotOffset', 'uint').add(instanceIndex).mul(uint(2));
     const rec0 = draw.element(recBase);                  // (x,y,z,scale)
     const rec1 = draw.element(recBase.add(uint(1)));     // (yaw,...)
     const scale = rec0.w.mul(scaleMultiplier), yaw = rec1.x;
@@ -336,8 +336,8 @@ export function createForestGPU(opts) {
   }
   // Camera-facing billboard node: ignores instance yaw, aligns plane to always face camera.
   // Uses cylindrical alignment (right = cross(worldUp, camDir), up = worldY) so trees stay upright.
-  function instanceNodesBillboard(offset) {
-    const recBase = uniform(offset, 'uint').add(instanceIndex).mul(uint(2));
+  function instanceNodesBillboard() {
+    const recBase = userData('slotOffset', 'uint').add(instanceIndex).mul(uint(2));
     const rec0 = draw.element(recBase);
     const scale = rec0.w.mul(uTreeScale);
     const ipos = vec3(rec0.x, rec0.y, rec0.z);
@@ -355,9 +355,10 @@ export function createForestGPU(opts) {
   }
   const geometryPool = createSharedDrawGeometryPool(renderer);
   const drawableGeometry = (geom, indirectAttr) => geometryPool.acquire(geom, CAP, indirectAttr);
-  function drawMesh(geom, mat, indirectAttr, castShadow, name = '') {
+  function drawMesh(geom, mat, indirectAttr, castShadow, slotOffset, name = '') {
     const g2 = drawableGeometry(geom, indirectAttr);
     const mesh = new THREE.Mesh(g2, mat);
+    mesh.userData.slotOffset = slotOffset;   // where this variant's records start in the draw buffer
     mesh.name = name;   // so a scene census can attribute the forest's always-on meshes
     mesh.frustumCulled = false;
     mesh.castShadow = castShadow;
@@ -402,97 +403,103 @@ export function createForestGPU(opts) {
   }
 
   const uBillBrightness = uniform(1.0);
-  const branchMats = [], leafMats = [], coarseLeafMats = [], billboardMats = [], shadowMats = [], meshes = [];
+  const billboardMats = [], meshes = [];
   // P5/Milestone 6: materials whose `.side` the "Tree leaves double-sided" perfAB toggle flips
   // at runtime (L1 leaves, coarse L2 leaves, billboards -- see the comment above where they're
   // created). L0 leaf materials are intentionally excluded; they stay hardcoded DoubleSide.
   const sideSwitchableMats = new Set();
+
+  function makeMat(roughness, doubleSide) {
+    return new MeshStandardNodeMaterial({
+      vertexColors: true,
+      roughness,
+      metalness: 0.0,
+      side: doubleSide ? THREE.DoubleSide : THREE.FrontSide,
+    });
+  }
+
+  // P5/Milestone 6 (finding 5): leaf cards are genuinely single-sided quads (verified in
+  // test-trees-geometry.mjs -- the winding-derived face normal matches the baked vertex
+  // normal, so there is no winding bug to fix here) that must be visible from most azimuths
+  // in a canopy. `doubleBillboard` (trees.js) adds a SECOND perpendicular card per leaf, but
+  // two single-sided perpendicular cards still leave a real ~90 degree viewing wedge where
+  // both show their backface (worked example in the design doc's finding-5 follow-up) --
+  // duplicating backface geometry to close that gap was evaluated and rejected: LOD0 leaves
+  // alone run ~7200 verts/3600 tris per variant, so mirroring every leaf card would double an
+  // already-large per-variant vertex budget (CPU generation + GPU memory + vertex-stage work
+  // on every instance, including off-screen ones under indirect draw) to save DoubleSide's
+  // fragment-stage-only cost -- not a clean trade at this density. Split instead, per the
+  // design doc's explicitly named partial-win option: keep DoubleSide for close LOD0 leaves
+  // (backface gaps are most visible up close) and default L1/coarse-L2 leaves to FrontSide
+  // (farther away, gaps are far less noticeable, and this is also where instance/overdraw
+  // count is largest so the fragment-stage win matters most). L0 leaves are intentionally
+  // NOT part of the "Tree leaves double-sided" toggle below (same "hardcoded exception,
+  // outside the toggle" treatment deadfall.js gives mushroom caps) -- only L1/coarse/billboard
+  // materials, which default to the FrontSide/cheap side, are toggle-switchable.
+  // One material per role for the whole forest (the slot offset comes from each mesh's userData).
+  // Billboards are the exception: each variant has its own baked capture, so its own material.
+  const n0 = instanceNodes(uTreeScale), n0Leaf = instanceNodes(uTreeScale.mul(uLeafScale), true);
+  const n1 = instanceNodes(uTreeScale), n1Leaf = instanceNodes(uTreeScale.mul(uLeafScale), true);
+  const n2 = instanceNodes(uTreeScale), n2Leaf = instanceNodes(uTreeScale.mul(uLeafScale), true);
+  const branchMat = makeMat(0.9, false);
+  const leafMat = makeMat(1.0, true);
+  const branchMat1 = makeMat(0.9, false);
+  const leafMat1 = makeMat(1.0, false);
+  const branchMat2 = makeMat(0.9, false);
+  const coarseMat = makeMat(1.0, false);
+  sideSwitchableMats.add(leafMat1);
+  sideSwitchableMats.add(coarseMat);
+  branchMat.positionNode = n0.world; branchMat.normalNode = n0.nWorld;
+  leafMat.positionNode = n0Leaf.world; leafMat.normalNode = n0Leaf.nWorld;
+  branchMat1.positionNode = n1.world; branchMat1.normalNode = n1.nWorld;
+  leafMat1.positionNode = n1Leaf.world; leafMat1.normalNode = n1Leaf.nWorld;
+  branchMat2.positionNode = n2.world; branchMat2.normalNode = n2.nWorld;
+  coarseMat.positionNode = n2Leaf.world; coarseMat.normalNode = n2Leaf.nWorld;
+  const branchMats = { L0: branchMat, L1: branchMat1, L2: branchMat2 };
+  const leafMats = { L0: leafMat, L1: leafMat1 };
+  let shadowMats = null;
+  if (SHADOW_LIST) {
+    // Shadow-only pair: full trunk plus the reduced leaf cards, on the shadow layer so the main
+    // camera never sees them. One bark caster replaces the three per-rung ones.
+    const nS = instanceNodes(uTreeScale), nSLeaf = instanceNodes(uTreeScale.mul(uLeafScale), true);
+    const barkShadowMat = makeMat(0.9, false);
+    const leafShadowMat = makeMat(1.0, true);
+    barkShadowMat.positionNode = nS.world; barkShadowMat.normalNode = nS.nWorld;
+    leafShadowMat.positionNode = nSLeaf.world; leafShadowMat.normalNode = nSLeaf.nWorld;
+    shadowMats = { bark: barkShadowMat, leaf: leafShadowMat };
+  }
+  const sharedMats = [branchMat, leafMat, branchMat1, leafMat1, branchMat2, coarseMat,
+    ...(shadowMats ? [shadowMats.bark, shadowMats.leaf] : [])];
+  if (opts.addEmissive) {
+    for (const m of sharedMats) m.emissiveNode = opts.addEmissive(m.positionNode, m.normalNode);
+  }
+
   for (let g = 0; g < V; g++) {
     const variant = palette.variants[g];
     const branchesL1Geo = variant.branchesLod1 ?? variant.branches;
     const branchesL2Geo = variant.branchesLod2 ?? variant.branches;
-    const n0 = instanceNodes(lodSlotOffset(g, 0), uTreeScale);
-    const n0Leaf = instanceNodes(lodSlotOffset(g, 0), uTreeScale.mul(uLeafScale), true);
-    const n1 = instanceNodes(lodSlotOffset(g, 1), uTreeScale);
-    const n1Leaf = instanceNodes(lodSlotOffset(g, 1), uTreeScale.mul(uLeafScale), true);
-    const n2 = instanceNodes(lodSlotOffset(g, 2), uTreeScale);
-    const n2Leaf = instanceNodes(lodSlotOffset(g, 2), uTreeScale.mul(uLeafScale), true);
-    const n3 = HAS_BILLBOARDS ? instanceNodesBillboard(lodSlotOffset(g, 3)) : null;
+    const off = l => lodSlotOffset(g, l);
 
-    function makeMat(roughness, doubleSide) {
-      return new MeshStandardNodeMaterial({
-        vertexColors: true,
-        roughness,
-        metalness: 0.0,
-        side: doubleSide ? THREE.DoubleSide : THREE.FrontSide,
-      });
-    }
-
-    // P5/Milestone 6 (finding 5): leaf cards are genuinely single-sided quads (verified in
-    // test-trees-geometry.mjs -- the winding-derived face normal matches the baked vertex
-    // normal, so there is no winding bug to fix here) that must be visible from most azimuths
-    // in a canopy. `doubleBillboard` (trees.js) adds a SECOND perpendicular card per leaf, but
-    // two single-sided perpendicular cards still leave a real ~90 degree viewing wedge where
-    // both show their backface (worked example in the design doc's finding-5 follow-up) --
-    // duplicating backface geometry to close that gap was evaluated and rejected: LOD0 leaves
-    // alone run ~7200 verts/3600 tris per variant, so mirroring every leaf card would double an
-    // already-large per-variant vertex budget (CPU generation + GPU memory + vertex-stage work
-    // on every instance, including off-screen ones under indirect draw) to save DoubleSide's
-    // fragment-stage-only cost -- not a clean trade at this density. Split instead, per the
-    // design doc's explicitly named partial-win option: keep DoubleSide for close LOD0 leaves
-    // (backface gaps are most visible up close) and default L1/coarse-L2 leaves to FrontSide
-    // (farther away, gaps are far less noticeable, and this is also where instance/overdraw
-    // count is largest so the fragment-stage win matters most). L0 leaves are intentionally
-    // NOT part of the "Tree leaves double-sided" toggle below (same "hardcoded exception,
-    // outside the toggle" treatment deadfall.js gives mushroom caps) -- only L1/coarse/billboard
-    // materials, which default to the FrontSide/cheap side, are toggle-switchable.
-    const branchMat = makeMat(0.9, false);
-    const leafMat = makeMat(1.0, true);
-    const branchMat1 = makeMat(0.9, false);
-    const leafMat1 = makeMat(1.0, false);
-    const branchMat2 = makeMat(0.9, false);
-    const coarseMat = makeMat(1.0, false);
-    // Billboard winding fixed in buildBillboardGeo (above) so FrontSide is now correct -- see
-    // that function's comment. Toggle-switchable alongside leafMat1/coarseMat.
-    const billMat = HAS_BILLBOARDS
-      ? new MeshBasicNodeMaterial({ transparent: true, alphaTest: 0.5, side: THREE.FrontSide })
-      : null;
-    sideSwitchableMats.add(leafMat1);
-    sideSwitchableMats.add(coarseMat);
-    if (billMat) sideSwitchableMats.add(billMat);
-
-    branchMat.positionNode = n0.world; branchMat.normalNode = n0.nWorld;
-    leafMat.positionNode = n0Leaf.world; leafMat.normalNode = n0Leaf.nWorld;
-    branchMat1.positionNode = n1.world; branchMat1.normalNode = n1.nWorld;
-    leafMat1.positionNode = n1Leaf.world; leafMat1.normalNode = n1Leaf.nWorld;
-    branchMat2.positionNode = n2.world; branchMat2.normalNode = n2.nWorld;
-    coarseMat.positionNode = n2Leaf.world; coarseMat.normalNode = n2Leaf.nWorld;
-    if (billMat) billMat.positionNode = n3.world;
-
-    if (opts.addEmissive) {
-      for (const m of [branchMat, leafMat, branchMat1, leafMat1, branchMat2, coarseMat]) {
-        m.emissiveNode = opts.addEmissive(m.positionNode, m.normalNode);
-      }
-    }
-
-    branchMats.push({ L0: branchMat, L1: branchMat1, L2: branchMat2 });
-    leafMats.push({ L0: leafMat, L1: leafMat1 });
-    coarseLeafMats.push(coarseMat);
-    if (billMat) billboardMats.push(billMat);
-
-    meshes.push(drawMesh(variant.branches, branchMat, indirectAttrs[g].branchesL0, true, `forest:v${g}:branchesL0`));
-    meshes.push(drawMesh(variant.leaves, leafMat, indirectAttrs[g].leavesL0, false, `forest:v${g}:leavesL0`));
-    meshes.push(drawMesh(variant.shadow, leafMat, indirectAttrs[g].shadowL0, true, `forest:v${g}:shadowL0`));
-    meshes.push(drawMesh(branchesL1Geo, branchMat1, indirectAttrs[g].branchesL1, true, `forest:v${g}:branchesL1`));
-    meshes.push(drawMesh(variant.leavesMid ?? variant.leaves, leafMat1, indirectAttrs[g].leavesL1, false, `forest:v${g}:leavesL1`));
-    meshes.push(drawMesh(branchesL2Geo, branchMat2, indirectAttrs[g].branchesL2, true, `forest:v${g}:branchesL2`));
-    meshes.push(drawMesh(variant.leavesCoarse, coarseMat, indirectAttrs[g].coarseLeavesL2, false, `forest:v${g}:coarseLeavesL2`));
+    meshes.push(drawMesh(variant.branches, branchMat, indirectAttrs[g].branchesL0, true, off(0), `forest:v${g}:branchesL0`));
+    meshes.push(drawMesh(variant.leaves, leafMat, indirectAttrs[g].leavesL0, false, off(0), `forest:v${g}:leavesL0`));
+    meshes.push(drawMesh(variant.shadow, leafMat, indirectAttrs[g].shadowL0, true, off(0), `forest:v${g}:shadowL0`));
+    meshes.push(drawMesh(branchesL1Geo, branchMat1, indirectAttrs[g].branchesL1, true, off(1), `forest:v${g}:branchesL1`));
+    meshes.push(drawMesh(variant.leavesMid ?? variant.leaves, leafMat1, indirectAttrs[g].leavesL1, false, off(1), `forest:v${g}:leavesL1`));
+    meshes.push(drawMesh(branchesL2Geo, branchMat2, indirectAttrs[g].branchesL2, true, off(2), `forest:v${g}:branchesL2`));
+    meshes.push(drawMesh(variant.leavesCoarse, coarseMat, indirectAttrs[g].coarseLeavesL2, false, off(2), `forest:v${g}:coarseLeavesL2`));
 
     if (HAS_BILLBOARDS) {
+      // Billboard winding fixed in buildBillboardGeo (above) so FrontSide is now correct -- see
+      // that function's comment. Toggle-switchable alongside leafMat1/coarseMat.
+      const billMat = new MeshBasicNodeMaterial({ transparent: true, alphaTest: 0.5, side: THREE.FrontSide });
+      billMat.positionNode = instanceNodesBillboard().world;
+      sideSwitchableMats.add(billMat);
+      billboardMats.push(billMat);
       const billGeo = variantBillboardGeo(variant);
       billGeo.instanceCount = CAP;
       billGeo.indirect = indirectAttrs[g].billboardL3;
       const billMesh = new THREE.Mesh(billGeo, billMat);
+      billMesh.userData.slotOffset = off(3);
       billMesh.name = `forest:v${g}:billboard`;
       billMesh.frustumCulled = false;
       billMesh.castShadow = false;
@@ -501,18 +508,9 @@ export function createForestGPU(opts) {
     }
 
     if (SHADOW_LIST) {
-      // Shadow-only pair: full trunk plus the reduced leaf cards, on the shadow layer so the main
-      // camera never sees them. One bark caster replaces the three per-rung ones.
-      const nS = instanceNodes(lodSlotOffset(g, SHADOW_SLOT), uTreeScale);
-      const nSLeaf = instanceNodes(lodSlotOffset(g, SHADOW_SLOT), uTreeScale.mul(uLeafScale), true);
-      const barkShadowMat = makeMat(0.9, false);
-      const leafShadowMat = makeMat(1.0, true);
-      barkShadowMat.positionNode = nS.world; barkShadowMat.normalNode = nS.nWorld;
-      leafShadowMat.positionNode = nSLeaf.world; leafShadowMat.normalNode = nSLeaf.nWorld;
-      shadowMats.push({ bark: barkShadowMat, leaf: leafShadowMat });
       // Bark casts from the L2 trunk geometry: at ~9cm shadow texels the full branches add nothing.
-      const barkShadow = drawMesh(branchesL2Geo, barkShadowMat, indirectAttrs[g].barkShadow, true, `forest:v${g}:barkShadow`);
-      const leafShadow = drawMesh(variant.shadow, leafShadowMat, indirectAttrs[g].leafShadow, true, `forest:v${g}:leafShadow`);
+      const barkShadow = drawMesh(branchesL2Geo, shadowMats.bark, indirectAttrs[g].barkShadow, true, off(SHADOW_SLOT), `forest:v${g}:barkShadow`);
+      const leafShadow = drawMesh(variant.shadow, shadowMats.leaf, indirectAttrs[g].leafShadow, true, off(SHADOW_SLOT), `forest:v${g}:leafShadow`);
       for (const m of [barkShadow, leafShadow]) { m.layers.set(SHADOW_LAYER); m.receiveShadow = false; }
       meshes.push(barkShadow, leafShadow);
     }
@@ -803,7 +801,7 @@ export function createForestGPU(opts) {
       const branchesL2Geo = variant.branchesLod2 ?? variant.branches;
       const geos = [
         variant.branches, variant.leaves, variant.shadow,
-        branchesL1Geo, variant.leaves, branchesL2Geo, variant.leavesCoarse,
+        branchesL1Geo, variant.leavesMid ?? variant.leaves, branchesL2Geo, variant.leavesCoarse,
       ];
       const attrs = indirectAttrs[g];
       const indirect = [
@@ -855,17 +853,16 @@ export function createForestGPU(opts) {
       needsRebuild = true;
       return true;
     },
-    // Drive the same material binding the baked path uses: fn(branchMat, leafMat) is
-    // called for every variant (procedural bark colorNode, or authored bark/leaf maps).
+    // Drive the same material binding the baked path uses: fn(branchMat, leafMat) is called once
+    // per role pair (procedural bark colorNode, or authored bark/leaf maps); the materials are
+    // shared by every variant.
     applyTextureSet(fn) {
-      for (let g = 0; g < V; g++) {
-        const bm = branchMats[g], lm = leafMats[g];
-        fn(bm.L0, lm.L0);
-        fn(bm.L1, lm.L1);
-        fn(bm.L2, coarseLeafMats[g]);
-        if (SHADOW_LIST) fn(shadowMats[g].bark, shadowMats[g].leaf);   // the leaf cutout needs its map
-      }
+      fn(branchMats.L0, leafMats.L0);
+      fn(branchMats.L1, leafMats.L1);
+      fn(branchMats.L2, coarseMat);
+      if (SHADOW_LIST) fn(shadowMats.bark, shadowMats.leaf);   // the leaf cutout needs its map
     },
+    get materials() { return sharedMats.slice(); },
     get billboardMaterials() { return billboardMats; },
     setRenderParts(partial = {}) {
       for (const key of ['bark', 'leaves', 'billboards', 'barkShadows', 'leafShadows']) {

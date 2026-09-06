@@ -59,7 +59,15 @@ for (let g = 0; g < V; g++) {
   }
 }
 const distinct = [...roles.values()].reduce((n, s) => n + s.size, 0);
+// One material object per role for the whole forest (billboards excepted; not built here).
+const materials = new Set();
+for (let g = 0; g < V; g++) for (const mesh of forest.variantMeshes(g)) materials.add(mesh.material);
+assert.equal(materials.size, 8, `${materials.size} distinct materials across ${V} variants, expected 8`);
+assert.equal(forest.materials.length, 8);
+for (let g = 0; g < V; g++) {
+  for (const mesh of forest.variantMeshes(g)) assert.equal(typeof mesh.userData.slotOffset, 'number', `${mesh.name} carries its slot offset`);
+}
 for (const [role, srcs] of roles) assert.equal(srcs.size, 1, `${role}: ${srcs.size} distinct programs across ${V} variants`);
 assert.ok(roles.size >= 7, `${roles.size} mesh roles`);
-console.log(`${roles.size} mesh roles, ${distinct} distinct WGSL programs across ${V} variants (a constant slot offset gave ${roles.size * V})`);
+console.log(`${roles.size} mesh roles, ${distinct} distinct WGSL programs, ${materials.size} materials across ${V} variants (per-variant materials gave ${roles.size * V} programs)`);
 forest.dispose();
