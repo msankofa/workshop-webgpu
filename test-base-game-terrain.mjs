@@ -57,7 +57,13 @@ console.log('\n[2] the player walks, jumps and crosses chunk boundaries on terra
   ok(Math.abs(p[2]) > 60, `travelled ${Math.abs(p[2]).toFixed(1)} m (crosses several 30 m chunks)`);
   ok(airborneFrames < 60 * 2, `mostly grounded while walking (${airborneFrames} airborne frames)`);
   ok(minGroundedGap > -0.2, `never sank into terrain (min gap ${minGroundedGap.toFixed(3)})`);
-  ok(terrain.system.chunks.size === 25 && terrain.system.activeChunks.every(c => Math.abs(c.centerZ - p[2]) < 90), 'window followed the player; old chunks unloaded');
+  // 25 is the ring; residency may hold up to the 49 of ring + one chunk of hysteresis (step 5),
+  // which is a cache against boundary thrash, not a bigger window: activeChunks is still the ring.
+  // 90 m was radius 2 plus half a chunk. The window now also leads the walk by a column (step 5),
+  // so the far edge sits a chunk further out in the direction of travel: 3 chunks + half = 105 m.
+  const farthest = Math.max(...terrain.system.activeChunks.map(c => Math.abs(c.centerZ - p[2])));
+  ok(terrain.system.targetChunkCount >= 25 && terrain.system.chunks.size <= 49 && farthest < 120,
+    `window followed the player and leads it; ${terrain.system.chunks.size} resident within the 49 the margin allows, farthest active chunk ${farthest.toFixed(0)} m`);
   controller.setInput({ moveX: 0, moveZ: 0, yaw: 0, sprint: false });
   controller.queueJump();
   let maxRise = 0; const baseY = p[1];
@@ -76,7 +82,7 @@ console.log('\n[3] visual off keeps authoritative collision');
   terrain.setVisible(false);
   ok(terrain.system.group.visible === false && terrain.provider.enabled === true, 'group hidden, provider still enabled');
   ok(worldQuery.groundProbe({ origin: [5, 50, 5], maxDistance: 100 })?.providerId === 'terrain', 'probes still hit hidden terrain');
-  ok(terrain.stats.draws === 0 && terrain.stats.residentTiles === 25, 'stats report 0 draws but full residency');
+  ok(terrain.stats.draws === 0 && terrain.stats.residentTiles >= 25, `stats report 0 draws but full residency (${terrain.stats.residentTiles})`);
   terrain.setVisible(true);
 }
 
@@ -106,7 +112,7 @@ console.log('\n[5] debug views and draw radius');
   terrain.setTileBounds(true);
   settle([0, 0, 0], 5);
   const bounds = terrain.system.group.children.find(c => c.name === 'base-game-terrain-tile-bounds');
-  ok(bounds.visible && bounds.children.length === 25, `tile bounds helper per resident chunk (${bounds.children.length})`);
+  ok(bounds.visible && bounds.children.length === terrain.system.activeChunks.length, `tile bounds helper per active chunk (${bounds.children.length})`);
   terrain.setTileBounds(false);
   terrain.setCollisionDebug(true);
   terrain.update([2, 10, 2], 1 / 60);
@@ -115,7 +121,7 @@ console.log('\n[5] debug views and draw radius');
   terrain.setCollisionDebug(false);
   terrain.setDrawRadius(1);
   settle([0, 0, 0], 120);
-  ok(terrain.system.chunks.size === 9, `draw radius 1 -> ${terrain.system.chunks.size}/9 chunks`);
+  ok(terrain.system.targetChunkCount === 9 && terrain.system.chunks.size <= 25, `draw radius 1 -> ${terrain.system.targetChunkCount}/9 target chunks, ${terrain.system.chunks.size} resident within the margin`);
   terrain.setDrawRadius(2);
   settle([0, 0, 0], 120);
   ok(terrain.system.chunks.size === 25, 'back to 25');

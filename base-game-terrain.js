@@ -51,6 +51,17 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   integrateAgeMs: 500,
   // The body's safety region: how far around the swept footprint counts as "under the player".
   safetyRadius: 2,
+  // Prefetch and hysteresis (plan step 5). The lead is in chunk columns ahead of travel; the
+  // margin is how far past the draw radius a chunk is kept before unloading, in chunks of the
+  // system that owns it, so a cascade level's margin is its own 480 or 1920 m.
+  prefetchChunks: 1,
+  prefetchVehicleChunks: 2,
+  vehicleSpeed: 12,
+  unloadMargin: 1,
+  // One in-flight cap shared by the near system and every cascade level, so four streamers
+  // cannot put four times the work in flight. Bounds outstanding jobs only; simultaneous
+  // completion is what the inbox bound is for.
+  maxInFlight: 24,
   // Per-chunk frustum culling in the batches. Measured both ways 2026-08-26: turning it off skips
   // BatchedMesh's per-instance cull loop but doubles submitted draws, and the A/B said p50 encode
   // is a wash (postPlain 3.0-6.1 off vs 3.2-6.9 on) while the tail is much worse without it
@@ -116,9 +127,12 @@ export function createBaseGameTerrain({
   // One clock for the streamer's queues and the scheduler's deadline, so queue age and frame
   // timers are the same numbers. Injected by the tests; the page passes its own.
   const clock = typeof now === 'function' ? now : (() => performance.now());
+  // Shared by every streamer below: one budget, not one each.
+  const inFlightBudget = { max: Math.max(1, cfg.maxInFlight | 0), count: 0 };
+  const streamParams = { prefetchChunks: cfg.prefetchChunks, prefetchVehicleChunks: cfg.prefetchVehicleChunks, vehicleSpeed: cfg.vehicleSpeed, unloadMargin: cfg.unloadMargin };
   const system = createTerrainSystem({
-    params: { chunkSize: cfg.chunkSize, renderRadius: cfg.renderRadius, maxChunksPerUpdate: cfg.maxChunksPerUpdate, maxUnloadsPerUpdate: cfg.maxUnloadsPerUpdate, useWorker, integrateExternally: true },
-    source, now: clock,
+    params: { chunkSize: cfg.chunkSize, renderRadius: cfg.renderRadius, maxChunksPerUpdate: cfg.maxChunksPerUpdate, maxUnloadsPerUpdate: cfg.maxUnloadsPerUpdate, useWorker, integrateExternally: true, ...streamParams },
+    source, now: clock, inFlightBudget,
   });
   // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
   let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
@@ -323,8 +337,8 @@ export function createBaseGameTerrain({
     if (cascade.length) return cascade;
     cfg.volumeLod.forEach((spec, i) => {
       const lvl = createTerrainSystem({
-        params: { chunkSize: spec.chunkSize, renderRadius: spec.renderRadius, segmentsPerChunk: spec.segments, lod: i + 1, volumetric: true, maxChunksPerUpdate: 1, maxUnloadsPerUpdate: 2, useWorker, integrateExternally: true },
-        source: system.source, now: clock,
+        params: { chunkSize: spec.chunkSize, renderRadius: spec.renderRadius, segmentsPerChunk: spec.segments, lod: i + 1, volumetric: true, maxChunksPerUpdate: 1, maxUnloadsPerUpdate: 2, useWorker, integrateExternally: true, ...streamParams },
+        source: system.source, now: clock, inFlightBudget,
       });
       lvl.setTint({ seaLevel, revision: tintRevision });
       lvl.material = groundMaterial();   // chunks pick it up at creation: same look, same wireframe
@@ -608,6 +622,7 @@ export function createBaseGameTerrain({
   let lastItemCount = 0;
   let stageCursor = 0;         // round-robin start, so no stage starves behind a nearer one
   let lastBody = null;         // previous frame's body position, for the swept footprint
+  const bodyVelocity = [0, 0];  // m/s, smoothed; what the streamers prefetch along
 
   // The batch bookkeeping that costs nothing: visibility, and removals for chunks that left.
   // Folding a chunk INTO a batch is a separate operation the scheduler charges to its deadline.
@@ -1137,6 +1152,15 @@ export function createBaseGameTerrain({
     // (the craft at the stick), colliders and the handoff follow `bodyPosition` (the player's body).
     update(globalPosition, dt = 0, bodyPosition = globalPosition) {
       if (!active) return false;
+      // The lead the streamers prefetch along, from the body's own motion and the dt we are
+      // given: this is the only place with a dt worth trusting.
+      if (dt > 0 && lastBody) {
+        const a = 0.25;   // smoothed, so one long frame does not swing the window
+        bodyVelocity[0] += ((bodyPosition[0] - lastBody[0]) / dt - bodyVelocity[0]) * a;
+        bodyVelocity[1] += ((bodyPosition[2] - lastBody[2]) / dt - bodyVelocity[1]) * a;
+        system.setMotion(bodyVelocity[0], bodyVelocity[1]);
+        for (const c of cascade) c.system.setMotion(bodyVelocity[0], bodyVelocity[1]);
+      }
       const t0 = performance.now();
       const changed = system.update(globalPosition[0], globalPosition[2]);
       const size = system.params.chunkSize;
@@ -1279,6 +1303,10 @@ export function createBaseGameTerrain({
         maxItemMs: +lastMaxItemMs.toFixed(2),
         lastIntegrateMs: +lastIntegrateMs.toFixed(2),
         integrateBudgetMs: cfg.integrateBudgetMs,
+        inFlight: inFlightBudget.count,
+        maxInFlight: inFlightBudget.max,
+        prefetchKeys: system.prefetchKeys,
+        speed: +system.speed.toFixed(2),
         maxFoldsPerUpdate: cfg.maxFoldsPerUpdate,
         maxColliderRebuildsPerUpdate: cfg.maxColliderRebuildsPerUpdate,
         lastFieldMs: +lastFieldMs.toFixed(2),

@@ -35,6 +35,22 @@ const DEFAULTS = {
   // false: update() drains the whole inbox itself, which is what every host did before the
   // queue existed. true: the host commits items one at a time under its own time budget.
   integrateExternally: false,
+  // Prefetch: chunk columns requested AHEAD of travel, so a boundary is crossed onto ground that
+  // is already streaming rather than requested at the moment it is needed. The ring around the
+  // body is always in the set regardless; this only extends it.
+  // Default 0 on both, like unloadMargin: an existing host's resident set is its contract, and
+  // Base Game opts in to the lead.
+  prefetchChunks: 0,          // at walking speed
+  prefetchVehicleChunks: 0,   // at vehicle speed, where a column is crossed in a fraction of the time
+  vehicleSpeed: 12,           // m/s at which the wider lead takes over
+  // Hysteresis: chunks are kept this many beyond renderRadius before unloading, so a body
+  // loitering on a boundary does not thrash the same chunk in and out. One chunk of THIS
+  // system's size, so a cascade level's margin scales with its own chunks. Default 0 -- every
+  // existing host keeps its residency contract; Base Game opts in.
+  unloadMargin: 0,
+  // A { max, count } object shared across systems, so four streamers cannot put four times the
+  // work in flight. Bounds OUTSTANDING work only; simultaneous completion is the inbox's job.
+  inFlightBudget: null,
 };
 
 function merge(base, over) {
@@ -201,6 +217,10 @@ class TerrainSystem {
     this.inbox = new Map();      // key -> completed worker result awaiting commit (newer same-key wins)
     this.inboxBytes = 0;
     this.staleDrops = 0;         // results discarded at enqueue or at commit because they no longer apply
+    this.inFlightBudget = options.inFlightBudget ?? null;
+    this.keepKeys = new Set();   // targetKeys plus the hysteresis margin: what is NOT unloaded
+    this.velocity = [0, 0];      // m/s, set by the host via setMotion; drives the prefetch lead
+    this.prefetchKeys = 0;       // observable: how many keys the lead added this recompute
     this.committedTotal = 0;
     if (this.params.useWorker) this.initWorker();
 
@@ -238,7 +258,7 @@ class TerrainSystem {
     if (this.worker) this.worker.terminate();
     this.worker = null;
     this.workers = [];
-    this.inFlight.clear();
+    this.releaseInFlight(this.inFlight.size); this.inFlight.clear();
     this.clearInbox();
     this.centerChunkX = null;   // force update() to recompute the build queue
   }
@@ -291,7 +311,7 @@ class TerrainSystem {
   // replacements land (the pre-far-LOD behaviour, still used where nothing draws underneath).
   restream({ drop = true } = {}) {
     this.epoch++;
-    this.inFlight.clear();
+    this.releaseInFlight(this.inFlight.size); this.inFlight.clear();
     this.clearInbox();
     this.atlasRequested.clear();
     this.lastSourceError = null;
@@ -346,7 +366,7 @@ class TerrainSystem {
     this.renderMode = this.params.experimentalInstancedTerrain && this.params.renderMode === 'instanced' ? 'instanced' : 'chunks';
     this.updateInstancedUniforms();
     this.epoch++;            // invalidate any in-flight worker jobs from the old params
-    this.inFlight.clear();
+    this.releaseInFlight(this.inFlight.size); this.inFlight.clear();
     this.clearInbox();
     this.atlasRequested.clear();   // re-request every height tile under the new epoch/params
     for (const chunk of this.chunks.values()) {
@@ -357,10 +377,12 @@ class TerrainSystem {
     this.centerChunkX = null;
     this.centerChunkZ = null;
     this.targetKeys.clear();
+    this.keepKeys.clear();
     this.activeChunkCache = [];
     this.activeChunkCacheDirty = true;
     this.buildQueue = [];
     this.buildQueueIndex = 0;
+    this.sigLead = null;
     this.update(this.centerX, this.centerZ);
   }
 
@@ -380,12 +402,20 @@ class TerrainSystem {
     // without the center moving — otherwise such changes would be silently ignored.
     // Numbers, not a joined string: this runs every frame and a template literal allocates.
     const sigChanged = chunkSize !== this.sigChunkSize || this.params.renderRadius !== this.sigRenderRadius;
+    // The lead is refreshed WITHIN a chunk: a body that turns around mid-chunk must stop asking
+    // for the ground behind it. Quantised to the column it would request, so a jittering
+    // velocity does not recompute the window every frame.
+    const lead = this.leadSignature(radius);
+    const leadChanged = lead !== this.sigLead;
 
-    if (centerChunkX !== this.centerChunkX || centerChunkZ !== this.centerChunkZ || this.targetKeys.size === 0 || sigChanged) {
+    if (centerChunkX !== this.centerChunkX || centerChunkZ !== this.centerChunkZ || this.targetKeys.size === 0 || sigChanged || leadChanged) {
+      this.sigLead = lead;
       this.centerChunkX = centerChunkX;
       this.centerChunkZ = centerChunkZ;
       this.sigChunkSize = chunkSize; this.sigRenderRadius = this.params.renderRadius;
       this.targetKeys = this.getTargetKeys(centerChunkX, centerChunkZ, radius);
+      this.keepKeys = this.ringKeys(centerChunkX, centerChunkZ, radius + Math.max(0, this.params.unloadMargin | 0));
+      for (const key of this.targetKeys) this.keepKeys.add(key);
       if (this.renderMode === 'instanced') this.updateInstancedTerrain();
       this.buildQueue = this.getMissingKeysSorted(centerX, centerZ);
       this.buildQueueIndex = 0;
@@ -412,8 +442,9 @@ class TerrainSystem {
         continue;
       }
       if (this.worker && this.params.visualMode !== 'external') {
-        // Backpressure: completed results already hold memory, so stop asking for more.
-        if (this.inboxFull) { this.buildQueueIndex--; break; }
+        // Backpressure: completed results already hold memory, and the shared budget bounds how
+        // much four streamers can have outstanding between them.
+        if (this.inboxFull || this.inFlightFull) { this.buildQueueIndex--; break; }
         this.dispatchChunk(item, chunkSize);   // builds off-thread; lands in onWorkerChunk
       } else {
         const chunk = this.createChunk(item.key, item.ix * chunkSize, item.iz * chunkSize, chunkSize);
@@ -432,7 +463,7 @@ class TerrainSystem {
       // Keys, not entries: this walks every resident chunk every quiet frame, and iterating a
       // Map's entries allocates a [key, value] pair per chunk.
       for (const key of this.chunks.keys()) {
-        if (this.targetKeys.has(key)) continue;
+        if (this.keepKeys.has(key)) continue;   // hysteresis: the margin beyond the load radius
         const chunk = this.chunks.get(key);
         this.disposeChunk(chunk);
         if (this.primaryMesh === chunk.mesh) this.primaryMesh = null;
@@ -484,9 +515,18 @@ class TerrainSystem {
     this.addChunk(chunk);
   }
 
+  // Release n slots of the shared in-flight budget (or all of this system's, when clearing).
+  releaseInFlight(n = 1) {
+    if (this.inFlightBudget) this.inFlightBudget.count = Math.max(0, this.inFlightBudget.count - n);
+  }
+  get inFlightFull() {
+    return !!this.inFlightBudget && this.inFlightBudget.count >= this.inFlightBudget.max;
+  }
+
   dispatchChunk(item, chunkSize) {
     const segments = this.chunkSegments(chunkSize);
     this.inFlight.add(item.key);
+    if (this.inFlightBudget) this.inFlightBudget.count++;
     if (this.source) {
       this.worker.postMessage({
         jobType: 'sourceTile',
@@ -636,7 +676,7 @@ class TerrainSystem {
       if (data.epoch === this.epoch && !data.error) this.writeHeightTile(data.key.slice(ATLAS_KEY_PREFIX.length), data.heights, data.texels);
       return;
     }
-    this.inFlight.delete(data.key);
+    if (this.inFlight.delete(data.key)) this.releaseInFlight(1);
     // Drop results from a previous param/source generation (the epoch was bumped).
     if (data.epoch !== this.epoch) { this.staleDrops++; return; }
     if (data.error) { this.lastSourceError = data.error; return; }
@@ -646,13 +686,63 @@ class TerrainSystem {
     this.enqueueResult(data);
   }
 
-  getTargetKeys(centerChunkX, centerChunkZ, radius) {
+  ringKeys(centerChunkX, centerChunkZ, radius) {
     const keys = new Set();
     for (let iz = centerChunkZ - radius; iz <= centerChunkZ + radius; iz++) {
       for (let ix = centerChunkX - radius; ix <= centerChunkX + radius; ix++) {
         if (this.chunkInBounds(ix, iz)) keys.add(`${ix},${iz}`);
       }
     }
+    return keys;
+  }
+
+  // Travel velocity in m/s, from the host, which is the only place a trustworthy dt exists.
+  // Deriving it here from wall-clock time between update() calls made a hitching frame -- or a
+  // headless loop with no time between frames -- read as thousands of m/s and widen the lead for
+  // no reason. A system nobody tells about motion simply has no lead.
+  setMotion(vx, vz) {
+    this.velocity[0] = Number.isFinite(vx) ? vx : 0;
+    this.velocity[1] = Number.isFinite(vz) ? vz : 0;
+  }
+
+  get speed() { return Math.hypot(this.velocity[0], this.velocity[1]); }
+
+  // Which columns the current velocity would ask for, as a small string. Recomputing the window
+  // on this rather than on the raw velocity keeps a jittering speed from rebuilding it per frame.
+  leadSignature() {
+    const speed = this.speed;
+    const lead = speed < 0.5 ? 0
+      : (speed >= this.params.vehicleSpeed ? this.params.prefetchVehicleChunks : this.params.prefetchChunks);
+    if (!lead) return '0';
+    const [vx, vz] = this.velocity;
+    return `${lead}:${Math.abs(vx) > speed * 0.35 ? Math.sign(vx) : 0}:${Math.abs(vz) > speed * 0.35 ? Math.sign(vz) : 0}`;
+  }
+
+  // The ring, plus columns ahead of travel. Standing still adds nothing; a vehicle gets a
+  // deeper lead because it crosses a column in a fraction of the time a walker does.
+  getTargetKeys(centerChunkX, centerChunkZ, radius) {
+    const keys = this.ringKeys(centerChunkX, centerChunkZ, radius);
+    const before = keys.size;
+    const speed = this.speed;
+    const lead = speed < 0.5 ? 0
+      : (speed >= this.params.vehicleSpeed ? this.params.prefetchVehicleChunks : this.params.prefetchChunks);
+    if (lead > 0) {
+      // A column per axis the body is actually moving along, so a diagonal gets both.
+      const [vx, vz] = this.velocity;
+      const stepX = Math.abs(vx) > speed * 0.35 ? Math.sign(vx) : 0;
+      const stepZ = Math.abs(vz) > speed * 0.35 ? Math.sign(vz) : 0;
+      for (let n = 1; n <= lead; n++) {
+        if (stepX) for (let iz = centerChunkZ - radius; iz <= centerChunkZ + radius; iz++) {
+          const ix = centerChunkX + stepX * (radius + n);
+          if (this.chunkInBounds(ix, iz)) keys.add(`${ix},${iz}`);
+        }
+        if (stepZ) for (let ix = centerChunkX - radius; ix <= centerChunkX + radius; ix++) {
+          const iz = centerChunkZ + stepZ * (radius + n);
+          if (this.chunkInBounds(ix, iz)) keys.add(`${ix},${iz}`);
+        }
+      }
+    }
+    this.prefetchKeys = keys.size - before;
     return keys;
   }
 
@@ -913,7 +1003,7 @@ class TerrainSystem {
 
   dispose() {
     if (this.worker) { this.worker.terminate(); this.worker = null; }
-    this.inFlight.clear();
+    this.releaseInFlight(this.inFlight.size); this.inFlight.clear();
     this.clearInbox();
     for (const chunk of this.chunks.values()) this.disposeChunk(chunk);
     this.chunks.clear();

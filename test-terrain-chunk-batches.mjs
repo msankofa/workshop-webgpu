@@ -56,7 +56,10 @@ console.log('\n[2] streamed chunks draw through batches; residency and eviction 
   // walk 600 m: batches follow the window, nothing leaks
   for (let f = 0; f < 600; f++) terrain.update([f, 0, 0], 1 / 60);
   st = terrain.stats;
-  ok(st.batches.chunks === terrain.system.chunks.size && st.batches.chunks <= 60, `after travel: ${st.batches.chunks} batched == ${terrain.system.chunks.size} resident`);
+  // 60 was the old bound, when residency was exactly the radius-3 ring of 49. Step 5 keeps one
+  // chunk of hysteresis past the draw radius and leads the walk by a column, so the ceiling is
+  // the radius-4 ring of 81. What matters is unchanged: batched tracks resident, nothing leaks.
+  ok(st.batches.chunks === terrain.system.chunks.size && st.batches.chunks <= 81, `after travel: ${st.batches.chunks} batched == ${terrain.system.chunks.size} resident, inside the 81 the margin allows`);
   const ownAfter = [...terrain.system.chunks.values()].filter(c => c.mesh?.visible).length;
   ok(st.batches.removes > 0 && st.draws === ownAfter + st.batches.draws, `${st.batches.removes} evictions; draws (${st.draws}) = own meshes (${ownAfter}) + batched (${st.batches.draws})`);
   terrain.setWireframe(true);

@@ -456,6 +456,35 @@ noise. The real effect is read from `passTerrainFoldMs` in a browser capture.
 | `test-cdlod-select.mjs` | `levelRanges`, `nodeSize`, `minDistToCell`, `selectNodes`, `nodeCountForViewDistance` | Range/size formulas match the geometric definition; `minDistToCell` is exact inside/outside a cell; **coverage partition** — every sampled point near the camera lands in exactly one selected node, across several camera positions; the camera's own cell is always a level-0 (finest) node; **bounded cost** — node count never exceeds `levels*windowCells²` and adding levels grows by bounded rings, not quadratically, with view distance; sub-leaf camera moves leave coarse node origins stable (no shimmer). |
 | `test-cdlod-morph.mjs` | `morphGridCoord`, `nodeSize` (cross-checked against `grassHeightRef`) | `morphK=0` is the identity; `morphK=1` snaps every grid vertex onto the parent (even) lattice; a fully-morphed fine node's boundary heights exactly match the coarser neighbor's lattice points (crack-free seam proof). |
 
+### Prefetch, hysteresis and one shared in-flight cap
+
+The window leads the walk instead of chasing it. `system.setMotion(vx, vz)` takes the body's
+velocity in m/s from the host -- `base-game-terrain.js` derives it from `bodyPosition` and the `dt`
+it is handed, smoothed. It is deliberately NOT inferred inside `terrain-system.js` from wall-clock
+time between `update()` calls: that made a hitching frame, or a headless test loop with no time
+between frames, read as thousands of m/s and widen the window for no reason.
+
+- `prefetchChunks` (1) / `prefetchVehicleChunks` (2) / `vehicleSpeed` (12 m/s): columns of chunks
+  added ahead of travel, one per axis the body is actually moving along, so a diagonal gets both.
+  Standing still adds nothing. The ring around the body is always in the set regardless.
+- The lead is refreshed WITHIN a chunk: `leadSignature()` quantises the velocity to the columns it
+  would request, so a body that turns around mid-chunk stops asking for the ground behind it while
+  a jittering speed does not rebuild the window every frame.
+- `unloadMargin` (1): chunks are kept this many past `renderRadius` before unloading -- one chunk
+  of THIS system's size, so a cascade level's margin is its own 480 or 1920 m. Measured over 20
+  crossings of one boundary: 5 rebuilds with the margin against 95 without.
+- `inFlightBudget`, a shared `{ max, count }`: the near system and every cascade level draw from
+  one pool (`maxInFlight`, 24), so four streamers cannot put four times the work in flight. It
+  bounds OUTSTANDING work only; simultaneous completion is what the inbox bound is for.
+
+**Defaults differ by host on purpose.** In `terrain-system.js` `prefetchChunks`,
+`prefetchVehicleChunks` and `unloadMargin` all default to **0**, because an existing host's
+resident set is part of its contract; Base Game opts in through `BASE_GAME_TERRAIN_DEFAULTS`. The
+cost of opting in is residency, not draws-per-chunk: at `renderRadius` 3 the ring is 49 chunks and
+the ceiling with one chunk of margin is the radius-4 ring of 81. `test-base-game-terrain.mjs` and
+`test-terrain-chunk-batches.mjs` had exact residency counts and now assert the target set with
+residency bounded by the margin.
+
 ### Coverage while work is queued
 
 `test-terrain-coverage.mjs` is the standing proof that deferring work never opens a hole:
