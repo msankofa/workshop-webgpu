@@ -59,7 +59,13 @@ function geometryFromArrays(a) {
   if (a.normals) geo.setAttribute('normal', new THREE.BufferAttribute(a.normals, 3));
   geo.setIndex(new THREE.BufferAttribute(a.index, 1));
   if (!a.normals) geo.computeVertexNormals();
-  geo.computeBoundingSphere();
+  // Colours and bounds the worker already produced; the tint revision lets the host re-tint a stale one.
+  if (a.colors && a.colors.length === a.positions.length) {
+    geo.setAttribute('color', new THREE.BufferAttribute(a.colors, 3));
+    geo.userData.tintRevision = a.tintRevision ?? null;
+  }
+  if (a.bounds) geo.boundingSphere = new THREE.Sphere(new THREE.Vector3().fromArray(a.bounds.center), a.bounds.radius);
+  else geo.computeBoundingSphere();
   return geo;
 }
 
@@ -142,8 +148,10 @@ class TerrainSystem {
     this.source = resolveSource(options.source);   // null => hard-coded terrain-field.js (Environment Viewer compat)
     this.lastSourceError = null;
     this.installMsPending = 0;      // out-of-frame worker install cost, drained by takeInstallCost()
-    this.installCostOut = { ms: 0, count: 0 };   // reused by takeInstallCost(); see there
+    this.installCostOut = { ms: 0, count: 0, workerTintMs: 0 };   // reused by takeInstallCost(); see there
     this.installCountPending = 0;
+    this.tintRequest = options.tint ?? null;   // { seaLevel, revision } — the worker tints under it
+    this.workerTintMsPending = 0;              // worker-thread tint time, reported apart from frame time
     this.group = new THREE.Group();
     this.group.name = 'TerrainChunks';
     this.material = new MeshStandardNodeMaterial({ color: 0x2a2f38, roughness: 1 });
@@ -463,6 +471,7 @@ class TerrainSystem {
         key: item.key,
         epoch: this.epoch,
         descriptor: this.source.descriptor,
+        tint: this.tintRequest,
         request: this.sourceTileRequest(item.ix, item.iz, chunkSize, segments, this.params.volumetric ? 1 : 0, this.chunkFields()),
       });
       return;
@@ -475,6 +484,7 @@ class TerrainSystem {
       size: chunkSize,
       segments,
       computeNormals: true,
+      tint: this.tintRequest,
       params: fieldParams(this.params),
     });
   }
@@ -496,9 +506,17 @@ class TerrainSystem {
   takeInstallCost() {
     this.installCostOut.ms = this.installMsPending;
     this.installCostOut.count = this.installCountPending;
+    this.installCostOut.workerTintMs = this.workerTintMsPending;
     this.installMsPending = 0;
     this.installCountPending = 0;
+    this.workerTintMsPending = 0;
     return this.installCostOut;
+  }
+
+  // The tint the worker should apply to results from now on. A revision change does not
+  // restream: replies stamped with the old revision are re-tinted by the host on commit.
+  setTint(request) {
+    this.tintRequest = request ? { seaLevel: request.seaLevel, revision: request.revision } : null;
   }
 
   onWorkerChunkInner(data) {
@@ -514,6 +532,7 @@ class TerrainSystem {
     // Drop results from a previous param/source generation (the epoch was bumped).
     if (data.epoch !== this.epoch) return;
     if (data.error) { this.lastSourceError = data.error; return; }
+    if (data.tintMs) this.workerTintMsPending += data.tintMs;
     // Drop if we moved away or a fresh chunk already exists.
     if (!this.targetKeys.has(data.key) || this.hasFreshChunk(data.key)) return;
 
@@ -573,9 +592,10 @@ class TerrainSystem {
   chunkFromTile(key, tile) {
     let geo = null;
     if (this.params.visualMode !== 'external') {
+      const finished = { colors: tile.colors, bounds: tile.bounds, tintRevision: tile.tintRevision };
       geo = tile.volume
-        ? geometryFromArrays({ positions: tile.volume.positions, normals: tile.volume.normals, index: tile.volume.indices, uvs: planarUvs(tile.volume.positions) })
-        : geometryFromArrays(buildChunkArraysFromTile(tile));
+        ? geometryFromArrays({ positions: tile.volume.positions, normals: tile.volume.normals, index: tile.volume.indices, uvs: planarUvs(tile.volume.positions), ...finished })
+        : geometryFromArrays({ ...buildChunkArraysFromTile(tile), ...finished });
     }
     const chunk = this.makeChunk(key, tile.xMin, tile.zMin, tile.size, tile.intervals, geo, tile.lod);
     chunk.meta.volumetric = !!tile.volume;

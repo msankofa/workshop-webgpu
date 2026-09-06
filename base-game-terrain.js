@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { MeshNormalNodeMaterial } from 'three/webgpu';
 import { Fn, float, vec3, mix as tslMix, clamp as tslClamp, select, uniform as tslUniform } from 'three/tsl';
 import { createTerrainSystem } from './terrain-system.js';
+import { TERRAIN_TINT, TERRAIN_TINT_BANDS, terrainTintAt } from './terrain-tint.js';
 import { createSource } from './terrain-source.js';
 import { createHeightfieldWorldQueryProvider } from './world-query-heightfield-provider.js';
 import { createChunkMeshWorldQueryProvider } from './world-query-chunk-mesh-provider.js';
@@ -71,34 +72,9 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   ],
 });
 
-// Ground colour. These are LINEAR values: they are written straight into a vertex-colour
-// attribute, which three treats as already in working space.
-export const TERRAIN_TINT = Object.freeze({
-  water: [0.16, 0.32, 0.42], sand: [0.72, 0.66, 0.46], grass: [0.30, 0.48, 0.22],
-  dry: [0.46, 0.44, 0.28], rock: [0.42, 0.40, 0.38], snow: [0.92, 0.93, 0.95],
-});
-
-// Band edges, shared by both forms below so a change cannot land in one and not the other.
-export const TERRAIN_TINT_BANDS = Object.freeze({
-  shoreSpan: 6, sandTop: 2, dryStart: 20, drySpan: 40, snowStart: 60, snowSpan: 40,
-  rockNormalY: 0.82, rockSpan: 0.25,
-});
-
-// CPU form: one vertex's ground colour, written into `out` at `o`. colorizeGeometry is just this
-// over every vertex; the GPU twin below is the same bands in TSL.
-export function terrainTintAt(yAboveSea, normalY, out = [0, 0, 0], o = 0) {
-  const T = TERRAIN_TINT, B = TERRAIN_TINT_BANDS;
-  const cl = v => (v < 0 ? 0 : v > 1 ? 1 : v);
-  const lerp = (a, b, t) => { for (let i = 0; i < 3; i++) out[o + i] = a[i] + (b[i] - a[i]) * t; };
-  const y = yAboveSea;
-  if (y < 0) lerp(T.water, T.sand, cl(1 + y / B.shoreSpan));
-  else if (y < B.sandTop) lerp(T.sand, T.grass, cl(y / B.sandTop));
-  else if (y < B.snowStart) lerp(T.grass, T.dry, cl((y - B.dryStart) / B.drySpan));
-  else lerp(T.dry, T.snow, cl((y - B.snowStart) / B.snowSpan));
-  const rock = cl((B.rockNormalY - normalY) / B.rockSpan);
-  for (let i = 0; i < 3; i++) out[o + i] += (T.rock[i] - out[o + i]) * rock;
-  return out;
-}
+// Ground colour and its bands now live in terrain-tint.js, so the worker can tint a chunk
+// without importing this file's dependencies. Re-exported here for existing importers.
+export { TERRAIN_TINT, TERRAIN_TINT_BANDS, terrainTintAt } from './terrain-tint.js';
 
 // GPU twin of terrainTintAt. Anything planted ON the terrain (grass
 // today) tints toward this so it reads as the same ground. The two must stay in step: they are
@@ -129,6 +105,15 @@ export function createBaseGameTerrain({
     params: { chunkSize: cfg.chunkSize, renderRadius: cfg.renderRadius, maxChunksPerUpdate: cfg.maxChunksPerUpdate, maxUnloadsPerUpdate: cfg.maxUnloadsPerUpdate, useWorker },
     source,
   });
+  // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
+  let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
+  // Bumped when the tint changes. A worker reply stamped with an older revision is re-tinted on commit.
+  let tintRevision = 1;
+  function syncTint() {
+    const request = { seaLevel, revision: tintRevision };
+    system.setTint(request);
+    for (const c of cascade) c.system.setTint(request);
+  }
   const provider = createHeightfieldWorldQueryProvider(system.source, { id: providerId });
   const unregisterProvider = worldQuery.registerProvider(provider);
   // Volumetric mode: the marching-cubes chunk meshes ARE the ground (caves, overhangs), so
@@ -298,6 +283,7 @@ export function createBaseGameTerrain({
   const batchedChunks = new Map();   // key -> chunk object currently copied into the batcher
   const cascadeBatchers = new Map(); // cascade system -> { batcher, batched }
   const cascade = [];   // [{ system, group, level, spec }]
+  syncTint();
   function ensureCascade() {
     if (cascade.length) return cascade;
     cfg.volumeLod.forEach((spec, i) => {
@@ -305,6 +291,7 @@ export function createBaseGameTerrain({
         params: { chunkSize: spec.chunkSize, renderRadius: spec.renderRadius, segmentsPerChunk: spec.segments, lod: i + 1, volumetric: true, maxChunksPerUpdate: 1, maxUnloadsPerUpdate: 2, useWorker },
         source: system.source,
       });
+      lvl.setTint({ seaLevel, revision: tintRevision });
       lvl.material = groundMaterial();   // chunks pick it up at creation: same look, same wireframe
       const group = new THREE.Group();
       group.name = `base-game-terrain-volume-lod-${i + 1}`;
@@ -513,8 +500,6 @@ export function createBaseGameTerrain({
   }
   let seaDepthActive = false;
   let residencyRevision = 0;
-  // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
-  let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
   // What the ground actually looks like, for anything planted ON it. The vertex tint is only what
   // shows when ground textures are off, so this follows that toggle rather than assuming either.
   const uGroundSea = tslUniform(seaLevel);
@@ -531,7 +516,9 @@ export function createBaseGameTerrain({
   }
   const TINT = TERRAIN_TINT;
   function colorizeGeometry(geo, force = false) {
-    if (geo.getAttribute('color') && !force) return;
+    // A worker-tinted chunk is already done unless its revision is stale (the sea level moved
+    // while it was in flight), in which case it is re-tinted here.
+    if (geo.getAttribute('color') && !force && geo.userData.tintRevision === tintRevision) return;
     const pos = geo.getAttribute('position'), nrm = geo.getAttribute('normal');
     const colors = new Float32Array(pos.count * 3);
     const c = [0, 0, 0];
@@ -539,6 +526,7 @@ export function createBaseGameTerrain({
       terrainTintAt(pos.getY(i) - seaLevel, nrm ? nrm.getY(i) : 1, colors, i * 3);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.userData.tintRevision = tintRevision;
   }
 
   const normalMaterial = new MeshNormalNodeMaterial();
@@ -699,6 +687,8 @@ export function createBaseGameTerrain({
   function setSeaLevel(level) {
     if (!Number.isFinite(level) || level === seaLevel) return false;
     seaLevel = level;
+    tintRevision++;
+    syncTint();
     uGroundSea.value = seaLevel;
     tileCover.setSeaLevel(level);
     planWalk.setSeaLevel(level);
@@ -928,6 +918,8 @@ export function createBaseGameTerrain({
       if (clipmap) clipmap.setSource(system.source, system.source.descriptor);
       for (const c of cascade) c.system.setSource(next);
       seaLevel = system.source?.descriptor?.seaLevel ?? 0;
+      tintRevision++;
+      syncTint();
       uGroundSea.value = seaLevel;
       tileCover.setSeaLevel(seaLevel);   // cover is derived against the waterline, and the swap moved it
       planWalk.setSeaLevel(seaLevel);

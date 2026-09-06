@@ -456,14 +456,34 @@ noise. The real effect is read from `passTerrainFoldMs` in a browser capture.
 | `test-cdlod-select.mjs` | `levelRanges`, `nodeSize`, `minDistToCell`, `selectNodes`, `nodeCountForViewDistance` | Range/size formulas match the geometric definition; `minDistToCell` is exact inside/outside a cell; **coverage partition** — every sampled point near the camera lands in exactly one selected node, across several camera positions; the camera's own cell is always a level-0 (finest) node; **bounded cost** — node count never exceeds `levels*windowCells²` and adding levels grows by bounded rings, not quadratically, with view distance; sub-leaf camera moves leave coarse node origins stable (no shimmer). |
 | `test-cdlod-morph.mjs` | `morphGridCoord`, `nodeSize` (cross-checked against `grassHeightRef`) | `morphK=0` is the identity; `morphK=1` snaps every grid vertex onto the parent (even) lattice; a fully-morphed fine node's boundary heights exactly match the coarser neighbor's lattice points (crack-free seam proof). |
 
+### The worker finishes the chunk
+
+`terrain-tint.js` also carries `tintTileColors(tile, seaLevel)` (a source tile's colours in the
+exact vertex order `buildChunkArraysFromTile` emits), `tintArrayColors(positions, normals,
+seaLevel)` (the legacy chunk arrays and volume meshes) and `boundsFromPositions(positions)` (what
+`computeBoundingSphere` would produce, as plain numbers).
+
+A dispatch carries `tint: { seaLevel, revision }` -- set with `system.setTint(request)`, which
+`base-game-terrain.js` calls for the near system and every cascade level whenever the waterline
+moves. The worker replies with `colors`, `bounds` (transferred, not copied) and the `tintRevision`
+it tinted under, plus `tintMs`, which `takeInstallCost()` reports as `workerTintMs` so worker time
+is never added to main-thread frame time. `geometryFromArrays` adopts all three, stamping
+`geometry.userData.tintRevision`.
+
+`colorizeGeometry` is the synchronous fallback and the correction: it returns early only when the
+geometry's stamped revision equals the current one, so a reply that was in flight while the sea
+level moved is re-tinted on commit. `recolorAll` still forces every chunk.
+
 ## Ground colour
 
 What the terrain shows is the streamed splat textures when `terrainTextures` is on, and a per-vertex
 height/slope tint when it is off -- "Ground textures replace the vertex tint when set". Both forms
 are exported so anything planted ON the ground can match it instead of guessing:
 
-- `terrainTintAt(yAboveSea, normalY, out, offset)` -- CPU, the only implementation `colorizeGeometry`
-  has, over `TERRAIN_TINT` and `TERRAIN_TINT_BANDS`.
+- `terrainTintAt(yAboveSea, normalY, out, offset)` -- CPU, over `TERRAIN_TINT` and
+  `TERRAIN_TINT_BANDS`. It lives in **`terrain-tint.js`** (no imports at all, so the worker can use
+  it without dragging the page's dependencies in) and is re-exported from `base-game-terrain.js`
+  for the importers that already had it there.
 - `terrainTintNode(yAboveSea, normalY)` -- the hand-synced TSL twin, over the same constants.
 - `createSplatSampleNode(textures, cfg)` (`terrain-splat-streamed.js`) -- the ground's albedo at a
   world point, read from the same maps the terrain draws with and blended by the same layer weights.
