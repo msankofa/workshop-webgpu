@@ -49,7 +49,7 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 | `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 140 |
 | `gpu-pipeline-meter.js` | Wraps a `GPUDevice`'s four pipeline factories to report how much of a frame went into building WebGPU pipelines, and how many arrived. Node-tested against a fake device (`test-gpu-pipeline-meter.mjs`). | 55 |
 | `render-matrix-walk.js` | Takes the per-frame world-matrix walk off three (`scene.matrixWorldAutoUpdate = false`) and skips the roots declared static, wrapping their `add`/`remove` at every depth so streamed-in children are still placed, with a periodic re-walk and a `touchAll()` for origin rebases. Node-tested (`test-render-matrix-walk.mjs`). | 100 |
-| `render-trace.js` | Wraps five private renderer methods (`_renderScene`, `_projectObject`, `_renderObjects`, `_renderObjectDirect`, `_renderBundle`) and each render list's `sort` to split one frame of `renderer.render` into scene walk, list sort, per-object encode and bundle replay, with an entry per whole scene render carrying that pass's object count. Node-tested (`test-render-trace.mjs`). | 110 |
+| `render-trace.js` | Wraps five private renderer methods (`_renderScene`, `_projectObject`, `_renderObjects`, `_renderObjectDirect`, `_renderBundle`) and each render list's `sort` to split one frame of `renderer.render` into scene walk, list sort, per-object encode and bundle replay. Scene renders nest (a post chain's output quad runs the world render inside its one object's encode), so they are kept on a stack: one entry per scene render, named by scene and camera, timed exclusively. Node-tested (`test-render-trace.mjs`). | 185 |
 | `render-pass-recorder.js` | Wraps the renderer's inspector to name every whole scene render in a frame, shadow passes included (three renames the scene to `Shadow Map [ <light> ]` across one). Turns `renderCalls` from a count into a list. Node-tested (`test-render-pass-recorder.mjs`). | 57 |
 | `environment-ui.js` | Builds the six-destination `#workshop-ui` in-game inspector (World, Entities, Player, Assets, Audio, Tools), re-parents the existing live panels, and builds the performance, preset, and audio control content. | 1300 |
 | `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
@@ -97,20 +97,36 @@ which phase is. This attributes it:
 ```js
 const renderTrace = createRenderTrace();
 renderTrace.attach(renderer);      // false when none of the private hooks exist
-renderTrace.take();                // per-frame totals, then reset
+renderTrace.take();                // per-frame result, then reset
 // { sceneRenders, sceneMs, projectCalls, projectMs, sortCalls, sortMs,
 //   objectListCalls, objectsMs, encodedObjects, encodeCalls, encodeMs,
-//   bundleGroups, bundleMs, scenes: [{ ms, objects, draws, bundles }] }
+//   bundleGroups, bundleMs,
+//   scenes: [{ name, camera, ms, exclusiveMs, objects, draws, bundles,
+//              projectMs, sortMs, objectsMs, encodeMs }] }
 ```
 
-Milliseconds nest: `sceneMs` contains `projectMs`, `sortMs`, `objectsMs` and `bundleMs`;
-`objectsMs` and `bundleMs` contain `encodeMs`. Each hooked method re-enters (projection recurses,
-a scene render encodes objects), so only the outermost call of each is timed. `scenes` has one
-entry per whole scene render in the order they ran -- main, shadow map, planar mirror -- and its
-object count is the length of the render list that pass encoded, not a scene census.
+**Scene renders nest, and that is the whole design.** A page rendering through a `RenderPipeline`
+draws a full-screen output quad, and the real world render happens inside that single object's
+encode, through the pass node's `updateBefore`; shadow and mirror renders nest the same way. So
+each `_renderScene` pushes its own entry on a stack and every phase is attributed to the innermost
+one. A parent's `ms` is inclusive, its `exclusiveMs` has its children subtracted, and its
+`encodeMs` and `objectsMs` have them subtracted too -- otherwise the frame reads as one object
+costing the entire render, which is exactly what the first version reported (scenes = 1,
+objects = 1, `encodeMs` = the whole 15-27 ms frame).
 
-`projectCalls` counts scene walks, one per whole scene render -- the recursion inside it is timed
-but not counted, so it is never an object count.
+`scenes` is therefore the primary result, in the order the renders ran, each named by its scene and
+camera: three renames the scene to `Shadow Map [ <light> ]` across a shadow pass and the post chain
+draws a `QuadMesh` with an orthographic camera, so main, shadow, mirror and quad are told apart. The
+totals are sums over those entries, and `sceneMs` sums the exclusive times so nesting is never
+counted twice. An entry's object count is the length of the render list that pass encoded, not a
+scene census.
+
+Within one entry, `projectMs`, `sortMs`, `objectsMs` and `bundleMs` are inside its `exclusiveMs`,
+and `encodeMs` is inside `objectsMs`. Each hooked method re-enters (projection recurses), so only
+the outermost call of each is timed per entry. `projectCalls` counts scene walks, one per scene
+render -- the recursion inside it is timed but not counted, so it is never an object count. Work
+that happens outside any scene render is kept in a separate `outside` bucket and folded into the
+totals.
 
 Three's private methods are the only seam here, so `attach` reports `missingHooks` when a Three
 upgrade renames one, and the caller records that beside the numbers rather than reporting zeros.

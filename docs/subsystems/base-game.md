@@ -418,6 +418,14 @@ per whole scene render) and the means over every traced frame. The object counts
 renderer's own render lists, not from `sceneCensus()`, so they say what each pass actually
 encoded.
 
+Read `lastFrame.scenes` before the slot totals. Base Game renders through the post chain whenever
+depth of field, a visor mode or Hi-Z is on, so the outermost scene render is the full-screen output
+quad -- one object -- and the world, shadow and mirror renders are nested inside its encode. Each
+is its own row with its own scene name, camera and object count; `exclusiveMs` is that row's own
+cost and `ms` includes whatever nested inside it. The first `?trace=1` captures reported
+scenes = 1, objects = 1 and the whole 15-27 ms frame as one object's encode, which was the trace
+collapsing that nesting rather than a real finding.
+
 ### The matrix-walk spike (`?matrixauto=0`)
 
 Three walks the whole scene's world matrices once per frame. `?matrixauto=0` hands that walk to
