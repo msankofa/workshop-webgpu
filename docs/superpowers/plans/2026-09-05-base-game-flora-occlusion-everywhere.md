@@ -1,6 +1,6 @@
 # Base Game: every occluder hides, every flora kind is hidden
 
-STATUS: phases 1 and 2 committed 2026-09-05 (28ab06f), unseen in a browser; 3 and 4 not started.
+STATUS: phases 1 and 2 committed 2026-09-05 (28ab06f), terrain occlusion gated off since ba95aa4; phases 3 and 4 superseded by `2026-09-06-base-game-hiz-occlusion.md`.
 
 ## Goal
 
