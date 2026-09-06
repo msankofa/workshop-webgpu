@@ -710,8 +710,8 @@ implemented against the Traversal Lab; A6 (the body acceptance gate) is a browse
   (`thirdPerson` = `local-third-person`, `lowerBody` = `local-lower-body`) and one remote rig per
   player id, converts global foot positions to render-local body centres, feeds velocity, yaw,
   pitch, grounded state and capsule size, enables Bot Viewer v3's `adaptGaitToSpeed`,
-  `movementDynamics` and `naturalLocomotion`, renders remote rigs through `body-part-batches.js`
-  instancing, tints remotes with the same id-derived colour as their capsule, and reports counts and
+  `movementDynamics` and `naturalLocomotion`, renders remote rigs **and, since 2026-09-06, the local rig** through `body-part-batches.js`
+  instancing (`instancedLocal`, default on; the third-person body was 160 separate meshes, 160 CPU-side draws in the main pass and again in the sun shadow pass, in a frame that GPU timestamps showed to be CPU-bound inside the render call). The pool's frame is owned by the module: it opens on the first flush (`updateLocal` or `beginRemoteFrame`) and closes in `flushWeapons()`, which every path calls, offline included; the page's begin/end remote-frame calls only run online. `diagnostics.instancedLocal` reports it. Tints remotes with the same id-derived colour as their capsule, and reports counts and
   support probes/misses. It owns no input, simulation, networking, camera or state storage and
   cannot move the capsule.
 - Conventions carried over from Bot Viewer v3 (2026-08-21), because the rig leans and strides along

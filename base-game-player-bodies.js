@@ -98,6 +98,7 @@ export function createBaseGamePlayerBodies({
   worldQuery,
   worldCoordinates,
   instancedRemotes = true,
+  instancedLocal = true,    // the local rig through the same pool: 160 meshes become a few instanced draws
   remoteCapacity = 2048,
   weaponSystem = null,     // createWeaponMountSystem(...) from weapon-mount.js; null = no weapons
 } = {}) {
@@ -108,6 +109,12 @@ export function createBaseGamePlayerBodies({
 
   const batches = instancedRemotes ? createBodyPartBatches({ THREE, scene, capacity: remoteCapacity }) : null;
   const remotes = new Map();
+  // The pool's frame is owned here, not by the remote loop: the local body flushes first (before the
+  // page's remote pass, which does not run offline), so the frame opens on the first flush and closes
+  // when the weapons flush, which every path reaches.
+  let poolFrameOpen = false;
+  function openPoolFrame() { if (!batches || poolFrameOpen) return; batches.beginFrame(); poolFrameOpen = true; }
+  function closePoolFrame() { if (!batches || !poolFrameOpen) return; batches.endFrame(); poolFrameOpen = false; }
   let local = null;
   let localMode = 'off';
   let enabled = true;
@@ -557,6 +564,7 @@ export function createBaseGamePlayerBodies({
   }
 
   function flushWeapons() {
+    closePoolFrame();
     if (!weaponSystem) return;
     weaponSystem.beginFrame();
     if (local?.weapon.mount) weaponSystem.flushMount(local.weapon.mount);
@@ -574,7 +582,7 @@ export function createBaseGamePlayerBodies({
     const entry = BASE_GAME_BODY_DESIGNS.find((d) => d.key === key) || BASE_GAME_BODY_DESIGNS[0];
     if (entry.key === designKey) return designKey;
     designKey = entry.key;
-    if (local) { releaseWeapon(local); local.body.destroy(); local = makeBody(BODY_MODE_TO_RIG[localMode], {}, false); requestWeapon(local, localWeaponId); }
+    if (local) { releaseWeapon(local); local.body.destroy(); local = makeBody(BODY_MODE_TO_RIG[localMode], {}, !!batches && instancedLocal); requestWeapon(local, localWeaponId); }
     return designKey;
   }
 
@@ -583,7 +591,7 @@ export function createBaseGamePlayerBodies({
     if (next === localMode && (next === 'off') === !local) return localMode;
     if (local) { releaseWeapon(local); local.body.destroy(); local = null; }
     localMode = next;
-    if (next !== 'off') { local = makeBody(BODY_MODE_TO_RIG[next], {}, false); requestWeapon(local, localWeaponId); }
+    if (next !== 'off') { local = makeBody(BODY_MODE_TO_RIG[next], {}, !!batches && instancedLocal); requestWeapon(local, localWeaponId); }
     return localMode;
   }
 
@@ -593,6 +601,7 @@ export function createBaseGamePlayerBodies({
     if (!enabled || sample.visible === false) { if (local.weapon.mount) local.weapon.mount.visible = false; return false; }
     feed(local, dt, sample, 'local');
     localUpdates++;
+    if (local.instanced) { openPoolFrame(); local.body.flush(batches, true); }
     return true;
   }
 
@@ -600,7 +609,7 @@ export function createBaseGamePlayerBodies({
   // remote tracks. Bodies that stop being updated for a frame are hidden, not destroyed.
   function beginRemoteFrame() {
     for (const record of remotes.values()) record.touched = false;
-    batches?.beginFrame();
+    openPoolFrame();
   }
 
   function updateRemote(dt, id, sample) {
@@ -634,7 +643,7 @@ export function createBaseGamePlayerBodies({
 
   function endRemoteFrame() {
     for (const record of remotes.values()) if (!record.touched) { record.body.setVisible(false); if (record.weapon.mount) record.weapon.mount.visible = false; }
-    batches?.endFrame();
+    closePoolFrame();
     flushWeapons();
   }
 
@@ -725,7 +734,7 @@ export function createBaseGamePlayerBodies({
       let probes = 0, misses = 0;
       if (local) { probes += local.support.diagnostics.probes; misses += local.support.diagnostics.misses; }
       for (const record of remotes.values()) { probes += record.support.diagnostics.probes; misses += record.support.diagnostics.misses; }
-      return { localMode, localBodies: local ? 1 : 0, remoteBodies: remotes.size, localUpdates, remoteUpdates, supportProbes: probes, supportMisses: misses, instancedRemotes: !!batches };
+      return { localMode, localBodies: local ? 1 : 0, remoteBodies: remotes.size, localUpdates, remoteUpdates, supportProbes: probes, supportMisses: misses, instancedRemotes: !!batches, instancedLocal: !!local?.instanced };
     },
     dispose() {
       if (local) { local.body.destroy(); local = null; }

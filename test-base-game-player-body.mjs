@@ -74,6 +74,21 @@ ok(JSON.stringify(controller.captureState()) === before, 'body updates never mut
 const feet = bodies.localBody.gait.feet;
 ok(near(feet.left.current.y, 0, 0.05) && near(feet.right.current.y, 0, 0.05), 'local feet plant on the origin floor');
 ok(bodies.localSupport.diagnostics.probes > 0, 'the local body routes support through the adapter');
+// The local rig draws through the instanced pool: no per-part meshes in the scene, a few InstancedMeshes.
+bodies.flushWeapons();
+const localMeshes = []; scene.traverse(o => { if (o.isMesh && !o.isInstancedMesh) localMeshes.push(o); });
+const batchMeshes = []; scene.traverse(o => { if (o.isInstancedMesh && o.name.startsWith('BodyBatch:')) batchMeshes.push(o); });
+ok(localMeshes.length === 0, `the local body owns no scene meshes (${localMeshes.length})`);
+ok(batchMeshes.some(m => m.visible && m.count > 0) && batchMeshes.length < 40, `the local body is instanced into ${batchMeshes.length} batch draws`);
+ok(bodies.diagnostics.instancedLocal === true, 'diagnostics say the local body is instanced');
+{
+  const meshScene = new THREE.Scene();
+  const meshBodies = createBaseGamePlayerBodies({ THREE, scene: meshScene, worldQuery, worldCoordinates: coords, instancedRemotes: false });
+  meshBodies.setLocalMode('thirdPerson');
+  meshBodies.updateLocal(1 / 60, { globalFoot: foot, velocity: [0, 0, 0], yaw: 0, grounded: true, height: 1.8, radius: 0.35 });
+  let n = 0; meshScene.traverse(o => { if (o.isMesh) n++; });
+  ok(n > 20 && meshBodies.diagnostics.instancedLocal === false, `without a pool the local body keeps the mesh path (${n} meshes)`);
+}
 
 // Overhead hold: a gadget in hand raises both hands over the head and the anchor sits between them.
 ok(bodies.heldAnchor('local') === null, 'no anchor while nothing is held overhead');
