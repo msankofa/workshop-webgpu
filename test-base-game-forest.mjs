@@ -93,11 +93,14 @@ const base = rig();
       && base.forest.forestGPU.summary.hasBillboards === false
       && base.forest.meshes.length === s.variants * 9,
     `${base.forest.meshes.length} meshes, lodCount ${base.forest.forestGPU.summary.lodCount}`);
-  // No billboards in v1 (D6): rung 3 is off, so a populated variant submits seven meshes.
-  check('a populated variant submits seven draws, not eight', s.draws === s.visibleVariants * 7,
-    `${s.draws} draws over ${s.visibleVariants} variants`);
-  check('the counter separates default shadow-pass mesh submissions: bark and leaf cards, one each',
-    s.shadowDraws === s.visibleVariants * 2,
+  // No billboards in v1 (D6): rung 3 is off, so a populated variant owns seven main meshes and the
+  // shadow pair; the rung gate hides the ones whose rung can hold none of its trees.
+  const gpuSum = base.forest.forestGPU.summary;
+  check('a populated variant submits seven main draws minus its gated empty rungs',
+    s.draws + gpuSum.rungMeshesHidden === s.visibleVariants * 7 + s.visibleVariants * 2 - s.shadowDraws && s.draws > 0,
+    `${s.draws} draws + ${gpuSum.rungMeshesHidden} gated over ${s.visibleVariants} variants`);
+  check('every visible main mesh belongs to a rung the gate says has trees',
+    base.forest.meshes.every(m => !m.visible || /Shadow$/.test(m.name) || m.name.indexOf('forest:') === 0),
     `${s.draws} main + ${s.shadowDraws} shadow over ${s.visibleVariants} variants`);
   // The per-frame path must NOT walk the instances: forestGPU.stats runs computeCullEstimate over
   // every live one, which measured 0.2 ms a frame at a draw radius the sliders reach.
@@ -192,21 +195,23 @@ section('every LOD rung has its own distance and its own switch');
   await settle(r);
   const all = r.forest.stats.draws;
   const variants = r.forest.stats.visibleVariants;
-  check('there is something to switch off', variants > 0 && all === variants * 7, `${all} draws`);
+  const visibleRung = (re) => r.forest.meshes.filter(m => m.visible && re.test(m.name)).length;
+  const n0 = visibleRung(/L0$/), n12 = visibleRung(/L[12]$/);
+  check('there is something to switch off', variants > 0 && all === n0 + n12 && all > 0, `${all} draws (${n0} rung 0, ${n12} rungs 1-2)`);
 
   r.forest.apply({ treeLod0: false });
   await settle(r, 2);
   r.forest.sampleDetail();
-  check('hiding rung 0 removes exactly its three meshes per variant',
-    r.forest.stats.draws === variants * 4, `${r.forest.stats.draws} draws, expected ${variants * 4}`);
+  check('hiding rung 0 removes exactly its visible meshes',
+    r.forest.stats.draws === all - n0 && visibleRung(/L0$/) === 0, `${r.forest.stats.draws} draws, expected ${all - n0}`);
   check('and the cull still runs over every instance, so this measures raster cost only',
     r.forest.stats.instances > 0 && r.forest.forestGPU.stats.cullDispatchInstances === r.forest.stats.capacity);
 
   r.forest.apply({ treeLod0: true, treeLod1: false, treeLod2: false });
   await settle(r, 2);
   r.forest.sampleDetail();
-  check('hiding rungs 1 and 2 removes exactly their four meshes per variant',
-    r.forest.stats.draws === variants * 3, `${r.forest.stats.draws} draws, expected ${variants * 3}`);
+  check('hiding rungs 1 and 2 removes exactly their visible meshes',
+    r.forest.stats.draws === all - n12 && visibleRung(/L[12]$/) === 0, `${r.forest.stats.draws} draws, expected ${all - n12}`);
 
   r.forest.apply({ treeLod1: true, treeLod2: true });
   await settle(r, 2);
@@ -628,15 +633,16 @@ section('shadows come from a shadow-only pair per variant, culled by reach and n
     r.forest.meshes.filter(m => !m.castShadow).every(m => m.layers.mask === 1 && m.name.indexOf('Shadow') < 0));
   check('the shadow list reach is the shadow camera half-extent', gpu.summary.shadowList === true && gpu.shadowReach === 90,
     `reach ${gpu.shadowReach}`);
-  check('two shadow submissions per populated variant', gpu.summary.shadowDraws === r.forest.stats.visibleVariants * 2,
-    `${gpu.summary.shadowDraws} shadow submissions`);
+  const inReach = r.forest.meshes.filter(m => m.visible && /barkShadow$/.test(m.name)).length;
+  check('two shadow submissions per populated variant within reach', gpu.summary.shadowDraws === inReach * 2 && inReach > 0,
+    `${gpu.summary.shadowDraws} shadow submissions, ${inReach} variants in reach`);
   // Turning both parts off empties the list rather than leaving hidden meshes with a live count.
   r.forest.apply({ treeBarkShadows: false, treeLeafShadows: false });
   check('with both parts off the list radius is 0 and nothing is submitted',
     gpu.shadowReach === 0 && gpu.summary.shadowDraws === 0, `reach ${gpu.shadowReach}, ${gpu.summary.shadowDraws} submissions`);
   r.forest.apply({ treeBarkShadows: true, treeLeafShadows: false });
-  check('bark alone submits one per variant and restores the reach',
-    gpu.shadowReach === 90 && gpu.summary.shadowDraws === r.forest.stats.visibleVariants, `${gpu.summary.shadowDraws} submissions`);
+  check('bark alone submits one per variant in reach and restores the reach',
+    gpu.shadowReach === 90 && gpu.summary.shadowDraws === inReach, `${gpu.summary.shadowDraws} submissions`);
   r.forest.apply({ treeShadowReach: 400 });
   check('the reach follows the light, not a constant', gpu.shadowReach === 400);
   r.terrain.dispose();

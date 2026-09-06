@@ -567,10 +567,44 @@ export function createForestGPU(opts) {
   const _fwd3 = new THREE.Vector3();
   function markDirty() {
     dirty = true;
+    rungGateDirty = true;
   }
 
+  // Rung gate: a mesh whose rung can hold no tree of its variant is hidden. Bucketing by ring
+  // distance alone (no cone, no occlusion, a margin either side of each ring) is an upper bound on
+  // what the kernel keeps, so a hidden mesh never has a live indirect count. Each mesh costs the
+  // renderer CPU whether its count is 0 or 500; with 16 variants x 9 meshes most rungs are empty.
+  const RUNG_GATE = opts.rungGate !== false;
+  const RUNG_EPS = 0.5;   // metres of slack around every ring
+  const rungCandidates = new Uint8Array(V * (LODS + 1)).fill(1);   // [g * (LODS+1) + rung], last = shadow
+  let rungGateDirty = true;
+  let rungMeshesHidden = 0;
+  function refreshRungCandidates() {
+    rungGateDirty = false;
+    if (!RUNG_GATE || !Number.isFinite(lastCamX) || !Number.isFinite(lastCamZ)) { rungCandidates.fill(1); return; }
+    rungCandidates.fill(0);
+    const r0 = uLodR0.value, r1 = uLodR1.value, r2 = uLodR2.value, maxR = uMaxDrawRadius.value;
+    const reach = SHADOW_LIST ? uShadowReach.value : 0;
+    const stride = LODS + 1;
+    for (let g = 0; g < V; g++) {
+      const count = countsArray[g], base0 = g * stride;
+      for (let slot = 0; slot < count; slot++) {
+        const base = (g * CAP + slot) * 8;
+        const dx = srcArray[base] - lastCamX, dz = srcArray[base + 2] - lastCamZ;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist <= r0 + RUNG_EPS) rungCandidates[base0] = 1;
+        if (dist >= r0 - RUNG_EPS && dist <= r1 + RUNG_EPS) rungCandidates[base0 + 1] = 1;
+        if (dist >= r1 - RUNG_EPS && dist <= r2 + RUNG_EPS) rungCandidates[base0 + 2] = 1;
+        if (HAS_BILLBOARDS && dist >= r2 - RUNG_EPS && dist <= maxR + RUNG_EPS) rungCandidates[base0 + 3] = 1;
+        if (reach > 0 && dist <= reach + RUNG_EPS) rungCandidates[base0 + LODS] = 1;
+      }
+    }
+  }
+  const rungHas = (g, rung) => rungCandidates[g * (LODS + 1) + rung] === 1;
+
   function syncRenderParts() {
-    let draws = 0, shadowDraws = 0;
+    if (rungGateDirty) refreshRungCandidates();
+    let draws = 0, shadowDraws = 0, gated = 0;
     const shadowsOn = SHADOW_LIST && uShadowReach.value > 0;
     for (let g = 0; g < V; g++) {
       const active = variantReady[g] === 1 && variantPopulated[g] === 1;
@@ -586,16 +620,23 @@ export function createForestGPU(opts) {
       ];
       if (HAS_BILLBOARDS) mask.push(renderParts.billboards && renderParts.bark && renderParts.leaves);
       for (let m = 0; m < MAIN_MESHES; m++) {
-        meshes[b + m].visible = active && mask[m] && lodEnabled[MAIN_RUNG[m]];
+        const wanted = active && mask[m] && lodEnabled[MAIN_RUNG[m]];
+        const has = rungHas(g, MAIN_RUNG[m]);
+        meshes[b + m].visible = wanted && has;
         if (meshes[b + m].visible) draws++;
+        else if (wanted) gated++;
       }
       if (SHADOW_LIST) {
         // Main meshes never cast; the shadow-only pair carries every caster within reach.
         for (let m = 0; m < MAIN_MESHES; m++) meshes[b + m].castShadow = false;
         const bark = meshes[b + MAIN_MESHES], leaf = meshes[b + MAIN_MESHES + 1];
-        bark.visible = active && shadowsOn && renderParts.barkShadows;
-        leaf.visible = active && shadowsOn && renderParts.leafShadows;
+        const inReach = rungHas(g, LODS);
+        const barkWanted = active && shadowsOn && renderParts.barkShadows;
+        const leafWanted = active && shadowsOn && renderParts.leafShadows;
+        bark.visible = barkWanted && inReach;
+        leaf.visible = leafWanted && inReach;
         shadowDraws += (bark.visible ? 1 : 0) + (leaf.visible ? 1 : 0);
+        gated += (barkWanted && !inReach ? 1 : 0) + (leafWanted && !inReach ? 1 : 0);
       } else {
         for (const m of [0, 3, 5]) meshes[b + m].castShadow = renderParts.barkShadows && shadowRungs[MESH_RUNG[m]];
         meshes[b + 2].castShadow = renderParts.leafShadows && shadowRungs[MESH_RUNG[2]];
@@ -606,6 +647,7 @@ export function createForestGPU(opts) {
     }
     submittedDraws = draws;
     submittedShadowDraws = shadowDraws;
+    rungMeshesHidden = gated;
   }
 
   // deterministic variant pick within a species (0 .. variantsPerSpecies-1)
@@ -667,6 +709,7 @@ export function createForestGPU(opts) {
       variantPopulated[g] = vis ? 1 : 0;
     }
     visibleVariants = visCount;
+    rungGateDirty = true;
     syncRenderParts();
     if (dropped > 0 && !overflowWarned) {
       overflowWarned = true;
@@ -1037,6 +1080,7 @@ export function createForestGPU(opts) {
       lastCamFz = camFz;
       dirty = false;
       reculls++;
+      if (RUNG_GATE) { rungGateDirty = true; syncRenderParts(); }
     },
     // Milestone 4/perfAB: live-retune the recull thresholds. Does not itself force a recull
     // (only changes the gate future update() calls use) -- same "sliders don't force work"
@@ -1072,6 +1116,8 @@ export function createForestGPU(opts) {
       return {
         draws: submittedDraws,
         shadowDraws: submittedShadowDraws,
+        rungMeshesHidden,
+        rungGate: RUNG_GATE,
         visibleVariants,
         readyVariants: readyVariantCount,
         variants: V,
