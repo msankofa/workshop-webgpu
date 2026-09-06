@@ -1,7 +1,7 @@
 {
   "group": "base-game",
   "name": "base game",
-  "savedAt": "2026-09-05T23:03:45.326Z",
+  "savedAt": "2026-09-06T16:14:55.265Z",
   "data": {
     "format": "pcw-base-game-state",
     "version": 2,
@@ -33,7 +33,7 @@
       "waterLook": "hybrid",
       "waterRefraction": true,
       "waterFoam": 1.15,
-      "waterClarity": 3,
+      "waterClarity": 18,
       "grassEnabled": true,
       "grassDensity": 128,
       "grassRadius": 341,
@@ -72,8 +72,6 @@
       "grassShading": "lambert",
       "grassReceiveShadow": true,
       "grassOcclusion": true,
-      "grassTerrainOccludes": false,
-      "grassOcclusionBias": 3,
       "grassBufferMB": 96,
       "grassKmax": 576,
       "grassDispatchBudgetM": 15,
@@ -358,7 +356,7 @@
       "playerSlopeLimit": 50,
       "playerStepHeight": 0.6,
       "playerSnapDistance": 0.4,
-      "cameraDistance": 2.675236235767439,
+      "cameraDistance": 4.951250869049302,
       "droneCameraZoom": 1.8867660144548224,
       "flightHud": true,
       "sentinelLowAlt": 150,
@@ -433,16 +431,16 @@
     },
     "camera": {
       "position": [
-        -345.89241248283673,
-        10.902110139205451,
-        -496.71435392651347
+        -372.7060933503655,
+        10.956703572920654,
+        -418.57382024758664
       ],
       "target": [
         0,
         4,
         0
       ],
-      "fov": 49.990143372902345
+      "fov": 50
     },
     "world": {
       "renderOrigin": [
@@ -552,33 +550,33 @@
     },
     "player": {
       "position": [
-        -347.8602609705998,
-        8.53834222464912,
-        -494.96256602456054
+        -376.9949910832776,
+        8.467601776066452,
+        -420.8719004781579
       ],
       "previousPosition": [
-        -347.8602609705998,
-        8.53834222464912,
-        -494.96256602456054
+        -376.9949910832776,
+        8.467601776066452,
+        -420.8719004781579
       ],
       "velocity": [
         0,
-        0.036090877613511485,
+        0,
         0
       ],
       "grounded": true,
-      "tick": 1646505,
+      "tick": 638614,
       "stance": {
         "crouch01": 3e-323,
-        "kneel01": 5e-323,
-        "prone01": 0
+        "kneel01": 9.690819139294635e-262,
+        "prone01": 0.9999999999999987
       },
       "controlling": null,
       "vehicle": null,
       "view": {
-        "yaw": -23.11532231330755,
-        "pitch": -0.159073956422385,
-        "boomDistance": 2.6752362357674206
+        "yaw": 13.494679161456608,
+        "pitch": -0.11113023152456128,
+        "boomDistance": 4.951250869049293
       }
     },
     "ui": {
@@ -587,7 +585,7 @@
         "Session": false,
         "Performance Capture": true,
         "World / Traversal Lab": true,
-        "Player / Camera": false,
+        "Player / Camera": true,
         "Weapon flashlight and laser": true,
         "Dev gun lights (9)": true,
         "Weapon spread": true,
@@ -616,15 +614,15 @@
         "Lightning": true,
         "Weather audio": true,
         "Atmosphere response": true,
-        "Terrain": false,
-        "Terrain world": false,
+        "Terrain": true,
+        "Terrain world": true,
         "Trails": true,
-        "Structures": false,
+        "Structures": true,
         "Plants": false,
-        "Trees": true,
-        "Tree placement": true,
-        "Tree species and look": true,
-        "Tree drawing": true
+        "Trees": false,
+        "Tree placement": false,
+        "Tree species and look": false,
+        "Tree drawing": false
       }
     }
   }
