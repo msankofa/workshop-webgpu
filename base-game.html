@@ -1343,6 +1343,21 @@ function syncSpawnBuilding() {
 // places and the depth pass would draw flat).
 let floraOccResidency = -1;
 const terrainFloraOccluder = o => o.isBatchedMesh; // stable identity keeps per-frame sync idempotent
+// Unlike the atrium's floor, streamed terrain is also the surface the grass stands on. It is a
+// safe occluder only while the cull and the renderer use the same drawn-height field; otherwise
+// the depth image self-occludes blades wherever the coarse placement field falls below the mesh.
+function terrainFloraOcclusionState() {
+  const requested = settings.worldMode === 'terrain' && settings.grassTerrainOccludes;
+  if (!requested) return { requested: false, marked: false, effective: false, reason: '' };
+  if (terrain.volumetric) return { requested: true, marked: false, effective: false,
+    reason: 'volumetric terrain has no matching drawn-height field' };
+  const heightSource = floraForBuilding?.stats.heightSource || 'not ready';
+  if (settings.grassHeightSource !== 'drawn' || heightSource !== 'drawn') {
+    return { requested: true, marked: false, effective: false,
+      reason: 'grass height source is ' + heightSource };
+  }
+  return { requested: true, marked: true, effective: !!settings.grassOcclusion, reason: '' };
+}
 function syncSpawnBuildingFlora() {
   if (!floraForBuilding) return;
   const wanted = spawnBuildingWanted();
@@ -1351,7 +1366,9 @@ function syncSpawnBuildingFlora() {
   if (wanted) roots.push(spawnBuilding.root);
   if (structures && structuresWanted()) roots.push(structures.root);
   if (settings.worldMode === 'traversalLab') roots.push(traversalLab.root);
-  if (settings.worldMode === 'terrain' && settings.grassTerrainOccludes) roots.push({ root: terrain.root, filter: terrainFloraOccluder });
+  const terrainOcclusion = terrainFloraOcclusionState();
+  floraForBuilding.stats.terrainOcclusion = terrainOcclusion;
+  if (terrainOcclusion.marked) roots.push({ root: terrain.root, filter: terrainFloraOccluder });
   floraForBuilding.setOccluders(roots);
   floraOccResidency = terrain.residencyRevision;
   floraOccStructures = structures?.version ?? -1;
@@ -1361,7 +1378,7 @@ function syncSpawnBuildingFlora() {
 let floraOccStructures = -1;
 function updateFloraOccluders() {
   if (!floraForBuilding || settings.worldMode !== 'terrain') return;
-  const terrainMoved = settings.grassTerrainOccludes && terrain.residencyRevision !== floraOccResidency;
+  const terrainMoved = floraForBuilding.stats.terrainOcclusion?.marked && terrain.residencyRevision !== floraOccResidency;
   const structuresMoved = structures && structuresWanted() && structures.version !== floraOccStructures;
   if (!terrainMoved && !structuresMoved) return;
   floraOccResidency = terrain.residencyRevision;
@@ -4957,8 +4974,11 @@ function refreshGrassRuntimeLine() {
   const stands = g.heightSource === 'drawn' ? 'far blades on the drawn rings'
     : `far blades on the 8 m field${g.heightSource === 'field (no rings)' ? ` (no rings: ${g.ringsWhy || 'not at build time'})` : g.heightSource === 'field (rings streaming)' ? ' (rings still streaming)' : ''}`;
   const occ = flora.occlusion ? (flora.occlusion.enabled ? ', occlusion on' : ', occlusion off') : ', no occluders';
+  const terrainOcc = g.terrainOcclusion?.requested
+    ? g.terrainOcclusion.marked ? ', terrain depth compatible' : ', terrain depth suppressed (' + g.terrainOcclusion.reason + ')'
+    : '';
   setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity})${cover}: `
-    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s (last: ${g.lastRecull || '?'})${occ}, ${ground}, ${stands}, `
+    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s (last: ${g.lastRecull || '?'})${occ}${terrainOcc}, ${ground}, ${stands}, `
     + `contact field ${(g.coverage * 100).toFixed(0)}% and placement field ${(g.placementCoverage * 100).toFixed(0)}% streamed.`
     + `${tiers}${thinned}${over}`);
   grassProbeLine.hidden = false;

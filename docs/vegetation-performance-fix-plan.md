@@ -128,3 +128,10 @@ cache (`lastRecull=dirty:forced`, about 75 reculls/s in the inspected capture). 
 ordered root/filter registrations are now idempotent, with a stable terrain filter identity.
 Occlusion bias/view/depth changes are also inert while master occlusion is off. Real streamed-root
 changes retain their explicit revision-driven invalidation. Browser confirmation remains pending.
+
+Terrain patchiness follow-up: the atrium's occluder floor is a fixed slab below grass, whereas
+Base Game can draw streamed or volumetric terrain from a different surface than the coarse field
+used to place grass. Feeding that terrain into the same depth pass makes it self-occlude blades
+wherever the placement surface lies below the rendered mesh. Terrain is now admitted as an
+occluder only when the non-volumetric grass reports the matching drawn height source; otherwise
+structure occlusion remains active and diagnostics report why terrain depth was suppressed.

@@ -22,6 +22,14 @@ for (const name of ['terrainRuntimeLine', 'grassRuntimeLine', 'forestRuntimeLine
 assert.match(html, /if \(element\.textContent !== text\) element\.textContent = text/);
 assert.match(html, /const terrainFloraOccluder = o => o\.isBatchedMesh/,
   'the per-frame flora sync reuses one terrain filter identity');
+assert.match(html, /if \(terrain\.volumetric\) return \{ requested: true, marked: false/,
+  'volumetric terrain cannot self-occlude grass planted on a different height field');
+assert.match(html, /heightSource !== 'drawn'/,
+  'terrain is marked only while grass uses the rendered height source');
+assert.match(html, /if \(terrainOcclusion\.marked\) roots\.push/,
+  'the compatibility result gates terrain registration in the depth pass');
+assert.ok(html.includes('terrain depth suppressed ('),
+  'the grass runtime line explains when requested terrain depth is unsafe');
 assert.match(html, /if \(panelElementVisible\(playerStatus\)\)/);
 assert.ok(html.includes('flora.setDiagnosticsEnabled(!!activePerformanceCapture || panelElementVisible(grassRuntimeLine) || vegetationDebugHud.visible'),
   'GPU grass diagnostics run only for an active capture, visible panel, or visible HUD');
