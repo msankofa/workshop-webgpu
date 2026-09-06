@@ -38,15 +38,14 @@ export function paletteKeyInput({ species, params = {}, masterSeed, speciesIdx, 
   });
 }
 
+// Node's subtle.digest hops threads; the sync hash keeps headless builds on microtasks.
+const nodeCrypto = globalThis.process?.versions?.node ? await import('node:crypto') : null;
+
 async function sha1Hex(text) {
   const bytes = new TextEncoder().encode(text);
-  const subtle = globalThis.crypto?.subtle;
-  if (subtle) {
-    const digest = await subtle.digest('SHA-1', bytes);
-    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-  const { createHash } = await import('node:crypto');
-  return createHash('sha1').update(bytes).digest('hex');
+  if (nodeCrypto) return nodeCrypto.createHash('sha1').update(bytes).digest('hex');
+  const digest = await globalThis.crypto.subtle.digest('SHA-1', bytes);
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 export async function paletteKey(inputs) {
@@ -136,3 +135,56 @@ export function deserializePalette(buffer) {
 }
 
 export { TIERS as PALETTE_TIERS };
+
+// ---- Cache tiers (browser only; every function resolves null / false instead of throwing) ----
+const IDB_NAME = 'forest-palettes', IDB_STORE = 'palettes';
+
+function openIdb() {
+  return new Promise(resolve => {
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+function idbRequest(mode, run) {
+  return openIdb().then(db => new Promise(resolve => {
+    if (!db) return resolve(null);
+    try {
+      const req = run(db.transaction(IDB_STORE, mode).objectStore(IDB_STORE));
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  }));
+}
+
+// Disk first (`families/palettes/<key>.bin`, served statically), then this browser's IndexedDB.
+export async function loadCachedPalette(key, { baseUrl = '/families/palettes/', fetchFn = globalThis.location ? globalThis.fetch : null } = {}) {
+  if (typeof fetchFn === 'function') {
+    try {
+      const res = await fetchFn(`${baseUrl}${key}.bin`, { cache: 'no-cache' });
+      if (res.ok) return { buffer: await res.arrayBuffer(), source: 'disk' };
+    } catch { /* not served, or offline */ }
+  }
+  if (globalThis.indexedDB) {
+    const buffer = await idbRequest('readonly', store => store.get(key));
+    if (buffer) return { buffer, source: 'indexeddb' };
+  }
+  return null;
+}
+
+// Write a bake back so the next run anywhere is a load: the serve.py route when a server answers,
+// and IndexedDB always. Returns which tiers took it.
+export async function storeCachedPalette(key, buffer, { saveUrl = '/api/save-palette', fetchFn = globalThis.location ? globalThis.fetch : null } = {}) {
+  const stored = { disk: false, indexeddb: false };
+  if (typeof fetchFn === 'function') {
+    try {
+      const res = await fetchFn(`${saveUrl}?key=${key}`, { method: 'POST', body: buffer, headers: { 'Content-Type': 'application/octet-stream' } });
+      stored.disk = res.ok;
+    } catch { /* no server */ }
+  }
+  if (globalThis.indexedDB) stored.indexeddb = (await idbRequest('readwrite', store => store.put(buffer, key))) !== null;
+  return stored;
+}

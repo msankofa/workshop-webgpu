@@ -103,6 +103,7 @@ import * as THREE from 'three';
 import { WebGPURenderer, RenderPipeline, TimestampQuery } from 'three/webgpu';
 import { pass, renderOutput } from 'three/tsl';
 import { createDepthOfField } from './depth-of-field.js';
+import { createHiZ } from './hiz-pyramid.js';
 import { visionNode, setVisionMode, visionMode, tagScene, heatTag, heatMix, HEAT, uIR, VISION_MODES, VISION_LABEL } from './vision-modes.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createLightingRig } from './lights.js';
@@ -293,9 +294,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassNearKeep: BASE_GAME_FLORA_DEFAULTS.grassNearKeep,
   grassShading: BASE_GAME_FLORA_DEFAULTS.grassShading,
   grassReceiveShadow: BASE_GAME_FLORA_DEFAULTS.grassReceiveShadow,
-  grassOcclusion: true,           // blades behind the spawn building's concrete are not generated
-  grassTerrainOccludes: false,    // the near terrain chunks hide blades behind a crest; off until the bias is tuned
-  grassOcclusionBias: 0.12,       // metres a blade top may sit behind the depth image before it is culled
+  grassOcclusion: true,           // grass and trees behind what the last frame drew are not generated (hiz-pyramid.js)
   grassBufferMB: BASE_GAME_FLORA_DEFAULTS.grassBufferMB,
   grassKmax: BASE_GAME_FLORA_DEFAULTS.grassKmax,
   grassDispatchBudgetM: BASE_GAME_FLORA_DEFAULTS.grassDispatchBudgetM,
@@ -1255,6 +1254,10 @@ const worldQuery = createWorldQueryService();
 const scenePass = pass(scene, camera, { samples: 4 });   // keep MSAA through the DoF path
 const depthOfField = createDepthOfField({ scenePass, camera });   // camera feeds the depth-linearization planes
 const postPipeline = new RenderPipeline(renderer);   // PostProcessing was renamed in r183
+// Hi-Z occlusion (2026-09-06): a depth pyramid reduced from the scene pass after each render, which
+// the grass and forest culls test against next frame. While it is on the frame renders through the
+// pass so the depth exists.
+const hiz = createHiZ({ renderer, camera, depthTexture: scenePass.renderTarget.depthTexture });
 // One pipeline for both effects: a second one would mean a second pass(scene, camera), so the whole
 // scene would render twice and the visor and depth of field could not be on together.
 //
@@ -1340,52 +1343,11 @@ function syncSpawnBuilding() {
   structures?.reset(structureParams());   // a new source moves every site
   syncSpawnBuildingFlora();
 }
-// The planters are a biome inside the building's rectangle, and the concrete occludes blades,
-// with the lab and the near terrain chunks (never the far clipmap rings, which a position node
-// places and the depth pass would draw flat).
-let floraOccResidency = -1;
-const terrainFloraOccluder = o => o.isBatchedMesh; // stable identity keeps per-frame sync idempotent
-// Unlike the atrium's floor, streamed terrain is also the surface the grass stands on. It is a
-// safe occluder only while the cull and the renderer use the same drawn-height field; otherwise
-// the depth image self-occludes blades wherever the coarse placement field falls below the mesh.
-function terrainFloraOcclusionState() {
-  const requested = settings.worldMode === 'terrain' && settings.grassTerrainOccludes;
-  if (!requested) return { requested: false, marked: false, effective: false, reason: '' };
-  if (terrain.volumetric) return { requested: true, marked: false, effective: false,
-    reason: 'volumetric terrain has no matching drawn-height field' };
-  const heightSource = floraForBuilding?.stats.heightSource || 'not ready';
-  if (settings.grassHeightSource !== 'drawn' || heightSource !== 'drawn') {
-    return { requested: true, marked: false, effective: false,
-      reason: 'grass height source is ' + heightSource };
-  }
-  return { requested: true, marked: true, effective: !!settings.grassOcclusion, reason: '' };
-}
+// The planters are a biome inside the building's rectangle. Occlusion needs no marked roots any
+// more: the Hi-Z pyramid holds everything the frame drew.
 function syncSpawnBuildingFlora() {
   if (!floraForBuilding) return;
-  const wanted = spawnBuildingWanted();
-  floraForBuilding.setStructure(wanted ? spawnBuilding.floraStructure : null);
-  const roots = [];
-  if (wanted) roots.push(spawnBuilding.root);
-  if (structures && structuresWanted()) roots.push(structures.root);
-  if (settings.worldMode === 'traversalLab') roots.push(traversalLab.root);
-  const terrainOcclusion = terrainFloraOcclusionState();
-  floraForBuilding.stats.terrainOcclusion = terrainOcclusion;
-  if (terrainOcclusion.marked) roots.push({ root: terrain.root, filter: terrainFloraOccluder });
-  floraForBuilding.setOccluders(roots);
-  floraOccResidency = terrain.residencyRevision;
-  floraOccStructures = structures?.version ?? -1;
-}
-// Streaming adds batches under an unmoved terrain root, and structures add groups under theirs,
-// so the marking must follow both.
-let floraOccStructures = -1;
-function updateFloraOccluders() {
-  if (!floraForBuilding || settings.worldMode !== 'terrain') return;
-  const terrainMoved = floraForBuilding.stats.terrainOcclusion?.marked && terrain.residencyRevision !== floraOccResidency;
-  const structuresMoved = structures && structuresWanted() && structures.version !== floraOccStructures;
-  if (!terrainMoved && !structuresMoved) return;
-  floraOccResidency = terrain.residencyRevision;
-  floraOccStructures = structures?.version ?? -1;
-  floraForBuilding.remarkOccluders();
+  floraForBuilding.setStructure(spawnBuildingWanted() ? spawnBuilding.floraStructure : null);
 }
 // Phase 4 slice: the analytic source is the only runtime source until terrain-source-v5.js lands.
 const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
@@ -3451,7 +3413,7 @@ terrain.setSplatWater(water.groundShade);
 // Grass over the streamed terrain (base-game-flora.js). It reads the terrain's own field windows:
 // the lod-0 contact window for the height a blade sits at, and the 8 m placement field's scalar
 // grass cover for where blades belong at all. grass-compute.js is imported only if it is enabled.
-const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, settings });
+const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, hiz: hiz.state, settings });
 floraForBuilding = flora;
 syncSpawnBuildingFlora();
 flora.onMesh((mesh, previousMesh) => {
@@ -3466,7 +3428,7 @@ const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRad
   'grassFadeEnd', 'grassFadeCurve', 'grassFadeHeight', 'grassFadeWidth', 'grassTintFadeStart', 'grassTintFadeEnd',
   'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade', 'grassHeightSource', 'grassResidencyGate',
   'grassCoverFloor', 'grassTierMid', 'grassMidDensity', 'grassTierFar', 'grassFarDensity',
-  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion', 'grassTerrainOccludes', 'grassOcclusionBias', 'drawDistance'];
+  'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion', 'drawDistance'];
 const appliedFlora = {};
 let floraLoading = false;
 function applyFloraSettings() {
@@ -3517,9 +3479,8 @@ function applyFloraSettings() {
     grassBufferMB: settings.grassBufferMB,
     grassKmax: settings.grassKmax,
   });
-  flora.setOcclusionEnabled?.(settings.grassOcclusion);
+  hiz.setEnabled(settings.grassOcclusion);
   syncSpawnBuildingFlora();
-  if (flora.occlusion) flora.occlusion.bias = settings.grassOcclusionBias;
 }
 
 const STRUCTURE_APPLY_KEYS = ['structuresEnabled', 'worldMode', 'structureSeed', 'structureSpacing', 'structureChance', 'structureScatter', 'structureReach'];
@@ -3548,7 +3509,7 @@ function applyTrailSettings() {
 // Trees over the same streamed fields (base-game-forest.js + base-game-trees.js). Placement reads
 // the 8 m window's coverTree channel; the trunks sit on the collision surface, so a trunk and the
 // player's feet cannot disagree about the ground.
-const forest = createBaseGameForest({ scene, renderer, camera, terrain, worldCoordinates, settings });
+const forest = createBaseGameForest({ scene, renderer, camera, terrain, worldCoordinates, hiz: hiz.state, settings });
 // Read from the light, not copied from it: a LOD rung starting past the shadow camera rasterises
 // into a map it cannot appear in.
 forest.apply({ treeShadowReach: rig.dirLight.shadow.camera.right });
@@ -4905,8 +4866,6 @@ addCommitRange(plantsSec, 'grassBufferMB', 'Instance buffer (MB; rebuilds the gr
 addCommitRange(plantsSec, 'grassKmax', 'Blades per 2 m cell cap (rebuilds the grass)', 16, 2048, 16, value => value.toFixed(0));
 addToggle(plantsSec, 'grassFrustumCull', 'Cull blades outside the view cone');
 addToggle(plantsSec, 'grassOcclusion', 'Occlusion culling');
-addToggle(plantsSec, 'grassTerrainOccludes', 'Terrain occlusion');
-addRange(plantsSec, 'grassOcclusionBias', 'Occlusion bias (m)', 0, 3, 0.02, value => `${value.toFixed(2)} m`);
 addRange(plantsSec, 'grassNearKeep', 'Keep everything within (m)', 0, 30, 0.5, value => `${value.toFixed(1)} m`);
 addSelect(plantsSec, 'grassShading', 'Blade shading', ['standard', 'lambert'], ['Standard (PBR)', 'Lambert (diffuse only, cheaper)']);
 addToggle(plantsSec, 'grassReceiveShadow', 'Blades receive shadows');
@@ -4975,12 +4934,9 @@ function refreshGrassRuntimeLine() {
   const ground = !g.groundTint?.available ? 'no ground colour' : g.groundSamplesTextures ? 'ground colour from the textures' : 'ground colour from the tint';
   const stands = g.heightSource === 'drawn' ? 'far blades on the drawn rings'
     : `far blades on the 8 m field${g.heightSource === 'field (no rings)' ? ` (no rings: ${g.ringsWhy || 'not at build time'})` : g.heightSource === 'field (rings streaming)' ? ' (rings still streaming)' : ''}`;
-  const occ = flora.occlusion ? (flora.occlusion.enabled ? ', occlusion on' : ', occlusion off') : ', no occluders';
-  const terrainOcc = g.terrainOcclusion?.requested
-    ? g.terrainOcclusion.marked ? ', terrain depth compatible' : ', terrain depth suppressed (' + g.terrainOcclusion.reason + ')'
-    : '';
+  const occ = hiz.state.enabled ? `, occlusion on (hi-z, ${hiz.stats.levels} levels, ${hiz.stats.lastUpdateCpuMs.toFixed(2)} ms)` : ', occlusion off';
   setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity})${cover}: `
-    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s (last: ${g.lastRecull || '?'})${occ}${terrainOcc}, ${ground}, ${stands}, `
+    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s (last: ${g.lastRecull || '?'})${occ}, ${ground}, ${stands}, `
     + `contact field ${(g.coverage * 100).toFixed(0)}% and placement field ${(g.placementCoverage * 100).toFixed(0)}% streamed.`
     + `${tiers}${thinned}${over}`);
   grassProbeLine.hidden = false;
@@ -5111,7 +5067,7 @@ function refreshForestRuntimeLine() {
     + `${f.draws} main + ${f.shadowDraws} shadow mesh submissions, ~${(f.triangles / 1000).toFixed(0)}k triangles, `
     + `${f.lod0}/${f.lod1}/${f.lod2} at LOD0/1/2, ${f.visibleVariants} visible, `
     + `${f.readyVariants} of ${f.variants} variants ready, textures ${f.textureMode}${f.textureMode === 'authored' && !f.texturesReady ? ' (loading)' : ''}, `
-    + `palette ${f.paletteMs.toFixed(0)} ms ${f.paletteWorker ? 'in a worker' : 'on the main thread'}, render warmup ${f.compileMs.toFixed(0)} ms, `
+    + `palette ${f.paletteSource === 'disk' || f.paletteSource === 'indexeddb' ? `loaded from ${f.paletteSource} in ${f.paletteLoadMs.toFixed(0)} ms` : `baked ${f.paletteSource === 'worker' ? 'in a worker' : 'on the main thread'} in ${f.paletteBakeMs.toFixed(0)} ms`}, render warmup ${f.compileMs.toFixed(0)} ms, `
     + `compute warmup ${f.computeCompileMs.toFixed(0)} ms, placing ${f.placeMs.toFixed(2)} ms.${over}`);
 }
 
@@ -6222,7 +6178,7 @@ function captureContext() {
     flora: {
       trees: { ...forest.sampleDetail() },
       grass: { ...flora.stats },
-      occlusion: flora.occlusion ? { ...flora.occlusionStats, enabled: flora.occlusion.enabled, size: flora.occlusion.size } : null,
+      occlusion: { hiz: true, enabled: hiz.state.enabled, levels: hiz.stats.levels, atlas: [hiz.state.atlasWidth, hiz.state.atlasHeight], updateMs: +hiz.stats.lastUpdateCpuMs.toFixed(3) },
       placementCoverage: terrain.fields ? +terrain.fields.coverage.toFixed(3) : null,
       contactCoverage: terrain.contactField ? +terrain.contactField.coverage.toFixed(3) : null,
       fieldScheduler: { ...terrain.fieldScheduler.stats },
@@ -6405,8 +6361,8 @@ const vegetationDebugHud = createVegetationDebugHud({
     now: performance.now(), fps: shownFps, worstMs: shownWorst,
     draws: lastRenderInfo.drawCalls, triangles: lastRenderInfo.triangles,
     grass: { ...flora.stats }, trees: { ...forest.sampleDetail() },
-    occlusion: flora.occlusion ? { ...flora.occlusionStats, enabled: flora.occlusion.enabled, size: flora.occlusion.size } : null,
-    occlusionRequested: settings.grassOcclusion, occluderRoots: flora.occluderRootCount,
+    occlusion: { hiz: true, enabled: hiz.state.enabled, levels: hiz.stats.levels, atlas: [hiz.state.atlasWidth, hiz.state.atlasHeight], updateMs: +hiz.stats.lastUpdateCpuMs.toFixed(3) },
+    occlusionRequested: settings.grassOcclusion,
     view: vegetationView(camera), gpuRequested: GPU_TIMESTAMPS, gpuResolved: gpuTimestampState.resolved,
     configuration: JSON.stringify([Object.fromEntries(Object.entries(settings).filter(([key]) => key !== 'grassOcclusion')),
       worldCoordinates.getOrigin(), terrain.fields?.coverage, terrain.contactField?.coverage]),
@@ -6763,7 +6719,6 @@ async function animate() {
     // as rain randomly costing several milliseconds.
     passStart = profileFrame ? performance.now() : 0;
     updateRainOccluders();
-    updateFloraOccluders();
     if (profileFrame) frameProfiler.mark('rainBake', performance.now() - passStart);
     if (!terrainStudio.open) {
       // postRender is one timer around four different things: the shadow map redraw, the planar
@@ -6778,7 +6733,7 @@ async function animate() {
       const encodeStart = profileFrame ? performance.now() : 0;
       // The pipeline runs when either effect wants it. Plain sight with depth of field off keeps the
       // direct render, so the common case still costs no full-screen pass.
-      const chained = settings.dofEnabled || settings.visorMode !== 'rgb' || FORCE_PASS_PATH;
+      const chained = settings.dofEnabled || settings.visorMode !== 'rgb' || FORCE_PASS_PATH || hiz.state.enabled;
       if (chained) {
         syncDofParams();
         if (settings.dofEnabled && settings.dofAutoFocus) depthOfField.updateFocus(dt, measureCentreDistance());
@@ -6797,6 +6752,12 @@ async function animate() {
         frameProfiler.mark(shadowRedrew ? 'postShadow' : 'postNoShadow', encodeMs);
         frameProfiler.mark(chained ? 'postChain' : 'postDirect', encodeMs);
       }
+    }
+    // The pyramid reduces the frame just drawn; the culls test against it next frame.
+    if (hiz.state.enabled) {
+      const hizStart = profileFrame ? performance.now() : 0;
+      await hiz.update();
+      if (profileFrame) frameProfiler.mark('hiz', performance.now() - hizStart);
     }
     // Drained every frame, profiling or not: the counters are cumulative, so skipping idle frames
     // would hand the first profiled frame every pipeline built since the page loaded. Marked

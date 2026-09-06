@@ -41,5 +41,9 @@ bot-viewer-saves/
 # .bin is one command away rather than lost work.
 terrain-bakes/*.bin
 
+# Baked tree palettes: a few MB each, written by /api/save-palette on a miss and rebuilt by any host
+# (docs/forest/palette-worker-and-bake-cache-plan.md). families/palettes/manifest.json IS tracked.
+families/palettes/*.bin
+
 # relay-published terrain projects (content-addressed cache)
 server/terrain-store/

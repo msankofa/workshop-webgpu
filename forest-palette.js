@@ -51,10 +51,15 @@ export function leafOptsFor(sp, params, texSet, spIdx) {
 // params + master seed the placement uses (so species match placementRecords). texSet:
 // the active texture set (or null) — drives leaf shape (quad vs simple) and bark vScale,
 // so the palette must be rebaked when texMode changes.
+// The species table a bake will use (authored table, else the procedural one from params + seed).
+export function paletteSpeciesTable({ params, masterSeed }) {
+  return params.speciesTable || buildSpecies(params, rngFrom(masterSeed));
+}
+
 export function createPaletteState({ createTree, params, masterSeed, variantsPerSpecies = 4, texSet = null }) {
   // An authored species table (from buildSpeciesFromFamilies) takes over when present;
   // its entries are full trees.js opts objects too, so nothing else below needs to change.
-  const species = params.speciesTable || buildSpecies(params, rngFrom(masterSeed));
+  const species = paletteSpeciesTable({ params, masterSeed });
   const variants = [];
   return { gen: null, createTree, species, variants, params, masterSeed, variantsPerSpecies, texSet, bakeMs: 0 };
 }

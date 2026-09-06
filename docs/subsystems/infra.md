@@ -33,7 +33,7 @@ It also owns `GET /api/list-states` (see "Folder seeding" below) and `GET /api/l
 (2026-07-30) are the same list/save pair for `maze layouts/`: the harness's "Export layout JSON"
 button saves pcw-layout worlds there, and `start-screen.js`'s Maze Layouts card lists them
 (filename validated against `_SAFE_MAZE_LAYOUT_FILENAME`, body must parse as JSON, `-N` suffix on
-collision). Every response also carries `Document-Policy: js-profiling`, which opts served
+collision). `POST /api/save-palette?key=<sha1>` (2026-09-06) takes a baked tree palette as a binary body (`forest-palette-io.js`'s `serializePalette`; the body must open with the palette magic and a parseable JSON header) and writes `families/palettes/<key>.bin` plus the header's metadata into `families/palettes/manifest.json`; `base-game-forest.js` posts a fresh bake there after publishing it and loads the static file on the next run (the `.bin` files are gitignored, the manifest is tracked). Every response also carries `Document-Policy: js-profiling`, which opts served
 pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf traces.
 
 - **`bot-diag-<stamp>.json`** (added 2026-07-29) — counters saved beside each trace through the same

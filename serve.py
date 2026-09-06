@@ -21,6 +21,9 @@ port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 
 FAMILIES_DIR = os.path.join(ROOT, 'families')
 PLANT_FAMILIES_DIR = os.path.join(ROOT, 'plant-families')
+PALETTES_DIR = os.path.join(FAMILIES_DIR, 'palettes')
+_SAFE_PALETTE_KEY = re.compile(r'^[0-9a-f]{40}$')
+_PALETTE_MAGIC = 0x50414c31
 MAPS_DIR = os.path.join(ROOT, 'maps')
 STATS_DIR = os.path.join(ROOT, 'research', 'stats')
 BASE_GAME_PERFORMANCE_LOG_PATH = os.environ.get(
@@ -469,6 +472,18 @@ def read_sabosugi_asset(slug, relpath):
     return body, _SABOSUGI_TYPES.get(ext, 'application/octet-stream')
 
 
+# The JSON header of a serialized palette, minus the per-geometry layout (magic, u32 header length,
+# header bytes). Raises on anything that is not a palette file.
+def palette_header(body):
+    magic, header_len = int.from_bytes(body[0:4], 'little'), int.from_bytes(body[4:8], 'little')
+    if magic != _PALETTE_MAGIC or header_len <= 0 or 8 + header_len > len(body):
+        raise ValueError('not a palette file')
+    header = json.loads(body[8:8 + header_len].decode('utf-8'))
+    header.pop('geometries', None)
+    header.pop('variants', None)
+    return header
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     # tree-viewer.html's "Export family JSON" POSTs to /api/save-family; plant-viewer.html's
     # equivalent POSTs to /api/save-plant-family. Both land straight in their own directory +
@@ -881,6 +896,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith('/api/save-hybrid'):
             self._handle_save_hybrid()
             return
+        if self.path.startswith('/api/save-palette'):
+            self._handle_save_palette()
+            return
         dir_path = self.ROUTES.get(self.path)
         if dir_path is None:
             self.send_error(404)
@@ -893,6 +911,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode('utf-8'))
             filename = save_family_to(payload, dir_path)
             self._send_json({'ok': True, 'filename': filename})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # POST /api/save-palette?key=<sha1> — a baked tree palette from forest-palette-io.js's
+    # serializePalette, written once as families/palettes/<key>.bin so every host loads it instead
+    # of regenerating (docs/forest/palette-worker-and-bake-cache-plan.md). The key is the content
+    # hash the client computed; the body must carry the palette magic and a parseable header, and
+    # the manifest gets the header's metadata so a person can see what is baked.
+    def _handle_save_palette(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        key = (query.get('key') or [''])[0]
+        length = int(self.headers.get('content-length', '0') or 0)
+        if not _SAFE_PALETTE_KEY.match(key):
+            self._send_json({'ok': False, 'error': 'bad key'}, status=400)
+            return
+        if length < 8 or length > 200_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            body = self.rfile.read(length)
+            meta = palette_header(body)
+            os.makedirs(PALETTES_DIR, exist_ok=True)
+            with open(os.path.join(PALETTES_DIR, f'{key}.bin'), 'wb') as f:
+                f.write(body)
+            manifest_path = os.path.join(PALETTES_DIR, 'manifest.json')
+            manifest = {}
+            if os.path.exists(manifest_path):
+                with open(manifest_path, encoding='utf-8') as f:
+                    manifest = json.load(f)
+            manifest[key] = {**meta, 'bytes': len(body)}
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2, sort_keys=True)
+            self._send_json({'ok': True, 'key': key, 'bytes': len(body)})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)
 

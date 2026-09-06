@@ -118,9 +118,11 @@ job protocol is designed for it from the start.
 - [x] 3. (2026-09-06) `forest-palette-worker.js` + `createForestPaletteWorker()` with fallback; Base Game and the
   environment viewer bake through it; `test-forest-palette-worker.mjs` runs the worker module's job
   handler in Node against the same inputs and asserts byte equality with the sync bake.
-- [ ] 4. `serve.py` `/api/save-palette` (binary body, key-named file, manifest update) and the
-  static GET; tree viewer bakes and saves on species keep/export for both host presets.
-- [ ] 5. Host load path (disk → IndexedDB → worker → thread), stats split, startup stage; write-back
+- [x] 4. (2026-09-06) `serve.py` `/api/save-palette` (binary body, key-named file, manifest update) and the
+  static GET. DEFERRED: the tree viewer pre-bake — the variant seed is `masterSeed + s*977 + v*131`, so the
+  key includes the world seed and species index, which the viewer does not know; decoupling the palette
+  seed from the world seed changes every existing forest's look and is the user's call.
+- [x] 5. (2026-09-06, Base Game; environment viewer bakes through the worker but does not cache yet) Host load path (disk → IndexedDB → worker → thread), stats split, startup stage; write-back
   of misses.
 - [ ] 6. `bake-palettes.mjs` (pre-bake every family for the current version; prune the manifest).
 - [ ] 7. Docs: `vegetation.md` (new modules, palette section), `infra.md` (`serve.py` route),

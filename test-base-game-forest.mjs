@@ -231,7 +231,8 @@ section('the clamps are real clamps, not echoed settings');
   const r = rig({ treeLodR0: 120, treeLodR1: 40, treeLodR2: 80, treeDrawRadius: 900 });
   await r.forest.load();
   r.forest.setEnabled(true);
-  await settle(r, 3);
+  // The palette key and cache lookup sit in front of the bake now, so the first wave needs more turns.
+  await settle(r, 12);
   const g = r.forest.forestGPU.stats;
   check('a lower r1 than r0 is raised to r0, not left to empty the band silently',
     g.lodR0 === 120 && g.lodR1 === 120, `r0 ${g.lodR0}, r1 ${g.lodR1}`);
@@ -404,6 +405,9 @@ section('shaders compile before the forest reaches the scene');
         publishedBefore: forest?.meshes.length ?? 0,
         gotTargetScene: target === scene,
         gotCamera: cam === camera,
+        startupStage: forest.stats.startup.stage,
+        startupWave: forest.stats.startup.wave,
+        pauseStartedAt: forest.stats.startup.pauseStartedAt,
       });
     },
   };
@@ -426,6 +430,14 @@ section('shaders compile before the forest reaches the scene');
   check('startup reports completed waves and ordered publication/finish timings',
     startup.waves === SMALL.treeVariantsPerSpecies && startup.firstPublicationMs >= 0
     && startup.totalMs >= startup.firstPublicationMs);
+  check('render warmup pauses visibility only for the first wave',
+    compiled.every((c, i) => c.startupStage === 'compiling render pipelines'
+      && c.startupWave === i + 1
+      && (i === 0 ? Number.isFinite(c.pauseStartedAt) : c.pauseStartedAt === null)));
+  check('completed startup reports active visibility and its last refresh',
+    startup.stage === 'complete' && startup.visibilityPaused === false
+      && startup.pauseMs === 0 && startup.visibilityAgeMs >= 0
+      && startup.visibilityAgeMs !== null && startup.elapsedMs === startup.totalMs);
   check('startup separates setup, installation, and scheduler waits',
     startup.setupMs >= 0 && startup.installMs >= 0 && startup.yieldMs >= 0
     && startup.yields === 8);
@@ -445,6 +457,83 @@ section('shaders compile before the forest reaches the scene');
     && forest.meshes.filter(m => m.visible).length === forest.stats.draws + forest.stats.shadowDraws,
     `${forest.meshes.filter(m => m.visible).length} visible, ${forest.stats.draws} draws + ${forest.stats.shadowDraws} shadow`);
   terrain.dispose();
+}
+
+section('published trees follow camera turns throughout later startup waves');
+{
+  const scene = new THREE.Scene(), wc = createWorldCoordinateSpace();
+  const terrain = createBaseGameTerrain({
+    scene, worldQuery: createWorldQueryService(), worldCoordinates: wc,
+    source: analyticDescriptor({ key: 'forest-live-waves', seaLevel: 0 }), useWorker: false,
+  });
+  terrain.setActive(true);
+  const camera = new THREE.PerspectiveCamera(70, 16 / 9, 0.1, 2000);
+  camera.position.set(0, 12, 0);
+  let wave = 0, releaseRender = null, releaseCompute = null, holdCompute = false;
+  const warmNodes = [], liveSubmissions = [];
+  const renderer = {
+    compileAsync: async () => {
+      wave++;
+      if (wave > 1) await new Promise(resolve => { releaseRender = resolve; });
+    },
+    computeAsync: async nodes => {
+      if (Array.isArray(nodes)) { liveSubmissions.push([...nodes]); return; }
+      warmNodes.push({ wave, node: nodes });
+      if (holdCompute) {
+        holdCompute = false;
+        await new Promise(resolve => { releaseCompute = resolve; });
+      }
+    },
+  };
+  const forest = createBaseGameForest({ renderer, scene, camera, terrain, worldCoordinates: wc,
+    settings: { ...SMALL, treeVariantsPerSpecies: 3 }, yieldTask: async () => {} });
+  const r = { terrain, camera, forest, worldCoordinates: wc, scene };
+  await forest.load(); forest.setEnabled(true);
+  await settle(r, 100);
+  check('second render wave is held while the first wave is published',
+    wave === 2 && !!releaseRender && forest.stats.startup.waves === 1);
+  const sharedNodes = warmNodes.slice(0, 2).map(entry => entry.node);
+  for (const targetWave of [2, 3]) {
+    const gpu = forest.forestGPU;
+    const expectedReady = SMALL.treeSpecies * (targetWave - 1);
+    const before = gpu.summary.reculls;
+    camera.rotation.y += Math.PI; camera.updateMatrixWorld(true);
+    await forest.update();
+    check(`camera turn reculls while render wave ${targetWave} is blocked`,
+      gpu.summary.reculls > before && !forest.stats.startup.visibilityPaused);
+    check(`wave ${targetWave} stays unpublished during render warmup`,
+      forest.stats.readyVariants === expectedReady && forest.meshes.length === expectedReady * 9);
+    holdCompute = true;
+    const resumeRender = releaseRender; releaseRender = null; resumeRender?.();
+    for (let i = 0; i < 100 && !releaseCompute; i++) await Promise.resolve();
+    check(`wave ${targetWave} reaches the held compute warmup`, !!releaseCompute);
+    const beforeComputeTurn = gpu.summary.reculls;
+    camera.rotation.y += Math.PI; camera.updateMatrixWorld(true);
+    await forest.update();
+    check(`camera turn reculls while compute wave ${targetWave} is blocked`,
+      gpu.summary.reculls > beforeComputeTurn && !forest.stats.startup.visibilityPaused
+        && forest.stats.readyVariants === expectedReady);
+    check(`live cull excludes the unfinished wave ${targetWave} finalizers`,
+      liveSubmissions.at(-1).length === 2 + expectedReady * 2
+        && !liveSubmissions.at(-1).includes(warmNodes.at(-1).node));
+    const resumeCompute = releaseCompute; releaseCompute = null; resumeCompute?.();
+    await settle(r, 100);
+  }
+  check('later warmup never dispatches the shared reset or cull kernels',
+    warmNodes.filter(entry => entry.wave > 1).every(entry => !sharedNodes.includes(entry.node)));
+  check('all three waves finish and upload every placed tree',
+    forest.stats.startup.waves === 3 && forest.stats.startup.stage === 'complete'
+      && forest.stats.readyVariants === SMALL.treeSpecies * 3
+      && forest.stats.instances > 0 && forest.stats.instances === forest.stats.trees);
+  let releaseLive = null;
+  renderer.computeAsync = async () => new Promise(resolve => { releaseLive = resolve; });
+  camera.rotation.y += Math.PI; camera.updateMatrixWorld(true);
+  const pendingUpdate = forest.update();
+  forest.setEnabled(false);
+  releaseLive?.();
+  check('disabling during an awaited live update does not access the disposed renderer',
+    await pendingUpdate === false && forest.forestGPU === null && !forest.stats.lastError);
+  forest.dispose(); terrain.dispose();
 }
 
 section('compile failures stay out of the scene and surface the real error');
