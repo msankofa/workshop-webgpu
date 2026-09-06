@@ -119,6 +119,17 @@ it is what lets the `Terrain occlusion` gate from `ba95aa4` go away.
 - The palette plan's byte-identical tests must stay green through this plan's kernel edits; the
   kernel never touches geometry.
 
+Two more plans in `docs/forest/` by the same session (agreed 2026-09-06 with workshop-webgpu-73):
+
+- `occlusion-culling-plan.md` proposed the same goal by extending `flora-occlusion.js`; it is
+  superseded by this file. Its point carried over: a tree survives if any pixel of it is visible,
+  so test the bound's nearest point against the max of the covering texels. The min would cull a
+  crown whose edge is visible.
+- `lod-quality-plan.md` edits the same `live`/`coneLive` region and `classifyInstance` in
+  `forest-cull.js` (crossfade band, projected-size tier). Order: palette worker first, then
+  whichever of that plan and this one starts first, the other rebases. `occludedByHiZ` stays a
+  separate export so the two do not overlap in the twin.
+
 ## Steps
 
 - [ ] 1. Spike, no product code: base-game.html forced through the pass path with occlusion off,
