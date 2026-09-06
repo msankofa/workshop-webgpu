@@ -3514,7 +3514,7 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
   // baked main-thread path (?forest=baked) below is skipped when this is active.
   const { placementRecords } = await import('./forest-placement.js');
   let forestGPU = null, forestPaletteMode = null;
-  let createForestPalette = null, createForestGPU = null;
+  let createForestGPU = null, paletteWorker = null, forestBuildToken = 0;
   const gpuTreeChunks = new Set();
   const mapChunkSize = () => terrainSystem.params.chunkSize || 30;
   const forestChunksForPlacement = () => loadedMap ? loadedMap.makeAllChunks(mapChunkSize()) : activeTerrainChunks();
@@ -3525,17 +3525,21 @@ const _forestPromise = Promise.all([import('./trees.js'), import('./tree-texture
     treeDensityAt: loadedMap ? (x, z) => loadedMap.treeDensityAt(x, z) : null,
   });
   if (FOREST_MODE === 'gpu') {
-    ({ createForestPalette } = await import('./forest-palette.js'));
+    paletteWorker = (await import('./forest-palette.js')).createForestPaletteWorker();
     ({ createForestGPU } = await import('./forest-gpu.js?v=visible-gating-debounce-1'));
   }
   // (Re)build the gpu palette + instance system for the current texture set. Leaf SHAPE
   // depends on texMode (authored = larger 'quad' atlas leaves; procedural = 'simple'),
   // and palette geometry is baked once, so a texMode change must rebake. No clustered
   // point-light emissive on trees (the baked path has none; adding it looked wrong).
-  function rebuildForestGPU(texSet) {
+  async function rebuildForestGPU(texSet) {
     if (NO_ENVIRONMENT || FOREST_MODE !== 'gpu' || !createForestGPU) return;
+    // The bake runs in a worker (in-thread fallback); the old forest stays up until the new one is ready.
+    const token = ++forestBuildToken;
+    const palette = await paletteWorker.bake({ createTree, params, masterSeed: MASTER_SEED, texSet },
+      { shouldContinue: () => token === forestBuildToken });
+    if (!palette || token !== forestBuildToken) return;
     if (forestGPU) { scene.remove(...forestGPU.meshes); forestGPU.dispose(); }
-    const palette = createForestPalette({ createTree, params, masterSeed: MASTER_SEED, texSet });
     forestGPU = createForestGPU({
       renderer, camera, palette, heightAt: terrainHeight,
       treeBaseOffset: params.treeBaseOffset,

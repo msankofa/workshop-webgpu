@@ -115,7 +115,7 @@ job protocol is designed for it from the start.
   changes with every input it should).
 - [x] 2. (2026-09-06) Refactor `forest-palette.js` so the per-variant bake step is exported; keep both existing
   entry points passing `test-forest-palette-startup.mjs`.
-- [ ] 3. `forest-palette-worker.js` + `createForestPaletteWorker()` with fallback; Base Game and the
+- [x] 3. (2026-09-06) `forest-palette-worker.js` + `createForestPaletteWorker()` with fallback; Base Game and the
   environment viewer bake through it; `test-forest-palette-worker.mjs` runs the worker module's job
   handler in Node against the same inputs and asserts byte equality with the sync bake.
 - [ ] 4. `serve.py` `/api/save-palette` (binary body, key-named file, manifest update) and the

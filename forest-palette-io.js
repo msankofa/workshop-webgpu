@@ -56,14 +56,14 @@ export async function paletteKey(inputs) {
 function attributeEntries(geo) {
   const out = [];
   if (geo.index) out.push(['index', geo.index]);
-  for (const name of Object.keys(geo.attributes).sort()) out.push([name, geo.attributes[name]]);
+  for (const name of Object.keys(geo.attributes)) out.push([name, geo.attributes[name]]);
   return out;
 }
 
 const pad4 = n => (n + 3) & ~3;
 
 // One ArrayBuffer: u32 magic, u32 header byte length, JSON header, then every attribute array
-// 4-byte aligned. Tiers that share one geometry object are stored once.
+// 4-byte aligned, attributes in their original order. Tiers sharing one geometry object are stored once.
 export function serializePalette(variants, meta = {}) {
   const chunks = [];
   let offset = 0;

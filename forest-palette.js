@@ -174,3 +174,118 @@ export async function createForestPaletteAsync(opts, {
   }
   return shouldContinue() ? finishPalette(state) : null;
 }
+
+// Strip textures and functions so a params object survives structured clone into the worker.
+function cloneableParams(params) {
+  return JSON.parse(JSON.stringify(params, (k, v) => (k === 'map' || k === 'normalMap' || typeof v === 'function' ? undefined : v)));
+}
+
+// The bake in a module worker (forest-palette-worker.js). `bake()` has createForestPaletteAsync's
+// contract (same opts, same callbacks, same wave order) so a host swaps one call for the other,
+// and it falls back to the in-thread async bake when no worker can be made (file://, no module
+// workers, or the worker fails before its first variant).
+export function createForestPaletteWorker({ threeUrl = null, deserialize = null } = {}) {
+  let worker = null, ready = null, failed = false;
+  let job = null;
+  const listeners = new Map();
+
+  function start() {
+    if (worker || failed) return ready;
+    try {
+      const url = threeUrl ?? import.meta.resolve?.('three');
+      if (!url) throw new Error('cannot resolve three for the worker');
+      worker = new Worker(new URL('./forest-palette-worker.js', import.meta.url), { type: 'module' });
+      ready = new Promise((resolve, reject) => {
+        worker.onmessage = (e) => {
+          const msg = e.data;
+          if (msg.jobType === 'ready') { resolve(true); return; }
+          if (msg.jobType === 'error' && !msg.key) { reject(new Error(msg.error)); return; }
+          listeners.get(msg.key)?.(msg);
+        };
+        worker.onerror = (err) => { reject(err); fail(); };
+        worker.postMessage({ jobType: 'init', threeUrl: url, baseUrl: import.meta.url });
+      }).catch(() => { fail(); return false; });
+    } catch {
+      fail();
+      ready = Promise.resolve(false);
+    }
+    return ready;
+  }
+  function fail() {
+    failed = true;
+    worker?.terminate();
+    worker = null;
+    for (const l of listeners.values()) l({ jobType: 'error', error: 'worker failed' });
+    listeners.clear();
+  }
+
+  async function bake(opts, { yieldFn = async () => {}, shouldContinue = () => true, onFamilyWave = null } = {}) {
+    const ok = await start();
+    if (!ok || !shouldContinue()) return ok ? null : createForestPaletteAsync(opts, { yieldFn, shouldContinue, onFamilyWave });
+    if (!deserialize) ({ deserializePalette: deserialize } = await import('./forest-palette-io.js'));
+    const state = createPaletteState(opts);
+    const total = state.species.length * state.variantsPerSpecies;
+    const key = `bake-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    job = key;
+    const { texSet } = state;
+    const msg = {
+      jobType: 'bake', key, params: cloneableParams(state.params), masterSeed: state.masterSeed,
+      variantsPerSpecies: state.variantsPerSpecies,
+      texSet: texSet ? { mode: texSet.mode, barkVScale: texSet.barkVScale,
+        leafAtlas: texSet.leafAtlas ? { cols: texSet.leafAtlas.cols, rows: texSet.leafAtlas.rows } : null } : null,
+    };
+    let firstVariant = false;
+    const cancel = () => { worker?.postMessage({ jobType: 'cancel', key }); listeners.delete(key); };
+    return new Promise((resolve, reject) => {
+      let wave = [], waveIdx = 0, chain = Promise.resolve(true);
+      listeners.set(key, (m) => {
+        chain = chain.then(async (alive) => {
+          if (!alive) return false;
+          if (!shouldContinue()) { cancel(); resolve(null); return false; }
+          if (m.jobType === 'error') {
+            listeners.delete(key);
+            if (firstVariant) reject(new Error(m.error));
+            else resolve(createForestPaletteAsync(opts, { yieldFn, shouldContinue, onFamilyWave }));
+            return false;
+          }
+          if (m.jobType === 'cancelled') { listeners.delete(key); resolve(null); return false; }
+          if (m.jobType === 'variant') {
+            firstVariant = true;
+            const variant = deserialize(m.buffer).variants[0];
+            state.variants[m.speciesIdx * state.variantsPerSpecies + m.variant] = variant;
+            state.bakeMs = m.bakeMs;
+            wave.push(variant);
+            if (wave.length === state.species.length) {
+              const published = wave; wave = [];
+              if (onFamilyWave) {
+                const keepGoing = await onFamilyWave({
+                  variant: waveIdx, variants: published,
+                  palette: { ...finishPalette(state), variants: [...state.variants] }, built: m.built, total,
+                });
+                if (keepGoing === false || !shouldContinue()) { cancel(); resolve(null); return false; }
+              }
+              waveIdx++;
+            }
+            await yieldFn();
+            return true;
+          }
+          if (m.jobType === 'done') {
+            listeners.delete(key);
+            state.bakeMs = m.bakeMs;
+            resolve(shouldContinue() ? finishPalette(state) : null);
+            return false;
+          }
+          return true;
+        });
+      });
+      worker.postMessage(msg);
+    });
+  }
+
+  return {
+    bake,
+    get available() { return !failed; },
+    cancel() { if (job && worker) worker.postMessage({ jobType: 'cancel', key: job }); },
+    dispose() { worker?.terminate(); worker = null; failed = true; listeners.clear(); },
+  };
+}

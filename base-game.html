@@ -5083,7 +5083,20 @@ addCommitRange(treeDrawSec, 'treeCapPerVariant', 'Instances per variant (capacit
 const forestRuntimeLine = document.createElement('div');
 forestRuntimeLine.className = 'note';
 treesSec.append(forestRuntimeLine);
+const forestStartupLine = document.createElement('div');
+forestStartupLine.className = 'note';
+treesSec.append(forestStartupLine);
 function refreshForestRuntimeLine() {
+  const startup = forest.stats.startup;
+  const seconds = ms => ms == null ? 'pending' : `${(ms / 1000).toFixed(1)} s`;
+  setTextIfChanged(forestStartupLine, !forest.stats.enabled ? '' : forest.stats.lastError ? `Tree startup failed: ${forest.stats.lastError}` : !startup ? 'Tree startup: loading modules.' :
+    `Tree startup: ${startup.stage}; wave ${startup.wave}/${startup.totalWaves}, ${startup.waves} published. `
+    + `Elapsed ${seconds(startup.elapsedMs)}, current stage ${seconds(startup.stageElapsedMs)}. `
+    + `First published ${seconds(startup.firstPublicationMs)}, complete ${seconds(startup.totalMs)}. `
+    + `Camera visibility ${startup.visibilityPaused ? `PAUSED for ${seconds(startup.pauseMs)} (startup owns compute buffers; turning cannot refresh trees)` : 'active'}. `
+    + `Last visibility refresh: ${startup.visibilityAgeMs == null ? 'none yet' : `${seconds(startup.visibilityAgeMs)} ago (unchanged camera can skip refresh)`}. `
+    + `Placement: ${forest.trees.stats.queued} chunks queued, ${forest.trees.stats.deferred} waiting for terrain. `
+    + 'Publication means scene readiness, not first pixels.');
   const f = forest.sampleDetail();   // per-rung counts are a scan; this is the interval that pays for it
   if (!f.enabled) { setTextIfChanged(forestRuntimeLine, 'Trees off.'); return; }
   if (!f.built) {
@@ -5098,7 +5111,7 @@ function refreshForestRuntimeLine() {
     + `${f.draws} main + ${f.shadowDraws} shadow mesh submissions, ~${(f.triangles / 1000).toFixed(0)}k triangles, `
     + `${f.lod0}/${f.lod1}/${f.lod2} at LOD0/1/2, ${f.visibleVariants} visible, `
     + `${f.readyVariants} of ${f.variants} variants ready, textures ${f.textureMode}${f.textureMode === 'authored' && !f.texturesReady ? ' (loading)' : ''}, `
-    + `palette ${f.paletteMs.toFixed(0)} ms elapsed, render warmup ${f.compileMs.toFixed(0)} ms, `
+    + `palette ${f.paletteMs.toFixed(0)} ms ${f.paletteWorker ? 'in a worker' : 'on the main thread'}, render warmup ${f.compileMs.toFixed(0)} ms, `
     + `compute warmup ${f.computeCompileMs.toFixed(0)} ms, placing ${f.placeMs.toFixed(2)} ms.${over}`);
 }
 

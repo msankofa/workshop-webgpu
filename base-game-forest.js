@@ -69,7 +69,7 @@ export function rungTriangles(palette) {
   const out = [0, 0, 0, 0];
   for (const v of palette.variants) {
     out[0] += tris(v.branches) + tris(v.leaves) + tris(v.shadow);
-    out[1] += tris(v.branchesLod1 ?? v.branches) + tris(v.leaves);
+    out[1] += tris(v.branchesLod1 ?? v.branches) + tris(v.leavesMid ?? v.leaves);
     out[2] += tris(v.branchesLod2 ?? v.branches) + tris(v.leavesCoarse);
     out[3] += 2;
   }
@@ -155,7 +155,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     enabled: false, built: false, loading: false, lastError: null,
     draws: 0, shadowDraws: 0, triangles: 0, instances: 0, capacity: 0, dropped: 0, truncating: false,
     textureMode: 'procedural', texturesReady: false,
-    variants: 0, readyVariants: 0, visibleVariants: 0, paletteMs: 0, compileMs: 0, computeCompileMs: 0, updateMs: 0,
+    variants: 0, readyVariants: 0, visibleVariants: 0, paletteMs: 0, paletteWorker: false, compileMs: 0, computeCompileMs: 0, updateMs: 0,
     lod0: 0, lod1: 0, lod2: 0, rejectedCone: 0, rejectedFar: 0,
     reculls: 0, skippedReculls: 0, cullEstimates: 0,
     // Placement, mirrored up so one readout answers "what did the density slider actually buy".
@@ -170,6 +170,11 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     }
     return new Promise(resolve => setTimeout(resolve, 0));
   });
+  let lastVisibilityAt = null;
+  function startupStage(stage) {
+    const s = stats.startup;
+    if (s) { s.stage = stage; s.stageStartedAt = now(); }
+  }
   const originScratch = [0, 0, 0];
   const focusScratch = [0, 0, 0];
   function readOrigin() {
@@ -282,7 +287,8 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     const geometries = new Set();
     for (const v of palette.variants) {
       if (!v) continue;
-      for (const geometry of [v.branches, v.branchesLod1, v.branchesLod2, v.leaves, v.shadow, v.leavesCoarse]) {
+      for (const geometry of [v.branches, v.branchesLod1, v.branchesLod2, v.leaves, v.shadow, v.leavesCoarse,
+        v.leavesMid !== v.leaves ? v.leavesMid : null]) {
         if (geometry) geometries.add(geometry);
       }
     }
@@ -328,7 +334,12 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     const startup = stats.startup = {
       setupMs: 0, installMs: 0, yieldMs: 0, yields: 0,
       firstPublicationMs: null, totalMs: null, waves: 0,
+      startedAt: t0, stageStartedAt: t0, stage: 'baking geometry',
+      wave: 1, totalWaves: Math.max(1, Math.round(cfg.treeVariantsPerSpecies)),
+      elapsedMs: 0, stageElapsedMs: 0, visibilityPaused: true,
+      pauseStartedAt: t0, pauseMs: 0, visibilityAgeMs: null,
     };
+    lastVisibilityAt = null;
     const yieldStartup = async () => {
       const started = now();
       try { await yieldMain(); }
@@ -345,7 +356,12 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     async function publishFamilyWave({ variants: wave, palette: progressPalette, total }) {
       if (token !== buildToken || !enabled) return false;
       stats.paletteMs = progressPalette.bakeMs;
-      gpuCanUpdate = false;
+      // Only the first wave warms reset/cull and needs to block visibility. Later waves
+      // install hidden slots and warm only their own finalizers; the published variants'
+      // reset -> cull -> active-finalizers submission remains intact between warmup calls.
+      gpuCanUpdate = built;
+      if (!gpuCanUpdate) startup.pauseStartedAt ??= now();
+      startupStage('installing wave');
       const initialWave = !forestGPU;
       if (!forestGPU) {
         const setupStart = now();
@@ -380,6 +396,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
         if (trees.records.size) forestGPU.setChunks(trees.records);
         startup.setupMs += now() - setupStart;
         const sharedStart = now();
+        startupStage('warming shared compute');
         await forestGPU.warmupComputeShared?.(yieldStartup, () => token === buildToken && enabled);
         stats.computeCompileMs += now() - sharedStart;
         if (token !== buildToken || !enabled || !forestGPU) return false;
@@ -405,11 +422,13 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       const warm = new THREE.Group();
       for (const mesh of waveMeshes) { mesh.visible = true; warm.add(mesh); }
       const compileStart = now();
+      startupStage('compiling render pipelines');
       if (renderer?.compileAsync) await renderer.compileAsync(warm, camera, scene);
       stats.compileMs += now() - compileStart;
       if (token !== buildToken || !enabled || forestGPU !== gpu) return false;
       for (const g of indices) {
         const computeStart = now();
+        startupStage(`warming compute variant ${g + 1}/${total}`);
         await gpu.warmupVariant?.(g, yieldStartup, () => token === buildToken && enabled);
         stats.computeCompileMs += now() - computeStart;
         if (token !== buildToken || !enabled || forestGPU !== gpu) return false;
@@ -428,10 +447,14 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       stats.variants = total;
       stats.readyVariants = readyPaletteVariants.filter(Boolean).length;
       gpuCanUpdate = true;
+      startup.pauseStartedAt = null;
+      startup.wave = Math.min(startup.totalWaves, startup.waves + 1);
+      startupStage(startup.waves < startup.totalWaves ? 'baking geometry' : 'finishing');
       return true;
     }
 
-    const completePalette = await mods.createForestPaletteAsync({
+    // Baked in a module worker when the page can make one; otherwise the same bake in-thread.
+    const completePalette = await mods.paletteWorker.bake({
       createTree: mods.createTree,
       params: paletteParams(),
       masterSeed: trees.seed,
@@ -445,10 +468,12 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     if (!completePalette || token !== buildToken) return false;
     palette = completePalette;
     stats.paletteMs = completePalette.bakeMs ?? (now() - t0);
+    stats.paletteWorker = mods.paletteWorker.available;
     rungTris = rungTriangles(palette);
     stats.variants = palette.variants.length;
     stats.readyVariants = palette.variants.length;
     startup.totalMs = now() - t0;
+    startupStage('complete');
     gpuCanUpdate = true;
     return true;
   }
@@ -476,6 +501,15 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
   // (computeCullEstimate walks every live instance), which is 0.2 ms a frame at a draw radius the
   // sliders reach. The per-rung numbers come from sampleDetail() instead, on the panel's interval.
   function syncStats() {
+    const startup = stats.startup;
+    if (startup) {
+      const at = now();
+      startup.elapsedMs = startup.totalMs ?? (at - startup.startedAt);
+      startup.stageElapsedMs = startup.stage === 'complete' ? 0 : at - startup.stageStartedAt;
+      startup.visibilityPaused = enabled && !gpuCanUpdate;
+      startup.pauseMs = startup.visibilityPaused && startup.pauseStartedAt != null ? at - startup.pauseStartedAt : 0;
+      startup.visibilityAgeMs = lastVisibilityAt == null ? null : at - lastVisibilityAt;
+    }
     const t = trees.stats;
     stats.trees = t.trees; stats.requestedTrees = t.requestedTrees; stats.coverThinning = t.coverThinning;
     stats.resident = t.resident; stats.deferred = t.deferred; stats.placeMs = t.placeMs;
@@ -542,6 +576,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
           createTree: treesMod.createTree,
           createForestPalette: paletteMod.createForestPalette,
           createForestPaletteAsync: paletteMod.createForestPaletteAsync,
+          paletteWorker: paletteMod.createForestPaletteWorker(),
           createForestGPU: gpuMod.createForestGPU,
           TREE_DEFAULTS: treesMod.TREE_DEFAULTS,
         };
@@ -565,7 +600,12 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       if (!built) { beginBuild(); syncStats(); return false; }
       syncOrigin();
       if (!gpuCanUpdate) { syncStats(); return false; }
-      await forestGPU.update();
+      const gpu = forestGPU;
+      const recullsBefore = gpu.summary.reculls;
+      await gpu.update();
+      // A disable or failed background wave can tear down this renderer while update yields.
+      if (!enabled || forestGPU !== gpu) return false;
+      if (gpu.summary.reculls !== recullsBefore) lastVisibilityAt = now();
       stats.updateMs = now() - t0;
       syncStats();
       return true;
@@ -596,6 +636,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       dropRebase?.();
       trees.dispose();
       teardownRenderer();
+      mods?.paletteWorker.dispose();
       texSet?.dispose?.();
       texSet = null;
     },
