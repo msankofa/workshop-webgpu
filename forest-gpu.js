@@ -312,8 +312,11 @@ export function createForestGPU(opts) {
       p.z.add(sin(time.mul(0.9).add(p.x.mul(0.3))).mul(lift)),
     );
   }
+  // The slot offset is a uniform, not a constant: a constant made every variant its own WGSL program
+  // (V x 8 materials x main + depth, ~224 compiles for 16 variants); identical source lets the
+  // renderer's program cache share ~14 compiles across all of them.
   function instanceNodes(offset, scaleMultiplier = uTreeScale, sway = false) {
-    const recBase = uint(offset).add(instanceIndex).mul(uint(2));
+    const recBase = uniform(offset, 'uint').add(instanceIndex).mul(uint(2));
     const rec0 = draw.element(recBase);                  // (x,y,z,scale)
     const rec1 = draw.element(recBase.add(uint(1)));     // (yaw,...)
     const scale = rec0.w.mul(scaleMultiplier), yaw = rec1.x;
@@ -334,7 +337,7 @@ export function createForestGPU(opts) {
   // Camera-facing billboard node: ignores instance yaw, aligns plane to always face camera.
   // Uses cylindrical alignment (right = cross(worldUp, camDir), up = worldY) so trees stay upright.
   function instanceNodesBillboard(offset) {
-    const recBase = uint(offset).add(instanceIndex).mul(uint(2));
+    const recBase = uniform(offset, 'uint').add(instanceIndex).mul(uint(2));
     const rec0 = draw.element(recBase);
     const scale = rec0.w.mul(uTreeScale);
     const ipos = vec3(rec0.x, rec0.y, rec0.z);
@@ -481,7 +484,7 @@ export function createForestGPU(opts) {
     meshes.push(drawMesh(variant.leaves, leafMat, indirectAttrs[g].leavesL0, false, `forest:v${g}:leavesL0`));
     meshes.push(drawMesh(variant.shadow, leafMat, indirectAttrs[g].shadowL0, true, `forest:v${g}:shadowL0`));
     meshes.push(drawMesh(branchesL1Geo, branchMat1, indirectAttrs[g].branchesL1, true, `forest:v${g}:branchesL1`));
-    meshes.push(drawMesh(variant.leaves, leafMat1, indirectAttrs[g].leavesL1, false, `forest:v${g}:leavesL1`));
+    meshes.push(drawMesh(variant.leavesMid ?? variant.leaves, leafMat1, indirectAttrs[g].leavesL1, false, `forest:v${g}:leavesL1`));
     meshes.push(drawMesh(branchesL2Geo, branchMat2, indirectAttrs[g].branchesL2, true, `forest:v${g}:branchesL2`));
     meshes.push(drawMesh(variant.leavesCoarse, coarseMat, indirectAttrs[g].coarseLeavesL2, false, `forest:v${g}:coarseLeavesL2`));
 
