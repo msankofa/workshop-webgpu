@@ -614,11 +614,13 @@ export function createBaseGameTerrain({
   let lastResident = 0;
   const perSecond = { installs: 0, window: 0, rate: 0 };
   const frameCostOut = { installMs: 0, foldMs: 0, fieldMs: 0, installCount: 0, colorizeMs: 0, batchMs: 0, colliderMs: 0,
-    integrateMs: 0, integrateItems: 0, maxItemMs: 0, queued: 0, queuedBytes: 0, colorizePassCount: 0 };
+    integrateMs: 0, integrateItems: 0, maxItemMs: 0, queued: 0, queuedBytes: 0, colorizePassCount: 0,
+    workerTintMs: 0, overruns: 0, queuedOldestMs: 0 };
   let lastIntegrateMs = 0;     // everything the scheduler ran this frame, on one deadline
   let lastOverruns = 0;        // frames' worth of the one-item overrun rule firing
   let lastMaxItemMs = 0;       // the single most expensive operation, usually a collider BVH
   let lastColorizePassCount = 0;   // chunks the unbudgeted materials pass had to tint this frame
+  let lastWorkerTintMs = 0;        // WORKER-thread tint time; never added to main-thread frame time
   let lastItemCount = 0;
   let stageCursor = 0;         // round-robin start, so no stage starves behind a nearer one
   let lastBody = null;         // previous frame's body position, for the swept footprint
@@ -834,6 +836,23 @@ export function createBaseGameTerrain({
   function queuedBytesTotal() { let n = system.queuedBytes; for (const c of cascade) n += c.system.queuedBytes; return n; }
   function queuedOldestTotal() { let n = system.queuedOldestMs(); for (const c of cascade) n = Math.max(n, c.system.queuedOldestMs()); return n; }
   function staleDropsTotal() { let n = system.staleDrops; for (const c of cascade) n += c.system.staleDrops; return n; }
+
+  // How far the body is from the nearest ground that wants a collider and has not got one, in
+  // metres. 0 when everything near it is collided, and 0 in heightfield mode, where the
+  // heightfield provider answers everywhere regardless of which chunks are resident.
+  function collisionReadyDistance() {
+    if (!volumetricMode) return 0;
+    const size = system.params.chunkSize;
+    let worst = 0;
+    for (const { key } of colliderOrder()) {
+      if (!colliderWanted(key) && collidedChunks.has(key)) continue;
+      if (!system.chunks.has(key)) continue;      // nothing to collide yet: that is the stream's problem
+      const [ix, iz] = key.split(',').map(Number);
+      const d = Math.hypot((ix + 0.5) * size - colliderFocus[0], (iz + 0.5) * size - colliderFocus[1]);
+      if (worst === 0 || d < worst) worst = d;
+    }
+    return +worst.toFixed(1);
+  }
 
   function integratePending() {
     if (system.queuedCount > 0) return true;
@@ -1173,10 +1192,12 @@ export function createBaseGameTerrain({
       const near = system.takeInstallCost();
       lastInstallMs = near.ms;
       lastInstallCount = near.count;
+      lastWorkerTintMs = near.workerTintMs;
       for (const c of cascade) {
         const far = c.system.takeInstallCost();
         lastInstallMs += far.ms;
         lastInstallCount += far.count;
+        lastWorkerTintMs += far.workerTintMs;
       }
       const resident = system.chunks.size;
       if (resident > lastResident) { perSecond.installs += resident - lastResident; installedTotal += resident - lastResident; }
@@ -1254,6 +1275,8 @@ export function createBaseGameTerrain({
       frameCostOut.integrateMs = lastIntegrateMs; frameCostOut.integrateItems = lastItemCount;
       frameCostOut.maxItemMs = lastMaxItemMs; frameCostOut.colorizePassCount = lastColorizePassCount;
       frameCostOut.queued = queuedTotal(); frameCostOut.queuedBytes = queuedBytesTotal();
+      frameCostOut.workerTintMs = lastWorkerTintMs; frameCostOut.overruns = lastOverruns;
+      frameCostOut.queuedOldestMs = queuedOldestTotal();
       return frameCostOut;
     },
 
@@ -1306,6 +1329,9 @@ export function createBaseGameTerrain({
         inFlight: inFlightBudget.count,
         maxInFlight: inFlightBudget.max,
         prefetchKeys: system.prefetchKeys,
+        collisionReadyDistance: collisionReadyDistance(),
+        workerTintMs: +lastWorkerTintMs.toFixed(2),
+        colorizePassCount: lastColorizePassCount,
         speed: +system.speed.toFixed(2),
         maxFoldsPerUpdate: cfg.maxFoldsPerUpdate,
         maxColliderRebuildsPerUpdate: cfg.maxColliderRebuildsPerUpdate,

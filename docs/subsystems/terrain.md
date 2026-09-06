@@ -413,6 +413,7 @@ guessed at a second time:
 | `passTerrainColliderMs` | `collisionGeometry` + `volumeProvider.setChunk` (`createMapCollider`) | yes | **4.8-7.5 ms** |
 | `passTerrainBatchMs` | `syncBatches`: colorize + copy into the `BatchedMesh` | yes | 1.0-1.4 ms |
 | `passTerrainColorizeMs` | `colorizeGeometry` over `group.children`, near and every cascade | no | 0.6 ms |
+| `passTerrainIntegrateMs` | everything the scheduler ran: installs, folds, colliders, on one deadline | yes | -- |
 
 The 2026-08-25 14:21-14:22 captures settled it: **the collider BVH is 91-96% of the fold**
 (7.8 ms fold = 7.5 collider + 1.4 batch + 0.6 colorize). The colorize loop was the prime suspect on
@@ -455,6 +456,28 @@ noise. The real effect is read from `passTerrainFoldMs` in a browser capture.
 | `test-cdlod-morton.mjs` | `part1by1`, `compact1by1`, `mortonKey`, `decodeMorton` | Bit spread/compact are exact inverses on 16-bit inputs; `mortonKey`/`decodeMorton` round-trip signed level/ix/iz (including negatives); distinct cells produce distinct codes. |
 | `test-cdlod-select.mjs` | `levelRanges`, `nodeSize`, `minDistToCell`, `selectNodes`, `nodeCountForViewDistance` | Range/size formulas match the geometric definition; `minDistToCell` is exact inside/outside a cell; **coverage partition** — every sampled point near the camera lands in exactly one selected node, across several camera positions; the camera's own cell is always a level-0 (finest) node; **bounded cost** — node count never exceeds `levels*windowCells²` and adding levels grows by bounded rings, not quadratically, with view distance; sub-leaf camera moves leave coarse node origins stable (no shimmer). |
 | `test-cdlod-morph.mjs` | `morphGridCoord`, `nodeSize` (cross-checked against `grassHeightRef`) | `morphK=0` is the identity; `morphK=1` snaps every grid vertex onto the parent (even) lattice; a fully-morphed fine node's boundary heights exactly match the coarser neighbor's lattice points (crack-free seam proof). |
+
+### What the panel and the capture report
+
+`frameCost` carries `integrateMs`, `integrateItems`, `maxItemMs`, `queued`, `queuedBytes`,
+`queuedOldestMs`, `overruns`, `colorizePassCount` and `workerTintMs` alongside the older split.
+`stats` adds `staleDrops`, `integrateBudgetMs`, `inFlight` / `maxInFlight`, `prefetchKeys`,
+`speed` and `collisionReadyDistance`.
+
+**`workerTintMs` is worker-thread time and is never added to main-thread frame time.** It arrives
+in the reply and is drained through `takeInstallCost()`; the frame's own totals do not include it.
+
+`collisionReadyDistance` is how far the body is from the nearest resident ground that wants a
+collider and has not got one, in metres. It is 0 in heightfield mode, where the heightfield
+provider answers everywhere regardless of which chunks are resident.
+
+In `base-game.html`: the capture records `terrainIntegrateMs`, `terrainQueued` and
+`terrainOverruns` per frame; the profiler gains a `terrainIntegrate` mark beside the existing six;
+and the terrain runtime line reports the queue, the budget, the slowest item, overruns, stale
+drops, the prefetch lead and the collision-ready distance.
+
+The capture compares **total frame CPU**, not the terrain pass alone, because an install moves a
+GPU upload into `renderer.render` where a terrain-pass-only comparison would not see it.
 
 ### Prefetch, hysteresis and one shared in-flight cap
 

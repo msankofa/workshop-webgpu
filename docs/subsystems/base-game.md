@@ -1,5 +1,17 @@
 # Base Game v0
 
+
+### Terrain integration queue (2026-09-07)
+
+Terrain arrivals no longer land in the frame they arrive in. Worker results wait in a bounded
+inbox and one scheduler commits them under a single `integrateBudgetMs` (2 ms) deadline shared by
+the near system, every cascade level and the colliders; the unbudgeted `cascadeChanged` fold is
+gone. The terrain runtime line reports the queue, the budget, the slowest item, overruns and stale
+drops, and captures record `terrainIntegrateMs`, `terrainQueued` and `terrainOverruns` per frame
+with a `terrainIntegrate` profiler mark. Full design in `docs/subsystems/terrain.md`; the plan is
+`docs/terrain-streaming-integration-plan.md`, of which step 7 (the collider BVH in the worker) is
+still outstanding, so the terrain pass remains bounded by one 3-4 ms BVH.
+
 ## Purpose
 
 `base-game.html` is the clean starting point for a game assembled from the workshop's existing

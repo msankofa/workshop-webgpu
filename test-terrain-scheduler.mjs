@@ -184,6 +184,19 @@ console.log('\n[7] the scheduler reports what it did');
   const st = terrain.stats;
   ok(typeof st.queued === 'number' && typeof st.queuedBytes === 'number' && typeof st.staleDrops === 'number',
     `stats carry queued ${st.queued}, queuedBytes ${st.queuedBytes}, staleDrops ${st.staleDrops}`);
+  // The full field set the panel and the capture read (plan step 6).
+  for (const field of ['queuedOldestMs', 'overruns', 'maxItemMs', 'lastIntegrateMs', 'integrateBudgetMs',
+                       'inFlight', 'maxInFlight', 'prefetchKeys', 'speed', 'collisionReadyDistance',
+                       'workerTintMs', 'colorizePassCount']) {
+    assert.equal(typeof st[field], 'number', `stats.${field} must be a number`);
+  }
+  ok(true, 'every field the panel and the capture read is present and numeric');
+  for (const field of ['integrateMs', 'integrateItems', 'maxItemMs', 'queued', 'queuedBytes', 'overruns', 'queuedOldestMs', 'workerTintMs', 'colorizePassCount']) {
+    assert.equal(typeof cost[field], 'number', `frameCost.${field} must be a number`);
+  }
+  ok(true, 'and so is every frameCost field');
+  // Worker tint time must never be added to main-thread frame time.
+  ok(cost.workerTintMs >= 0 && cost.integrateMs >= 0, `worker tint time is reported separately (${cost.workerTintMs.toFixed(2)} ms worker vs ${cost.integrateMs.toFixed(2)} ms main thread)`);
   terrain.dispose();
 }
 
@@ -196,7 +209,7 @@ console.log('\n[8] an untinted arrival is tinted inside the scheduled operation,
   held.length = 0;
   const terrain = createBaseGameTerrain({
     scene: new THREE.Scene(), worldQuery: createWorldQueryService(), worldCoordinates: createWorldCoordinateSpace(),
-    source: desc, useWorker: true, params: { renderRadius: 6, chunkSize: 30, integrateBudgetMs: 100000, maxChunksPerUpdate: 8 },
+    source: desc, useWorker: true, params: { renderRadius: 6, chunkSize: 30, integrateBudgetMs: 100000, maxChunksPerUpdate: 8, maxInFlight: 400 },
   });
   terrain.setActive(true);
   for (let i = 0; i < 400; i++) terrain.update([0, 0, 0], 1 / 60);

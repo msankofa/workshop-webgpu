@@ -173,4 +173,22 @@ console.log('\n[7] Base Game wires one budget across the near system and the cas
   terrain.dispose();
 }
 
+console.log('\n[8] an error reply releases its in-flight slot, or errors leak the budget');
+{
+  held.length = 0;
+  const budget = { max: 4, count: 0 };
+  const system = makeSystem({ renderRadius: 3 }, { inFlightBudget: budget });
+  for (let i = 0; i < 10; i++) system.update(0, 0);
+  ok(budget.count === 4, `${budget.count} jobs outstanding, at the cap`);
+  // Every one of them comes back as a source error rather than a tile.
+  const errored = held.splice(0, held.length);
+  for (const { worker, msg } of errored) worker.onmessage({ data: { key: msg.key, epoch: msg.epoch, jobType: 'sourceTile', error: 'simulated source failure', contractError: true } });
+  ok(budget.count === 0, `all ${errored.length} error replies released their slots (${budget.count} still held)`);
+  ok(system.lastSourceError === 'simulated source failure', 'and the error is reported rather than swallowed');
+  for (let i = 0; i < 5; i++) system.update(0, 0);
+  ok(budget.count > 0, 'so the streamer can dispatch again instead of deadlocking on leaked slots');
+  system.dispose();
+  ok(budget.count === 0, 'and dispose releases what was left');
+}
+
 console.log(`\n${pass} checks passed`);

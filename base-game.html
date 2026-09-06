@@ -4507,8 +4507,13 @@ function refreshTerrainRuntimeLine() {
     : fl.kind === 'volume-cascade'
       ? ` Far LOD (volume cascade): ${fl.levels.map(l => `${l.spacing} m ${l.resident}/${l.target}${l.inFlight ? `+${l.inFlight}` : ''}`).join(', ')} to ${(fl.outerHalfExtent / 1000).toFixed(1)} km, ${fl.draws} draws / ${fl.triangles} tris, ${fl.lastUpdateMs} ms${fl.levels.some(l => l.lastSourceError) ? `, error: ${fl.levels.find(l => l.lastSourceError).lastSourceError}` : ''}.`
       : ` Far LOD (rings): ${fl.levels} rings to ${(fl.outerHalfExtent / 1000).toFixed(1)} km, coverage ${fl.coverage.join('/')}, ${fl.triangles} tris, ${fl.tilesInFlight} tiles in flight, ${fl.lastUpdateMs} ms${fl.lastError ? `, error: ${fl.lastError}` : ''}.`;
+  // The integration queue: what has arrived and is waiting for a frame to commit it, against the
+  // one deadline every install, fold and collider is charged to.
+  const q = `Integration: ${st.lastIntegrateMs} ms of ${st.integrateBudgetMs} ms budget, ${st.queued} results waiting (${(st.queuedBytes / 1048576).toFixed(1)} MB, oldest ${st.queuedOldestMs} ms), slowest item ${st.maxItemMs} ms, ${st.overruns} overruns, ${st.staleDrops} dropped.`;
+  const lead = st.prefetchKeys ? ` Leading ${st.prefetchKeys} chunks at ${st.speed} m/s.` : '';
+  const coll = st.collisionReadyDistance ? ` Nearest uncollided ground ${st.collisionReadyDistance} m.` : '';
   setTextIfChanged(terrainRuntimeLine, st.active
-    ? `${st.volumetric ? 'volumetric' : 'heightfield'}: ${st.residentTiles}/${st.targetTiles} tiles resident, ${st.queuedTiles} queued, ${st.inFlightTiles} in flight, ${st.draws} draws / ${st.triangles} tris, update ${st.lastUpdateMs.toFixed(2)} ms${st.lastSourceError ? `, error: ${st.lastSourceError}` : ''}${volNote}${far}`
+    ? `${st.volumetric ? 'volumetric' : 'heightfield'}: ${st.residentTiles}/${st.targetTiles} tiles resident, ${st.queuedTiles} queued, ${st.inFlightTiles}/${st.maxInFlight} in flight, ${st.draws} draws / ${st.triangles} tris, update ${st.lastUpdateMs.toFixed(2)} ms${st.lastSourceError ? `, error: ${st.lastSourceError}` : ''}${volNote} ${q}${lead}${coll}${far}`
     : `Terrain inactive.${volNote}`);
 }
 refreshTerrainRuntimeLine();
@@ -6216,6 +6221,9 @@ function frameEvents() {
   const events = {
     terrainInstalls: terrain.frameCost?.installCount ?? 0,
     terrainFoldMs: terrain.frameCost?.foldMs ?? 0,
+    terrainIntegrateMs: terrain.frameCost?.integrateMs ?? 0,
+    terrainQueued: terrain.frameCost?.queued ?? 0,
+    terrainOverruns: terrain.frameCost?.overruns ?? 0,
     forestReculls: Math.max(0, next.forestReculls - eventCounters.forestReculls),
     forestRebuilds: Math.max(0, next.forestRebuilds - eventCounters.forestRebuilds),
     grassReculls: Math.max(0, next.grassReculls - eventCounters.grassReculls),
@@ -6801,6 +6809,7 @@ async function animate() {
       frameProfiler.mark('terrainColorize', terrainCost.colorizeMs);
       frameProfiler.mark('terrainBatch', terrainCost.batchMs);
       frameProfiler.mark('terrainCollider', terrainCost.colliderMs);
+      frameProfiler.mark('terrainIntegrate', terrainCost.integrateMs);
     }
     if (terrain.takeHandoffCompleted() && !isOnline()) reseatPlayerOnTerrain(1);
     passStart = profileFrame ? performance.now() : 0;
