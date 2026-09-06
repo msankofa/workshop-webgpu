@@ -550,6 +550,7 @@ export function createBaseGameTerrain({
     uGroundSplatMix.value = (splatEnabled && splatTextures) ? 1 : 0;
   }
   const TINT = TERRAIN_TINT;
+  let colorizeWork = 0;        // per-vertex tints actually performed, counted wherever they happen
   function colorizeGeometry(geo, force = false) {
     // A worker-tinted chunk is already done unless its revision is stale (the sea level moved
     // while it was in flight), in which case it is re-tinted here.
@@ -562,6 +563,7 @@ export function createBaseGameTerrain({
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.userData.tintRevision = tintRevision;
+    colorizeWork++;
   }
 
   const normalMaterial = new MeshNormalNodeMaterial();
@@ -598,10 +600,11 @@ export function createBaseGameTerrain({
   let lastResident = 0;
   const perSecond = { installs: 0, window: 0, rate: 0 };
   const frameCostOut = { installMs: 0, foldMs: 0, fieldMs: 0, installCount: 0, colorizeMs: 0, batchMs: 0, colliderMs: 0,
-    integrateMs: 0, integrateItems: 0, maxItemMs: 0, queued: 0, queuedBytes: 0 };
+    integrateMs: 0, integrateItems: 0, maxItemMs: 0, queued: 0, queuedBytes: 0, colorizePassCount: 0 };
   let lastIntegrateMs = 0;     // everything the scheduler ran this frame, on one deadline
   let lastOverruns = 0;        // frames' worth of the one-item overrun rule firing
   let lastMaxItemMs = 0;       // the single most expensive operation, usually a collider BVH
+  let lastColorizePassCount = 0;   // chunks the unbudgeted materials pass had to tint this frame
   let lastItemCount = 0;
   let stageCursor = 0;         // round-robin start, so no stage starves behind a nearer one
   let lastBody = null;         // previous frame's body position, for the swept footprint
@@ -665,6 +668,7 @@ export function createBaseGameTerrain({
   // per-vertex work either: colorizeGeometry returns early on a chunk whose revision is current.
   function applyMaterialsPass() {
     const tColor = clock();
+    const workBefore = colorizeWork;
     const mat = normals ? normalMaterial : groundMaterial();
     system.material.wireframe = wireframe;
     normalMaterial.wireframe = wireframe;
@@ -684,6 +688,9 @@ export function createBaseGameTerrain({
       }
     }
     lastColorizeMs += clock() - tColor;
+    // How many chunks this UNBUDGETED pass had to tint. The scheduler tints on commit, so in a
+    // healthy frame this is 0 and the per-vertex cost sits inside the deadline instead.
+    lastColorizePassCount += colorizeWork - workBefore;
     let pending = 0;
     const targets = batchTargets();
     batcher.setMaterial(mat);
@@ -731,6 +738,18 @@ export function createBaseGameTerrain({
     return ((ix + 0.5) * size - at[0]) ** 2 + ((iz + 0.5) * size - at[2]) ** 2;
   }
 
+  // Commit one queued result and make sure it is tinted before anything draws it. A tile that
+  // arrived without normals carries no worker colours (terrain-tint's finishTileTint), and the
+  // chunk draws its own mesh from the moment it installs until its fold -- with vertexColors on
+  // and no colour attribute if the tint waited for foldOne. Charged to the same operation.
+  function commitAndTint(sys, key) {
+    const committed = sys.commitNextResult(key);
+    if (committed === null) return null;
+    const chunk = sys.chunks.get(committed);
+    if (chunk?.mesh && !chunk.mesh.geometry.getAttribute('color')) colorizeGeometry(chunk.mesh.geometry);
+    return committed;
+  }
+
   // One frame's integration. Every operation -- an install, one batch fold, one collider BVH --
   // is charged to the SAME deadline, safety region included; nothing is exempt. The next
   // operation is selected only while budget remains, and an operation already started may finish
@@ -748,7 +767,7 @@ export function createBaseGameTerrain({
     // (1) The body's safety region: its install prerequisite, then its collider. Highest
     // priority, same deadline.
     const pickSafety = () => {
-      for (const key of safety) if (system.inbox.has(key)) return { run: () => system.commitNextResult(key) };
+      for (const key of safety) if (system.inbox.has(key)) return { run: () => commitAndTint(system, key) };
       if (volumetricMode) for (const key of safety) if (colliderWanted(key) && colliders > 0) return { run: () => { buildCollider(key); colliders--; } };
       return null;
     };
@@ -757,7 +776,7 @@ export function createBaseGameTerrain({
     const pickOther = () => {
       const stages = [];
       for (const t of targets) {
-        if (t.sys.queuedCount > 0) stages.push({ age: t.sys.queuedOldestMs(), run: () => t.sys.commitNextResult() });
+        if (t.sys.queuedCount > 0) stages.push({ age: t.sys.queuedOldestMs(), run: () => commitAndTint(t.sys) });
       }
       if (folds > 0) {
         for (const t of targets) {
@@ -1141,7 +1160,7 @@ export function createBaseGameTerrain({
       perSecond.window += dt;
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
       lastFoldMs = lastColorizeMs = lastBatchMs = lastColliderMs = lastIntegrateMs = 0;
-      lastItemCount = 0;
+      lastItemCount = lastColorizePassCount = 0;
       if (seaDepthActive) { seaDepth.recentre(globalPosition[0], globalPosition[2]); seaDepth.update(); }
       if (farLodMode && !volumetricMode && clipmap) {
         const t1 = performance.now();
@@ -1209,7 +1228,7 @@ export function createBaseGameTerrain({
       frameCostOut.installCount = lastInstallCount; frameCostOut.colorizeMs = lastColorizeMs;
       frameCostOut.batchMs = lastBatchMs; frameCostOut.colliderMs = lastColliderMs;
       frameCostOut.integrateMs = lastIntegrateMs; frameCostOut.integrateItems = lastItemCount;
-      frameCostOut.maxItemMs = lastMaxItemMs;
+      frameCostOut.maxItemMs = lastMaxItemMs; frameCostOut.colorizePassCount = lastColorizePassCount;
       frameCostOut.queued = queuedTotal(); frameCostOut.queuedBytes = queuedBytesTotal();
       return frameCostOut;
     },

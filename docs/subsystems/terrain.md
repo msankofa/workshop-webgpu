@@ -479,6 +479,12 @@ operation; nothing is exempt, safety region included.
 - **The count caps stay.** `maxFoldsPerUpdate` and `maxColliderRebuildsPerUpdate` (one BVH) are
   per-frame caps on top of the deadline, never mapped to unlimited.
 
+A commit tints: `commitAndTint` colorizes a chunk that arrived without worker colours (a tile with
+no normals) inside the same scheduled operation, so that per-vertex loop is charged to the deadline
+rather than to the materials pass. `frameCost.colorizePassCount` reports how many chunks the
+unbudgeted pass still had to tint -- 0 in a healthy frame, 1 for the synchronous cold-start chunk,
+and every arrival if the tint is left to the pass.
+
 `applyMaterials()` splits in two. `applyMaterialsPass()` is materials, wireframe and batch
 visibility -- no folding, and since the worker tints, no per-vertex work either. `applyMaterials()`
 keeps the immediate unbudgeted fold for the settings paths (wireframe, normals, a new splat

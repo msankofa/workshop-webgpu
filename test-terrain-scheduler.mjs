@@ -187,4 +187,41 @@ console.log('\n[7] the scheduler reports what it did');
   terrain.dispose();
 }
 
+console.log('\n[8] an untinted arrival is tinted inside the scheduled operation, not in the unbudgeted pass');
+{
+  // Real clock, not the injected one: what is asserted is where the per-vertex tint is CHARGED,
+  // and that is milliseconds. A tile with no normals carries no worker colours (finishTileTint
+  // refuses to tint without slope), so it is the one case where the main thread still tints.
+  // 169 chunks, not 25: at 25 the difference is under a millisecond warm and proves nothing.
+  held.length = 0;
+  const terrain = createBaseGameTerrain({
+    scene: new THREE.Scene(), worldQuery: createWorldQueryService(), worldCoordinates: createWorldCoordinateSpace(),
+    source: desc, useWorker: true, params: { renderRadius: 6, chunkSize: 30, integrateBudgetMs: 100000, maxChunksPerUpdate: 8 },
+  });
+  terrain.setActive(true);
+  for (let i = 0; i < 400; i++) terrain.update([0, 0, 0], 1 / 60);
+  for (const { worker, msg } of held.splice(0, held.length)) {
+    if (msg.jobType !== 'sourceTile') continue;
+    const tile = createSource(msg.descriptor).buildTile(msg.request);
+    delete tile.normals;
+    worker.onmessage({ data: { ...tile, colors: null, key: msg.key, epoch: msg.epoch, jobType: 'sourceTile' } });
+  }
+  const queued = terrain.system.queuedCount;
+  ok(queued > 100, `${queued} results queued with no worker colours`);
+  terrain.update([0, 0, 0], 1 / 60, [0, 0, 0]);
+  const cost = terrain.frameCost;
+  const installed = [...terrain.system.chunks.values()].filter(c => c.mesh);
+  const coloured = installed.filter(c => c.mesh.geometry.getAttribute('color'));
+  ok(coloured.length === installed.length, `every resident chunk is tinted (${coloured.length}/${installed.length})`);
+  // A count, not a duration: timing this is JIT-sensitive enough to pass either way. With the
+  // tint inside the operation the unbudgeted pass has nothing left to tint; without it, it tints
+  // every one of them (measured at 9.7 ms cold, 2.7 ms warm -- which is why the count is asserted).
+  // <= 1, not 0: the cold-start chunk is built synchronously inside the system constructor and
+  // never passes through a scheduled commit, so the pass is still its safety net. Without the
+  // fix this number is every chunk that arrived.
+  ok(cost.colorizePassCount <= 1, `the unbudgeted materials pass tinted ${cost.colorizePassCount} chunks, not ${installed.length}`);
+  ok(cost.integrateMs > cost.colorizeMs, `the per-vertex work was charged to the scheduler instead (${cost.integrateMs.toFixed(1)} ms integrate vs ${cost.colorizeMs.toFixed(2)} ms materials pass)`);
+  terrain.dispose();
+}
+
 console.log(`\n${pass} checks passed`);
