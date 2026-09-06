@@ -131,6 +131,28 @@ check('survivors retain one compaction atomic alongside gated diagnostic rejecti
 check('the view cone is in the kernel', /dot\(\s*\(\s*vec2<f32>/.test(cull) || /dot\( vec2<f32>/.test(cull));
 check('the occlusion branch is compiled out without an occluder image', count(cull, /uOcc|occlusion/g) === 0 && !/textureSample\(/.test(cull));
 
+section('with a Hi-Z pyramid the cull carries the box test through one atlas binding');
+{
+  const { createHiZ } = await import('./hiz-pyramid.js');
+  const hiz = createHiZ({ renderer, camera, depthTexture: new THREE.DepthTexture(640, 360) });
+  await hiz.update();
+  const floraHiz = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, hiz: hiz.state });
+  floraHiz.setEnabled(true);
+  await floraHiz.load();
+  check('grass builds with the pyramid', (await floraHiz.update(0.016)) === true);
+  captured = null;
+  floraHiz.grass.forceRecull();
+  await floraHiz.grass.update(0.02);
+  let cullHiz = '', err = null;
+  try { cullHiz = buildCompute(captured[1]); dumpTo('cull-hiz', cullHiz); } catch (e) { err = e; }
+  check('the cull builds', !err, String(err?.message ?? ''));
+  const sampledHiz = count(cullHiz, /var [A-Za-z_0-9]+ : texture_2d</g);
+  check('the pyramid costs exactly one more sampled binding', sampledHiz === sampled + 1, `${sampledHiz} bound`);
+  check('the depth image path is compiled out', count(cullHiz, /textureSample\(/g) === 0);
+  check('the box test is in the kernel', count(cullHiz, /textureLoad\(/g) >= count(cull, /textureLoad\(/g) + 4);
+  floraHiz.dispose?.(); hiz.dispose();
+}
+
 section('the blade material compiles to WGSL');
 {
   let shaders = null, err = null;

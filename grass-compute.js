@@ -27,6 +27,7 @@ import {
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
 import { createGrassLook } from './grass-look.js';
+import { createHizSampler } from './hiz-test.js';
 import { FIBER_REMAP_MIN, FIBER_REMAP_MAX, STYLE_KEYS } from './grass-textures.js';
 import { maxInstances, perCellCount, tierLayout, thinTiers } from './grass-cells.js';
 import {
@@ -237,6 +238,10 @@ export function createComputeGrass(opts) {
   // it when it is deeper than all of them by more than the bias. Without an occlusion option the
   // test is not compiled in at all.
   const occlusion = opts.occlusion || null;
+  // Hi-Z (2026-09-06): a host with a hiz-pyramid.js state gets hiz-test.js's box test against
+  // last frame's depth pyramid instead of the depth image; the visibility test is the same.
+  const hiz = !occlusion && opts.hiz ? opts.hiz : null;
+  const hizSampler = hiz ? createHizSampler(hiz) : null;
   const uOccOn = uniform(occlusion && occlusion.enabled ? 1 : 0);
   const uOccVP = uniform(new THREE.Matrix4());
   const uOccTexel = uniform(new THREE.Vector2(1 / 256, 1 / 256));
@@ -258,7 +263,7 @@ export function createComputeGrass(opts) {
   // One texture node, sampled five times through .sample(): one binding, not five. The cull
   // stage is near WebGPU's sampled-texture limit (see vegetation.md), so every binding counts.
   const occTex = occlusion ? texture(occlusion.texture) : null;
-  const keepFn = occlusion
+  const keepFn = occlusion || hizSampler
     ? Fn(([wx, wy, wz, h, dist]) => {
         const visible = bool(true).toVar();
         const keep = bool(true).toVar();
@@ -270,11 +275,16 @@ export function createComputeGrass(opts) {
           // Off-screen points and disabled occlusion need no depth reads. Keep the same five
           // conservative taps and bias for points whose tops actually project into the image.
           If(visible.and(top.onScreen), () => {
-            const uv = vec2(clamp(top.ndc.x.mul(0.5).add(0.5), 0, 1), clamp(float(0.5).sub(top.ndc.y.mul(0.5)), 0, 1));
-            const tx = vec2(uOccTexel.x, 0), tz = vec2(0, uOccTexel.y);
-            const far = max(max(occTex.sample(uv).r, occTex.sample(uv.add(tx)).r),
-              max(occTex.sample(uv.sub(tx)).r, max(occTex.sample(uv.add(tz)).r, occTex.sample(uv.sub(tz)).r)));
-            keep.assign(top.w.greaterThan(far.add(uOccBias).add(top.w.mul(0.01))).not());
+            if (occlusion) {
+              const uv = vec2(clamp(top.ndc.x.mul(0.5).add(0.5), 0, 1), clamp(float(0.5).sub(top.ndc.y.mul(0.5)), 0, 1));
+              const tx = vec2(uOccTexel.x, 0), tz = vec2(0, uOccTexel.y);
+              const far = max(max(occTex.sample(uv).r, occTex.sample(uv.add(tx)).r),
+                max(occTex.sample(uv.sub(tx)).r, max(occTex.sample(uv.add(tz)).r, occTex.sample(uv.sub(tz)).r)));
+              keep.assign(top.w.greaterThan(far.add(uOccBias).add(top.w.mul(0.01))).not());
+            } else {
+              const half = float(0.05);
+              keep.assign(hizSampler.occluded(vec3(wx.sub(half), wy, wz.sub(half)), vec3(wx.add(half), wy.add(h), wz.add(half))).not());
+            }
           });
         });
         return vec2(select(visible, float(1), float(0)), select(keep, float(1), float(0)));
@@ -282,6 +292,14 @@ export function createComputeGrass(opts) {
     : null;
   let lastOccRevision = -1;
   function syncOcclusion() {
+    if (hizSampler) {
+      const changed = hizSampler.sync();
+      const on = hizSampler.enabled ? 1 : 0;
+      const onChanged = uOccOn.value !== on;
+      uOccOn.value = on;
+      uOccVP.value.copy(hiz.viewProj);
+      return changed || onChanged;
+    }
     if (!occlusion) return false;
     const on = occlusion.enabled ? 1 : 0;
     const revision = occlusion.revision ?? 0;

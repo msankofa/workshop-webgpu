@@ -151,7 +151,7 @@ export function safeRadiusFor(window, headroom = 1) {
   return Math.max(0, (window.extent / 2 - tile / 2) / Math.max(1e-6, headroom));
 }
 
-export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, scene, camera, terrain, worldCoordinates, settings = {} } = {}) {
+export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, scene, camera, terrain, worldCoordinates, hiz = null, settings = {} } = {}) {
   if (!scene?.add) throw new TypeError('flora needs a scene');
   if (!terrain?.acquireFields) throw new TypeError('flora needs the Base Game terrain facade');
   const cfg = { ...BASE_GAME_FLORA_DEFAULTS, ...settings };
@@ -389,6 +389,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       tiers: tierSpecFor(cfg),
       frustumCull: cfg.grassFrustumCull,
       occlusion: occlusion ? occlusion.state : null,
+      hiz: occlusion ? null : hiz,
       nearKeep: cfg.grassNearKeep,
       shading: cfg.grassShading,
     });

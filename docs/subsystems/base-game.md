@@ -3575,25 +3575,30 @@ everywhere off a planter, bared a 80 by 100 m rectangle of ground around the bui
 same reason the collider puts one plinth under each floor slab rather than one under the box,
 and `base-game-flora.js`'s new `setStructure({ bounds, densityTex, heightTex })` wraps its
 terrain samplers so that inside the rectangle the textures answer and outside the terrain does.
-The wrap is live: uniforms and texture-node values swap, no graph rebuild. `setOccluders(root)`
-builds a `flora-occlusion.js` pass over the building's chunked meshes and hands its state to
-`createComputeGrass`, whose cull kernel then drops blades behind the concrete; the first call
-before the grass exists is free, a later first call rebuilds the field once. The page calls both
+The wrap is live: uniforms and texture-node values swap, no graph rebuild. The page calls it
 from `syncSpawnBuildingFlora()` whenever the building is reseated or the world mode changes.
 
-Since 2026-09-05 the occluder list is more than the building: in the spawn-area world the lab's
-root joins it, and on terrain the terrain root joins it filtered to its `BatchedMesh` chunk
-batches (the far clipmap rings are placed by a position node, so the depth pass would draw them
-flat; the debug bounds and contact marker are not batches either). A crest therefore hides the
-blades behind it. Streaming adds batches under the unmoved terrain root, which the pass's static
-cache cannot see, so `updateFloraOccluders()` re-marks the roots whenever
-`terrain.residencyRevision` moves. The setting `grassTerrainOccludes` (default off since the first browser look showed gaps in the near grass, the rendered mesh sitting above the field height the blade uses; `grassOcclusionBias`, default 0.12 m, is the slider to close them with; "Terrain
-occlusion") drops the terrain root from the list; it is a flora apply key, so a toggle
-re-syncs at once. The cost, an extra draw of the visible chunk batches at 256 px on every moving
-frame, has not been measured; the flora HUD's occlusion render time is where to read it. The lab
-entry has no visible effect yet, because the grass only runs in the terrain world.
-Grass, building meshes and the depth image all live in the render-local frame, so the kernel
-projection stays consistent across a rebase. Nothing is browser-verified yet.
+**Hi-Z occlusion** (2026-09-06, `docs/superpowers/plans/2026-09-06-base-game-hiz-occlusion.md`,
+steps 1 to 5). The marked-occluder depth image is gone from this page. `createHiZ` in
+`hiz-pyramid.js` takes the scene pass's depth attachment (the same `pass(scene, camera)` depth of
+field reads) and, after every render while `grassOcclusion` is on, reduces it into a max-depth
+pyramid packed in one atlas texture; `hiz.update()` runs right after the render, marked `hiz` in
+the profiler. While it is on, `chained` is true, so the frame always renders through the node
+pipeline (that is where the depth exists; `?forcePass=1` forces the same path with occlusion off,
+to measure the difference). The grass and forest culls both take `hiz: hiz.state` at creation and
+run `hiz-test.js`'s box test against LAST frame's pyramid: a blade's box is its base to its top,
+a tree's the canopy radius wide and the tallest variant tall; hidden only when the box's nearest
+point is behind the farthest of the four covering texels by more than one texel's world footprint
+plus 0.05 m. Every opaque thing the frame drew occludes, terrain and caves and trees included, so
+`grassTerrainOccludes`, `grassOcclusionBias`, the occluder root list, `terrainFloraOcclusionState`
+and `updateFloraOccluders` are removed (saved states that still carry the two keys load fine: the
+loader reads only known keys). The one remaining control is the `Occlusion culling` toggle. The
+forest shadow list is written before the test, so a hidden tree still casts. The pyramid
+describes the previous frame, so a tree revealed by a step around a corner appears one frame
+late; the plan's "Later" section names the two-phase form if that pops. The grass HUD line reports
+the level count and the reduce's CPU time; the capture's `occlusion` field carries `hiz: true`, the
+atlas size and that time. Nothing is browser-verified yet; the cost of the pass path versus the
+direct render on the user's machine is still to be read.
 
 ## Scattered structures (2026-09-05, in progress)
 
@@ -3657,8 +3662,8 @@ world, and online the room's `structures` flag, Solo the `structuresEnabled` set
 terrain is volumetric. Online the room's `structureSeed` and `structureSpacing` win over the
 settings (`structureParams()`); `pickRoomTerrainConfig` sends the Solo values when creating a room.
 `syncSpawnBuilding` resets the structures on every source change, the root joins the rebase
-shift, its materials take the rain decorator, and its root joins the flora occluder list, with
-`updateFloraOccluders` re-marking when the structures' `version` moves. A Structures panel card
+shift, and its materials take the rain decorator (it occludes grass through the Hi-Z pyramid like
+everything else the frame draws, since 2026-09-06). A Structures panel card
 has the toggle, seed and spacing, and a runtime line (buildings, tiles, meshes, collision
 triangles, bake time, nearest building).
 

@@ -5,12 +5,23 @@ globalThis.document ??= { createElement: () => ({ width: 0, height: 0, getContex
   putImageData: () => {} }) }) };
 const THREE = await import('three/webgpu');
 const { context } = await import('three/tsl');
-const { hizLevelSizes, hizReduceCPU, hizPickLevel, hizBias, createHiZ, HIZ_BIAS_FLOOR } = await import('./hiz-pyramid.js');
+const { hizLevelSizes, hizAtlasLayout, hizReduceCPU, hizPickLevel, hizBias, createHiZ, HIZ_BIAS_FLOOR } = await import('./hiz-pyramid.js');
 
 // Sizes: half-res base, halving with round-up, stopping at 1x1.
 assert.deepEqual(hizLevelSizes(1920, 1080, 8).map(s => [s.width, s.height]),
   [[960, 540], [480, 270], [240, 135], [120, 68], [60, 34], [30, 17], [15, 9], [8, 5]]);
 assert.deepEqual(hizLevelSizes(3, 2, 8).map(s => [s.width, s.height]), [[2, 1], [1, 1]]);
+
+// Atlas layout: level 0 left, the rest stacked down the right column, never overlapping.
+{
+  const layout = hizAtlasLayout(hizLevelSizes(1920, 1080, 8));
+  assert.deepEqual([layout.width, layout.height], [960 + 480, 540]);
+  assert.deepEqual(layout.levels[0], { x: 0, y: 0, width: 960, height: 540 });
+  assert.deepEqual(layout.levels[1], { x: 960, y: 0, width: 480, height: 270 });
+  assert.deepEqual(layout.levels[2], { x: 960, y: 270, width: 240, height: 135 });
+  const last = layout.levels[7];
+  assert.ok(last.y + last.height <= layout.height, 'the column fits under level 0');
+}
 
 // Reduction keeps the farthest depth and clamps the odd edge instead of reading past it.
 const src = new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9]);   // 3x3
@@ -62,11 +73,14 @@ assert.equal(await hiz.update(), true);
 assert.equal(hiz.stats.levels, 8);
 assert.equal(captured.length, 8, 'one dispatch per level in one submit');
 assert.deepEqual([hiz.state.levels[0].width, hiz.state.levels[0].height], [320, 180]);
-assert.equal(hiz.state.levels[0].texture.format, THREE.RedFormat);
-assert.equal(hiz.state.levels[0].texture.type, THREE.FloatType);
+assert.equal(hiz.state.atlas.format, THREE.RedFormat);
+assert.equal(hiz.state.atlas.type, THREE.FloatType);
+assert.deepEqual([hiz.state.atlasWidth, hiz.state.atlasHeight], [480, 181], 'the column of rounded-up levels can outgrow level 0 by a texel');
 const wgsl0 = buildCompute(captured[0]), wgsl1 = buildCompute(captured[1]);
 assert.ok(/textureLoad/.test(wgsl0), 'level 0 fetches the pass depth without a sampler');
-assert.ok(/textureStore/.test(wgsl0) && /textureStore/.test(wgsl1));
+assert.equal((wgsl0.match(/textureStore/g) || []).length, 2, 'level 0 writes its own texture and the atlas');
+assert.ok(/textureStore/.test(wgsl1));
+assert.equal((buildCompute(captured[7]).match(/textureStore/g) || []).length, 1, 'the last level writes only the atlas');
 assert.ok((wgsl1.match(/textureLoad/g) || []).length >= 4, 'a reduce reads its 2x2 block');
 assert.ok(/max\(/.test(wgsl1), 'a reduce keeps the farthest depth');
 assert.equal(hiz.state.revision, 1);
@@ -79,16 +93,15 @@ const { createHizSampler } = await import('./hiz-test.js');
 {
   const { Fn: F, vec3: V3, float: Fl, instanceIndex: II, storage: St } = await import('three/tsl');
   const h2 = createHiZ({ renderer, camera, depthTexture, levels: 8 }); await h2.update();
-  const sampler = createHizSampler(h2.state, { levels: 4 });
-  assert.equal(sampler.bound, 4);
+  const sampler = createHizSampler(h2.state);
   assert.equal(sampler.sync(), true, 'first sync reports a change');
   assert.equal(sampler.sync(), false, 'same revision and camera: no change');
   const out = new THREE.StorageBufferAttribute(new Float32Array(4), 1);
   const kernel = F(() => { St(out, 'float', 4).element(II).assign(Fl(sampler.occluded(V3(0, 0, -5), V3(1, 2, -4)))); })().compute(4);
   const wgsl = buildCompute(kernel);
-  assert.equal((wgsl.match(/texture_2d<f32>/g) || []).length, 4, 'four level bindings');
+  assert.equal((wgsl.match(/texture_2d<f32>/g) || []).length, 1, 'one binding: the atlas');
   assert.ok(!/sampler/.test(wgsl), 'no samplers');
-  assert.ok((wgsl.match(/textureLoad/g) || []).length >= 16, 'four taps per bound level');
+  assert.equal((wgsl.match(/textureLoad/g) || []).length, 4, 'four taps');
   h2.dispose();
 }
 console.log('hiz pyramid: sizes, reduction, level pick, bias and WGSL build checks passed');

@@ -23,6 +23,7 @@
 import * as THREE from 'three';
 import { createSharedDrawGeometryPool } from './shared-draw-geometry.js';
 import { frustumConeCos } from './forest-cull.js';   // camera math only; the cull kernel stays a hand-synced twin
+import { createHizSampler } from './hiz-test.js';
 import {
   MeshBasicNodeMaterial, MeshStandardNodeMaterial, StorageInstancedBufferAttribute, StorageBufferAttribute,
   IndirectStorageBufferAttribute,
@@ -140,6 +141,14 @@ export function createForestGPU(opts) {
     return Math.max(size.x, size.z) * 0.5 * 1.15; // half-width, same 1.15 pad as variantBillboardGeo
   }
   const uTreeRadius = uniform(Math.max(0, ...palette.variants.map(variantCanopyRadius)));
+  function variantHeight(variant) {
+    if (!variant.branches.boundingBox) variant.branches.computeBoundingBox();
+    if (!variant.leaves.boundingBox) variant.leaves.computeBoundingBox();
+    return Math.max(variant.branches.boundingBox.max.y, variant.leaves.boundingBox.max.y, 0);
+  }
+  const uTreeHeight = uniform(Math.max(0, ...palette.variants.map(variantHeight)));
+  // Hi-Z (2026-09-06): a host with a hiz-pyramid.js state gets hiz-test.js's box test in the cull.
+  const hizSampler = opts.hiz ? createHizSampler(opts.hiz) : null;
 
   // Canopy sway (base-game). The graph is only built when a host asks for it, so a host that does
   // not pass leafSway keeps the time-independent material it had.
@@ -197,7 +206,14 @@ export function createForestGPU(opts) {
       const coneCos = cos(acos(baseCos).add(angularPad)).sub(uRearMargin);
       const coneLive = fwdDot.greaterThanEqual(coneCos).or(dist.lessThan(float(1e-6))).or(uConeEnabled.lessThan(float(0.5)));
 
-      const live = farLive.and(coneLive);
+      // Hi-Z: the instance's box (canopy radius wide, tree height tall) against last frame's depth
+      // pyramid. The shadow slot above is written before this on purpose: a hidden tree still casts.
+      let live = farLive.and(coneLive);
+      if (hizSampler) {
+        const hr = uTreeRadius.mul(rec0.w).mul(uTreeScale), th = uTreeHeight.mul(rec0.w).mul(uTreeScale);
+        const hidden = hizSampler.occluded(vec3(rec0.x.sub(hr), rec0.y, rec0.z.sub(hr)), vec3(rec0.x.add(hr), rec0.y.add(th), rec0.z.add(hr)));
+        live = live.and(hidden.not());
+      }
 
       If(live, () => {
         const r0sq = uLodR0.mul(uLodR0);
@@ -819,6 +835,7 @@ export function createForestGPU(opts) {
       }
       palette.variants[g] = variant;
       uTreeRadius.value = Math.max(uTreeRadius.value, variantCanopyRadius(variant));
+      uTreeHeight.value = Math.max(uTreeHeight.value, variantHeight(variant));
       markDirty();
       return true;
     },
@@ -990,7 +1007,9 @@ export function createForestGPU(opts) {
       const camTurned = camFx * lastCamFx + camFz * lastCamFz < recullHeadingCos || coneWidened;
       const firstRecull = !Number.isFinite(lastCamX) || !Number.isFinite(lastCamZ)
         || !Number.isFinite(lastCamFx) || !Number.isFinite(lastCamFz);
-      if (!dirty && !firstRecull && !camMoved && !camTurned) {
+      // The pyramid is per frame, so while it is on any new frame re-culls.
+      const hizChanged = hizSampler ? hizSampler.sync() : false;
+      if (!dirty && !firstRecull && !camMoved && !camTurned && !hizChanged) {
         skippedReculls++;
         return;
       }

@@ -6,12 +6,17 @@
 // matches a candidate's screen footprint, reads the four texels it covers, and treats the candidate
 // as hidden only when its nearest point is behind all of them (see hiz-test.js).
 //
-// The CPU helpers (sizes, reduction, level pick, bias) are pure and are what the Node test covers;
-// createHiZ() owns the GPU chain and mirrors them exactly.
+// Every level is also packed into ONE atlas texture (level 0 on the left, the rest stacked down
+// the right), so a kernel reaches the whole pyramid through a single texture binding; the grass
+// cull stage has one binding to spare. A level cannot read and write the same texture in one
+// dispatch, so the chain reduces through per-level textures and writes each result twice.
+//
+// The CPU helpers (sizes, layout, reduction, level pick, bias) are pure and are what the Node test
+// covers; createHiZ() owns the GPU chain and mirrors them exactly.
 
 import * as THREE from 'three';
 import { StorageTexture } from 'three/webgpu';
-import { Fn, float, int, ivec2, uniform, vec4, texture, textureStore, instanceIndex, max, min, perspectiveDepthToViewZ } from 'three/tsl';
+import { Fn, int, ivec2, uniform, vec4, texture, textureStore, instanceIndex, max, min, perspectiveDepthToViewZ } from 'three/tsl';
 
 export const HIZ_BASE_DIVISOR = 2;   // level 0 is the frame at half resolution
 export const HIZ_BIAS_FLOOR = 0.05;   // metres, added under the texel footprint
@@ -27,6 +32,15 @@ export function hizLevelSizes(frameWidth, frameHeight, levels) {
     w = Math.max(1, Math.ceil(w / 2)); h = Math.max(1, Math.ceil(h / 2));
   }
   return out;
+}
+
+// Atlas layout: level 0 at the origin, levels 1.. stacked down a column to its right.
+export function hizAtlasLayout(sizes) {
+  const levels = [{ x: 0, y: 0, ...sizes[0] }];
+  let y = 0;
+  for (let i = 1; i < sizes.length; i++) { levels.push({ x: sizes[0].width, y, ...sizes[i] }); y += sizes[i].height; }
+  const width = sizes[0].width + (sizes.length > 1 ? sizes[1].width : 0);
+  return { width, height: Math.max(sizes[0].height, y), levels };
 }
 
 // CPU twin of the reduce kernel: max of the 2x2 block, reads clamped to the source edge.
@@ -56,60 +70,66 @@ export function hizBias(distance, level, frameWidth, tanHalfFov, aspect) {
   return level0Texel * (1 << level) + HIZ_BIAS_FLOOR;
 }
 
+function storageR32(width, height) {
+  const t = new StorageTexture(width, height);
+  t.format = THREE.RedFormat; t.type = THREE.FloatType;
+  t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false;
+  return t;
+}
+
 // GPU chain. `depthTexture` is the scene pass's depth attachment; `camera` gives near/far and the
 // view-projection the kernels test against. Sizes follow the renderer's drawing buffer.
 export function createHiZ({ renderer, camera, depthTexture, levels = 8 }) {
   const state = {
-    enabled: true, levels: [], frameWidth: 0, frameHeight: 0,
+    enabled: true, atlas: null, atlasWidth: 0, atlasHeight: 0, levels: [], frameWidth: 0, frameHeight: 0,
     viewProj: new THREE.Matrix4(), cameraPosition: new THREE.Vector3(), near: camera.near, far: camera.far,
     tanHalfFov: Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5), aspect: camera.aspect, revision: 0,
   };
   const stats = { levels: 0, dispatches: 0, lastUpdateCpuMs: 0 };
   const uNear = uniform(camera.near), uFar = uniform(camera.far);
-  const uSize = [];   // per level: ivec2 size of that level
-  let textures = [], kernels = [];
+  let textures = [], atlas = null, kernels = [];
   const size = new THREE.Vector2();
 
   function dispose() {
     for (const t of textures) t.dispose();
-    textures = []; kernels = []; state.levels = [];
+    atlas?.dispose();
+    textures = []; kernels = []; atlas = null; state.atlas = null; state.levels = [];
   }
 
   function build(frameWidth, frameHeight) {
     dispose();
     const sizes = hizLevelSizes(frameWidth, frameHeight, levels);
-    textures = sizes.map(({ width, height }) => {
-      const t = new StorageTexture(width, height);
-      t.format = THREE.RedFormat; t.type = THREE.FloatType;
-      t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false;
-      return t;
-    });
-    uSize.length = 0;
+    const layout = hizAtlasLayout(sizes);
+    // The last level needs no texture of its own: nothing reduces from it.
+    textures = sizes.slice(0, -1).map(({ width, height }) => storageR32(width, height));
+    atlas = storageR32(layout.width, layout.height);
     const depthLoad = texture(depthTexture).setSampler(false);
-    // Level 0: the pass depth at every other pixel, made linear. The pass depth is the frame size.
-    const size0 = uniform(ivec2(sizes[0].width, sizes[0].height)); uSize.push(size0);
-    kernels = [Fn(() => {
-      const w = int(size0.x);
-      const xy = ivec2(int(instanceIndex).mod(w), int(instanceIndex).div(w));
-      const d = depthLoad.load(xy.mul(int(HIZ_BASE_DIVISOR))).x;
-      const dist = perspectiveDepthToViewZ(d, uNear, uFar).negate();
-      textureStore(textures[0], xy, vec4(dist, 0, 0, 1)).toWriteOnly();
-    })().compute(sizes[0].width * sizes[0].height)];
-    for (let i = 1; i < sizes.length; i++) {
-      const src = texture(textures[i - 1]).setSampler(false);
-      const sizeN = uniform(ivec2(sizes[i].width, sizes[i].height)); uSize.push(sizeN);
-      const srcMax = ivec2(sizes[i - 1].width - 1, sizes[i - 1].height - 1);
+    kernels = [];
+    for (let i = 0; i < sizes.length; i++) {
+      const { width, height } = sizes[i];
+      const at = layout.levels[i];
+      const src = i > 0 ? texture(textures[i - 1]).setSampler(false) : null;
+      const srcMax = i > 0 ? ivec2(sizes[i - 1].width - 1, sizes[i - 1].height - 1) : null;
+      const own = textures[i] || null;
       kernels.push(Fn(() => {
-        const w = int(sizeN.x);
-        const xy = ivec2(int(instanceIndex).mod(w), int(instanceIndex).div(w));
-        const b = xy.mul(int(2));
-        const a = min(b, srcMax), c = min(b.add(int(1)), srcMax);
-        const m = max(max(src.load(ivec2(a.x, a.y)).x, src.load(ivec2(c.x, a.y)).x),
-          max(src.load(ivec2(a.x, c.y)).x, src.load(ivec2(c.x, c.y)).x));
-        textureStore(textures[i], xy, vec4(m, 0, 0, 1)).toWriteOnly();
-      })().compute(sizes[i].width * sizes[i].height));
+        const xy = ivec2(int(instanceIndex).mod(int(width)), int(instanceIndex).div(int(width)));
+        let value;
+        if (i === 0) {
+          // Level 0: the pass depth at every other pixel, made linear.
+          value = perspectiveDepthToViewZ(depthLoad.load(xy.mul(int(HIZ_BASE_DIVISOR))).x, uNear, uFar).negate();
+        } else {
+          const b = xy.mul(int(2));
+          const a = min(b, srcMax), c = min(b.add(int(1)), srcMax);
+          value = max(max(src.load(ivec2(a.x, a.y)).x, src.load(ivec2(c.x, a.y)).x),
+            max(src.load(ivec2(a.x, c.y)).x, src.load(ivec2(c.x, c.y)).x));
+        }
+        const out = vec4(value, 0, 0, 1);
+        if (own) textureStore(own, xy, out).toWriteOnly();
+        textureStore(atlas, xy.add(ivec2(at.x, at.y)), out).toWriteOnly();
+      })().compute(width * height));
     }
-    state.levels = sizes.map((s, i) => ({ texture: textures[i], width: s.width, height: s.height }));
+    state.atlas = atlas; state.atlasWidth = layout.width; state.atlasHeight = layout.height;
+    state.levels = layout.levels.map(l => ({ ...l }));
     state.frameWidth = frameWidth; state.frameHeight = frameHeight;
     stats.levels = sizes.length;
   }
