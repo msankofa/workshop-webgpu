@@ -456,6 +456,47 @@ noise. The real effect is read from `passTerrainFoldMs` in a browser capture.
 | `test-cdlod-select.mjs` | `levelRanges`, `nodeSize`, `minDistToCell`, `selectNodes`, `nodeCountForViewDistance` | Range/size formulas match the geometric definition; `minDistToCell` is exact inside/outside a cell; **coverage partition** — every sampled point near the camera lands in exactly one selected node, across several camera positions; the camera's own cell is always a level-0 (finest) node; **bounded cost** — node count never exceeds `levels*windowCells²` and adding levels grows by bounded rings, not quadratically, with view distance; sub-leaf camera moves leave coarse node origins stable (no shimmer). |
 | `test-cdlod-morph.mjs` | `morphGridCoord`, `nodeSize` (cross-checked against `grassHeightRef`) | `morphK=0` is the identity; `morphK=1` snaps every grid vertex onto the parent (even) lattice; a fully-morphed fine node's boundary heights exactly match the coarser neighbor's lattice points (crack-free seam proof). |
 
+### One scheduler, one deadline
+
+`base-game-terrain.js` runs a single scheduler each frame over the near system, every cascade
+level and the colliders. `integrateBudgetMs` (default 2) is one soft deadline for **every**
+operation; nothing is exempt, safety region included.
+
+- **Operations are indivisible and small**: one install (`commitNextResult`), one batch fold
+  (`foldOne`), one collider BVH (`buildCollider`). Never a multi-chunk transaction.
+- **The budget is checked before selecting**, never mid-operation. An operation already started
+  finishes past the deadline and then the frame stops globally. That one-item overrun is the
+  guarantee; the millisecond is not, because a 3-4 ms BVH is bigger than the whole budget until
+  step 7 moves it into the worker.
+- **Priority 1, the safety region.** `safetyKeys(body)` is the swept footprint: the segment from
+  last frame's body position to this one, sampled at half a chunk, expanded by `safetyRadius`, so
+  a diagonal corner cut is caught the same as a cardinal crossing. Four cardinal neighbours would
+  miss it. The keys are ordered nearest the body, and its install prerequisite comes before its
+  collider. Charged to the same deadline as everything else.
+- **Priority 2, everything else**, nearest-first within a stage; stages rotate (`stageCursor`) so
+  none starves behind a nearer one, and a queue older than `integrateAgeMs` (500) jumps the order
+  outright. The near system's folds are ordered from the BODY, the cascade's from the stream centre.
+- **The count caps stay.** `maxFoldsPerUpdate` and `maxColliderRebuildsPerUpdate` (one BVH) are
+  per-frame caps on top of the deadline, never mapped to unlimited.
+
+`applyMaterials()` splits in two. `applyMaterialsPass()` is materials, wireframe and batch
+visibility -- no folding, and since the worker tints, no per-vertex work either. `applyMaterials()`
+keeps the immediate unbudgeted fold for the settings paths (wireframe, normals, a new splat
+material, `recolorAll`), where a person changed something and expects to see it.
+
+**The `cascadeChanged` fold is gone.** `update()` no longer calls `applyMaterials()` when a far LOD
+chunk lands; that call folded every pending chunk at every level at once and was the 27 ms fold in
+the 21:19 capture. The cascade is now scheduled like every other stage.
+
+Residency: the scheduler's commits, not just `system.update()`'s return, bump `residencyRevision`
+and drive `updateCoverage` and the tile-bounds refresh, because a chunk installed by the scheduler
+this frame is residency that moved this frame.
+
+One consequence to know: with `integrateExternally` on, the unload-idle check waits for an empty
+inbox, so under sustained arrivals unloads lag behind the window. That is deliberate -- unloading
+on top of queued replacements is how holes appear -- but it means resident counts can sit above
+the target set while a burst drains.
+
 ### The integration inbox
 
 Worker results are no longer installed inside `onmessage`. `onWorkerChunkInner` calls

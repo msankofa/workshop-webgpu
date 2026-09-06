@@ -40,6 +40,17 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   // ~2.4-3.75 ms per chunk (createMapCollider), and 1/frame at 60 Hz still outruns the ~14/s that
   // actually arrive.
   maxColliderRebuildsPerUpdate: 1,
+  // One soft deadline for EVERY integration operation in a frame -- install, batch fold, collider
+  // BVH -- across the near system and every cascade level. Operations are indivisible, so the one
+  // that is running when the deadline passes finishes and then the frame stops: that overrun is
+  // the guarantee, not the millisecond. A 3-4 ms BVH is bigger than this budget on its own, which
+  // is why step 7 (the BVH in the worker) is what finally makes the number real.
+  integrateBudgetMs: 2,
+  // A queue older than this jumps the nearest-first order, so no stage starves under sustained
+  // arrivals somewhere nearer.
+  integrateAgeMs: 500,
+  // The body's safety region: how far around the swept footprint counts as "under the player".
+  safetyRadius: 2,
   // Per-chunk frustum culling in the batches. Measured both ways 2026-08-26: turning it off skips
   // BatchedMesh's per-instance cull loop but doubles submitted draws, and the A/B said p50 encode
   // is a wash (postPlain 3.0-6.1 off vs 3.2-6.9 on) while the tail is much worse without it
@@ -94,6 +105,7 @@ export const terrainTintNode = /*@__PURE__*/ Fn(([yAboveSea, normalY]) => {
 export function createBaseGameTerrain({
   scene, worldQuery, worldCoordinates, source,
   params = {}, providerId = 'terrain', volumeProviderId = 'terrain-volume', useWorker = true, volumetric = false, farLod = false,
+  now = null,
 }) {
   if (!scene?.add) throw new TypeError('Base Game terrain requires a Three.js scene');
   if (!worldQuery?.registerProvider) throw new TypeError('Base Game terrain requires a world-query service');
@@ -101,9 +113,12 @@ export function createBaseGameTerrain({
   if (!source) throw new TypeError('Base Game terrain requires a terrain source or descriptor');
 
   const cfg = { ...BASE_GAME_TERRAIN_DEFAULTS, ...params };
+  // One clock for the streamer's queues and the scheduler's deadline, so queue age and frame
+  // timers are the same numbers. Injected by the tests; the page passes its own.
+  const clock = typeof now === 'function' ? now : (() => performance.now());
   const system = createTerrainSystem({
-    params: { chunkSize: cfg.chunkSize, renderRadius: cfg.renderRadius, maxChunksPerUpdate: cfg.maxChunksPerUpdate, maxUnloadsPerUpdate: cfg.maxUnloadsPerUpdate, useWorker },
-    source,
+    params: { chunkSize: cfg.chunkSize, renderRadius: cfg.renderRadius, maxChunksPerUpdate: cfg.maxChunksPerUpdate, maxUnloadsPerUpdate: cfg.maxUnloadsPerUpdate, useWorker, integrateExternally: true },
+    source, now: clock,
   });
   // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
   let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
@@ -149,35 +164,55 @@ export function createBaseGameTerrain({
     sliced.setIndex(new THREE.BufferAttribute(geo.index.array.subarray(0, cut), 1));
     return sliced;
   }
-  // Returns true when colliders were left to rebuild. Nearest-first: a budget must never defer the
-  // chunk the player is standing on, so the wanted list is ordered by distance from the focus and
-  // the removals (cheap) always run.
-  function syncVolumeColliders(maxRebuilds = 0) {
-    if (!volumetricMode) { if (collidedChunks.size) { volumeProvider.clear(); collidedChunks.clear(); } return false; }
+  // Split into three so the scheduler can charge ONE BVH to its deadline. The removals are cheap
+  // and always run; picking and building are separate so a pick never commits to a build.
+  function colliderOrder() {
     const size = system.params.chunkSize, r = cfg.collisionRadius;
     const cx = Math.floor(colliderFocus[0] / size), cz = Math.floor(colliderFocus[1] / size);
-    const wanted = new Set();
     const order = [];
-    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
-      const key = `${cx + dx},${cz + dz}`;
-      wanted.add(key);
-      order.push({ key, d2: dx * dx + dz * dz });
-    }
+    for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) order.push({ key: `${cx + dx},${cz + dz}`, d2: dx * dx + dz * dz });
     order.sort((a, b) => a.d2 - b.d2);
-    let built = 0, deferred = false;
-    for (const { key } of order) {
-      const chunk = system.chunks.get(key);
-      if (!chunk || !chunk.meta.volumetric || !chunk.mesh) continue;
-      if (collidedChunks.get(key) === chunk) continue;
-      if (maxRebuilds > 0 && built >= maxRebuilds) { deferred = true; break; }
-      volumeProvider.setChunk(key, collisionGeometry(chunk), { sourceVersion: chunk.meta.sourceVersion });
-      collidedChunks.set(key, chunk);
-      built++;
-    }
+    return order;
+  }
+  function colliderWanted(key) {
+    const chunk = system.chunks.get(key);
+    return !!chunk && !!chunk.meta.volumetric && !!chunk.mesh && collidedChunks.get(key) !== chunk;
+  }
+  // Nearest-first from the collider focus (the BODY, not the stream centre): a budget must never
+  // defer the chunk the player is standing on.
+  function nextColliderKey() {
+    if (!volumetricMode) return null;
+    for (const { key } of colliderOrder()) if (colliderWanted(key)) return key;
+    return null;
+  }
+  function buildCollider(key) {
+    const chunk = system.chunks.get(key);
+    if (!chunk || !chunk.mesh) return false;
+    const t0 = clock();
+    volumeProvider.setChunk(key, collisionGeometry(chunk), { sourceVersion: chunk.meta.sourceVersion });
+    collidedChunks.set(key, chunk);
+    lastColliderMs += clock() - t0;
+    return true;
+  }
+  function syncColliderRemovals() {
+    if (!volumetricMode) { if (collidedChunks.size) { volumeProvider.clear(); collidedChunks.clear(); } return; }
+    const wanted = new Set(colliderOrder().map(o => o.key));
     for (const key of [...collidedChunks.keys()]) {
       if (!wanted.has(key) || !system.chunks.has(key)) { volumeProvider.removeChunk(key); collidedChunks.delete(key); }
     }
-    return deferred;
+  }
+  // Returns true when colliders were left to rebuild. Kept for the immediate paths (a mode
+  // switch, a source swap) that must not wait for a frame budget.
+  function syncVolumeColliders(maxRebuilds = 0) {
+    syncColliderRemovals();
+    if (!volumetricMode) return false;
+    let built = 0, key;
+    while ((key = nextColliderKey()) != null) {
+      if (maxRebuilds > 0 && built >= maxRebuilds) return true;
+      buildCollider(key);
+      built++;
+    }
+    return false;
   }
   if (volumetric) { system.setVolumetric(true); volumetricMode = true; }
 
@@ -288,8 +323,8 @@ export function createBaseGameTerrain({
     if (cascade.length) return cascade;
     cfg.volumeLod.forEach((spec, i) => {
       const lvl = createTerrainSystem({
-        params: { chunkSize: spec.chunkSize, renderRadius: spec.renderRadius, segmentsPerChunk: spec.segments, lod: i + 1, volumetric: true, maxChunksPerUpdate: 1, maxUnloadsPerUpdate: 2, useWorker },
-        source: system.source,
+        params: { chunkSize: spec.chunkSize, renderRadius: spec.renderRadius, segmentsPerChunk: spec.segments, lod: i + 1, volumetric: true, maxChunksPerUpdate: 1, maxUnloadsPerUpdate: 2, useWorker, integrateExternally: true },
+        source: system.source, now: clock,
       });
       lvl.setTint({ seaLevel, revision: tintRevision });
       lvl.material = groundMaterial();   // chunks pick it up at creation: same look, same wireframe
@@ -562,42 +597,74 @@ export function createBaseGameTerrain({
   let installedTotal = 0;
   let lastResident = 0;
   const perSecond = { installs: 0, window: 0, rate: 0 };
-  const frameCostOut = { installMs: 0, foldMs: 0, fieldMs: 0, installCount: 0, colorizeMs: 0, batchMs: 0, colliderMs: 0 };
+  const frameCostOut = { installMs: 0, foldMs: 0, fieldMs: 0, installCount: 0, colorizeMs: 0, batchMs: 0, colliderMs: 0,
+    integrateMs: 0, integrateItems: 0, maxItemMs: 0, queued: 0, queuedBytes: 0 };
+  let lastIntegrateMs = 0;     // everything the scheduler ran this frame, on one deadline
+  let lastOverruns = 0;        // frames' worth of the one-item overrun rule firing
+  let lastMaxItemMs = 0;       // the single most expensive operation, usually a collider BVH
+  let lastItemCount = 0;
+  let stageCursor = 0;         // round-robin start, so no stage starves behind a nearer one
+  let lastBody = null;         // previous frame's body position, for the swept footprint
 
-  // `budget` is shared across the near system and every cascade level, so one frame's fold-in is
-  // bounded overall rather than per-system. Returns true when chunks were left unfolded.
-  function syncBatches(sys, b, batched, hideRule, budget = null) {
-    let deferred = false;
+  // The batch bookkeeping that costs nothing: visibility, and removals for chunks that left.
+  // Folding a chunk INTO a batch is a separate operation the scheduler charges to its deadline.
+  // A chunk not yet in its batch draws its own mesh, which is correct, just one draw call more;
+  // and a replaced chunk still has its predecessor's geometry in the batch under this key, so
+  // that entry is hidden or it would draw over the new mesh.
+  function syncBatchVisibility(sys, b, batched, hideRule) {
+    let pending = 0;
     b.beginFrame();
     for (const [key, chunk] of sys.chunks) {
       if (!chunk.mesh) continue;
       const hidden = hideRule(chunk);
-      if (batched.get(key) !== chunk) {
-        if (budget && budget.left <= 0) {
-          // Not folded this frame: the chunk draws its own mesh, which is correct, just cheaper
-          // to leave than to batch right now. Colours are already applied by applyMaterials.
-          // A replaced chunk still has its predecessor's geometry in the batch under this key --
-          // left visible it would draw over the new mesh, so the mesh wins until the fold lands.
-          deferred = true;
-          if (b.has(key)) b.setVisible(key, false);
-          chunk.mesh.visible = !hidden;
-          continue;
-        }
-        colorizeGeometry(chunk.mesh.geometry);
-        if (b.add(key, chunk.mesh.geometry)) batched.set(key, chunk); else batched.delete(key);
-        if (budget) budget.left--;
-      }
       const inBatch = batched.get(key) === chunk;
-      chunk.mesh.visible = !inBatch && !hidden;
       if (inBatch) b.setVisible(key, !hidden);
+      else { pending++; if (b.has(key)) b.setVisible(key, false); }
+      chunk.mesh.visible = !inBatch && !hidden;
     }
     for (const key of [...batched.keys()]) if (!sys.chunks.has(key)) { b.remove(key); batched.delete(key); }
-    return deferred;
+    return pending;
   }
-  function applyMaterials(maxFolds = 0) {
-    const budget = maxFolds > 0 ? { left: maxFolds } : null;
-    let deferred = false;
-    const tColor = performance.now();
+  // Fold exactly one chunk into its batch. One operation, one deadline charge.
+  function foldOne(sys, b, batched, hideRule, key) {
+    const chunk = sys.chunks.get(key);
+    if (!chunk || !chunk.mesh) return false;
+    const t0 = clock();
+    colorizeGeometry(chunk.mesh.geometry);
+    if (b.add(key, chunk.mesh.geometry)) batched.set(key, chunk); else batched.delete(key);
+    const inBatch = batched.get(key) === chunk;
+    const hidden = hideRule(chunk);
+    chunk.mesh.visible = !inBatch && !hidden;
+    if (inBatch) b.setVisible(key, !hidden);
+    lastBatchMs += clock() - t0;
+    return true;
+  }
+  // The next chunk of this system waiting to be folded, nearest to `focus` first.
+  function nextFoldKey(sys, batched, focus) {
+    let best = null, bestD = Infinity;
+    for (const [key, chunk] of sys.chunks) {
+      if (!chunk.mesh || batched.get(key) === chunk) continue;
+      const d = (chunk.xMin + chunk.size * 0.5 - focus[0]) ** 2 + (chunk.zMin + chunk.size * 0.5 - focus[1]) ** 2;
+      if (d < bestD) { bestD = d; best = key; }
+    }
+    return best;
+  }
+  const nearHideRule = chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode;
+  const cascadeHideRule = () => false;
+  // Every batcher, near and cascade, as one list the scheduler and the material pass both walk.
+  function batchTargets() {
+    const out = [{ sys: system, b: batcher, batched: batchedChunks, hideRule: nearHideRule }];
+    for (const c of cascade) {
+      let cb = cascadeBatchers.get(c.system);
+      if (!cb) { cb = { batcher: createChunkBatcher({ material: cascadeMaterial(c.level), name: `base-game-terrain-lod-${c.level}-batches`, slots: 64, vertices: 200_000, indices: 600_000, perObjectFrustumCulled: cfg.batchFrustumCulled }), batched: new Map() }; cascadeBatchers.set(c.system, cb); c.group.add(cb.batcher.group); }
+      out.push({ sys: c.system, b: cb.batcher, batched: cb.batched, hideRule: cascadeHideRule, level: c.level });
+    }
+    return out;
+  }
+  // Materials, wireframe and batch visibility. No folding and, since the worker tints, no
+  // per-vertex work either: colorizeGeometry returns early on a chunk whose revision is current.
+  function applyMaterialsPass() {
+    const tColor = clock();
     const mat = normals ? normalMaterial : groundMaterial();
     system.material.wireframe = wireframe;
     normalMaterial.wireframe = wireframe;
@@ -608,28 +675,136 @@ export function createBaseGameTerrain({
       colorizeGeometry(child.geometry);
       child.material = mat;
     }
-    // During a restream into volumetric mode the retained heightfield chunks are wrong ground:
-    // hide them and let the cascade's 5 m level show through until the exact chunk lands.
-    lastColorizeMs = performance.now() - tColor;
-    const tBatch = performance.now();
-    batcher.setMaterial(mat);
-    deferred = syncBatches(system, batcher, batchedChunks, chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode, budget) || deferred;
     for (const c of cascade) {
       const lvlMat = cascadeMaterial(c.level);
-      const tLvl = performance.now();
       for (const child of c.system.group.children) {
         if (!child.isMesh || !child.userData.terrainChunk) continue;
         colorizeGeometry(child.geometry);
         child.material = lvlMat;
       }
-      lastColorizeMs += performance.now() - tLvl;
-      let cb = cascadeBatchers.get(c.system);
-      if (!cb) { cb = { batcher: createChunkBatcher({ material: lvlMat, name: `base-game-terrain-lod-${c.level}-batches`, slots: 64, vertices: 200_000, indices: 600_000, perObjectFrustumCulled: cfg.batchFrustumCulled }), batched: new Map() }; cascadeBatchers.set(c.system, cb); c.group.add(cb.batcher.group); }
-      cb.batcher.setMaterial(lvlMat);
-      deferred = syncBatches(c.system, cb.batcher, cb.batched, () => false, budget) || deferred;
     }
-    lastBatchMs = performance.now() - tBatch;
-    return deferred;
+    lastColorizeMs += clock() - tColor;
+    let pending = 0;
+    const targets = batchTargets();
+    batcher.setMaterial(mat);
+    for (const t of targets) {
+      if (t.level != null) t.b.setMaterial(cascadeMaterial(t.level));
+      pending += syncBatchVisibility(t.sys, t.b, t.batched, t.hideRule);
+    }
+    return pending;
+  }
+  // Immediate, unbudgeted fold of everything. This is the settings path (wireframe, normals, a
+  // new splat material, recolorAll): a person changed something and expects to see it, and it is
+  // not a per-frame cost. The per-frame path goes through the scheduler instead.
+  function applyMaterials(maxFolds = 0) {
+    applyMaterialsPass();
+    let left = maxFolds > 0 ? maxFolds : Infinity;
+    for (const t of batchTargets()) {
+      let key;
+      while (left > 0 && (key = nextFoldKey(t.sys, t.batched, [system.centerX, system.centerZ])) != null) {
+        foldOne(t.sys, t.b, t.batched, t.hideRule, key);
+        left--;
+      }
+    }
+    return applyMaterialsPass() > 0;
+  }
+
+  // The chunks the body's footprint touched THIS frame: the swept segment from where it was to
+  // where it is, sampled with the body's own radius, so a diagonal crossing is caught the same as
+  // a cardinal one. Four cardinal neighbours would miss a corner cut.
+  function safetyKeys(bodyPosition) {
+    const size = system.params.chunkSize, r = cfg.safetyRadius;
+    const from = lastBody ?? bodyPosition;
+    const dx = bodyPosition[0] - from[0], dz = bodyPosition[2] - from[2];
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / (size * 0.5)));
+    const keys = new Set();
+    for (let i = 0; i <= steps; i++) {
+      const x = from[0] + dx * (i / steps), z = from[2] + dz * (i / steps);
+      for (const ox of [-r, r]) for (const oz of [-r, r]) keys.add(`${Math.floor((x + ox) / size)},${Math.floor((z + oz) / size)}`);
+    }
+    // Nearest the body FIRST: the sweep is built from where the body was, and the chunk it is
+    // standing in now is the one collision cannot wait for.
+    return [...keys].sort((a, b) => keyDistance2(a, size, bodyPosition) - keyDistance2(b, size, bodyPosition));
+  }
+  function keyDistance2(key, size, at) {
+    const [ix, iz] = key.split(',').map(Number);
+    return ((ix + 0.5) * size - at[0]) ** 2 + ((iz + 0.5) * size - at[2]) ** 2;
+  }
+
+  // One frame's integration. Every operation -- an install, one batch fold, one collider BVH --
+  // is charged to the SAME deadline, safety region included; nothing is exempt. The next
+  // operation is selected only while budget remains, and an operation already started may finish
+  // past it, after which the frame stops globally. That overrun is the guarantee.
+  function integrate(bodyPosition) {
+    const t0 = clock();
+    const deadline = t0 + cfg.integrateBudgetMs;
+    const safety = safetyKeys(bodyPosition);
+    const targets = batchTargets();
+    let folds = cfg.maxFoldsPerUpdate > 0 ? cfg.maxFoldsPerUpdate : Infinity;
+    let colliders = cfg.maxColliderRebuildsPerUpdate > 0 ? cfg.maxColliderRebuildsPerUpdate : Infinity;
+    let items = 0, overran = false;
+    lastMaxItemMs = 0;
+
+    // (1) The body's safety region: its install prerequisite, then its collider. Highest
+    // priority, same deadline.
+    const pickSafety = () => {
+      for (const key of safety) if (system.inbox.has(key)) return { run: () => system.commitNextResult(key) };
+      if (volumetricMode) for (const key of safety) if (colliderWanted(key) && colliders > 0) return { run: () => { buildCollider(key); colliders--; } };
+      return null;
+    };
+    // (2) Everything else, nearest-first within a stage, stages rotated so none starves, and a
+    // queue older than integrateAgeMs jumping the order outright.
+    const pickOther = () => {
+      const stages = [];
+      for (const t of targets) {
+        if (t.sys.queuedCount > 0) stages.push({ age: t.sys.queuedOldestMs(), run: () => t.sys.commitNextResult() });
+      }
+      if (folds > 0) {
+        for (const t of targets) {
+          const key = nextFoldKey(t.sys, t.batched, t.sys === system ? [bodyPosition[0], bodyPosition[2]] : [system.centerX, system.centerZ]);
+          if (key != null) { stages.push({ age: 0, run: () => { foldOne(t.sys, t.b, t.batched, t.hideRule, key); folds--; } }); break; }
+        }
+      }
+      if (colliders > 0) {
+        const key = nextColliderKey();
+        if (key != null) stages.push({ age: 0, run: () => { buildCollider(key); colliders--; } });
+      }
+      if (!stages.length) return null;
+      const aged = stages.filter(st => st.age > cfg.integrateAgeMs).sort((a, b) => b.age - a.age);
+      if (aged.length) return aged[0];
+      const pick = stages[stageCursor % stages.length];
+      stageCursor++;
+      return pick;
+    };
+
+    for (;;) {
+      // Budget is checked BEFORE selecting, never in the middle of an operation.
+      if (items > 0 && clock() >= deadline) { overran = true; break; }
+      const op = pickSafety() ?? pickOther();
+      if (!op) break;
+      const opStart = clock();
+      op.run();
+      const ms = clock() - opStart;
+      if (ms > lastMaxItemMs) lastMaxItemMs = ms;
+      items++;
+    }
+    lastItemCount = items;
+    if (overran && clock() > deadline) lastOverruns++;
+    lastIntegrateMs = clock() - t0;
+    return items;
+  }
+
+  // Queued integration work across the near system AND every cascade level, so the budget and
+  // the panel see the whole backlog rather than one system's share of it.
+  function queuedTotal() { let n = system.queuedCount; for (const c of cascade) n += c.system.queuedCount; return n; }
+  function queuedBytesTotal() { let n = system.queuedBytes; for (const c of cascade) n += c.system.queuedBytes; return n; }
+  function queuedOldestTotal() { let n = system.queuedOldestMs(); for (const c of cascade) n = Math.max(n, c.system.queuedOldestMs()); return n; }
+  function staleDropsTotal() { let n = system.staleDrops; for (const c of cascade) n += c.system.staleDrops; return n; }
+
+  function integratePending() {
+    if (system.queuedCount > 0) return true;
+    for (const c of cascade) if (c.system.queuedCount > 0) return true;
+    return false;
   }
 
   function refreshTileBounds() {
@@ -965,17 +1140,8 @@ export function createBaseGameTerrain({
       lastResident = resident;
       perSecond.window += dt;
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
-      lastFoldMs = lastColorizeMs = lastBatchMs = lastColliderMs = 0;
-      // Budgeted, and resumed on later frames: a burst of arrivals is spread instead of landing
-      // as one 20-35 ms hitch. Deferred chunks keep drawing their own mesh meanwhile.
-      if (changed || foldPending || colliderPending) {
-        const tFold = performance.now();
-        foldPending = applyMaterials(cfg.maxFoldsPerUpdate);
-        const tColl = performance.now();
-        colliderPending = syncVolumeColliders(cfg.maxColliderRebuildsPerUpdate);
-        lastColliderMs = performance.now() - tColl;
-        lastFoldMs = performance.now() - tFold;
-      }
+      lastFoldMs = lastColorizeMs = lastBatchMs = lastColliderMs = lastIntegrateMs = 0;
+      lastItemCount = 0;
       if (seaDepthActive) { seaDepth.recentre(globalPosition[0], globalPosition[2]); seaDepth.update(); }
       if (farLodMode && !volumetricMode && clipmap) {
         const t1 = performance.now();
@@ -987,9 +1153,22 @@ export function createBaseGameTerrain({
       if (farLodMode && volumetricMode && cascade.length) {
         const t1 = performance.now();
         for (const c of cascade) cascadeChanged = c.system.update(globalPosition[0], globalPosition[2]) || cascadeChanged;
-        if (cascadeChanged) applyMaterials();
         lastClipmapMs = performance.now() - t1;
       }
+      // One scheduler over the near system, every cascade level and the colliders, on one
+      // deadline. The cascade's own unbudgeted applyMaterials() call is gone: it folded every
+      // pending chunk at every level whenever a far chunk landed, which was the 27 ms fold.
+      const tFold = performance.now();
+      let committed = 0;
+      if (changed || cascadeChanged || foldPending || colliderPending || integratePending()) {
+        syncColliderRemovals();
+        applyMaterialsPass();
+        committed = integrate(bodyPosition);
+        foldPending = applyMaterialsPass() > 0;   // a second pass: what the scheduler folded is now visible
+        colliderPending = nextColliderKey() != null;
+      }
+      lastFoldMs = performance.now() - tFold;
+      lastBody = [bodyPosition[0], bodyPosition[1], bodyPosition[2]];
       const tField = performance.now();
       const fw = fieldWindow(), cw = contactWindow(), pw = planWindow();
       if (fw) fw.update(globalPosition[0], globalPosition[2]);
@@ -997,8 +1176,11 @@ export function createBaseGameTerrain({
       if (pw) pw.update(globalPosition[0], globalPosition[2]);
       if (fw || cw) fieldScheduler.pump();
       if (pw) planScheduler.pump();
-      if (changed || cascadeChanged) residencyRevision++;   // which chunks exist moved; anything baked over them is stale
-      updateCoverage(globalPosition, dt, changed || cascadeChanged);
+      // Commits, not just `changed`: a chunk installed by the scheduler this frame is residency
+      // that moved this frame, and `changed` would not report it until the next update().
+      const residencyMoved = changed || cascadeChanged || committed > 0;
+      if (residencyMoved) residencyRevision++;   // anything baked over the chunks is stale
+      updateCoverage(globalPosition, dt, residencyMoved);
       lastFieldMs = performance.now() - tField;
       const bodyCollided = volumeProvider.hasChunk(chunkKeyAt(bodyPosition[0], bodyPosition[2]));
       if (handoffPending && bodyCollided) {
@@ -1010,7 +1192,7 @@ export function createBaseGameTerrain({
         handoffPending = true;
         applyProviders();
       }
-      if (changed && tileBounds) refreshTileBounds();
+      if (residencyMoved && tileBounds) refreshTileBounds();
       if (collisionDebug) {
         const hit = provider.groundProbe({ origin: [globalPosition[0], globalPosition[1] + 0.5, globalPosition[2]], maxDistance: 50, slopeLimitCos: -1 });
         contactMarker.visible = !!hit && visible;
@@ -1026,6 +1208,9 @@ export function createBaseGameTerrain({
       frameCostOut.installMs = lastInstallMs; frameCostOut.foldMs = lastFoldMs; frameCostOut.fieldMs = lastFieldMs;
       frameCostOut.installCount = lastInstallCount; frameCostOut.colorizeMs = lastColorizeMs;
       frameCostOut.batchMs = lastBatchMs; frameCostOut.colliderMs = lastColliderMs;
+      frameCostOut.integrateMs = lastIntegrateMs; frameCostOut.integrateItems = lastItemCount;
+      frameCostOut.maxItemMs = lastMaxItemMs;
+      frameCostOut.queued = queuedTotal(); frameCostOut.queuedBytes = queuedBytesTotal();
       return frameCostOut;
     },
 
@@ -1067,6 +1252,14 @@ export function createBaseGameTerrain({
         lastColliderMs: +lastColliderMs.toFixed(2),
         foldPending,
         colliderPending,
+        queued: queuedTotal(),
+        queuedBytes: queuedBytesTotal(),
+        queuedOldestMs: +queuedOldestTotal().toFixed(1),
+        staleDrops: staleDropsTotal(),
+        overruns: lastOverruns,
+        maxItemMs: +lastMaxItemMs.toFixed(2),
+        lastIntegrateMs: +lastIntegrateMs.toFixed(2),
+        integrateBudgetMs: cfg.integrateBudgetMs,
         maxFoldsPerUpdate: cfg.maxFoldsPerUpdate,
         maxColliderRebuildsPerUpdate: cfg.maxColliderRebuildsPerUpdate,
         lastFieldMs: +lastFieldMs.toFixed(2),
