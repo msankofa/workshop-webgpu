@@ -126,3 +126,38 @@ export function thinTiers(half, tiers, budget) {
   }
   return t;
 }
+
+// Per-tier survivor regions (2026-09-06, tiered recull plan): each tier compacts its survivors
+// into its own slice of the instance buffer so one tier can recull without touching another.
+// A tier's slice is its own candidate count; when the layout outgrows the buffer the inner tiers
+// keep their full slice and the outer ones take what is left, the same priority as thinTiers.
+export function tierRegions(layout, capacity) {
+  const out = [];
+  let base = 0, prev = 0;
+  for (let i = 0; i < layout.threads.length; i++) {
+    const want = Math.max(0, layout.threads[i] - prev);
+    const size = Math.max(0, Math.min(want, capacity - base));
+    out.push({ base, size });
+    base += size; prev = layout.threads[i];
+  }
+  return out;
+}
+
+// Whether a tier is due for a recull. `last` is what the tier saw at its previous recull
+// ({ x, z, fx, fz, frame } or null), `now` the camera and frame ({ x, z, fx, fz, frame, dirty,
+// occlusion }), `clock` the tier's thresholds ({ move, turn, frames }; move in metres, turn in
+// degrees, frames a count; 0 move or turn fires on any motion, frames under 1 counts as 1).
+// A dirty window always fires. Without occlusion nothing else does: the cull only depends on the
+// camera through the cell crossing and the cone, which the caller folds into `dirty`.
+export function tierDue(last, now, clock) {
+  if (now.dirty || !last) return true;
+  if (!now.occlusion) return false;
+  const frames = Math.max(1, clock.frames | 0);
+  if (now.frame - last.frame >= frames) return true;
+  const dx = now.x - last.x, dz = now.z - last.z;
+  const moved = dx * dx + dz * dz;
+  if (moved > 0 && moved >= clock.move * clock.move) return true;
+  const dot = now.fx * last.fx + now.fz * last.fz;
+  const turned = dot < Math.cos(clock.turn * Math.PI / 180) - 1e-9;
+  return turned && (clock.turn > 0 || dot < 1 - 1e-9);
+}
