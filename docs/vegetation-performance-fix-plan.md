@@ -120,3 +120,11 @@ outcomes, with buffer overflow reported separately. The bottom HUD shows total a
 percentages. These diagnostic atomics can affect FPS and are disabled when the HUD, grass panel,
 and performance capture are all closed. Occlusion root refreshes also preserve the requested
 toggle and remove stale owned layer bits when terrain or other roots leave the set.
+
+Patchiness root cause follow-up: unlike the atrium viewer, Base Game called its flora structure/
+root synchronizer from the per-frame world update. The receiver APIs treated identical values as
+edits, so every frame forced grass regeneration and dirtied the supposedly static occlusion
+cache (`lastRecull=dirty:forced`, about 75 reculls/s in the inspected capture). Structure and
+ordered root/filter registrations are now idempotent, with a stable terrain filter identity.
+Occlusion bias/view/depth changes are also inert while master occlusion is off. Real streamed-root
+changes retain their explicit revision-driven invalidation. Browser confirmation remains pending.

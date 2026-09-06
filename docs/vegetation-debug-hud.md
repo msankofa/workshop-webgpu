@@ -24,6 +24,14 @@ ground/water, off-screen, depth-occlusion, and survivor totals, with capacity ov
 Those rejection atomics run only while diagnostics are requested and may reduce FPS; hide the
 HUD and close the grass panel when measuring normal play. Occlusion A/B FPS while the HUD is
 open includes this constant instrumentation overhead.
+
+Base Game's world updater still invokes flora synchronization every frame because online room
+flags can change independently of local settings. The setters are identity-idempotent: unchanged
+structure textures and unchanged ordered root/filter pairs neither force a grass recull nor
+invalidate the static depth cache. The terrain filter is a stable function reference. Bias,
+depth revision and depth-camera changes are ignored by the grass cull while master occlusion is
+off; enabling it applies the latest cached values in one recull. Actual terrain residency and
+structure-version changes continue through `remarkOccluders()` explicitly.
 Depth render and cache-skip rates expose the occlusion pass's activity; its CPU submission
 duration does not measure GPU depth rasterization. Trees currently have no depth-occlusion cull.
 

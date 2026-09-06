@@ -525,7 +525,8 @@ section('occlusion root refreshes preserve the requested toggle and retire old r
   const building = new THREE.Group(), terrainRoot = new THREE.Group();
   const terrainMesh = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial());
   terrainRoot.add(terrainMesh);
-  flora.setOccluders([building, terrainRoot]);
+  check('the first root registration changes occlusion state', flora.setOccluders([building, terrainRoot]) === true);
+  check('sending identical roots every frame is a no-op', flora.setOccluders([building, terrainRoot]) === false);
   flora.setOcclusionEnabled(false);
   flora.setOccluders([building, terrainRoot]);
   check('refreshing roots cannot silently turn requested occlusion back on', flora.occlusion.enabled === false);
@@ -537,6 +538,10 @@ section('occlusion root refreshes preserve the requested toggle and retire old r
   check('an empty root set disables the pass', flora.occlusion.enabled === false);
   flora.setOccluders([building]);
   check('adding roots restores the requested enabled state', flora.occlusion.enabled === true);
+  const structure = { bounds: { minX: 0, minZ: 0, worldX: 10, worldZ: 10 },
+    densityTex: new THREE.DataTexture(), heightTex: new THREE.DataTexture() };
+  check('the first structure registration changes the grass inputs', flora.setStructure(structure) === true);
+  check('sending the identical structure every frame cannot force a recull', flora.setStructure(structure) === false);
   flora.dispose(); terrain.dispose(); terrainMesh.geometry.dispose(); terrainMesh.material.dispose();
 }
 

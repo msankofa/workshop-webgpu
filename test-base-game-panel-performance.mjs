@@ -20,6 +20,8 @@ for (const name of ['terrainRuntimeLine', 'grassRuntimeLine', 'forestRuntimeLine
   assert.match(html, new RegExp(`if \\(panelElementVisible\\(${name}\\)\\) refresh`));
 }
 assert.match(html, /if \(element\.textContent !== text\) element\.textContent = text/);
+assert.match(html, /const terrainFloraOccluder = o => o\.isBatchedMesh/,
+  'the per-frame flora sync reuses one terrain filter identity');
 assert.match(html, /if \(panelElementVisible\(playerStatus\)\)/);
 assert.ok(html.includes('flora.setDiagnosticsEnabled(!!activePerformanceCapture || panelElementVisible(grassRuntimeLine) || vegetationDebugHud.visible'),
   'GPU grass diagnostics run only for an active capture, visible panel, or visible HUD');

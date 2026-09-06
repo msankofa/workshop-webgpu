@@ -1342,6 +1342,7 @@ function syncSpawnBuilding() {
 // with the lab and the near terrain chunks (never the far clipmap rings, which a position node
 // places and the depth pass would draw flat).
 let floraOccResidency = -1;
+const terrainFloraOccluder = o => o.isBatchedMesh; // stable identity keeps per-frame sync idempotent
 function syncSpawnBuildingFlora() {
   if (!floraForBuilding) return;
   const wanted = spawnBuildingWanted();
@@ -1350,7 +1351,7 @@ function syncSpawnBuildingFlora() {
   if (wanted) roots.push(spawnBuilding.root);
   if (structures && structuresWanted()) roots.push(structures.root);
   if (settings.worldMode === 'traversalLab') roots.push(traversalLab.root);
-  if (settings.worldMode === 'terrain' && settings.grassTerrainOccludes) roots.push({ root: terrain.root, filter: (o) => o.isBatchedMesh });
+  if (settings.worldMode === 'terrain' && settings.grassTerrainOccludes) roots.push({ root: terrain.root, filter: terrainFloraOccluder });
   floraForBuilding.setOccluders(roots);
   floraOccResidency = terrain.residencyRevision;
   floraOccStructures = structures?.version ?? -1;

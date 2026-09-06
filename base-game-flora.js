@@ -547,7 +547,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // { bounds: {minX, minZ, worldX, worldZ}, densityTex, heightTex } in GLOBAL metres, or null.
     // Live: the uniforms and texture nodes swap without a rebuild.
     setStructure(next) {
-      structure = next || null;
+      next = next || null;
+      if (structure === next) return false;
+      structure = next;
       uStructOn.value = structure ? 1 : 0;
       if (structure) {
         uStructMin.value.set(structure.bounds.minX, structure.bounds.minZ);
@@ -559,20 +561,25 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
         structHeightNode.value = placeholderTex;
       }
       grass?.forceRecull?.();
+      return true;
     },
     // The groups whose opaque meshes occlude blades: one Object3D, or a list of Object3D or
     // { root, filter }. The kernels compile the test in at build, so the first call before the
     // grass exists is free; a later first call rebuilds the field.
     setOccluders(roots) {
-      occluderRoots = (Array.isArray(roots) ? roots : [roots]).filter(Boolean).map((r) => (r.isObject3D ? { root: r, filter: null } : r));
+      const next = (Array.isArray(roots) ? roots : [roots]).filter(Boolean).map((r) => (r.isObject3D ? { root: r, filter: null } : r));
+      if (next.length === occluderRoots.length
+        && next.every((entry, i) => entry.root === occluderRoots[i].root && entry.filter === occluderRoots[i].filter)) return false;
+      occluderRoots = next;
       occlusion?.clearOccluders();
-      if (!occluderRoots.length) { if (occlusion) occlusion.setEnabled(false); return; }
+      if (!occluderRoots.length) { if (occlusion) occlusion.setEnabled(false); return true; }
       if (!occlusion) {
         occlusion = createFloraOcclusion({ renderer, scene, camera, cacheStatic: true });
         if (grass) rebuild();
       }
       occlusion.setEnabled(occlusionEnabled);
       this.remarkOccluders();
+      return true;
     },
     // Re-marks every root: a streamed terrain grows new batches under an unmoved root.
     remarkOccluders() {

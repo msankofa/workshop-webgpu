@@ -285,8 +285,10 @@ export function createComputeGrass(opts) {
     if (!occlusion) return false;
     const on = occlusion.enabled ? 1 : 0;
     const revision = occlusion.revision ?? 0;
-    const changed = uOccOn.value !== on || !uOccVP.value.equals(occlusion.viewProj)
-      || lastOccRevision !== revision || uOccBias.value !== occlusion.bias || !uOccTexel.value.equals(occlusion.texel);
+    // While disabled, depth image, camera and bias changes cannot affect the shader result.
+    // Still cache them so enabling needs one recull, not a second catch-up recull afterward.
+    const changed = uOccOn.value !== on || !!on && (!uOccVP.value.equals(occlusion.viewProj)
+      || lastOccRevision !== revision || uOccBias.value !== occlusion.bias || !uOccTexel.value.equals(occlusion.texel));
     lastOccRevision = revision;
     uOccOn.value = on;
     uOccVP.value.copy(occlusion.viewProj);

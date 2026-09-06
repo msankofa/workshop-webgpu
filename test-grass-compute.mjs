@@ -356,6 +356,17 @@ section('occluder edits recull even when the camera is stationary');
   occlusion.bias = 0.2;
   await grass.update(3);
   check('a bias change also forces a cull', grass.stats.reculls === before + 2);
+  occlusion.enabled = false;
+  await grass.update(4);
+  const disabled = grass.stats.reculls;
+  occlusion.bias = 2.5;
+  occlusion.revision++;
+  occlusion.viewProj.makeTranslation(10, 0, 0);
+  await grass.update(5);
+  check('bias, image and camera changes are inert while occlusion is disabled', grass.stats.reculls === disabled);
+  occlusion.enabled = true;
+  await grass.update(6);
+  check('re-enabling applies the latest depth state in one recull', grass.stats.reculls === disabled + 1);
   grass.dispose(); occlusion.texture.dispose();
 }
 
