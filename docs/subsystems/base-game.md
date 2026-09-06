@@ -3600,6 +3600,20 @@ the level count and the reduce's CPU time; the capture's `occlusion` field carri
 atlas size and that time. Nothing is browser-verified yet; the cost of the pass path versus the
 direct render on the user's machine is still to be read.
 
+**Tiered recull** (2026-09-06, `docs/superpowers/plans/2026-09-06-base-game-grass-tiered-recull.md`,
+steps 1 to 3). The first A/B with the pyramid on showed 79% fewer blades and no frame-time win,
+because the pyramid changes every frame and the grass reculled its 15 million candidates every
+frame. The grass now compacts each distance tier's survivors into its own region and draws it
+with its own indirect draw (`grass-compute.js`, see `vegetation.md`), and each tier reculls on its
+own clock: the near tier every frame; the middle tier when the camera moved `grassRecullMoveMid`
+metres or turned `grassRecullTurnMid` degrees or after `grassRecullFramesMid` frames (defaults
+0.5 m, 3°, 4); the far tier likewise with `grassRecullMoveFar`, `grassRecullTurnFar`,
+`grassRecullFramesFar` (2 m, 8°, 16). Six Plants sliders under the tier sliders; all are flora
+apply keys. With occlusion off the old rule stands (a recull on a cell crossing or a cone change).
+The grass runtime line reports per-tier reculls a second and candidate threads, which is where
+the win shows: the far tier is most of the threads and reculls a few times a second while walking.
+Unseen in a browser.
+
 ## Scattered structures (2026-09-05, in progress)
 
 Every structure placed in the world is eco-brutalist, from the same generator as the spawn

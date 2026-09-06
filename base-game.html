@@ -292,6 +292,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   grassFarDensity: BASE_GAME_FLORA_DEFAULTS.grassFarDensity,
   grassFrustumCull: BASE_GAME_FLORA_DEFAULTS.grassFrustumCull,
   grassNearKeep: BASE_GAME_FLORA_DEFAULTS.grassNearKeep,
+  grassRecullMoveMid: BASE_GAME_FLORA_DEFAULTS.grassRecullMoveMid, grassRecullTurnMid: BASE_GAME_FLORA_DEFAULTS.grassRecullTurnMid, grassRecullFramesMid: BASE_GAME_FLORA_DEFAULTS.grassRecullFramesMid,
+  grassRecullMoveFar: BASE_GAME_FLORA_DEFAULTS.grassRecullMoveFar, grassRecullTurnFar: BASE_GAME_FLORA_DEFAULTS.grassRecullTurnFar, grassRecullFramesFar: BASE_GAME_FLORA_DEFAULTS.grassRecullFramesFar,
   grassShading: BASE_GAME_FLORA_DEFAULTS.grassShading,
   grassReceiveShadow: BASE_GAME_FLORA_DEFAULTS.grassReceiveShadow,
   grassOcclusion: true,           // grass and trees behind what the last frame drew are not generated (hiz-pyramid.js)
@@ -3428,6 +3430,7 @@ const FLORA_APPLY_KEYS = ['grassEnabled', 'worldMode', 'grassDensity', 'grassRad
   'grassFadeEnd', 'grassFadeCurve', 'grassFadeHeight', 'grassFadeWidth', 'grassTintFadeStart', 'grassTintFadeEnd',
   'grassNearFadeStart', 'grassNearFadeEnd', 'grassHandoverDistance', 'grassNearFade', 'grassHeightSource', 'grassResidencyGate',
   'grassCoverFloor', 'grassTierMid', 'grassMidDensity', 'grassTierFar', 'grassFarDensity',
+  'grassRecullMoveMid', 'grassRecullTurnMid', 'grassRecullFramesMid', 'grassRecullMoveFar', 'grassRecullTurnFar', 'grassRecullFramesFar',
   'grassFrustumCull', 'grassNearKeep', 'grassShading', 'grassReceiveShadow', 'grassBufferMB', 'grassKmax', 'grassOcclusion', 'drawDistance'];
 const appliedFlora = {};
 let floraLoading = false;
@@ -3474,6 +3477,8 @@ function applyFloraSettings() {
     grassFarDensity: settings.grassFarDensity,
     grassFrustumCull: settings.grassFrustumCull,
     grassNearKeep: settings.grassNearKeep,
+    grassRecullMoveMid: settings.grassRecullMoveMid, grassRecullTurnMid: settings.grassRecullTurnMid, grassRecullFramesMid: settings.grassRecullFramesMid,
+    grassRecullMoveFar: settings.grassRecullMoveFar, grassRecullTurnFar: settings.grassRecullTurnFar, grassRecullFramesFar: settings.grassRecullFramesFar,
     grassShading: settings.grassShading,
     grassReceiveShadow: settings.grassReceiveShadow,
     grassBufferMB: settings.grassBufferMB,
@@ -4839,6 +4844,12 @@ addRange(plantsSec, 'grassMidDensity', 'Middle tier density (fraction of the sli
 addRange(plantsSec, 'grassTierFar', 'Middle tier ends (m, 0 = no far tier)', 0, 600, 1,
   value => (value ? `${value.toFixed(0)} m` : 'no far tier'));
 addRange(plantsSec, 'grassFarDensity', 'Far tier density (fraction of the slider)', 0, 1, 0.05, value => value.toFixed(2));
+addRange(plantsSec, 'grassRecullMoveMid', 'Middle tier recull: moved (m)', 0, 20, 0.1, value => `${value.toFixed(1)} m`);
+addRange(plantsSec, 'grassRecullTurnMid', 'Middle tier recull: turned (deg)', 0, 90, 0.5, value => `${value.toFixed(1)}°`);
+addRange(plantsSec, 'grassRecullFramesMid', 'Middle tier recull: every (frames)', 1, 120, 1, value => `${value.toFixed(0)}`);
+addRange(plantsSec, 'grassRecullMoveFar', 'Far tier recull: moved (m)', 0, 50, 0.1, value => `${value.toFixed(1)} m`);
+addRange(plantsSec, 'grassRecullTurnFar', 'Far tier recull: turned (deg)', 0, 90, 0.5, value => `${value.toFixed(1)}°`);
+addRange(plantsSec, 'grassRecullFramesFar', 'Far tier recull: every (frames)', 1, 240, 1, value => `${value.toFixed(0)}`);
 addRange(plantsSec, 'grassCullStart', 'Fade band start (m, 0 = 80% of radius)', 0, 600, 1,
   value => (value ? `${value.toFixed(0)} m` : 'auto'));
 addRange(plantsSec, 'grassFadeEnd', 'Fade band end (m, 0 = the draw radius)', 0, 600, 1,
@@ -4936,7 +4947,7 @@ function refreshGrassRuntimeLine() {
     : `far blades on the 8 m field${g.heightSource === 'field (no rings)' ? ` (no rings: ${g.ringsWhy || 'not at build time'})` : g.heightSource === 'field (rings streaming)' ? ' (rings still streaming)' : ''}`;
   const occ = hiz.state.enabled ? `, occlusion on (hi-z, ${hiz.stats.levels} levels, ${hiz.stats.lastUpdateCpuMs.toFixed(2)} ms)` : ', occlusion off';
   setTextIfChanged(grassRuntimeLine, `${g.radius.toFixed(0)} m${clamped} at ${g.density.toFixed(1)} blades/m^2 (max ${g.maxDensity})${cover}: `
-    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads a recull at ${g.recullRate.toFixed(1)} reculls/s (last: ${g.lastRecull || '?'})${occ}, ${ground}, ${stands}, `
+    + `${drawn}, ${(g.dispatch / 1e6).toFixed(2)}M threads the last recull at ${g.recullRate.toFixed(1)} reculls/s (last: ${g.lastRecull || '?'}; per tier ${(g.tierRecullRate || []).map(r => r.toFixed(0)).join(' / ')} reculls/s over ${(g.tierThreads || []).map(t => (t / 1e6).toFixed(2)).join(' / ')}M threads)${occ}, ${ground}, ${stands}, `
     + `contact field ${(g.coverage * 100).toFixed(0)}% and placement field ${(g.placementCoverage * 100).toFixed(0)}% streamed.`
     + `${tiers}${thinned}${over}`);
   grassProbeLine.hidden = false;

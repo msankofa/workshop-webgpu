@@ -42,6 +42,11 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   // defaults; shading and shadow receive are the original look.
   grassFrustumCull: true,      // drop blades outside the camera's horizontal field of view
   grassNearKeep: 6,            // metres around the camera kept whatever the cone says
+  // Per-tier recull clocks under Hi-Z occlusion (tiered recull plan): a tier re-culls when the
+  // camera moved or turned this much since its last recull, or after this many frames. The near
+  // tier is every frame. 0 metres or degrees fires on any motion.
+  grassRecullMoveMid: 0.5, grassRecullTurnMid: 3, grassRecullFramesMid: 4,
+  grassRecullMoveFar: 2, grassRecullTurnFar: 8, grassRecullFramesFar: 16,
   grassShading: 'standard',    // 'standard' (PBR) or 'lambert' (diffuse only, cheaper per fragment)
   grassReceiveShadow: true,
   grassKmax: 512,              // blades per 2 m cell; the density ceiling is this / cellSize^2
@@ -125,6 +130,12 @@ export function expectedBlades(radius, density, cullStart, fadeEnd = 0, curve = 
 }
 
 // The grass-compute tier spec for a settings block: [{ radius, density }], the last open-ended.
+export function tierClocksFor(cfg) {
+  return [{ move: 0, turn: 0, frames: 1 },
+    { move: cfg.grassRecullMoveMid, turn: cfg.grassRecullTurnMid, frames: cfg.grassRecullFramesMid },
+    { move: cfg.grassRecullMoveFar, turn: cfg.grassRecullTurnFar, frames: cfg.grassRecullFramesFar }];
+}
+
 export function tierSpecFor(cfg) {
   const mid = Math.max(0, cfg.grassTierMid || 0), far = Math.max(0, cfg.grassTierFar || 0);
   const tiers = [];
@@ -213,7 +224,8 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // Readbacks on a timer: blades the last cull kept, the ground colour under the camera as the
     // cull packs it (global y), and the CPU twin of that colour from the layer averages.
     drawn: null, probe: null, groundTwin: null, probeError: null, coverHere: null, waitingOnTextures: false,
-    rebuilds: 0, recullRate: 0 };
+    rebuilds: 0, recullRate: 0, tierRecullRate: [0, 0, 0], tierThreads: [0, 0, 0] };
+  let lastTierReculls = [0, 0, 0];
 
   // Global = render-local + origin. One vec3 uniform, mutated on rebase; the graph never rebuilds.
   const uRenderOrigin = uniform(new injectedTHREE.Vector3());
@@ -387,6 +399,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       nearFadeStart: cfg.grassNearFadeStart,
       nearFadeEnd: cfg.grassNearFadeEnd,
       tiers: tierSpecFor(cfg),
+      tierClocks: tierClocksFor(cfg),
       frustumCull: cfg.grassFrustumCull,
       occlusion: occlusion ? occlusion.state : null,
       hiz: occlusion ? null : hiz,
@@ -422,6 +435,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     sampling = false;
     lastSample = -Infinity;
     lastReculls = grass?.stats.reculls ?? 0;
+    lastTierReculls = (grass?.stats.tierReculls ?? [0, 0, 0]).slice();
     ringStep = 0;
     ringResults.fill(null);
     stats.drawn = stats.cull = stats.probe = stats.ringProbe = stats.probeError = null;
@@ -432,6 +446,9 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
     // Reculls a second: the compute cost is per recull, so this says whether a spike is grass.
     stats.recullRate = (stats.reculls - lastReculls) / SAMPLE_EVERY;
     lastReculls = stats.reculls;
+    const tierReculls = grass?.stats.tierReculls ?? [0, 0, 0];
+    stats.tierRecullRate = tierReculls.map((n, i) => (n - (lastTierReculls[i] ?? 0)) / SAMPLE_EVERY);
+    lastTierReculls = tierReculls.slice();
     if (typeof renderer?.getArrayBufferAsync !== 'function' || !grass?.readBladeCount) { lastSample = seconds; return; }
     sampling = true; lastSample = seconds;
     const sampledGrass = grass, revision = diagnosticsRevision;
@@ -662,6 +679,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       // truncates at the far edge rather than clamping the sliders, so the panel can say so.
       stats.groundSamplesTextures = terrain.groundColorSamplesTextures ?? false;
       stats.tiers = grass.stats.tiers ?? null;
+      stats.tierThreads = grass.stats.tierThreads ?? [0, 0, 0];
       // Tiered expectations integrate 1024 rings. These inputs change with settings, not the
       // camera; neither the integration nor the getter/object allocations belong in every frame.
       if (telemetryDirty || sampledTiers !== stats.tiers || sampledDensity !== stats.density) {
@@ -690,6 +708,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       if (builtWith && (builtWith.bufferMB !== cfg.grassBufferMB || builtWith.kmax !== cfg.grassKmax)) { rebuild(); return; }
       grass.setFrustumCull?.(cfg.grassFrustumCull);
       grass.setNearKeep?.(cfg.grassNearKeep);
+      grass.setTierClocks?.(tierClocksFor(cfg));
       grass.setShading?.(cfg.grassShading);
       grass.setReceiveShadow?.(cfg.grassReceiveShadow);
       const radius = Math.max(1, Math.min(cfg.grassRadius, maxRadius || cfg.grassRadius));

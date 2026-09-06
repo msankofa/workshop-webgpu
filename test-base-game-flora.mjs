@@ -306,6 +306,9 @@ section('the buffer and the cell cap rebuild; the draw controls do not');
   await flora.update(0.016);
   const first = flora.grass, capacity = flora.stats.capacity;
   flora.apply({ grassShading: 'lambert', grassReceiveShadow: false, grassFrustumCull: false, grassNearKeep: 10 });
+  flora.apply({ grassRecullMoveFar: 5, grassRecullFramesFar: 32, grassRecullTurnMid: 1 });
+  check('the recull clock sliders reach the grass', flora.grass.tierClocks[2].move === 5 && flora.grass.tierClocks[2].frames === 32 && flora.grass.tierClocks[1].turn === 1
+    && flora.grass.tierClocks[0].frames === 1, JSON.stringify(flora.grass.tierClocks));
   check('shading, shadows and the cone reach the mesh without a rebuild', flora.grass === first && first.shading === 'lambert'
     && first.mesh.receiveShadow === false && first.frustumCull === false);
   flora.apply({ grassBufferMB: 32 });
