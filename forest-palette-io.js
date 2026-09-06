@@ -27,11 +27,13 @@ export function canonicalJson(value) {
 }
 
 // Everything the bake of one species depends on, as one string; the key is its SHA-1.
-export function paletteKeyInput({ species, params = {}, masterSeed, speciesIdx, variantsPerSpecies, texMode = 'procedural', leafAtlas = null, barkVScale, treesVersion }) {
+// No world seed: variant geometry is seeded by PALETTE_SEED in forest-palette.js, so the species
+// table itself is the identity.
+export function paletteKeyInput({ species, params = {}, speciesIdx, variantsPerSpecies, texMode = 'procedural', leafAtlas = null, barkVScale, treesVersion }) {
   const geometryParams = {};
   for (const k of GEOMETRY_PARAMS) if (params[k] !== undefined) geometryParams[k] = params[k];
   return canonicalJson({
-    treesVersion, species, geometryParams, masterSeed, speciesIdx, variantsPerSpecies,
+    treesVersion, species, geometryParams, speciesIdx, variantsPerSpecies,
     texMode: texMode === 'procedural' ? 'procedural' : 'authored',
     leafAtlas: leafAtlas ? { cols: leafAtlas.cols, rows: leafAtlas.rows } : null,
     barkVScale: barkVScale ?? null,

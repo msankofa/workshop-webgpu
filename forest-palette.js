@@ -47,6 +47,10 @@ export function leafOptsFor(sp, params, texSet, spIdx) {
   return leafOpts;
 }
 
+// Variant geometry is seeded from this constant, not the world seed: the world decides where trees
+// stand and which variant each uses, so one palette per species table serves every world and page.
+export const PALETTE_SEED = 0x7a1e77e;
+
 // createTree: the generator factory from trees.js. params/masterSeed: the same forest
 // params + master seed the placement uses (so species match placementRecords). texSet:
 // the active texture set (or null) — drives leaf shape (quad vs simple) and bark vScale,
@@ -71,7 +75,7 @@ export function bakeVariant(state, s, v) {
   const leafOpts = leafOptsFor(sp, params, texSet, s);
   const barkOpts = { ...sp.bark };
   if (texSet && texSet.barkVScale !== undefined) barkOpts.vScale = texSet.barkVScale;
-  const seed = Math.floor(rngFrom(masterSeed + s * 977 + v * 131).next() * 0xffffffff) >>> 0;
+  const seed = Math.floor(rngFrom(PALETTE_SEED + s * 977 + v * 131).next() * 0xffffffff) >>> 0;
   const options = { ...sp, seed, leaves: leafOpts, bark: barkOpts, branchLods: params.branchLods ?? [] };
   // Tree's constructor generates immediately. Start with the first real variant instead of
   // generating a seed-1 default tree whose geometry would be overwritten without ever used.

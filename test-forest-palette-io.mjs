@@ -49,7 +49,7 @@ assert.throws(() => deserializePalette(new ArrayBuffer(16)), /not a palette/);
 console.log(`round trip: ${fresh.variants.length} variants, ${(buf.byteLength / 1024).toFixed(0)} KB, byte-identical`);
 
 // Key: stable across property order and unrelated params; changes with every input it should.
-const base = { species: params.speciesTable[0], params, masterSeed: 5, speciesIdx: 0, variantsPerSpecies: 2, texMode: 'authored', leafAtlas: texSet.leafAtlas, barkVScale: 0.35, treesVersion: TREES_VERSION };
+const base = { species: params.speciesTable[0], params, speciesIdx: 0, variantsPerSpecies: 2, texMode: 'authored', leafAtlas: texSet.leafAtlas, barkVScale: 0.35, treesVersion: TREES_VERSION };
 const k0 = await paletteKey(base);
 assert.match(k0, /^[0-9a-f]{40}$/);
 const reordered = JSON.parse(JSON.stringify(base));
@@ -58,8 +58,9 @@ assert.equal(await paletteKey(reordered), k0, 'property order');
 assert.equal(await paletteKey({ ...base, params: { ...params, treeLeafSway: 9, density: 3 } }), k0, 'non-geometry params ignored');
 assert.equal(await paletteKey({ ...base, species: { ...base.species, bark: { ...base.species.bark, map: {} } } }), k0, 'textures ignored');
 assert.equal(await paletteKey({ ...base, texMode: 'ez' }), await paletteKey({ ...base, texMode: 'authored' }), 'any non-procedural mode is authored');
+assert.equal(await paletteKey({ ...base, masterSeed: 99 }), k0, 'the world seed is not part of the key');
 const changed = {
-  species: { ...base.species, seedBias: 1 }, masterSeed: 6, speciesIdx: 1, variantsPerSpecies: 3,
+  species: { ...base.species, seedBias: 1 }, speciesIdx: 1, variantsPerSpecies: 3,
   texMode: 'procedural', leafAtlas: { cols: 4, rows: 4 }, barkVScale: 0.5, treesVersion: TREES_VERSION + 1,
   params: { ...params, midLeafRatio: 0.25 },
 };
@@ -67,4 +68,4 @@ for (const [field, value] of Object.entries(changed)) {
   assert.notEqual(await paletteKey({ ...base, [field]: value }), k0, `key changes with ${field}`);
 }
 assert.ok(paletteKeyInput(base).includes('"treesVersion"'));
-console.log('key: stable across order/unrelated params, changes with 9 inputs');
+console.log('key: stable across order/unrelated params/world seed, changes with 8 inputs');

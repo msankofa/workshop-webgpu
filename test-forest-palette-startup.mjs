@@ -76,3 +76,11 @@ const cancelled = await createForestPaletteAsync({
 assert.equal(cancelled, null);
 assert.equal(created, 0);
 console.log('pre-cancelled palette creates no unused default tree');
+{
+  const params = { species: 2, diversity: 0.5, generalization: 0.5, maxSize: 0.55, leafCount: 6, leafSize: 1, leafShadowPct: 0.3,
+    speciesTable: speciesTableForSelection(DEFAULT_BASE_GAME_TREE_SPECIES).slice(0, 1) };
+  const a = createForestPalette({ createTree, params, masterSeed: 1, variantsPerSpecies: 2 });
+  const b = createForestPalette({ createTree, params, masterSeed: 987654, variantsPerSpecies: 2 });
+  assert.equal(fingerprint(a), fingerprint(b), 'two worlds with the same species table share one palette');
+  console.log('palette geometry does not depend on the world seed');
+}

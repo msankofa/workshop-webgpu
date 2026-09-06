@@ -461,7 +461,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     const bakeParams = paletteParams();
     const speciesTable = mods.paletteSpeciesTable({ params: bakeParams, masterSeed: trees.seed });
     const key = await mods.io.paletteKey({
-      species: speciesTable, params: bakeParams, masterSeed: trees.seed, speciesIdx: null, variantsPerSpecies,
+      species: speciesTable, params: bakeParams, speciesIdx: null, variantsPerSpecies,
       texMode: texSet?.mode, leafAtlas: texSet?.leafAtlas, barkVScale: texSet?.barkVScale, treesVersion: mods.TREES_VERSION,
     });
     stats.paletteKey = key;
@@ -513,7 +513,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       stats.paletteBakeMs = now() - bakeStart;
       stats.paletteSource = mods.paletteWorker.available ? 'worker' : 'thread';
       const buffer = mods.io.serializePalette(completePalette.variants, {
-        key, treesVersion: mods.TREES_VERSION, masterSeed: trees.seed, variantsPerSpecies,
+        key, treesVersion: mods.TREES_VERSION, variantsPerSpecies,
         speciesCount: speciesTable.length, texMode: texSet?.mode ?? 'procedural', bakedAt: new Date().toISOString(),
       });
       mods.io.storeCachedPalette(key, buffer).then(stored => { if (token === buildToken) stats.paletteStored = stored; });

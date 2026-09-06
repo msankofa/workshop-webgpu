@@ -134,7 +134,7 @@ const LEAF_SHAPE = [
 ];
 
 // Bump whenever generation output changes; baked palettes are keyed on it (forest-palette-io.js).
-export const TREES_VERSION = 1;
+export const TREES_VERSION = 2;
 
 // The generator defaults, for callers that scale one level rather than replacing the table.
 // Read-only by contract: the arrays are shared with DEFAULTS.

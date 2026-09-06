@@ -1,6 +1,6 @@
 # Forest palette: bake in a worker, bake once and load many
 
-Date: 2026-09-06. Status: shipped 2026-09-06 (commits 0f24963..), unseen in a browser; the tree-viewer pre-bake and the environment viewer's cache tier are deferred (see steps 4 and 5).
+Date: 2026-09-06. Status: shipped 2026-09-06 (commits 0f24963..), unseen in a browser; the tree-viewer pre-bake, family pre-bake in `bake-palettes.mjs` and the environment viewer's cache tier are not built yet (see steps 4-6).
 
 Tree generation in Base Game runs on the main thread: `base-game-forest.js:456` awaits
 `createForestPaletteAsync`, which runs `createTree()` for every species × variant with an
@@ -119,12 +119,11 @@ job protocol is designed for it from the start.
   environment viewer bake through it; `test-forest-palette-worker.mjs` runs the worker module's job
   handler in Node against the same inputs and asserts byte equality with the sync bake.
 - [x] 4. (2026-09-06) `serve.py` `/api/save-palette` (binary body, key-named file, manifest update) and the
-  static GET. DEFERRED: the tree viewer pre-bake — the variant seed is `masterSeed + s*977 + v*131`, so the
-  key includes the world seed and species index, which the viewer does not know; decoupling the palette
-  seed from the world seed changes every existing forest's look and is the user's call.
+  static GET. The variant seed is now `PALETTE_SEED + s*977 + v*131` (user's call, 2026-09-06; `TREES_VERSION` 2),
+  so the key has no world seed and a viewer pre-bake is possible; that pre-bake itself is still not built.
 - [x] 5. (2026-09-06, Base Game; environment viewer bakes through the worker but does not cache yet) Host load path (disk → IndexedDB → worker → thread), stats split, startup stage; write-back
   of misses.
-- [x] 6. (2026-09-06) `bake-palettes.mjs` prunes stale/orphan entries; pre-baking deferred with step 4's viewer bake (same seed reason).
+- [x] 6. (2026-09-06) `bake-palettes.mjs` prunes stale/orphan entries; pre-baking every family is now possible and not yet built.
 - [x] 7. (2026-09-06, per step) Docs: `vegetation.md` (new modules, palette section), `infra.md` (`serve.py` route),
   `base-game.md` (startup stages, stats); `agent_log.csv` per step.
 
