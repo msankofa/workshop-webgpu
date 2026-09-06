@@ -750,6 +750,8 @@ const ARM_SLIDER_KEYS = Object.freeze({
 // layer on top through the Restore and Load buttons, as before.
 const SHIPPED_STATE_PATH = 'base-game-default-state.json';
 let shippedState = null;
+// ?forcePass=1 renders through the node pass with no effect on, to measure what a Hi-Z depth source would cost.
+const FORCE_PASS_PATH = new URLSearchParams(location.search).get('forcePass') === '1';
 if (new URLSearchParams(location.search).get('defaults') !== 'stock') {
   try {
     const response = await fetch(`./${SHIPPED_STATE_PATH}?t=${Date.now()}`, { cache: 'no-store' });
@@ -6763,7 +6765,7 @@ async function animate() {
       const encodeStart = profileFrame ? performance.now() : 0;
       // The pipeline runs when either effect wants it. Plain sight with depth of field off keeps the
       // direct render, so the common case still costs no full-screen pass.
-      const chained = settings.dofEnabled || settings.visorMode !== 'rgb';
+      const chained = settings.dofEnabled || settings.visorMode !== 'rgb' || FORCE_PASS_PATH;
       if (chained) {
         syncDofParams();
         if (settings.dofEnabled && settings.dofAutoFocus) depthOfField.updateFocus(dt, measureCentreDistance());
