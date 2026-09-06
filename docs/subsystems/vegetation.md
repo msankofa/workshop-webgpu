@@ -41,6 +41,7 @@ buffers so the CPU never reads back GPU state.
 | `tree-families-store.js` (69 lines) | `loadFamilies`/`speciesTableFor`/`validateFamily`/`indexOfSpeciesId`/`familyOptions`: the read boundary between `tree-viewer.html`'s authored families in localStorage and a forest-placement species table. Pure apart from an injectable storage handle. Read-only — never writes tree-viewer's keys. Attaches a namespaced `_tag.id` (`<familyId>/<speciesId>`) so hand-placed trees can reference a species stably across family edits. |
 | `bot-trees-place.js` (212 lines) | Pure placement math for `bot-trees.js`, no three.js: trunk-proxy triangle budgeting (`trunkProxyTriangles`/`maxTreesForBudget`), trunk dimensions derived from what renders (`trunkRadiusFor`/`trunkHeightFor`), nav-blocker rects (`trunkNavRects`), the `stampCluster` brush primitive (radius/count/falloff/minSeparation — new, nothing in the repo did this before), and the record lifecycle (`tagAutoRecords`/`resolvePlacedRecords`/`serializePlaced`/`nearestPlacedIndex`). Reuses `bot-flora-place.js`'s chunk/exclusion primitives rather than duplicating them. |
 | `bot-trees.js` (540 lines) | `createBotTrees()`: trees over a bot-viewer arena. Bakes a palette via `forest-palette.js`, scatters via `forest-placement.js` on a single `floraChunk` arena chunk, renders one `InstancedMesh` per (variant, branches\|leaves), and emits low-poly trunk cylinders into a detached `colliderRoot` for the host to pass as a `createMapCollider` `extraRoot`. See "Trees in bot-viewer-v3" below. |
+| `forest-palette-io.js` | Pure. `paletteKey(inputs)` (async SHA-1 over `paletteKeyInput`: species opts with textures stripped, the geometry-shaping palette params, master seed, species index, variants per species, `procedural`/`authored` texture mode, atlas grid, bark vScale, `TREES_VERSION` from `trees.js`), `serializePalette(variants, meta)` → one 4-byte-aligned `ArrayBuffer` (magic, JSON header, attribute arrays; tiers sharing one geometry stored once) and `deserializePalette(buffer)` → `{ variants, meta }` with attributes as zero-copy views. Step 1 of `docs/forest/palette-worker-and-bake-cache-plan.md`; nothing consumes it yet. `test-forest-palette-io.mjs`. |
 | `tree-lod-preview.js` | `createLodPreview({ renderer, scene, createTree })` and `HOST_PRESETS` (`'base game'`: rings 60/140/260, `branchLods` stride 2 × 0.67 and 3 × 0.5, no billboards; `'environment viewer'`: rings 258/400/583, full branches at every tier, billboards). `build({ opts, texSet, n, params, layout, distance, leafShadowPct })` bakes the current tree as a one-species table through `createForestPalette` itself — so LOD0/1/2 are byte-for-byte what `forest-gpu.js` would instance — and lays each tier out as a cluster of `n` plain meshes with the game's side policy (LOD0 leaves DoubleSide, LOD1/2 FrontSide). LOD3 is one orthographic capture per variant into a `CanvasTexture` (sun 1.2, ambient 0.4, the `'cross'` bake in `environment-viewer.html`) on an upright quad that `update(camera)` yaws toward the camera. `stats` gives tris, leaves and distance per tier. `test-tree-lod-preview.mjs` covers the geometry tiers. |
 | `tree-age.js` | `applyAge(opts, ageT)`: pure sapling→mature transform (scale, branch-recursion "development", leaf count/size) for a `trees.js` options object. No DOM/THREE dependency — used by `tree-viewer.html`'s age-preview slider today, intended for the game's forest placement to reuse later (per-instance age roll) without duplicating the math. |
 
@@ -756,8 +757,10 @@ baking is CPU-side-once (`forest-palette.js`), but per-frame work is GPU-only:
   explicitly awaited so the indirect-draw read of `instanceCount` never races the compute write —
   the comments note 14 separate awaited submits/frame were a measured CPU cost before this
   consolidation.
-- 4 LOD levels per variant: L0/L1 (full branch+leaf geometry, different materials/instance node
-  graphs), L2 (full branches + a separately-baked coarse/cheap leaf geometry,
+- 4 LOD levels per variant: L0 (full branches + leaves + shadow leaves), L1 (`branchesLod1` +
+  `leavesMid` — an intermediate leaf bake controlled by `midLeafRatio`/`midLeafSizeMult`, which at
+  their 1/1 defaults *is* the full leaf geometry, same object, so hosts that never set them draw
+  exactly as before), L2 (full branches + a separately-baked coarse/cheap leaf geometry,
   `leavesCoarse`, controlled by `coarseLeafRatio`/`coarseLeafSizeMult`), L3 (a single
   camera-facing billboard plane per tree, cylindrically aligned so it stays upright). Each variant
   owns 8 meshes in `meshes[g*8 + 0..7]` (`branchesL0, leavesL0, shadowL0, branchesL1, leavesL1,
@@ -1622,6 +1625,20 @@ and built two fresh `MeshStandardMaterial`s, each a node-graph build and a pipel
 WebGPU side; the CPU geometry cost is unchanged (about 3 ms for the default tree in Node either
 way). `_commit()` now also calls `geometry.dispose()` before replacing attributes so the previous
 buffers are released — `regenerate()` used to leave them to the backend.
+
+The LOD panel's "LOD1 leaf ratio" and "LOD1 leaf size x" drive `forest-palette.js`'s `midLeafRatio` /
+`midLeafSizeMult` (added 2026-09-05), the intermediate leaf bake `forest-gpu.js` now draws at LOD1
+(`variant.leavesMid ?? variant.leaves`); `base-game-forest.js` counts and disposes it. Both default to 1,
+which reuses the full leaf geometry, so neither game changes until a host passes the parameters.
+
+Forward plans from the 2026-09-06 review of the Base Game trees live in `docs/forest/`:
+`lod-quality-plan.md` (crossfade, octahedral impostors, leaf bulge + translucency, screen-size LOD
+with a budget), `occlusion-culling-plan.md` (superseded by `docs/superpowers/plans/2026-09-06-base-game-hiz-occlusion.md`; HZB against terrain and structures through
+`flora-occlusion.js`), `shadow-cascades-plan.md` (three cascades with per-cascade tree rungs) and
+`placement-and-capacity-plan.md` (slope/altitude/moisture/spacing/clearing rules; capacity sized
+from the window with deterministic thinning) and `palette-worker-and-bake-cache-plan.md` (the palette
+bake in a module worker; species palettes serialised once to `families/palettes/<hash>.bin` and loaded
+by every host, disk → IndexedDB → worker → thread). None are started.
 
 **LOD mode** (Mode select: `solo` / `grid` / `lod`) shows the current tree at every tier the game
 draws, through `tree-lod-preview.js`. The eye sits at the origin, 1.7 m up, looking down +Z. Layout
