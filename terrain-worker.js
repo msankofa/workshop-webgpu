@@ -9,26 +9,11 @@
 
 import { buildChunkArrays, buildHeightTile } from './terrain-field.js';
 import { createSource, normalizeDescriptor, tileKey, tileTransferables, TerrainSourceError } from './terrain-source.js';
-import { tintArrayColors, tintTileColors, boundsFromPositions } from './terrain-tint.js';
+import { tintArrayColors, boundsFromPositions, finishTileTint } from './terrain-tint.js';
 import './terrain-source-analytic.js';
 import './terrain-source-v5.js';
 
 const sources = new Map();   // normalized-descriptor JSON -> source (a changed descriptor never reuses a stale source)
-
-// Finish the chunk here: vertex colours and the bounding sphere, so the main thread adopts
-// them instead of walking every vertex twice in the frame the result lands.
-function finishTile(tile, tint) {
-  if (!tint) return null;
-  const t0 = performance.now();
-  let colors = null, bounds = null;
-  if (tile.volume && tile.volume.positions) {
-    colors = tintArrayColors(tile.volume.positions, tile.volume.normals, tint.seaLevel);
-    bounds = boundsFromPositions(tile.volume.positions);
-  } else if (tile.heights) {
-    colors = tintTileColors(tile, tint.seaLevel);
-  }
-  return { colors, bounds, tintRevision: tint.revision, tintMs: performance.now() - t0 };
-}
 
 function sourceFor(descriptor) {
   const id = JSON.stringify(normalizeDescriptor(descriptor));
@@ -46,7 +31,7 @@ self.onmessage = (e) => {
       const source = sourceFor(descriptor);
       const tile = source.buildTile(request);
       const k = key ?? tileKey(source.descriptor, epoch, tile.lod, tile.ix, tile.iz);
-      const finished = finishTile(tile, tint);
+      const finished = finishTileTint(tile, tint);
       const transfer = tileTransferables(tile);
       if (finished?.colors) transfer.push(finished.colors.buffer);
       self.postMessage(
@@ -75,10 +60,12 @@ self.onmessage = (e) => {
   let colors = null, bounds = null, tintMs = 0;
   if (tint) {
     const t0 = performance.now();
-    colors = tintArrayColors(a.positions, a.normals, tint.seaLevel);
+    // No normals means no slope, and tinting at normalY = 1 would drop the rock band:
+    // leave the colours null and let the main thread tint off the normals it computes.
+    if (a.normals) colors = tintArrayColors(a.positions, a.normals, tint.seaLevel);
     bounds = boundsFromPositions(a.positions);
     tintMs = performance.now() - t0;
-    transfer.push(colors.buffer);
+    if (colors) transfer.push(colors.buffer);
   }
 
   self.postMessage(

@@ -463,6 +463,12 @@ exact vertex order `buildChunkArraysFromTile` emits), `tintArrayColors(positions
 seaLevel)` (the legacy chunk arrays and volume meshes) and `boundsFromPositions(positions)` (what
 `computeBoundingSphere` would produce, as plain numbers).
 
+`finishTileTint(tile, tint)` is the worker's whole decision, kept here rather than in the worker so
+it can be tested in Node: it returns **null colours for a tile with no normals**, because without a
+slope the tint would fall back to `normalY = 1` and lose the rock band entirely. Null colours hand
+the tint back to the host, which by then has the normals `geometryFromArrays` computed. The legacy
+chunk-arrays branch applies the same rule.
+
 A dispatch carries `tint: { seaLevel, revision }` -- set with `system.setTint(request)`, which
 `base-game-terrain.js` calls for the near system and every cascade level whenever the waterline
 moves. The worker replies with `colors`, `bounds` (transferred, not copied) and the `tintRevision`

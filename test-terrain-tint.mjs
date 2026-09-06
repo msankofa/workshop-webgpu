@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { buildChunkArrays, buildChunkArraysFromTile } from './terrain-field.js';
 import { createSource } from './terrain-source.js';
 import { analyticDescriptor } from './terrain-source-analytic.js';
-import { terrainTintAt, tintTileColors, tintArrayColors, boundsFromPositions } from './terrain-tint.js';
+import { terrainTintAt, tintTileColors, tintArrayColors, boundsFromPositions, finishTileTint } from './terrain-tint.js';
 import { createWorldQueryService } from './world-query.js';
 import { createWorldCoordinateSpace } from './world-coordinates.js';
 
@@ -57,7 +57,29 @@ console.log('\n[2] worker bounds equal what three would compute');
   ok(Math.abs(b.radius - geo.boundingSphere.radius) < 1e-9, `radius matches (${b.radius.toFixed(4)} vs ${geo.boundingSphere.radius.toFixed(4)})`);
 }
 
-console.log('\n[3] a stale-revision reply is re-tinted on commit, a current one is not');
+console.log('\n[3] a tile without normals arrives untinted, and the host tints it with slope');
+{
+  const withNormals = source.buildTile(request);
+  const withoutNormals = source.buildTile({ ...request, fields: ['heights'] });
+  ok(!withoutNormals.normals, 'the heights-only tile really has no normals');
+  const tint = { seaLevel: 0, revision: 7 };
+  ok(finishTileTint(withNormals, tint).colors instanceof Float32Array, 'a tile with normals is tinted in the worker');
+  const finished = finishTileTint(withoutNormals, tint);
+  ok(finished.colors === null, 'a tile without normals comes back untinted rather than tinted flat');
+  ok(!!finished.bounds === false, 'and carries no bounds either (they come from the volume positions)');
+
+  // Slope is what would be lost: the rock band only appears once real normals exist, so the flat
+  // normalY = 1 tint the worker used to send is not the same picture the host produces.
+  const arrays = buildChunkArraysFromTile(withNormals);
+  let steepest = 1, at = 0;
+  for (let i = 0; i < arrays.normals.length / 3; i++) if (arrays.normals[i * 3 + 1] < steepest) { steepest = arrays.normals[i * 3 + 1]; at = i; }
+  const withSlope = terrainTintAt(arrays.positions[at * 3 + 1], steepest);
+  const flat = terrainTintAt(arrays.positions[at * 3 + 1], 1);
+  const gap = Math.max(...withSlope.map((v, k) => Math.abs(v - flat[k])));
+  ok(steepest < 0.82 && gap > 1e-3, `the rock band a flat tint would have lost is real here (normalY ${steepest.toFixed(3)}, colour gap ${gap.toFixed(4)})`);
+}
+
+console.log('\n[4] a stale-revision reply is re-tinted on commit, a current one is not');
 {
   // A worker that tints under whatever revision the system asked for.
   const dispatched = [];

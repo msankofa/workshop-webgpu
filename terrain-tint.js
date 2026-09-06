@@ -58,6 +58,22 @@ export function tintTileColors(tile, seaLevel = 0) {
   return colors;
 }
 
+// What the worker sends back for one finished tile. Colours are produced ONLY when the tile
+// carries normals: without them the slope is unknown, and tinting at normalY = 1 would drop the
+// rock band. Null colours hand the tint back to the host, which by then has main-thread normals.
+export function finishTileTint(tile, tint) {
+  if (!tint) return null;
+  const t0 = performance.now();
+  let colors = null, bounds = null;
+  if (tile.volume && tile.volume.positions) {
+    if (tile.volume.normals) colors = tintArrayColors(tile.volume.positions, tile.volume.normals, tint.seaLevel);
+    bounds = boundsFromPositions(tile.volume.positions);
+  } else if (tile.heights && tile.normals) {
+    colors = tintTileColors(tile, tint.seaLevel);
+  }
+  return { colors, bounds, tintRevision: tint.revision, tintMs: performance.now() - t0 };
+}
+
 // The bounding sphere three would compute, as plain numbers, so the worker can send it
 // and geometryFromArrays can adopt it instead of walking every vertex again.
 export function boundsFromPositions(positions) {
