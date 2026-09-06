@@ -3751,6 +3751,9 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
   // The fold, split again: which of the three is left after the budget.
   terrainColorize: 'passTerrainColorizeMs', terrainBatch: 'passTerrainBatchMs',
   terrainCollider: 'passTerrainColliderMs',
+  // Everything the integration scheduler ran on its one deadline. A sub-split of the terrain
+  // pass like the three above, so it is NOT in BASE_GAME_FRAME_SLOTS: it would double-count.
+  terrainIntegrate: 'passTerrainIntegrateMs',
   // ?trace=1 only, and never folded into postRender: the encode split into the renderer's own
   // phases. traceScene is every whole scene render; it contains the other four.
   traceScene: 'passTraceSceneMs', traceProject: 'passTraceProjectMs', traceSort: 'passTraceSortMs',
