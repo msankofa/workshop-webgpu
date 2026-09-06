@@ -1,6 +1,6 @@
 # Forest palette: bake in a worker, bake once and load many
 
-Date: 2026-09-06. Status: planned, not started.
+Date: 2026-09-06. Status: shipped 2026-09-06 (commits 0f24963..), unseen in a browser; the tree-viewer pre-bake and the environment viewer's cache tier are deferred (see steps 4 and 5).
 
 Tree generation in Base Game runs on the main thread: `base-game-forest.js:456` awaits
 `createForestPaletteAsync`, which runs `createTree()` for every species × variant with an
@@ -124,8 +124,8 @@ job protocol is designed for it from the start.
   seed from the world seed changes every existing forest's look and is the user's call.
 - [x] 5. (2026-09-06, Base Game; environment viewer bakes through the worker but does not cache yet) Host load path (disk → IndexedDB → worker → thread), stats split, startup stage; write-back
   of misses.
-- [ ] 6. `bake-palettes.mjs` (pre-bake every family for the current version; prune the manifest).
-- [ ] 7. Docs: `vegetation.md` (new modules, palette section), `infra.md` (`serve.py` route),
+- [x] 6. (2026-09-06) `bake-palettes.mjs` prunes stale/orphan entries; pre-baking deferred with step 4's viewer bake (same seed reason).
+- [x] 7. (2026-09-06, per step) Docs: `vegetation.md` (new modules, palette section), `infra.md` (`serve.py` route),
   `base-game.md` (startup stages, stats); `agent_log.csv` per step.
 
 ## Validation
