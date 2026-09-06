@@ -5,9 +5,10 @@ let clock = 0;
 const now = () => clock;
 
 // A stand-in with the same call shape as the WebGPU renderer: render a scene, project the graph
-// recursively, sort the list, then encode each object. `onEncode` is what a post chain does -- the
-// output quad's single object triggers the real scene render inside its own encode.
-function fakeRenderer({ onEncode = null } = {}) {
+// recursively, sort the list, then encode each object. The three hooks are the three places a
+// nested scene render can start from: inside an object's encode (what a post chain does), between
+// the sort and the object loop (inside no phase at all), and inside a bundle replay.
+function fakeRenderer({ onEncode = null, beforeObjects = null, onBundle = null } = {}) {
   const list = { items: [], sort() { clock += 2; } };
   const renderer = {
     _renderLists: { get() { return list; } },
@@ -15,6 +16,7 @@ function fakeRenderer({ onEncode = null } = {}) {
       clock += 1;
       this._projectObject({ depth: 2 });
       this._renderLists.get().sort();
+      beforeObjects?.(renderer);
       this._renderObjects(new Array(objectCount).fill(0));
     },
     _projectObject(node) {
@@ -26,9 +28,19 @@ function fakeRenderer({ onEncode = null } = {}) {
       for (const _ of objects) this._renderObjectDirect();
     },
     _renderObjectDirect() { clock += 3; onEncode?.(renderer); },
-    _renderBundle() { clock += 4; },
+    _renderBundle() { clock += 4; onBundle?.(renderer); },
   };
   return { renderer, list };
+}
+
+// Runs `body` once, with a guard so the nested render does not itself nest forever.
+function once(fn) {
+  let inside = false;
+  return (renderer) => {
+    if (inside) return;
+    inside = true;
+    try { fn(renderer); } finally { inside = false; }
+  };
 }
 
 {
@@ -70,14 +82,8 @@ function fakeRenderer({ onEncode = null } = {}) {
   // The real Base Game shape: the post chain's output quad is the OUTER scene render, one object,
   // and the whole world render happens nested inside that object's encode. Before the stack, the
   // guard dropped the inner render and the frame read as one object costing 15-27 ms.
-  let inner = false;
   const { renderer } = fakeRenderer({
-    onEncode: (r) => {
-      if (inner) return;
-      inner = true;
-      r._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, 4);
-      inner = false;
-    },
+    onEncode: once(r => r._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, 4)),
   });
   const trace = createRenderTrace({ now });
   trace.attach(renderer);
@@ -112,6 +118,96 @@ function fakeRenderer({ onEncode = null } = {}) {
   assert.equal(t.projectCalls, 2, 'each scene render walks its own graph');
   assert.equal(t.sortCalls, 2);
   console.log('pass: a nested scene render is its own entry and the parent excludes its time');
+}
+
+{
+  // A nested render that starts BEFORE the parent's object loop is inside none of its phase timers,
+  // so nothing may be subtracted from them. Charging every child to encode/objects unconditionally
+  // made an outer render that had not encoded anything yet report negative time there.
+  const { renderer } = fakeRenderer({
+    beforeObjects: once(r => r._renderScene({ name: 'shadow' }, { type: 'OrthographicCamera' }, 2)),
+  });
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, 1);
+  const t = trace.take();
+
+  assert.equal(t.scenes.length, 2);
+  const [outer, child] = t.scenes;
+  assert.equal(child.name, 'shadow');
+  // The child: 1 enter + 3 project + 2 sort + 1 objects + 2 x 3 encode = 13.
+  assert.equal(child.ms, 13);
+  assert.equal(child.exclusiveMs, 13);
+  // The outer render's own object loop ran after the child returned, so its timers are untouched:
+  // exactly what the same scene costs with no child at all.
+  assert.equal(outer.objectsMs, 4, 'the object loop is unchanged by a child that ran before it');
+  assert.equal(outer.encodeMs, 3, 'and so is the encode');
+  assert.equal(outer.projectMs, 3, 'the projection had already finished too');
+  assert.equal(outer.sortMs, 2);
+  assert.equal(outer.ms, 23, 'the outer render still contains the child');
+  assert.equal(outer.exclusiveMs, 10, 'but its own time does not');
+  assert.equal(t.encodeMs, 9, 'the frame encode is the outer object plus the two in the child');
+  console.log('pass: a child that runs outside the parent phases is subtracted from none of them');
+}
+
+{
+  // The same rule for a bundle replay: a scene render nested inside _renderBundle comes out of the
+  // parent's bundleMs, and out of nothing else.
+  const { renderer } = fakeRenderer({
+    onBundle: once(r => r._renderScene({ name: 'mirror' }, { type: 'PerspectiveCamera' }, 1)),
+  });
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, 1);
+  renderer._renderBundle();
+  const t = trace.take();
+
+  assert.equal(t.scenes.length, 2);
+  const child = t.scenes.find(entry => entry.name === 'mirror');
+  // 1 enter + 3 project + 2 sort + 1 objects + 3 encode = 10.
+  assert.equal(child.ms, 10);
+  assert.equal(child.exclusiveMs, 10);
+  // The bundle ran outside any scene render here, so its timer lives in the totals: 4 for the
+  // replay itself, with the 10 the nested render cost taken back out.
+  assert.equal(t.bundleMs, 4, 'the bundle replay excludes the scene render nested inside it');
+  assert.equal(t.bundleGroups, 1);
+  console.log('pass: a child nested inside a bundle replay comes out of the bundle timer');
+}
+
+{
+  const { renderer, list } = fakeRenderer();
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, 1);
+  assert.equal(trace.take().sortCalls, 1);
+  trace.detach();
+
+  // Render lists are cached per (scene, camera) and outlive a trace, so a detached trace that left
+  // its sort hook in place kept collecting through a list it had already let go of -- and the next
+  // trace saw __traceSort and never patched it, so its sorts vanished.
+  const second = createRenderTrace({ now });
+  second.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, 1);
+  const t = second.take();
+  assert.equal(t.sortCalls, 1, 'a fresh trace on the same render list still counts the sort');
+  assert.equal(t.sortMs, 2);
+  second.detach();
+  assert.equal(list.__traceSort, undefined, 'and the flag is cleared on the way out');
+
+  // A later owner's hook must survive our detach.
+  const mine = list.sort;
+  const third = createRenderTrace({ now });
+  third.attach(renderer);
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, 1);
+  const theirs = function (...args) { return mine.apply(this, args); };
+  list.sort = theirs;
+  third.detach();
+  assert.equal(list.sort, theirs, 'detach leaves a hook installed after ours alone');
+  console.log('pass: detach unpatches the render lists it patched, and only those');
 }
 
 {

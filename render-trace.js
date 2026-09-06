@@ -12,6 +12,11 @@
 // `scenes` is the primary output and the totals are sums over it. Without that, one frame reads as
 // a single object costing the whole render.
 //
+// A child is charged only to the parent phases that were open when it started: a nested render can
+// begin before the parent reaches its object loop, and subtracting it from a timer it never ran
+// inside would understate that timer. Nothing is clamped, so an accounting mistake shows up as a
+// negative number instead of as a plausible zero.
+//
 // Private methods are a deliberate trade: they are the only seam Three gives here, so `attach`
 // reports which hooks it actually found and the caller records that beside the numbers.
 
@@ -30,12 +35,17 @@ function newEntry(name, camera) {
     bundles: 0, bundleMs: 0,
     // Re-entry counters, per scene: projection recurses, and a phase must not be timed twice.
     depth: { project: 0, objects: 0, encode: 0, bundle: 0, sort: 0 },
+    // Time nested scene renders spent inside each phase timer of this entry, subtracted on close.
+    childInPhase: { project: 0, objects: 0, encode: 0, bundle: 0, sort: 0 },
   };
 }
 
 // What a scene render is: three renames the scene to `Shadow Map [ <light> ]` across a shadow pass,
 // and the post chain's output quad renders a QuadMesh with an orthographic camera, so the name and
 // the camera together tell main, shadow, mirror and quad apart in the record.
+const PHASES = ['project', 'sort', 'objects', 'encode', 'bundle'];
+const PHASE_MS = { project: 'projectMs', sort: 'sortMs', objects: 'objectsMs', encode: 'encodeMs', bundle: 'bundleMs' };
+
 function describe(scene, camera) {
   const name = scene?.name || scene?.type || 'scene';
   const cam = camera ? (camera.name || camera.type || 'camera') : 'none';
@@ -51,6 +61,7 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
   const current = () => stack[stack.length - 1] ?? outside;
   let attachedTo = null;
   let restore = [];
+  let patchedLists = [];
   const missing = [];
 
   // A phase inside whichever scene render is on top of the stack. Nested scene renders push their
@@ -80,6 +91,10 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
     renderer._renderScene = function (...args) {
       const { name, camera } = describe(args[0], args[1]);
       const entry = newEntry(name, camera);
+      const parent = current();
+      // Which of the parent's phases this child runs inside, read as it starts: the depth counters
+      // already say which of the parent's timers are open.
+      const openPhases = PHASES.filter(phase => parent.depth[phase] > 0);
       scenes.push(entry);
       stack.push(entry);
       const t0 = now();
@@ -88,13 +103,12 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       } finally {
         stack.pop();
         entry.ms = now() - t0;
-        // A nested scene render happens inside this one's encode, so its whole cost is subtracted
-        // from every timer that contained it. Otherwise the post chain's output quad reports one
-        // object costing the entire frame.
+        // Its own children come out of its own numbers: all of them out of the scene time, and each
+        // out of exactly the phases that were open around it.
         entry.exclusiveMs = entry.ms - entry.childMs;
-        entry.encodeMs = Math.max(0, entry.encodeMs - entry.childMs);
-        entry.objectsMs = Math.max(0, entry.objectsMs - entry.childMs);
-        current().childMs += entry.ms;
+        for (const phase of PHASES) entry[PHASE_MS[phase]] -= entry.childInPhase[phase];
+        parent.childMs += entry.ms;
+        for (const phase of openPhases) parent.childInPhase[phase] += entry.ms;
       }
     };
     restore.push(() => { renderer._renderScene = original; });
@@ -110,7 +124,7 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       const list = originalGet.apply(this, args);
       if (list && typeof list.sort === 'function' && !list.__traceSort) {
         const originalSort = list.sort;
-        list.sort = function (...sortArgs) {
+        const patchedSort = function (...sortArgs) {
           const entry = current();
           if (entry.depth.sort > 0) return originalSort.apply(this, sortArgs);
           entry.sortCalls++;
@@ -119,7 +133,10 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
           try { return originalSort.apply(this, sortArgs); }
           finally { entry.depth.sort--; entry.sortMs += now() - t0; }
         };
+        list.sort = patchedSort;
         list.__traceSort = true;
+        // Render lists outlive a trace, so detach has to unpatch each one it touched.
+        patchedLists.push({ list, patchedSort, originalSort });
       }
       return list;
     };
@@ -127,6 +144,12 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
   }
 
   function totals() {
+    // The outside bucket is never closed by a scene exit, so it settles its own children here: a
+    // bundle replayed between renders can still start a scene render.
+    for (const phase of PHASES) {
+      outside[PHASE_MS[phase]] -= outside.childInPhase[phase];
+      outside.childInPhase[phase] = 0;
+    }
     const out = {
       sceneRenders: scenes.length, sceneMs: 0,
       projectCalls: 0, projectMs: 0,
@@ -180,6 +203,14 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
     detach() {
       for (const undo of restore.reverse()) undo();
       restore = [];
+      // Identity checked, never assumed: if something else wrapped a sort after we did, putting our
+      // original back would silently uninstall the later owner's hook.
+      for (const { list, patchedSort, originalSort } of patchedLists) {
+        if (list.sort !== patchedSort) continue;
+        list.sort = originalSort;
+        delete list.__traceSort;
+      }
+      patchedLists = [];
       attachedTo = null;
     },
     // Totals since the last take, then reset. `scenes` is the primary result and the totals are

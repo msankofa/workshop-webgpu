@@ -478,9 +478,12 @@ writes its counts into the same GPU buffers the recorded commands already refere
 settled or is re-recording every frame.
 
 **The browser result (2026-09-07): bundles are not usable here.** Under `?bundles=1` the user saw
-the trees frozen as an afterimage -- the replay path refreshes only the first object of a render, so
-everything else keeps the transform it was recorded with, which a moving camera makes obvious. The
-flag stays as a measurement, not an option, and design A (compact live-count pulling) is what the
+the trees frozen as an afterimage. That is what the rejection rests on -- the observed output, at a
+moving camera, with the rest of the scene correct. The cause is a hypothesis and not proven: it is
+consistent with recorded objects not being refreshed on replay, but the exact path through
+`needsRefresh` (its `hasNode` / `hasAnimation` / `firstInitialization` / velocity early returns,
+then the `renderId` branch, then `equals`) was not traced, so which of those decides it is unknown.
+The flag stays a measurement, not an option, and design A (compact live-count pulling) is what the
 forest's draw cost has to go through instead.
 
 Two consequences of how a replay works, both expected rather than faults. A replayed bundle

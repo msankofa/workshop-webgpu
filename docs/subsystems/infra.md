@@ -122,11 +122,25 @@ counted twice. An entry's object count is the length of the render list that pas
 scene census.
 
 Within one entry, `projectMs`, `sortMs`, `objectsMs` and `bundleMs` are inside its `exclusiveMs`,
-and `encodeMs` is inside `objectsMs`. Each hooked method re-enters (projection recurses), so only
-the outermost call of each is timed per entry. `projectCalls` counts scene walks, one per scene
-render -- the recursion inside it is timed but not counted, so it is never an object count. Work
-that happens outside any scene render is kept in a separate `outside` bucket and folded into the
-totals.
+and `encodeMs` is inside `objectsMs`. **The phase fields are not a partition -- do not sum them**;
+adding `objectsMs` and `encodeMs` counts the per-object encode twice. Each hooked method re-enters
+(projection recurses), so only the outermost call of each is timed per entry. `projectCalls` counts
+scene walks, one per scene render -- the recursion inside it is timed but not counted, so it is
+never an object count. Work that happens outside any scene render is kept in a separate `outside`
+bucket and folded into the totals.
+
+A child scene render is subtracted only from the parent timers that were **open when it started**.
+Nesting is not always inside the encode: a render can begin between the sort and the object loop,
+inside none of the phases, or inside a bundle replay. Charging every child to `encodeMs` and
+`objectsMs` regardless made a parent that had not encoded anything yet report time it never spent.
+Nothing is clamped to zero, so an accounting mistake surfaces as a negative number rather than as a
+plausible-looking one.
+
+`detach()` restores the wrapped methods and also unpatches every render list whose `sort` it
+wrapped, clearing `__traceSort` -- render lists are cached per (scene, camera) and outlive a trace,
+so a hook left behind would keep collecting into a discarded trace and the next trace would skip
+that list entirely. Each restore checks identity first, so a hook installed after ours is left
+alone.
 
 Three's private methods are the only seam here, so `attach` reports `missingHooks` when a Three
 upgrade renames one, and the caller records that beside the numbers rather than reporting zeros.
