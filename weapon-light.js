@@ -85,6 +85,7 @@ export function createWeaponLight({ THREE, scene, options = null } = {}) {
   const spot = new THREE.SpotLight(flashlightColor(cfg.warmth), 0, cfg.range, coneAngleRad(cfg.angleDeg), cfg.penumbra, cfg.decay);
   spot.name = 'weaponFlashlight';
   spot.castShadow = !!cfg.shadows;
+  spot.shadow.autoUpdate = false;   // rendered only while lit (see update)
   spot.shadow.mapSize.set(cfg.shadowMapSize, cfg.shadowMapSize);
   spot.shadow.camera.near = 0.2;
   spot.shadow.camera.far = Math.max(1, cfg.range);
@@ -141,6 +142,11 @@ export function createWeaponLight({ THREE, scene, options = null } = {}) {
     const want = on && hasPlacement && source ? 1 : 0;
     level = rampToward(level, want, dt, cfg.rampRate);
     spot.intensity = cfg.intensity * level;
+    // An off light still renders its shadow map every frame if castShadow is set (the pass list showed
+    // both weapon lights doing so at intensity 0). Gate the map on the light being lit; toggling
+    // castShadow instead would change the lighting shader and rebuild pipelines.
+    const lit = level > 0.002;
+    if (spot.castShadow && spot.shadow.autoUpdate !== lit) { spot.shadow.autoUpdate = lit; if (lit) spot.shadow.needsUpdate = true; }
     spill.intensity = cfg.spillIntensity * level;
     return level;
   }

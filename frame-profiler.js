@@ -65,13 +65,14 @@ export function createFrameProfiler({ smoothing = 0.2, now = () => performance.n
     return v;
   }
 
-  // Zeroes every name seen so far plus the defaults, so a timer that doesn't run reads 0, not stale.
+  // Zeroes every CPU name seen so far plus the defaults, so a timer that doesn't run reads 0, not
+  // stale. GPU names are NOT zeroed: a timestamp resolves asynchronously a frame or two after the
+  // work, so zeroing here meant every end-of-frame snapshot (and every capture) read 0 for GPU time.
+  // recordGpu overwrites the value when the next query lands; reset() clears it.
   function beginFrame() {
     if (!profilingEnabled) return;
     for (const name of latest.keys()) latest.set(name, 0);
     for (const name of DEFAULT_NAMES) latest.set(name, 0);
-    for (const name of gpuLatest.keys()) gpuLatest.set(name, 0);
-    for (const name of DEFAULT_GPU_NAMES) gpuLatest.set(name, 0);
     // smooth/gpuSmooth are deliberately untouched: the HUD's EMA decays instead of snapping to 0.
   }
 

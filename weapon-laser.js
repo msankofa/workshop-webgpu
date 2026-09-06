@@ -93,6 +93,7 @@ export function createWeaponLaser({ THREE, scene, options = null } = {}) {
   const spot = new THREE.SpotLight(hueToHex(cfg.hue), 0, cfg.range, dotAngleRad(cfg.dotAngleDeg), cfg.penumbra, cfg.decay);
   spot.name = 'weaponLaserDot';
   spot.castShadow = !!cfg.shadows;
+  spot.shadow.autoUpdate = false;   // rendered only while lit (see update)
   spot.shadow.mapSize.set(cfg.shadowMapSize, cfg.shadowMapSize);
   spot.shadow.camera.near = 0.2;
   spot.shadow.camera.far = Math.max(1, cfg.range);
@@ -145,6 +146,11 @@ export function createWeaponLaser({ THREE, scene, options = null } = {}) {
     const usable = !!(source?.muzzle && source?.direction);
     level = rampToward(level, on && usable ? 1 : 0, dt, cfg.rampRate);
     spot.intensity = cfg.intensity * level;
+    // An off light still renders its shadow map every frame if castShadow is set (the pass list showed
+    // both weapon lights doing so at intensity 0). Gate the map on the light being lit; toggling
+    // castShadow instead would change the lighting shader and rebuild pipelines.
+    const lit = level > 0.002;
+    if (spot.castShadow && spot.shadow.autoUpdate !== lit) { spot.shadow.autoUpdate = lit; if (lit) spot.shadow.needsUpdate = true; }
     beam.material.opacity = cfg.beamOpacity * level;
     if (level <= 0.002) {
       if (beam.visible) beam.visible = false;

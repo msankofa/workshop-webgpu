@@ -986,7 +986,7 @@ sits the lamp `lensForward` metres past the muzzle so the barrel does not shadow
 
 Residency follows `flash-lights.js`'s rule exactly: both lights live in the scene from startup and
 switch through **intensity**, never `.visible`, because on the WebGPU backend the set of visible
-lights keys the render pipeline. `castShadow` is structural in the same way, so `flashlightShadows`
+lights keys the render pipeline. While the light is off (`level` at 0) its `shadow.autoUpdate` is false, so no shadow map is rendered for it — before 2026-09-06 the pass recorder showed `Shadow Map [ weaponFlashlight ]` and `Shadow Map [ weaponLaserDot ]` every frame at intensity 0, each redrawing the whole caster set for nothing; turning the light on sets `needsUpdate` once and `autoUpdate` back on. `castShadow` is structural in the same way, so `flashlightShadows`
 is a deliberate settings toggle (default off) that costs one recompile when flipped and a second
 shadow pass while on; without it the beam shines through walls.
 

@@ -58,7 +58,7 @@ p2.beginFrame();
 snap = p2.snapshot(CUSTOM);
 ok(snap.simMs === 0, 'beginFrame zeroes a custom-named CPU timer');
 ok(snap.renderMs === 0, 'beginFrame zeroes every custom-named CPU timer');
-ok(snap.gpuGrassMs === 0, 'beginFrame still zeroes the default GPU names');
+ok(snap.gpuGrassMs === 2.5, 'beginFrame keeps the last resolved GPU time (timestamps land a frame late)');
 ok(p2.snapshot(CUSTOM, { smooth: true }).simMs === 8, 'beginFrame leaves the smoothed value alone');
 
 // A phase that genuinely runs short decays the EMA rather than carrying the old value forward.
