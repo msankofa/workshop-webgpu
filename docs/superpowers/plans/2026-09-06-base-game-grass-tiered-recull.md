@@ -1,6 +1,6 @@
 # Base Game grass: recull each distance tier on its own clock
 
-Date: 2026-09-06. STATUS: planned, not started. Follows `2026-09-06-base-game-hiz-occlusion.md`.
+Date: 2026-09-06. STATUS: steps 1 to 4 committed 2026-09-06 (a50348e, 7cdec82, 2a7a2dc and the forest gate on top), docs in each; unseen in a browser. Follows `2026-09-06-base-game-hiz-occlusion.md`.
 
 ## Why
 

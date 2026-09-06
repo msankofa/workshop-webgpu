@@ -99,6 +99,12 @@ const baseParams = {
 
   // (f) 0.01-unit drift must NOT recull.
   ok(shouldRecull(prev, { x: 0.01, z: 0, ...fwd(0) }) === false, 'f: 0.01-unit drift does not recull');
+  // (j) the Hi-Z frame clock: a still camera re-tests every hizFrames frames, only with the pyramid on.
+  const prevF = { ...prev, frame: 100 };
+  ok(shouldRecull(prevF, { x: 0, z: 0, ...fwd(0), frame: 103, hiz: true }) === false, 'j: three still frames under the clock do not recull');
+  ok(shouldRecull(prevF, { x: 0, z: 0, ...fwd(0), frame: 104, hiz: true }) === true, 'j: the fourth frame re-tests against the pyramid');
+  ok(shouldRecull(prevF, { x: 0, z: 0, ...fwd(0), frame: 104, hiz: true }, { hizFrames: 8 }) === false, 'j: a longer clock waits');
+  ok(shouldRecull(prevF, { x: 0, z: 0, ...fwd(0), frame: 200, hiz: false }) === false, 'j: without the pyramid a still camera never reculls');
 
   // (f) 2-unit move DOES recull (exceeds the 1.5-unit default move threshold).
   ok(shouldRecull(prev, { x: 2, z: 0, ...fwd(0) }) === true, 'f: 2-unit move triggers recull');

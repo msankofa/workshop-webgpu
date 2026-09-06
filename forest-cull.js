@@ -107,6 +107,12 @@ export function shouldRecull(prev, next, thresholds = {}) {
   if (dx * dx + dz * dz > moveDist * moveDist) return true;
   const dot = next.fx * prev.fx + next.fz * prev.fz;
   if (dot < headingCos) return true;
+  // Hi-Z (2026-09-06): under a per-frame depth pyramid the list is re-tested every hizFrames
+  // frames even with the camera still; `next.hiz` says the pyramid is on and `frame` counts frames.
+  if (next.hiz && Number.isFinite(next.frame) && Number.isFinite(prev.frame)) {
+    const hizFrames = Math.max(1, thresholds.hizFrames ?? 4);
+    if (next.frame - prev.frame >= hizFrames) return true;
+  }
   return false;
 }
 

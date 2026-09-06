@@ -149,6 +149,10 @@ export function createForestGPU(opts) {
   const uTreeHeight = uniform(Math.max(0, ...palette.variants.map(variantHeight)));
   // Hi-Z (2026-09-06): a host with a hiz-pyramid.js state gets hiz-test.js's box test in the cull.
   const hizSampler = opts.hiz ? createHizSampler(opts.hiz) : null;
+  // The pyramid changes every frame; the forest re-tests against it every `hizRecullFrames`
+  // frames unless the camera thresholds below fire first (tiered recull plan, step 4).
+  let hizRecullFrames = Math.max(1, Math.round(opts.hizRecullFrames ?? 4));
+  let hizFramesSince = 0;
 
   // Canopy sway (base-game). The graph is only built when a host asks for it, so a host that does
   // not pass leafSway keeps the time-independent material it had.
@@ -558,6 +562,7 @@ export function createForestGPU(opts) {
   // live; changing either does NOT itself force a recull (they only change the gate for FUTURE
   // frames), matching dressing-gpu.js's equivalent sliders.
   let recullMoveDist = 1.5;                          // world units of XZ camera travel
+  let lastHizOn = false;
   let recullHeadingCos = Math.cos(2 * Math.PI / 180); // 2 degrees of heading change
   const _fwd3 = new THREE.Vector3();
   function markDirty() {
@@ -931,6 +936,9 @@ export function createForestGPU(opts) {
       if (changed) syncRenderParts();
     },
     get lodEnabled() { return [...lodEnabled]; },
+    // Frames between Hi-Z re-tests while the camera is under its move and turn thresholds.
+    setHizRecullFrames(n) { hizRecullFrames = Math.max(1, Math.round(Number.isFinite(n) ? n : 4)); },
+    get hizRecullFrames() { return hizRecullFrames; },
     setShadowRungs(next) {
       let changed = false;
       for (let l = 0; l < LODS; l++) {
@@ -1007,12 +1015,18 @@ export function createForestGPU(opts) {
       const camTurned = camFx * lastCamFx + camFz * lastCamFz < recullHeadingCos || coneWidened;
       const firstRecull = !Number.isFinite(lastCamX) || !Number.isFinite(lastCamZ)
         || !Number.isFinite(lastCamFx) || !Number.isFinite(lastCamFz);
-      // The pyramid is per frame, so while it is on any new frame re-culls.
-      const hizChanged = hizSampler ? hizSampler.sync() : false;
-      if (!dirty && !firstRecull && !camMoved && !camTurned && !hizChanged) {
+      // The pyramid is per frame; its clock is hizRecullFrames, hand-synced with forest-cull.js's
+      // shouldRecull (hizFrames). A toggle of the sampler counts as a change at once.
+      const hizSynced = hizSampler ? hizSampler.sync() : false;
+      const hizOn = !!hizSampler && hizSampler.enabled;
+      hizFramesSince++;
+      const hizDue = hizSynced && (!hizOn || hizFramesSince >= hizRecullFrames || hizOn !== lastHizOn);
+      lastHizOn = hizOn;
+      if (!dirty && !firstRecull && !camMoved && !camTurned && !hizDue) {
         skippedReculls++;
         return;
       }
+      hizFramesSince = 0;
       uCam.value.set(camX, camZ);
       uCamFwd.value.set(camFx, camFz);
       uFovCos.value = camFovCos;

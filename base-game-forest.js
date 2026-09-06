@@ -31,6 +31,7 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
   // default should not double render objects/material graphs before GPU captures justify it.
   treeVariantsPerSpecies: 2,
   treeLeafSway: 1,
+  treeHizRecullFrames: 4,      // frames between Hi-Z re-tests while the camera is under the forest's move/turn gate
   treeBark: true, treeLeaves: true, treeBarkShadows: true, treeLeafShadows: true,
   // Half-extent of the host's directional shadow camera (base-game.html sets +/-90). A LOD rung
   // whose near edge is past this rasterises into a shadow map it cannot appear in.
@@ -389,6 +390,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
           maxDrawRadius: drawRadius(),
           capPerVariant: Math.max(16, Math.round(cfg.treeCapPerVariant)),
           leafSway: cfg.treeLeafSway,
+          hizRecullFrames: cfg.treeHizRecullFrames,
           billboards: false,
           progressive: true,
           shadowLayer,
@@ -559,6 +561,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       barkShadows: cfg.treeBarkShadows, leafShadows: cfg.treeLeafShadows,
     });
     forestGPU.setLeafSway(cfg.treeLeafSway);
+    forestGPU.setHizRecullFrames?.(cfg.treeHizRecullFrames);
     forestGPU.setTreeBaseOffset(cfg.treeVerticalOffset);
   }
 

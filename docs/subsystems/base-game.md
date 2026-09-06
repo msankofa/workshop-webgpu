@@ -3612,7 +3612,9 @@ metres or turned `grassRecullTurnMid` degrees or after `grassRecullFramesMid` fr
 apply keys. With occlusion off the old rule stands (a recull on a cell crossing or a cone change).
 The grass runtime line reports per-tier reculls a second and candidate threads, which is where
 the win shows: the far tier is most of the threads and reculls a few times a second while walking.
-Unseen in a browser.
+The forest's own gate (1.5 m, 2°) stays and gains a frame clock, `treeHizRecullFrames` (default
+4, a Trees slider), so trees are re-tested against the pyramid a few times a second at rest rather
+than every frame. Unseen in a browser.
 
 ## Scattered structures (2026-09-05, in progress)
 

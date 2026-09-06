@@ -329,6 +329,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   treeLod2: BASE_GAME_FOREST_DEFAULTS.treeLod2,
   treeCapPerVariant: BASE_GAME_FOREST_DEFAULTS.treeCapPerVariant,
   treeLeafSway: BASE_GAME_FOREST_DEFAULTS.treeLeafSway,
+  treeHizRecullFrames: BASE_GAME_FOREST_DEFAULTS.treeHizRecullFrames,
   treeBark: BASE_GAME_FOREST_DEFAULTS.treeBark,
   treeLeaves: BASE_GAME_FOREST_DEFAULTS.treeLeaves,
   treeBarkShadows: BASE_GAME_FOREST_DEFAULTS.treeBarkShadows,
@@ -3534,7 +3535,7 @@ const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'tree
   'treeMaxSize', 'treeSizeVar', 'treeSkew', 'treeSpeciesSelection',
   'treeTexMode', 'treeVariantsPerSpecies', 'treeLeafSize', 'treeTrunkHeight', 'treeTrunkWidth',
   'treeVerticalOffset', 'treeDrawRadius', 'drawDistance', 'treeLodR0', 'treeLodR1', 'treeLodR2',
-  'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway',
+  'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway', 'treeHizRecullFrames',
   'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows'];
 const appliedForest = {};
 let forestLoading = false;
@@ -5033,6 +5034,7 @@ addCommitRange(treeLookSec, 'treeLeafSize', 'Leaf size', 0.05, 5, 0.05, value =>
 // them off the screen, which is what isolates a rung's raster cost.
 addRange(treeDrawSec, 'treeVerticalOffset', 'Trunk vertical bias (m)', -1, 1, 0.01, value => `${value.toFixed(2)} m`);
 addRange(treeDrawSec, 'treeLeafSway', 'Canopy sway', 0, 4, 0.05, value => value.toFixed(2));
+addRange(treeDrawSec, 'treeHizRecullFrames', 'Occlusion recull: every (frames)', 1, 120, 1, value => `${value.toFixed(0)}`);
 addRange(treeDrawSec, 'treeDrawRadius', 'Draw radius', 40, 900, 5, value => `${value.toFixed(0)} m`);
 addRange(treeDrawSec, 'treeLodR0', 'LOD0 distance (full detail)', 5, 900, 5, value => `${value.toFixed(0)} m`);
 addToggle(treeDrawSec, 'treeLod0', 'Draw LOD0');
