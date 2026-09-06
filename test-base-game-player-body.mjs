@@ -82,6 +82,21 @@ ok(localMeshes.length === 0, `the local body owns no scene meshes (${localMeshes
 ok(batchMeshes.some(m => m.visible && m.count > 0) && batchMeshes.length < 40, `the local body is instanced into ${batchMeshes.length} batch draws`);
 ok(bodies.diagnostics.instancedLocal === true, 'diagnostics say the local body is instanced');
 {
+  // Gear merge (bot-viewer-v3's) halves the bucket count of a kitted soldier body.
+  const count = (merge) => {
+    const sc = new THREE.Scene();
+    const b = createBaseGamePlayerBodies({ THREE, scene: sc, worldQuery, worldCoordinates: coords, mergeGear: merge });
+    b.setLocalMode('thirdPerson'); b.setBodyDesign('soldier:rifleman');
+    b.updateLocal(1 / 60, { globalFoot: foot, velocity: [0, 0, 0], yaw: 0, grounded: true, height: 1.8, radius: 0.35 });
+    b.flushWeapons();
+    let n = 0; sc.traverse(o => { if (o.isInstancedMesh && o.visible && o.count > 0) n++; });
+    return n;
+  };
+  const merged = count(true), split = count(false);
+  ok(merged > 0 && merged < split * 0.8, `gear merge cuts the soldier's live buckets ${split} -> ${merged}`);
+  console.log(`  soldier body: ${split} instanced buckets per-piece, ${merged} with gear merge`);
+}
+{
   const meshScene = new THREE.Scene();
   const meshBodies = createBaseGamePlayerBodies({ THREE, scene: meshScene, worldQuery, worldCoordinates: coords, instancedRemotes: false });
   meshBodies.setLocalMode('thirdPerson');

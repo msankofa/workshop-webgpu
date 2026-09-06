@@ -99,6 +99,7 @@ export function createBaseGamePlayerBodies({
   worldCoordinates,
   instancedRemotes = true,
   instancedLocal = true,    // the local rig through the same pool: 160 meshes become a few instanced draws
+  mergeGear = true,         // bot-viewer-v3's gear merge: one geometry per (anchor, role), ~30% fewer buckets
   remoteCapacity = 2048,
   weaponSystem = null,     // createWeaponMountSystem(...) from weapon-mount.js; null = no weapons
 } = {}) {
@@ -162,6 +163,7 @@ export function createBaseGamePlayerBodies({
       mode: rigMode,
       style: { ...styleFor(appearance), ...style },
       batches: instanced ? batches : null,
+      mergeGear: instanced && mergeGear,
       design: composeDesign(modelKey, appearance),
       ...LOCOMOTION_OPTIONS,
     });
