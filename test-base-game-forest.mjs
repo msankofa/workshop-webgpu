@@ -396,6 +396,7 @@ section('shaders compile before the forest reaches the scene');
       if (!Array.isArray(nodes)) warmComputeCalls++;
     },
     compileAsync: async (warm, cam, target) => {
+      if (warm?.name === 'forest:compile-probe') return;   // the timed single-mesh probe is not a wave
       const meshes = [];
       warm.traverse(o => { if (o.isMesh) meshes.push(o); });
       compiled.push({
@@ -472,7 +473,8 @@ section('published trees follow camera turns throughout later startup waves');
   let wave = 0, releaseRender = null, releaseCompute = null, holdCompute = false;
   const warmNodes = [], liveSubmissions = [];
   const renderer = {
-    compileAsync: async () => {
+    compileAsync: async (group) => {
+      if (group?.name === 'forest:compile-probe') return;   // the timed single-mesh probe is not a wave
       wave++;
       if (wave > 1) await new Promise(resolve => { releaseRender = resolve; });
     },

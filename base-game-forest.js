@@ -156,7 +156,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     draws: 0, shadowDraws: 0, triangles: 0, instances: 0, capacity: 0, dropped: 0, truncating: false,
     textureMode: 'procedural', texturesReady: false,
     variants: 0, readyVariants: 0, visibleVariants: 0, paletteMs: 0, paletteWorker: false,
-    paletteLoadMs: 0, paletteBakeMs: 0, paletteSource: 'none', paletteKey: null, paletteStored: null, compileMs: 0, computeCompileMs: 0, updateMs: 0,
+    paletteLoadMs: 0, paletteBakeMs: 0, paletteSource: 'none', paletteKey: null, paletteStored: null, compileMs: 0, firstCompileMs: null, compiledMeshes: 0, computeCompileMs: 0, updateMs: 0,
     lod0: 0, lod1: 0, lod2: 0, rejectedCone: 0, rejectedFar: 0,
     reculls: 0, skippedReculls: 0, cullEstimates: 0,
     // Placement, mirrored up so one readout answers "what did the density slider actually buy".
@@ -351,6 +351,8 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     ensureTextureSet();
     stats.paletteMs = 0;
     stats.compileMs = 0;
+    stats.firstCompileMs = null;
+    stats.compiledMeshes = 0;
     stats.computeCompileMs = 0;
     stats.readyVariants = 0;
 
@@ -425,8 +427,19 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
       for (const mesh of waveMeshes) { mesh.visible = true; warm.add(mesh); }
       const compileStart = now();
       startupStage('compiling render pipelines');
+      // The first mesh alone, timed apart: one shader's compile cost vs. everything else in the wave.
+      if (renderer?.compileAsync && stats.firstCompileMs == null && waveMeshes.length) {
+        const single = new THREE.Group();
+        single.name = 'forest:compile-probe';
+        single.add(waveMeshes[0]);
+        await renderer.compileAsync(single, camera, scene);
+        stats.firstCompileMs = now() - compileStart;
+        warm.add(waveMeshes[0]);
+        if (token !== buildToken || !enabled || forestGPU !== gpu) return false;
+      }
       if (renderer?.compileAsync) await renderer.compileAsync(warm, camera, scene);
       stats.compileMs += now() - compileStart;
+      stats.compiledMeshes += waveMeshes.length;
       if (token !== buildToken || !enabled || forestGPU !== gpu) return false;
       for (const g of indices) {
         const computeStart = now();

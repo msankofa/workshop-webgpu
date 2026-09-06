@@ -479,6 +479,9 @@ leaves L0, leaves L1, coarse leaves, shadow-only bark and leaves), plus one bill
 because each variant has its own baked capture. `applyTextureSet(fn)` therefore calls `fn` once per role
 pair, not once per variant; `materials` returns the shared list. `test-forest-gpu-programs.mjs` builds the
 WGSL headlessly through `WebGPUBackend.createNodeBuilder` and asserts one program per role and 8 materials.
+`stats.firstCompileMs` times the first wave's first mesh through `compileAsync` on its own (a group named
+`forest:compile-probe`, which the tests' stubs ignore) so one shader's compile cost can be read apart from
+the rest of the wave; `compiledMeshes` counts what the waves compiled. The vegetation debug HUD shows both.
 WebGPU creates a pipeline per material per pass, lazily, on the
 first frame each mesh draws, and `syncRenderParts` reveals a variant only once it has records — so
 the compiles arrive scattered across a session as chunks stream in. `base-game-forest.js` therefore
