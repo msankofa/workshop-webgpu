@@ -28,6 +28,10 @@ assert.deepEqual(vegetationOcclusionAvailability(unavailable), {
   available: false, roots: 0, requested: true, reason: 'volumetric terrain has no matching drawn-height field',
 });
 assert.match(vegetationDebugLines(unavailable), /requested but UNAVAILABLE[\s\S]*volumetric terrain/);
+const hiz = { ...base, occlusion: { hiz: true, enabled: true, levels: 8, atlas: [1440, 540], updateMs: 0.12 }, occlusionRequested: true, occluderRoots: 0 };
+assert.deepEqual(vegetationOcclusionAvailability(hiz), { available: true, roots: 0, requested: true, reason: '' });
+assert.match(vegetationDebugLines(hiz), /Occlusion ON \(hi-z pyramid[\s\S]*8 levels, 1,440x540 atlas/);
+assert.ok(!/Grass occlusion|No tree depth occlusion/.test(vegetationDebugLines(hiz)), 'the hi-z line never says the old depth-image things');
 const on = structuredClone(base);
 on.now = 4000; on.grass.drawn = 60; on.occlusion.enabled = true;
 on.grass.drawnSample = { atMs: 3900, occlusion: true, view: [0, 1] };

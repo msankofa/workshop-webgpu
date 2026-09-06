@@ -5,6 +5,8 @@ const ms = value => Number.isFinite(value) ? value.toFixed(2) : '?';
 export const vegetationView = camera => [...camera.position.toArray(), ...camera.quaternion.toArray(), ...camera.projectionMatrix.elements];
 const sameView = (a, b) => a?.length === b?.length && !!a && a.every((v, i) => Math.abs(v - b[i]) < 0.00001);
 export function vegetationOcclusionAvailability(s) {
+  // A Hi-Z pyramid (hiz-pyramid.js) needs no marked roots: everything the frame drew is in it.
+  if (s.occlusion?.hiz) return { available: true, roots: 0, requested: !!s.occlusionRequested, reason: '' };
   const roots = Number.isFinite(s.occluderRoots) ? s.occluderRoots : (s.occlusion ? 1 : 0);
   const available = roots > 0;
   const terrain = s.grass?.terrainOcclusion;
@@ -47,7 +49,8 @@ export function vegetationDebugLines(s, previous = null) {
     c ? `Exact GPU cull: ${n(rejected)} / ${n(tested)} rejected (${pct(rejected, tested)}%); ${pct(c.survivors, tested)}% survived\n  planar/cone/fade ${n(c.planar)} (${pct(c.planar, tested)}%); density ${n(c.density)} (${pct(c.density, tested)}%); ground/water ${n(c.ground)} (${pct(c.ground, tested)}%)\n  off-screen ${n(c.view)} (${pct(c.view, tested)}%); depth occlusion ${n(c.occlusion)} (${pct(c.occlusion, tested)}%); capacity overflow ${n(c.overflow)}\n  Diagnostic rejection atomics are enabled and can lower FPS.` : 'Exact GPU cull: waiting for diagnostic counters.',
     !t.enabled ? 'Trees OFF' : `Trees: ${n(t.trees)} placed / ${n(t.instances)} uploaded / ${n(t.dropped)} dropped\n  CPU estimates LOD0/1/2: ${n(t.lod0)} / ${n(t.lod1)} / ${n(t.lod2)}; cone/far rejected ${n(t.rejectedCone)} / ${n(t.rejectedFar)}\n  ${n(t.draws)} main + ${n(t.shadowDraws)} shadow draws; variants ${n(t.readyVariants)}/${n(t.variants)}`,
     t.enabled ? `Tree startup: first published ${ms(t.startup?.firstPublicationMs == null ? null : t.startup.firstPublicationMs / 1000)}s; complete ${ms(t.startup?.totalMs == null ? null : t.startup.totalMs / 1000)}s\n  palette CPU ${ms(t.paletteMs)}ms; render warmup ${ms(t.compileMs / 1000)}s; compute warmup ${ms(t.computeCompileMs)}ms` : '',
-    o && oa.available ? `Grass occlusion ${o.enabled ? 'ON' : 'OFF'} (${o.size}² depth, ${n(oa.roots)} roots): ${rate('renders')} renders/s, ${rate('skipped')} cached skips/s\n  last depth-render CPU submission ${ms(o.lastRenderCpuMs)}ms (not GPU time)\n  No tree depth occlusion. Use A/B below for observed blade-count impact.`
+    o?.hiz ? `Occlusion ${o.enabled ? 'ON' : 'OFF'} (hi-z pyramid from the main pass depth, ${n(o.levels)} levels, ${n(o.atlas?.[0])}x${n(o.atlas?.[1])} atlas)\n  reduce ${ms(o.updateMs)}ms CPU submission (not GPU time); grass and trees both tested against last frame's depth`
+      : o && oa.available ? `Grass occlusion ${o.enabled ? 'ON' : 'OFF'} (${o.size}² depth, ${n(oa.roots)} roots): ${rate('renders')} renders/s, ${rate('skipped')} cached skips/s\n  last depth-render CPU submission ${ms(o.lastRenderCpuMs)}ms (not GPU time)\n  No tree depth occlusion. Use A/B below for observed blade-count impact.`
       : `Grass occlusion ${oa.requested ? 'requested but UNAVAILABLE' : 'OFF'}: ${oa.reason}.\n  Toggle is disabled until an occluder depth source exists; no tree depth occlusion.`,
     `GPU timestamps ${s.gpuRequested ? 'requested' : 'OFF'}; resolved ${n(s.gpuResolved)}. Counts do not establish GPU cost.`,
   ].filter(Boolean).join('\n');
@@ -86,7 +89,7 @@ export function createVegetationDebugHud({ document, host = document.body, sampl
     const availability = vegetationOcclusionAvailability(s);
     occlusionButton.disabled = !availability.available;
     occlusionButton.textContent = !availability.available ? 'Grass occlusion unavailable'
-      : s.occlusion?.enabled ? 'Turn grass occlusion off' : 'Turn grass occlusion on';
+      : s.occlusion?.enabled ? 'Turn occlusion off' : 'Turn occlusion on';
     occlusionButton.title = availability.available ? '' : availability.reason;
   };
   occlusionButton = button('Toggle grass occlusion', () => {
@@ -94,7 +97,7 @@ export function createVegetationDebugHud({ document, host = document.body, sampl
     if (!availability.available) { result.textContent = 'Cannot toggle grass occlusion: ' + availability.reason + '.'; return; }
     toggleOcclusion(); previous = null;
     const after = sample(); syncOcclusionButton(after);
-    result.textContent = `Grass occlusion is now ${after.occlusion?.enabled ? 'ON' : 'OFF'}. Stand still for a fresh count before comparing.`;
+    result.textContent = `Occlusion is now ${after.occlusion?.enabled ? 'ON' : 'OFF'}. Stand still for a fresh count before comparing.`;
   });
   button('Compare with pin', () => { result.textContent = compareVegetationSamples(pinned, sample()); });
   body.append(result); root.append(toggle, body); host.append(root);
