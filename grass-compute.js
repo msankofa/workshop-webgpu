@@ -22,14 +22,14 @@ import {
 } from 'three/webgpu';
 import {
   Fn, If, instanceIndex, storage, uniform, attribute, float, bool, int, uint, bitcast, modInt,
-  vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld, max,
-  atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix, pow, select, sqrt, ceil,
+  vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld, max, min,
+  atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix, pow, select, sqrt, ceil, userData,
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
 import { createGrassLook } from './grass-look.js';
 import { createHizSampler } from './hiz-test.js';
 import { FIBER_REMAP_MIN, FIBER_REMAP_MAX, STYLE_KEYS } from './grass-textures.js';
-import { maxInstances, perCellCount, tierLayout, thinTiers } from './grass-cells.js';
+import { maxInstances, perCellCount, tierLayout, thinTiers, tierRegions, tierDue } from './grass-cells.js';
 import {
   buildChunkIndex, sampleChunk, slotCapacityForRadius,
   chunkKey, parseChunkKey, pointToChunkDist,
@@ -89,6 +89,16 @@ const slotRandFn = Fn(([gx, gz, slot, salt]) => {
 export const COLOR_MODES = Object.freeze(['palette', 'ground', 'proof']);
 
 // Up to three distance tiers, sorted by radius, the last always open-ended.
+export function normaliseTierClocks(spec) {
+  const d = [{ move: 0, turn: 0, frames: 1 }, { move: 0.5, turn: 3, frames: 4 }, { move: 2, turn: 8, frames: 16 }];
+  const list = Array.isArray(spec) ? spec : [];
+  return d.map((def, i) => {
+    const c = list[i] || {};
+    const num = (v, fallback) => Number.isFinite(v) && v >= 0 ? v : fallback;
+    return { move: num(c.move, def.move), turn: num(c.turn, def.turn), frames: Math.max(1, Math.round(num(c.frames, def.frames))) };
+  });
+}
+
 export function normaliseTiers(spec) {
   const list = (Array.isArray(spec) ? spec : [])
     .map(t => ({ radius: Number(t?.radius), density: Math.max(0, Math.min(1, Number(t?.density ?? 1))) }))
@@ -189,12 +199,17 @@ export function createComputeGrass(opts) {
   // per instance: 2x vec4 → [2i]=(x,y,z,h), [2i+1]=(yaw,_,_,_)
   const instAttr = new StorageInstancedBufferAttribute(new Float32Array(CAP * 8), 8);
   const inst = storage(instAttr, 'vec4', CAP * 2);
-  // [survivors, planar/fade, density, ground/water, view, depth occlusion, capacity overflow].
+  // [survivors, planar/fade, density, ground/water, view, depth occlusion, capacity overflow,
+  // tier 0 survivors, tier 1 survivors, tier 2 survivors]. Anchor mode counts in [0]; the
+  // procedural cull counts per tier (2026-09-06, tiered recull) so one tier can recull alone.
   // Rejection counters are opt-in: their atomics are useful diagnostics but are not free.
-  const counterAttr = new StorageBufferAttribute(new Uint32Array(7), 1);
-  const counter = storage(counterAttr, 'uint', 7).toAtomic();
-  const indirectAttr = new IndirectStorageBufferAttribute(new Uint32Array([9, 0, 0, 0, 0]), 5);
-  const indirect = storage(indirectAttr, 'uint', 5);
+  const TIERS = 3;
+  const counterAttr = new StorageBufferAttribute(new Uint32Array(7 + TIERS), 1);
+  const counter = storage(counterAttr, 'uint', 7 + TIERS).toAtomic();
+  // One indirect draw per tier over that tier's region of the instance buffer.
+  const indirectAttrs = Array.from({ length: TIERS }, () => new IndirectStorageBufferAttribute(new Uint32Array([9, 0, 0, 0, 0]), 5));
+  const indirects = indirectAttrs.map(a => storage(a, 'uint', 5));
+  const indirectAttr = indirectAttrs[0], indirect = indirects[0];
   // anchor mode: (x,y,z,rand01) per anchor, chunk-slot-strided + live count per slot
   const anchorArray = anchorMode ? new Float32Array(anchorCap * 4) : null;
   const anchorAttr = anchorMode ? new StorageBufferAttribute(anchorArray, 4) : null;
@@ -373,6 +388,17 @@ export function createComputeGrass(opts) {
   const uWaterMin = uniform(o.waterLevel + o.shoreMargin);
   const uDensityScale = uniform(1);            // anchor mode: live density / sampled base
   const uHardCap = uniform(CAP, 'uint');       // instance-buffer capacity (write + draw clamp)
+  // Tiered recull: the thread the dispatch starts at, the reset mask, and each tier's region.
+  const uTierBegin = uniform(0, 'int');
+  const uResetTiers = uniform(7, 'uint');
+  const uRegionBase = [uniform(0, 'uint'), uniform(0, 'uint'), uniform(0, 'uint')];
+  const uRegionSize = [uniform(CAP, 'uint'), uniform(0, 'uint'), uniform(0, 'uint')];
+  let tierThreads = [0, 0, 0], regions = tierRegions({ threads: [CAP] }, CAP);
+  // Per-tier recull clocks ({ move, turn, frames }); see grass-cells.tierDue.
+  let tierClocks = normaliseTierClocks(opts.tierClocks);
+  const tierLast = [null, null, null];
+  let frameNo = 0;
+  let meshes = [];   // filled once the meshes exist; syncPerCell runs before that
   const uBaseAmp  = uniform(o.baseAmp);
   const uLake     = uniform(o.lake);
   const uLakeDepth= uniform(o.lakeDepth);
@@ -415,7 +441,9 @@ export function createComputeGrass(opts) {
     lastCell: '',
     dirty: true,
     dirtyReason: 'build',
-    lastRecull: '',       // what triggered the last recull: dirty:<reason>, cell, cone or occlusion
+    lastRecull: '',       // what triggered the last recull: dirty:<reason>, cell, cone, occlusion or tiers a-b
+    tierReculls: [0, 0, 0],   // reculls that covered each tier
+    tierThreads: [0, 0, 0],   // candidate threads per tier
   };
   const markDirty = (reason = 'set') => {
     dirty = true;
@@ -457,6 +485,13 @@ export function createComputeGrass(opts) {
       radius: Number.isFinite(tierSpec[i].radius) ? tierSpec[i].radius : uRadius.value,
       density: t.perCell / (cellSize * cellSize), requested: asked[i].perCell / (cellSize * cellSize),
     }));
+    tierThreads = [next.t0, next.t1, totalThreads];
+    regions = tierRegions({ threads: tierThreads }, CAP);
+    for (let t = 0; t < TIERS; t++) {
+      uRegionBase[t].value = regions[t].base; uRegionSize[t].value = regions[t].size;
+      if (meshes[t]) meshes[t].userData.regionBase = regions[t].base;
+    }
+    stats.tierThreads = [next.t0, next.t1 - next.t0, totalThreads - next.t1];
     if (uPerCell.value !== thinned[0].perCell) uPerCell.value = thinned[0].perCell;
     if (changed) markDirty('perCell');
   }
@@ -494,6 +529,9 @@ export function createComputeGrass(opts) {
   // ---- compute kernels (reset → generate+cull → finalize), per the spike ----
   const reset = Fn(() => {
     for (let i = 0; i < 7; i++) atomicStore(counter.element(i), uint(0));
+    for (let t = 0; t < TIERS; t++) {
+      If(uResetTiers.bitAnd(uint(1 << t)).notEqual(uint(0)), () => { atomicStore(counter.element(7 + t), uint(0)); });
+    }
   })().compute(1);
   const diagnosticAdd = index => {
     If(uDiagnostics.greaterThan(0.5), () => { atomicAdd(counter.element(index), uint(1)); });
@@ -503,6 +541,17 @@ export function createComputeGrass(opts) {
       .and(uMaxBlades.equal(uint(0)).or(s.lessThan(uMaxBlades)));
     If(withinCap, () => {
       const base2 = s.mul(uint(2));
+      const yaw = yawFn();
+      const bh = heightFn2();
+      const g = groundFn();
+      inst.element(base2).assign(vec4(wx, wy, wz, bh));
+      inst.element(base2.add(uint(1))).assign(vec4(yaw, g.x, g.y, g.z));
+    }).Else(() => { diagnosticAdd(6); });
+  };
+  // Procedural mode: the survivor lands in its tier's region; `s` counts within the tier.
+  const appendBladeAt = (s, base, size, wx, wy, wz, yawFn, heightFn2, groundFn) => {
+    If(s.lessThan(size), () => {
+      const base2 = base.add(s).mul(uint(2));
       const yaw = yawFn();
       const bh = heightFn2();
       const g = groundFn();
@@ -554,12 +603,15 @@ export function createComputeGrass(opts) {
   })().compute(anchorCap) : null;
 
   const proceduralCull = anchorMode ? null : Fn(() => {
-    const idx = int(instanceIndex);                  // 0 .. cull.count-1, sized to the live window
+    const idx = int(instanceIndex).add(uTierBegin);  // dispatch-relative thread, offset to the first tier reculled
     // Which tier this thread belongs to, and its cell-major index within it.
     const inT0 = idx.lessThan(uTierThreads0), inT1 = idx.lessThan(uTierThreads1);
     const local = select(inT0, idx, select(inT1, idx.sub(uTierThreads0), idx.sub(uTierThreads1)));
     const perCell = select(inT0, uTierPerCell0, select(inT1, uTierPerCell1, uTierPerCell2));
     const cellBase = select(inT0, int(0), select(inT1, uTierCells0, uTierCells1));
+    const tierCounter = select(inT0, uint(7), select(inT1, uint(8), uint(9)));
+    const regionBase = select(inT0, uRegionBase[0], select(inT1, uRegionBase[1], uRegionBase[2]));
+    const regionSize = select(inT0, uRegionSize[0], select(inT1, uRegionSize[1], uRegionSize[2]));
     const K = perCell.max(int(1));                   // live blades per cell; 0 would divide by zero
     const slot = modInt(local, K);
     const cellI = cellBase.add(local.div(K));        // ring-ordered cell index (grass-cells.ringCell)
@@ -611,8 +663,8 @@ export function createComputeGrass(opts) {
             If(visibility.x.lessThan(0.5), () => { diagnosticAdd(4); })
               .ElseIf(visibility.y.lessThan(0.5), () => { diagnosticAdd(5); })
               .Else(() => {
-                const s = atomicAdd(counter.element(0), uint(1));
-                appendBlade(s, idx, wx, wy, wz,
+                const s = atomicAdd(counter.element(tierCounter), uint(1));
+                appendBladeAt(s, regionBase, regionSize, wx, wy, wz,
                   () => slotRandFn(hx, hz, slot, int(3)).mul(6.2831853),
                   () => float(0.8).add(slotRandFn(hx, hz, slot, int(5)).mul(0.6)),
                   () => injectedGround ? injectedGround(wx, wz, wy) : vec3(0));
@@ -643,7 +695,7 @@ export function createComputeGrass(opts) {
     probeBuf.element(1).assign(vec4(densityFn(wx, wz), cone, fadeEdgeFn(dist), water));
   })().compute(1) : null;
 
-  const finalize = Fn(() => {
+  const finalize = anchorMode ? Fn(() => {
     const c = atomicLoad(counter.element(0));
     indirect.element(1).assign(c);
     If(c.greaterThan(uHardCap), () => {
@@ -652,6 +704,17 @@ export function createComputeGrass(opts) {
     If(uMaxBlades.greaterThan(uint(0)).and(c.greaterThan(uMaxBlades)), () => {
       indirect.element(1).assign(uMaxBlades);
     });
+  })().compute(1) : Fn(() => {
+    // Every tier's draw is rewritten from its counter; a tier that did not recull kept its count.
+    const remaining = uMaxBlades.toVar();
+    for (let t = 0; t < TIERS; t++) {
+      const c = min(atomicLoad(counter.element(7 + t)), uRegionSize[t]).toVar();
+      If(uMaxBlades.greaterThan(uint(0)), () => {
+        c.assign(min(c, remaining));
+        remaining.assign(remaining.sub(c));
+      });
+      indirects[t].element(1).assign(c);
+    }
   })().compute(1);
 
   // ---- instanced base blade + node material ----
@@ -660,8 +723,11 @@ export function createComputeGrass(opts) {
   geom.indirect = indirectAttr;          // exact form per the spike
 
   const aWind = attribute('aWind', 'float');
-  const rec0 = inst.element(instanceIndex.mul(uint(2)));        // (x,y,z,h)
-  const rec1 = inst.element(instanceIndex.mul(uint(2)).add(uint(1))); // (yaw,...)
+  // Each tier's mesh draws its own region; the base comes from mesh.userData so one material
+  // (one program) serves all three, the way the forest's slot offset does.
+  const recIndex = userData('regionBase', 'uint').add(instanceIndex);
+  const rec0 = inst.element(recIndex.mul(uint(2)));        // (x,y,z,h)
+  const rec1 = inst.element(recIndex.mul(uint(2)).add(uint(1))); // (yaw,...)
   const base = rec0.xyz, bladeH = rec0.w, yaw = rec1.x;
   const groundColor = rec1.yzw;                       // written by the cull; zero when not injected
 
@@ -770,6 +836,22 @@ export function createComputeGrass(opts) {
   mesh.frustumCulled = false;
   mesh.castShadow = false;
   mesh.receiveShadow = true;
+  mesh.userData.regionBase = 0;
+  // Tiers 1 and 2 draw as children of the tier-0 mesh, so a host that adds `mesh` gets all three.
+  meshes.push(mesh);
+  if (!anchorMode) {
+    for (let t = 1; t < TIERS; t++) {
+      const g = geom.clone();
+      g.instanceCount = CAP;
+      g.indirect = indirectAttrs[t];
+      const m = new THREE.Mesh(g, mat);
+      m.frustumCulled = false; m.castShadow = false; m.receiveShadow = true;
+      m.userData.regionBase = regions[t].base;
+      m.name = `grass-tier-${t}`;
+      mesh.add(m);
+      meshes.push(m);
+    }
+  }
 
   // ---- anchor streaming: keep chunks near the camera resident in slot pool ----
   // Admits nearest-first within a per-frame CPU budget; evicts with one chunk of
@@ -848,29 +930,61 @@ export function createComputeGrass(opts) {
       if (cellChanged) stats.lastCell = `${cellX}:${cellZ}`;
       const cone = coneFor();
       const coneChanged = cone.fx !== lastFx || cone.fz !== lastFz || cone.cos !== lastCos;
-      // Occlusion depends on the exact camera, so any camera change re-culls while it is on.
+      // Occlusion depends on the exact camera. A depth-image occluder re-culls on any change; a
+      // Hi-Z pyramid changes every frame, so each tier decides on its own clock instead.
       const occChanged = syncOcclusion();
-      if (recullMode !== 'frame' && !dirty && !cellChanged && !coneChanged && !occChanged) {
+      const occOn = hizSampler ? hizSampler.enabled : !!(occlusion && uOccOn.value > 0.5);
+      const dirtyAll = recullMode === 'frame' || dirty || cellChanged || coneChanged || (occChanged && !hizSampler);
+      frameNo++;
+      let first = -1, last = -1;
+      if (anchorMode) { if (dirtyAll || occChanged) { first = 0; last = 0; } }
+      else {
+        // Only a per-frame pyramid runs the clocks; a depth image reculls through dirtyAll when it changes.
+        const now = { x: camera.position.x, z: camera.position.z, fx: cone.fx, fz: cone.fz, frame: frameNo, dirty: dirtyAll, occlusion: !!hizSampler && occOn };
+        for (let t = 0; t < TIERS; t++) {
+          if (stats.tierThreads[t] <= 0 && t > 0) continue;
+          if (!tierDue(tierLast[t], now, tierClocks[t])) continue;
+          if (first < 0) first = t;
+          last = t;
+        }
+      }
+      if (first < 0) {
         stats.skippedReculls++;
         return;
       }
-      stats.lastRecull = dirty ? 'dirty:' + stats.dirtyReason : cellChanged ? 'cell' : coneChanged ? 'cone' : occChanged ? 'occlusion' : 'frame';
-      // count drives both the dispatch and the shader's own bounds guard, so shrinking the radius
-      // or the density now shrinks the work instead of discarding it inside the kernel.
+      stats.lastRecull = dirty ? 'dirty:' + stats.dirtyReason : cellChanged ? 'cell' : coneChanged ? 'cone' : occChanged && !hizSampler ? 'occlusion' : `tiers ${first}-${last}`;
+      // The dispatch covers the due tiers as one contiguous span of the thread layout; count drives
+      // both the dispatch and the shader's own bounds guard, so shrinking the radius or the
+      // density shrinks the work instead of discarding it inside the kernel.
       if (!anchorMode) {
-        cull.count = Math.max(1, totalThreads);
+        const begin = first > 0 ? tierThreads[first - 1] : 0;
+        const end = tierThreads[last];
+        uTierBegin.value = begin;
+        cull.count = Math.max(1, end - begin);
         stats.dispatch = cull.count;
+        let mask = 0;
+        for (let t = first; t <= last; t++) mask |= 1 << t;
+        uResetTiers.value = mask;
       }
       uCam.value.set(camera.position.x, camera.position.z);
       uFwd.value.set(cone.fx, cone.fz); uCosHalf.value = cone.cos;
       lastFx = cone.fx; lastFz = cone.fz; lastCos = cone.cos;
       await renderer.computeAsync([reset, cull, finalize]);
+      for (let t = first; t <= last; t++) {
+        tierLast[t] = { x: camera.position.x, z: camera.position.z, fx: cone.fx, fz: cone.fz, frame: frameNo };
+        stats.tierReculls[t]++;
+      }
       lastCellX = cellX;
       lastCellZ = cellZ;
       dirty = false;
       stats.dirty = false;
       stats.reculls++;
     },
+    // Per-tier recull clocks: [{ move (m), turn (deg), frames }] x3, or null for the defaults.
+    setTierClocks(spec) {
+      tierClocks = normaliseTierClocks(spec);
+    },
+    get tierClocks() { return tierClocks.map(c => ({ ...c })); },
     // The floating origin moved. Placement hashes and every world-space sample add this back, so
     // the field stays put in the world instead of re-rolling.
     setWorldOrigin(x, z) {
@@ -1002,7 +1116,7 @@ export function createComputeGrass(opts) {
     setReceiveShadow(on) {
       const next = !!on;
       if (mesh.receiveShadow === next) return;
-      mesh.receiveShadow = next;
+      for (const m of meshes) m.receiveShadow = next;
       for (const m of Object.values(mats)) m.needsUpdate = true;
     },
     // The XZ view cone, live: a change moves the cone, which re-culls like a turn does.
@@ -1039,7 +1153,8 @@ export function createComputeGrass(opts) {
     },
     async readCullCounts() {
       const v = new Uint32Array(await renderer.getArrayBufferAsync(counterAttr));
-      return { survivors: v[0], planar: v[1], density: v[2], ground: v[3], view: v[4], occlusion: v[5], overflow: v[6] };
+      const survivors = anchorMode ? v[0] : v[7] + v[8] + v[9];
+      return { survivors, planar: v[1], density: v[2], ground: v[3], view: v[4], occlusion: v[5], overflow: v[6], tiers: [v[7], v[8], v[9]] };
     },
     // The ground colour under a render-local (x, z) as the cull packs it, plus the render-local
     // height it stood on: { r, g, b, y }, or null without an injected ground node. Two GPU round

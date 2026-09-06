@@ -373,7 +373,8 @@ section('occluder edits recull even when the camera is stationary');
 section('diagnostic rejection counters retain their stage identity');
 {
   const camera = new THREE.PerspectiveCamera();
-  const values = new Uint32Array([11, 22, 33, 44, 55, 66, 7]);
+  // Procedural mode counts survivors per tier in [7..9]; the readback sums them.
+  const values = new Uint32Array([0, 22, 33, 44, 55, 66, 7, 5, 4, 2]);
   const grass = createComputeGrass({
     renderer: { computeAsync: async () => {}, getArrayBufferAsync: async () => values.buffer },
     camera, radius: 20, maxRadius: 20, density: 4, Kmax: 64,
@@ -381,10 +382,47 @@ section('diagnostic rejection counters retain their stage identity');
   const counts = await grass.readCullCounts();
   check('the readback names survivors and every rejection stage',
     JSON.stringify(counts) === JSON.stringify({
-      survivors: 11, planar: 22, density: 33, ground: 44, view: 55, occlusion: 66, overflow: 7,
-    }));
+      survivors: 11, planar: 22, density: 33, ground: 44, view: 55, occlusion: 66, overflow: 7, tiers: [5, 4, 2],
+    }), JSON.stringify(counts));
   grass.setDiagnosticsEnabled(true);
   check('enabling counters forces one freshly instrumented recull', grass.stats.dirty === true);
+  grass.dispose();
+}
+
+section('with a Hi-Z pyramid each tier reculls on its own clock');
+{
+  const hiz = { enabled: true, atlas: new THREE.DataTexture(new Float32Array(4), 2, 2, THREE.RedFormat, THREE.FloatType),
+    levels: [{ x: 0, y: 0, width: 2, height: 2 }], viewProj: new THREE.Matrix4(), revision: 1, frameWidth: 4, frameHeight: 4, tanHalfFov: 1, aspect: 1 };
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.5, 0, 0.5);
+  const grass = createComputeGrass({ renderer: { computeAsync: async () => {} }, camera, radius: 40, maxRadius: 40, density: 12, dispatchBudget: 1e9, hiz,
+    tiers: [{ radius: 10, density: 1 }, { radius: 25, density: 0.5 }, { radius: Infinity, density: 0.25 }] });
+  const bump = () => { hiz.revision++; };
+  await grass.update(0);
+  const [t0, t1, t2] = grass.stats.tierThreads;
+  check('three tiers carry threads', t0 > 0 && t1 > 0 && t2 > 0, JSON.stringify(grass.stats.tierThreads));
+  check('the first recull covers every tier', grass.stats.dispatch === t0 + t1 + t2 && grass.stats.tierReculls.join() === '1,1,1', `${grass.stats.dispatch} ${grass.stats.tierReculls}`);
+  bump(); await grass.update(1);
+  check('a still camera one frame on reculls the near tier only', grass.stats.dispatch === t0 && grass.stats.tierReculls.join() === '2,1,1', `${grass.stats.dispatch} ${grass.stats.tierReculls}`);
+  check('and says so', grass.stats.lastRecull === 'tiers 0-0', grass.stats.lastRecull);
+  camera.position.x += 0.6; bump(); await grass.update(2);
+  check('a 0.6 m step reaches the middle tier', grass.stats.dispatch === t0 + t1 && grass.stats.tierReculls.join() === '3,2,1', `${grass.stats.dispatch} ${grass.stats.tierReculls}`);
+  camera.position.x += 2.5; bump(); await grass.update(3);
+  check('a 2.5 m step reaches the far tier', grass.stats.dispatch === t0 + t1 + t2 && grass.stats.tierReculls.join() === '4,3,2', `${grass.stats.dispatch} ${grass.stats.tierReculls}`);
+  for (let i = 0; i < 3; i++) { bump(); await grass.update(4 + i); }
+  check('three still frames recull the near tier alone', grass.stats.tierReculls.join() === '7,3,2', `${grass.stats.tierReculls}`);
+  bump(); await grass.update(7);
+  check('the fourth still frame is the middle tier\'s clock', grass.stats.tierReculls.join() === '8,4,2', `${grass.stats.tierReculls}`);
+  grass.setTierClocks([{ move: 0, turn: 0, frames: 1 }, { move: 0, turn: 0, frames: 1 }, { move: 0, turn: 0, frames: 1 }]);
+  bump(); await grass.update(8);
+  check('clocks of one frame recull everything every frame', grass.stats.dispatch === t0 + t1 + t2, `${grass.stats.dispatch}`);
+  hiz.enabled = false; bump(); await grass.update(9);
+  const offReculls = grass.stats.reculls;
+  bump(); await grass.update(10);
+  check('with the pyramid off a still camera reculls nothing', grass.stats.reculls === offReculls, `${grass.stats.reculls} vs ${offReculls}`);
+  check('the tier meshes hang off the main mesh', grass.mesh.children.length === 2 && grass.mesh.children.every(m => m.material === grass.mesh.material));
+  check('and read their own regions', grass.mesh.userData.regionBase === 0 && grass.mesh.children[0].userData.regionBase === t0 && grass.mesh.children[1].userData.regionBase === t0 + t1,
+    `${grass.mesh.children.map(m => m.userData.regionBase)} vs ${t0} ${t0 + t1}`);
   grass.dispose();
 }
 
