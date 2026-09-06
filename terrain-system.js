@@ -27,6 +27,14 @@ const DEFAULTS = {
   lod: 0,                     // source path only: tile lod (0 = exact; > 0 = band-limited to the chunk's own spacing, visual LOD cascades)
   segmentsPerChunk: 0,        // > 0 overrides chunkSegments() with a fixed count (LOD cascades)
   workerCount: 0,             // 0 = min(4, cores - 2) terrain workers behind one round-robin facade
+  // Worker results wait here instead of being installed inside onmessage. Bounded in items AND
+  // bytes: an in-flight cap bounds neither simultaneous completion nor how much memory the
+  // completed results hold. Dispatch pauses while over either line -- that is the backpressure.
+  inboxMaxItems: 32,
+  inboxMaxBytes: 48 * 1024 * 1024,
+  // false: update() drains the whole inbox itself, which is what every host did before the
+  // queue existed. true: the host commits items one at a time under its own time budget.
+  integrateExternally: false,
 };
 
 function merge(base, over) {
@@ -189,6 +197,11 @@ class TerrainSystem {
     this.inFlight = new Set();   // chunk keys dispatched to the worker, awaiting a result
     this.epoch = 0;              // bumped on rebuild(); stamped on jobs so stale results are dropped
     this.workerChanged = false;  // a worker chunk landed since the last update() — surface it as "changed"
+    this.now = typeof options.now === 'function' ? options.now : (() => performance.now());   // injected in tests
+    this.inbox = new Map();      // key -> completed worker result awaiting commit (newer same-key wins)
+    this.inboxBytes = 0;
+    this.staleDrops = 0;         // results discarded at enqueue or at commit because they no longer apply
+    this.committedTotal = 0;
     if (this.params.useWorker) this.initWorker();
 
     this.rebuild();
@@ -226,6 +239,7 @@ class TerrainSystem {
     this.worker = null;
     this.workers = [];
     this.inFlight.clear();
+    this.clearInbox();
     this.centerChunkX = null;   // force update() to recompute the build queue
   }
 
@@ -278,6 +292,7 @@ class TerrainSystem {
   restream({ drop = true } = {}) {
     this.epoch++;
     this.inFlight.clear();
+    this.clearInbox();
     this.atlasRequested.clear();
     this.lastSourceError = null;
     if (drop) {
@@ -311,7 +326,7 @@ class TerrainSystem {
   }
 
   get pendingBuildCount() {
-    return Math.max(0, this.buildQueue.length - this.buildQueueIndex) + this.inFlight.size;
+    return Math.max(0, this.buildQueue.length - this.buildQueueIndex) + this.inFlight.size + this.inbox.size;
   }
 
   // Lazy: rebuilding this eagerly cost one array of N objects per chunk arrival AND once more per
@@ -332,6 +347,7 @@ class TerrainSystem {
     this.updateInstancedUniforms();
     this.epoch++;            // invalidate any in-flight worker jobs from the old params
     this.inFlight.clear();
+    this.clearInbox();
     this.atlasRequested.clear();   // re-request every height tile under the new epoch/params
     for (const chunk of this.chunks.values()) {
       this.disposeChunk(chunk);
@@ -391,11 +407,13 @@ class TerrainSystem {
     const maxBuilds = Math.max(1, Math.floor(this.params.maxChunksPerUpdate));
     for (let i = 0; i < maxBuilds && this.buildQueueIndex < this.buildQueue.length; i++) {
       const item = this.buildQueue[this.buildQueueIndex++];
-      if (this.hasFreshChunk(item.key) || this.inFlight.has(item.key) || !this.targetKeys.has(item.key)) {
+      if (this.hasFreshChunk(item.key) || this.inFlight.has(item.key) || this.inbox.has(item.key) || !this.targetKeys.has(item.key)) {
         i--;
         continue;
       }
       if (this.worker && this.params.visualMode !== 'external') {
+        // Backpressure: completed results already hold memory, so stop asking for more.
+        if (this.inboxFull) { this.buildQueueIndex--; break; }
         this.dispatchChunk(item, chunkSize);   // builds off-thread; lands in onWorkerChunk
       } else {
         const chunk = this.createChunk(item.key, item.ix * chunkSize, item.iz * chunkSize, chunkSize);
@@ -406,7 +424,7 @@ class TerrainSystem {
 
     // Only unload once the build pipeline is idle (queue drained AND no worker jobs
     // in flight), so we don't churn chunks mid-stream.
-    if (this.buildQueueIndex >= this.buildQueue.length && this.inFlight.size === 0) {
+    if (this.buildQueueIndex >= this.buildQueue.length && this.inFlight.size === 0 && this.inbox.size === 0) {
       this.buildQueue = [];
       this.buildQueueIndex = 0;
       const maxUnloads = Math.max(1, Math.floor(this.params.maxUnloadsPerUpdate));
@@ -424,6 +442,10 @@ class TerrainSystem {
         if (unloads >= maxUnloads) break;
       }
     }
+
+    // Unless the host drives integration under its own time budget, drain here: this is what
+    // every consumer did before the queue existed, just moved inside the frame where it is visible.
+    if (!this.params.integrateExternally) while (this.commitNextResult() !== null);
 
     // installChunk/addChunk maintain this as chunks arrive, so a quiet frame has nothing to
     // re-pick and the Map iterator it used to allocate is skipped.
@@ -489,6 +511,92 @@ class TerrainSystem {
     });
   }
 
+  // Rough payload size, for the byte bound. Only the big typed arrays matter.
+  static resultBytes(data) {
+    let n = 0;
+    for (const f of ['positions', 'normals', 'uvs', 'index', 'heights', 'colors']) if (data[f]?.byteLength) n += data[f].byteLength;
+    if (data.volume) for (const f of ['positions', 'normals', 'indices']) if (data.volume[f]?.byteLength) n += data.volume[f].byteLength;
+    return n;
+  }
+
+  // Does this result still describe ground we want? Checked at enqueue AND again at commit,
+  // because the window can move while an item waits its turn.
+  resultValid(data) {
+    return data.epoch === this.epoch && this.targetKeys.has(data.key) && !this.hasFreshChunk(data.key);
+  }
+
+  get queuedCount() { return this.inbox.size; }
+  get queuedBytes() { return this.inboxBytes; }
+  // Age of the oldest waiting item, so a host can see a queue that is not draining.
+  queuedOldestMs() {
+    let oldest = 0;
+    const now = this.now();
+    for (const item of this.inbox.values()) oldest = Math.max(oldest, now - item.queuedAt);
+    return oldest;
+  }
+  get inboxFull() {
+    return this.inbox.size >= this.params.inboxMaxItems || this.inboxBytes >= this.params.inboxMaxBytes;
+  }
+
+  enqueueResult(data) {
+    if (!this.resultValid(data)) { this.staleDrops++; return false; }
+    const bytes = TerrainSystem.resultBytes(data);
+    const previous = this.inbox.get(data.key);
+    if (previous) { this.inboxBytes -= previous.bytes; this.staleDrops++; }   // newer same-key reply wins
+    this.inbox.set(data.key, { key: data.key, data, bytes, queuedAt: this.now() });
+    this.inboxBytes += bytes;
+    return true;
+  }
+
+  // The waiting item nearest the stream centre, or null. Distance is recomputed at selection
+  // time rather than stored: the centre moves while items wait.
+  nextQueuedKey() {
+    let best = null, bestD = Infinity;
+    const size = this.params.chunkSize;
+    for (const item of this.inbox.values()) {
+      const [ix, iz] = item.key.split(',').map(Number);
+      const dx = (ix + 0.5) * size - this.centerX, dz = (iz + 0.5) * size - this.centerZ;
+      const d = dx * dx + dz * dz;
+      if (d < bestD) { bestD = d; best = item.key; }
+    }
+    return best;
+  }
+
+  // Commit one waiting result: build its geometry and install it. Returns the key it did, or
+  // null when there was nothing left that still applies. This is the indivisible unit of work
+  // the host's scheduler charges to its deadline.
+  commitNextResult(key = this.nextQueuedKey()) {
+    while (key != null) {
+      const item = this.inbox.get(key);
+      this.inbox.delete(key);
+      if (item) this.inboxBytes -= item.bytes;
+      if (item && this.resultValid(item.data)) {
+        this.installResult(item.data);
+        this.committedTotal++;
+        return key;
+      }
+      this.staleDrops++;                  // it stopped applying while it waited
+      key = this.nextQueuedKey();
+    }
+    return null;
+  }
+
+  installResult(data) {
+    const [ix, iz] = data.key.split(',').map(Number);
+    const chunkSize = this.params.chunkSize;
+    const chunk = data.jobType === 'sourceTile'
+      ? this.chunkFromTile(data.key, data)
+      : this.chunkFromArrays(data.key, ix * chunkSize, iz * chunkSize, chunkSize, data);
+    this.installChunk(chunk);
+    this.workerChanged = true;
+    this.activeChunkCacheDirty = true;
+  }
+
+  clearInbox() {
+    this.inbox.clear();
+    this.inboxBytes = 0;
+  }
+
   // Worker results land in w.onmessage, outside the rAF and outside every profiler slot, so this
   // cost is invisible to the frame passes. Accumulate it for the host to drain and report.
   onWorkerChunk(data) {
@@ -530,20 +638,12 @@ class TerrainSystem {
     }
     this.inFlight.delete(data.key);
     // Drop results from a previous param/source generation (the epoch was bumped).
-    if (data.epoch !== this.epoch) return;
+    if (data.epoch !== this.epoch) { this.staleDrops++; return; }
     if (data.error) { this.lastSourceError = data.error; return; }
     if (data.tintMs) this.workerTintMsPending += data.tintMs;
-    // Drop if we moved away or a fresh chunk already exists.
-    if (!this.targetKeys.has(data.key) || this.hasFreshChunk(data.key)) return;
-
-    const [ix, iz] = data.key.split(',').map(Number);
-    const chunkSize = this.params.chunkSize;
-    const chunk = data.jobType === 'sourceTile'
-      ? this.chunkFromTile(data.key, data)
-      : this.chunkFromArrays(data.key, ix * chunkSize, iz * chunkSize, chunkSize, data);
-    this.installChunk(chunk);
-    this.workerChanged = true;
-    this.activeChunkCacheDirty = true;
+    // Nothing is built here any more: geometry construction is the frame cost this queue exists
+    // to move. enqueueResult drops anything that no longer applies.
+    this.enqueueResult(data);
   }
 
   getTargetKeys(centerChunkX, centerChunkZ, radius) {
@@ -559,7 +659,7 @@ class TerrainSystem {
   getMissingKeysSorted(centerX, centerZ) {
     const missing = [];
     for (const key of this.targetKeys) {
-      if (this.hasFreshChunk(key) || this.inFlight.has(key)) continue;
+      if (this.hasFreshChunk(key) || this.inFlight.has(key) || this.inbox.has(key)) continue;
       const [ix, iz] = key.split(',').map(Number);
       const cx = (ix + 0.5) * this.params.chunkSize;
       const cz = (iz + 0.5) * this.params.chunkSize;
@@ -814,6 +914,7 @@ class TerrainSystem {
   dispose() {
     if (this.worker) { this.worker.terminate(); this.worker = null; }
     this.inFlight.clear();
+    this.clearInbox();
     for (const chunk of this.chunks.values()) this.disposeChunk(chunk);
     this.chunks.clear();
     if (this.instancedTerrain) {

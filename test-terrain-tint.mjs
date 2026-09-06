@@ -124,10 +124,11 @@ console.log('\n[4] a stale-revision reply is re-tinted on commit, a current one 
   const staleColors = tintTileColors(stale, 0);   // tinted at the OLD sea level
   terrain.system.chunks.delete('1,1');            // as if it were still in flight across the change
   terrain.system.onWorkerChunk({ ...stale, colors: staleColors, tintRevision: 1, key: '1,1', epoch: terrain.system.epoch, jobType: 'sourceTile' });
-  const staleChunk = terrain.system.chunks.get('1,1');
-  ok(!!staleChunk, 'the stale reply installed');
-  ok(staleChunk.mesh.geometry.userData.tintRevision === 1, 'and arrived stamped with the old revision');
+  // Since step 2 a reply waits in the inbox rather than being installed inside onmessage.
+  ok(terrain.system.queuedCount === 1 && !terrain.system.chunks.has('1,1'), 'the stale reply waits in the inbox rather than installing itself');
   terrain.update([0, 0, 0], 1 / 60);
+  const staleChunk = terrain.system.chunks.get('1,1');
+  ok(!!staleChunk, 'the next update commits it');
   const got = staleChunk.mesh.geometry.getAttribute('color').array;
   const want = tintTileColors(stale, 40);
   let diff = 0;

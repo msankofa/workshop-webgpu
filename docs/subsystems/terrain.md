@@ -456,6 +456,37 @@ noise. The real effect is read from `passTerrainFoldMs` in a browser capture.
 | `test-cdlod-select.mjs` | `levelRanges`, `nodeSize`, `minDistToCell`, `selectNodes`, `nodeCountForViewDistance` | Range/size formulas match the geometric definition; `minDistToCell` is exact inside/outside a cell; **coverage partition** — every sampled point near the camera lands in exactly one selected node, across several camera positions; the camera's own cell is always a level-0 (finest) node; **bounded cost** — node count never exceeds `levels*windowCells²` and adding levels grows by bounded rings, not quadratically, with view distance; sub-leaf camera moves leave coarse node origins stable (no shimmer). |
 | `test-cdlod-morph.mjs` | `morphGridCoord`, `nodeSize` (cross-checked against `grassHeightRef`) | `morphK=0` is the identity; `morphK=1` snaps every grid vertex onto the parent (even) lattice; a fully-morphed fine node's boundary heights exactly match the coarser neighbor's lattice points (crack-free seam proof). |
 
+### The integration inbox
+
+Worker results are no longer installed inside `onmessage`. `onWorkerChunkInner` calls
+`enqueueResult(data)`, which validates and parks the result in `system.inbox`, a `Map` keyed by
+chunk key. Geometry construction -- the frame cost the queue exists to move -- happens later, in
+`commitNextResult()`.
+
+- **Validated at both ends.** `resultValid(data)` requires a matching `epoch`, membership of
+  `targetKeys`, and no fresh chunk already under that key. It runs at enqueue AND again at commit,
+  because the window moves while an item waits. Either rejection increments `staleDrops`.
+- **Newer same-key wins.** A second reply for a key replaces the first and releases its bytes, so a
+  stale reply can never clear a newer same-key request.
+- **Bounded in items and bytes.** `inboxMaxItems` (32) and `inboxMaxBytes` (48 MB); `inboxFull`
+  pauses *dispatch*, which is the backpressure. It never drops a completed result -- that work is
+  already paid for. An in-flight cap alone bounds neither simultaneous completion nor memory held.
+- **Nearest-first.** `nextQueuedKey()` recomputes distance from the current stream centre at
+  selection time rather than storing it, because the centre moves while items wait.
+- **Counted as pending.** `pendingBuildCount` includes queued items; the unload-idle check requires
+  an empty inbox as well as an empty queue and no in-flight jobs; a key with a result waiting is
+  neither re-dispatched nor treated as missing.
+- **Cleared on every invalidation.** `rebuild`, `restream` (so `setSource` and `setVolumetric`),
+  `dispose` and `disableWorker` all call `clearInbox()`.
+
+`integrateExternally` (default **false**) decides who drains it. Off, `update()` drains the whole
+inbox itself, which is what every host did before the queue existed -- environment-viewer and the
+existing tests are unchanged, the work simply moved inside the frame where a profiler can see it.
+Base Game turns it on so its scheduler can commit one item at a time under a time budget.
+
+Observability: `queuedCount`, `queuedBytes`, `queuedOldestMs()`, `staleDrops`, `committedTotal`.
+The clock is injectable (`createTerrainSystem({ now })`) so ageing is testable without sleeping.
+
 ### The worker finishes the chunk
 
 `terrain-tint.js` also carries `tintTileColors(tile, seaLevel)` (a source tile's colours in the
