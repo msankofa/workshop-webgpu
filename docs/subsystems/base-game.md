@@ -457,6 +457,15 @@ writes its counts into the same GPU buffers the recorded commands already refere
 `context.render.bundles` records the invalidation counts, so a capture says whether the forest
 settled or is re-recording every frame.
 
+Two consequences of how a replay works, both expected rather than faults. A replayed bundle
+ignores the render list `_projectObject` rebuilt that frame, so a visibility change the signature
+missed would draw stale geometry -- and the LOD rung gate flips `mesh.visible` on every recull, so
+while the player walks `forestInvalidations` tracks reculls, not only the palette waves; a standing
+capture is the one that shows whether the recording settles. And `needsRefresh` still runs for
+every recorded object each frame to update bindings and node uniforms, so the ceiling on what
+bundles can save is the command encode, not the whole per-object cost. `?trace=1`'s
+`passTraceEncodeMs` against `passTraceObjectsMs` is what separates the two.
+
 The browser sends one completed entry to `serve.py`, which atomically prepends it to
 `research/stats/base-game-performance-log.json`; newest results therefore appear first and an old
 browser tab never sends an old copy of the log back to the server. The file uses the
