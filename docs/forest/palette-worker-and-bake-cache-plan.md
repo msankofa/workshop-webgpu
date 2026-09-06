@@ -113,7 +113,7 @@ job protocol is designed for it from the start.
 - [x] 1. (2026-09-06) `TREES_VERSION` in `trees.js`; `forest-palette-io.js` key + serialise/deserialise;
   `test-forest-palette-io.mjs` (round trip byte-identical, key stable across property order, key
   changes with every input it should).
-- [ ] 2. Refactor `forest-palette.js` so the per-variant bake step is exported; keep both existing
+- [x] 2. (2026-09-06) Refactor `forest-palette.js` so the per-variant bake step is exported; keep both existing
   entry points passing `test-forest-palette-startup.mjs`.
 - [ ] 3. `forest-palette-worker.js` + `createForestPaletteWorker()` with fallback; Base Game and the
   environment viewer bake through it; `test-forest-palette-worker.mjs` runs the worker module's job

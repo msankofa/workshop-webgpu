@@ -22,7 +22,7 @@ function bakeFlatColor(geom, hex) {
 // Build the per-species leaf/bark options the same way the baker does
 // (environment-viewer.html:862-878). In authored mode the leaves switch to the larger
 // 'quad' atlas billboards (cell = speciesIdx % atlasCells); procedural uses 'simple'.
-function leafOptsFor(sp, params, texSet, spIdx) {
+export function leafOptsFor(sp, params, texSet, spIdx) {
   const leafOpts = { ...sp.leaves, shadowFraction: params.leafShadowPct };
   leafOpts.count = Math.max(0, Math.floor(params.leafCount ?? sp.leaves.count ?? 10));
   leafOpts.size = sp.leaves.size * (params.leafSize ?? 1);
@@ -51,7 +51,7 @@ function leafOptsFor(sp, params, texSet, spIdx) {
 // params + master seed the placement uses (so species match placementRecords). texSet:
 // the active texture set (or null) — drives leaf shape (quad vs simple) and bark vScale,
 // so the palette must be rebaked when texMode changes.
-function createPaletteState({ createTree, params, masterSeed, variantsPerSpecies = 4, texSet = null }) {
+export function createPaletteState({ createTree, params, masterSeed, variantsPerSpecies = 4, texSet = null }) {
   // An authored species table (from buildSpeciesFromFamilies) takes over when present;
   // its entries are full trees.js opts objects too, so nothing else below needs to change.
   const species = params.speciesTable || buildSpecies(params, rngFrom(masterSeed));
@@ -59,7 +59,7 @@ function createPaletteState({ createTree, params, masterSeed, variantsPerSpecies
   return { gen: null, createTree, species, variants, params, masterSeed, variantsPerSpecies, texSet, bakeMs: 0 };
 }
 
-function bakeVariant(state, s, v) {
+export function bakeVariant(state, s, v) {
   const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const { species, variants, params, masterSeed, texSet } = state;
   const sp = species[s];
@@ -92,6 +92,18 @@ function bakeVariant(state, s, v) {
   gen.regenerateLeaves(coarseLeafOpts);
   const leavesCoarseGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
 
+  // LOD1 leaves: an intermediate bake between full and coarse. At the 1/1 defaults it is the full
+  // leaf geometry itself (same object), so hosts that never set it bake and draw exactly as before.
+  const midRatio = Math.max(0.05, Math.min(1.0, params.midLeafRatio ?? 1));
+  const midSize = Math.max(1.0, params.midLeafSizeMult ?? 1);
+  let leavesMidGeo = leavesGeo;
+  if (midRatio !== 1 || midSize !== 1) {
+    gen.regenerateLeaves({
+      ...leafOpts, count: Math.max(1, Math.round(leafOpts.count * midRatio)), size: leafOpts.size * midSize, shadowFraction: 0,
+    });
+    leavesMidGeo = bakeFlatColor(gen.leavesMesh.geometry, sp.leaves.tint);
+  }
+
   const variant = {
     speciesIdx: s,
     variant: v,
@@ -99,6 +111,7 @@ function bakeVariant(state, s, v) {
     branchesLod1: branchesLod1Geo,
     branchesLod2: branchesLod2Geo,
     leaves: leavesGeo,
+    leavesMid: leavesMidGeo,
     shadow: shadowGeo,
     leavesCoarse: leavesCoarseGeo,
   };
@@ -108,7 +121,7 @@ function bakeVariant(state, s, v) {
   return variant;
 }
 
-function finishPalette(state) {
+export function finishPalette(state) {
   return {
     variants: state.variants,
     variantsPerSpecies: state.variantsPerSpecies,
