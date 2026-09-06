@@ -74,4 +74,21 @@ hiz.setEnabled(false);
 assert.equal(await hiz.update(), false);
 hiz.dispose();
 assert.equal(hiz.state.levels.length, 0);
+// The shared test builds to WGSL with one binding per bound level, no samplers.
+const { createHizSampler } = await import('./hiz-test.js');
+{
+  const { Fn: F, vec3: V3, float: Fl, instanceIndex: II, storage: St } = await import('three/tsl');
+  const h2 = createHiZ({ renderer, camera, depthTexture, levels: 8 }); await h2.update();
+  const sampler = createHizSampler(h2.state, { levels: 4 });
+  assert.equal(sampler.bound, 4);
+  assert.equal(sampler.sync(), true, 'first sync reports a change');
+  assert.equal(sampler.sync(), false, 'same revision and camera: no change');
+  const out = new THREE.StorageBufferAttribute(new Float32Array(4), 1);
+  const kernel = F(() => { St(out, 'float', 4).element(II).assign(Fl(sampler.occluded(V3(0, 0, -5), V3(1, 2, -4)))); })().compute(4);
+  const wgsl = buildCompute(kernel);
+  assert.equal((wgsl.match(/texture_2d<f32>/g) || []).length, 4, 'four level bindings');
+  assert.ok(!/sampler/.test(wgsl), 'no samplers');
+  assert.ok((wgsl.match(/textureLoad/g) || []).length >= 16, 'four taps per bound level');
+  h2.dispose();
+}
 console.log('hiz pyramid: sizes, reduction, level pick, bias and WGSL build checks passed');

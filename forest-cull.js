@@ -129,3 +129,38 @@ export function frustumConeCos(fovDeg, aspect = 1, forwardY = 0) {
   if (ahead <= 1e-6) return -1;
   return ahead / Math.hypot(a * t, ahead);
 }
+
+// occludedByHiZ (2026-09-06): CPU twin of hiz-test.js's occluded(). `pyramid` is
+// { levels: [{ data, width, height }], viewProj: 16 column-major floats, tanHalfFov, aspect },
+// with level 0 holding view distance at HIZ_BASE_DIVISOR-th the frame and each level the 2x2
+// max of the one below. `bounds` is { min: [x,y,z], max: [x,y,z] } in world space.
+export const HIZ_BIAS_FLOOR = 0.05;
+export const HIZ_NEAR_W = 0.05;
+export function occludedByHiZ(bounds, pyramid) {
+  const m = pyramid.viewProj;
+  let loX = Infinity, loY = Infinity, hiX = -Infinity, hiY = -Infinity, nearest = Infinity;
+  for (let c = 0; c < 8; c++) {
+    const x = c & 1 ? bounds.max[0] : bounds.min[0], y = c & 2 ? bounds.max[1] : bounds.min[1], z = c & 4 ? bounds.max[2] : bounds.min[2];
+    const cx = m[0] * x + m[4] * y + m[8] * z + m[12], cy = m[1] * x + m[5] * y + m[9] * z + m[13];
+    const w = m[3] * x + m[7] * y + m[11] * z + m[15];
+    if (w < HIZ_NEAR_W) return false;   // straddles the near plane: never hidden
+    const nx = cx / w, ny = cy / w;
+    loX = Math.min(loX, nx); hiX = Math.max(hiX, nx); loY = Math.min(loY, ny); hiY = Math.max(hiY, ny);
+    nearest = Math.min(nearest, w);
+  }
+  if (!(hiX > -1 && loX < 1 && hiY > -1 && loY < 1)) return false;   // off screen: the cone owns it
+  const clamp01 = v => Math.min(1, Math.max(0, v));
+  const uLo = clamp01(loX * 0.5 + 0.5), uHi = clamp01(hiX * 0.5 + 0.5);
+  const vLo = clamp01(0.5 - hiY * 0.5), vHi = clamp01(0.5 - loY * 0.5);
+  const l0 = pyramid.levels[0];
+  const extent = Math.max((uHi - uLo) * l0.width, (vHi - vLo) * l0.height);
+  let level = 0;
+  while (level < pyramid.levels.length - 1 && extent > 2 * (1 << level)) level++;
+  const lv = pyramid.levels[level];
+  const ax = Math.min(lv.width - 1, Math.floor(uLo * lv.width)), bx = Math.min(lv.width - 1, Math.floor(uHi * lv.width));
+  const ay = Math.min(lv.height - 1, Math.floor(vLo * lv.height)), by = Math.min(lv.height - 1, Math.floor(vHi * lv.height));
+  const farthest = Math.max(lv.data[ay * lv.width + ax], lv.data[ay * lv.width + bx], lv.data[by * lv.width + ax], lv.data[by * lv.width + bx]);
+  const texelWorld = (2 * pyramid.tanHalfFov * pyramid.aspect) / l0.width;
+  const bias = nearest * texelWorld * (1 << level) + HIZ_BIAS_FLOOR;
+  return nearest > farthest + bias;
+}

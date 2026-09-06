@@ -1,4 +1,6 @@
-import { cullInstance, classifyInstance, shouldRecull, frustumConeCos } from './forest-cull.js';
+import { cullInstance, classifyInstance, shouldRecull, frustumConeCos, occludedByHiZ } from './forest-cull.js';
+import * as THREE from 'three';
+import { hizReduceCPU } from './hiz-pyramid.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error('FAIL:', m); } };
@@ -144,6 +146,33 @@ const baseParams = {
   ok(frustumConeCos(50, 16 / 9, Math.sin(45 * Math.PI / 180)) === frustumConeCos(50, 16 / 9, -Math.sin(45 * Math.PI / 180)), 'h: up and down pitch are symmetric');
   ok(frustumConeCos(110, 16 / 9, 0) < frustumConeCos(50, 16 / 9, 0), 'h: a wider fov gives a wider cone');
   ok(frustumConeCos(NaN, 16 / 9, 0) === -1 && frustumConeCos(50, 0, 0) > 0, 'h: bad inputs fall back safely');
+}
+
+// ---- occludedByHiZ: the Hi-Z test against a synthetic pyramid (2026-09-06) ----
+{
+  const cam = new THREE.PerspectiveCamera(70, 16 / 9, 0.1, 1000);
+  cam.position.set(0, 2, 0); cam.lookAt(0, 2, -10); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
+  const vp = new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse).elements;
+  const W = 64, H = 36;
+  // A wall 10 m ahead fills the left half of the screen; the right half is open (depth 500).
+  const l0 = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) l0[y * W + x] = x < W / 2 ? 10 : 500;
+  const levels = [{ data: l0, width: W, height: H }];
+  while (levels[levels.length - 1].width > 1 || levels[levels.length - 1].height > 1) {
+    const p = levels[levels.length - 1]; levels.push(hizReduceCPU(p.data, p.width, p.height));
+  }
+  const pyr = { levels, viewProj: vp, tanHalfFov: Math.tan(THREE.MathUtils.degToRad(35)), aspect: 16 / 9 };
+  const box = (x, y, z, hx, hy, hz) => ({ min: [x - hx, y - hy, z - hz], max: [x + hx, y + hy, z + hz] });
+  ok(occludedByHiZ(box(-3, 2, -20, 0.5, 1, 0.5), pyr) === true, 'i: a box fully behind the wall is hidden');
+  ok(occludedByHiZ(box(3, 2, -20, 0.5, 1, 0.5), pyr) === false, 'i: the open half keeps a box');
+  ok(occludedByHiZ(box(-3, 2, -5, 0.5, 1, 0.5), pyr) === false, 'i: a box in front of the wall is kept');
+  ok(occludedByHiZ(box(0, 2, -20, 3, 1, 0.5), pyr) === false, 'i: a box spanning the wall edge is kept (max of the covered texels)');
+  ok(occludedByHiZ(box(-3, 2, -20, 0.5, 12, 0.5), pyr) === false, 'i: a crown that reaches over the top of the screen is kept');
+  ok(occludedByHiZ(box(-3, 2, -0.5, 0.5, 1, 0.5), pyr) === false, 'i: a box straddling the near plane is never hidden');
+  ok(occludedByHiZ(box(-3, 2, 20, 0.5, 1, 0.5), pyr) === false, "i: behind the camera is the cone test's job");
+  ok(occludedByHiZ(box(-3, 2, -10.03, 0.5, 1, 0.01), pyr) === false, 'i: within the bias floor of the wall depth is kept');
+  ok(occludedByHiZ(box(-3, 2, -13, 0.5, 1, 0.01), pyr) === true, 'i: past the bias (a level-2 texel footprint, about 1.8 m in this coarse pyramid) it is hidden');
+  ok(occludedByHiZ(box(-2, 2, -200, 40, 5, 1), pyr) === false, 'i: a coarse-level rectangle over both halves is kept');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
