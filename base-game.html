@@ -1202,12 +1202,16 @@ const heapMB = () => (performance.memory ? +(performance.memory.usedJSHeapSize /
 // default and its slots are separate from passPost*, so a warm capture with the flag is still
 // comparable with one without it -- the hooks themselves cost a call per drawn object.
 const RENDER_TRACE = readFlag('trace');
-const renderTrace = createRenderTrace();
+// ?trace=1&tracephases=0 installs every hook and counter but leaves the timers reading zero, so two
+// captures of the same route say what the instrumentation itself costs. Recorded as `timed`.
+const TRACE_PHASES = readFlagDefaultTrue('tracephases');
+const renderTrace = createRenderTrace({ timePhases: TRACE_PHASES });
 if (RENDER_TRACE && !renderTrace.attach(renderer)) console.warn('[base-game] ?trace=1 found none of the renderer hooks:', renderTrace.missingHooks);
 else if (RENDER_TRACE) console.warn('[base-game] ?trace=1 is on: the encode is instrumented per object, so frame times are not comparable with an untraced capture.');
 // The last traced frame, plus the mean over the traced frames so far: the per-frame slots below
 // carry the milliseconds, this carries the object counts the renderer's own render lists reported.
 const traceSummary = { enabled: RENDER_TRACE, attached: renderTrace.attached, missingHooks: renderTrace.missingHooks,
+  timed: renderTrace.timed,
   frames: 0, lastFrame: null, worstFrame: null, worstEncodeFrame: null, meanObjects: 0, meanDraws: 0, meanScenes: 0 };
 const traceTotals = { objects: 0, draws: 0, scenes: 0 };
 // Drained every traced frame, profiling or not: the totals reset on take, so skipping a frame would
@@ -1220,6 +1224,12 @@ function recordRenderTrace() {
   frameProfiler.mark('traceObjects', t.objectsMs);
   frameProfiler.mark('traceEncode', t.encodeMs);
   frameProfiler.mark('traceBundle', t.bundleMs);
+  // The six stages inside the encode. They sit inside traceEncode, so do not add them to it.
+  frameProfiler.mark('traceNodes', t.nodesBeforeMs + t.nodesRenderMs);
+  frameProfiler.mark('traceGeometries', t.geometriesMs);
+  frameProfiler.mark('traceBindings', t.bindingsMs);
+  frameProfiler.mark('tracePipelines', t.pipelinesMs);
+  frameProfiler.mark('traceDraw', t.drawMs);
   traceSummary.frames++;
   traceTotals.objects += t.encodedObjects;
   traceTotals.draws += t.encodeCalls;
@@ -1227,7 +1237,13 @@ function recordRenderTrace() {
   // scenes carries each pass's `top` rows and `topShare` with it, so the capture says which objects
   // owned the encode, not just how many there were.
   traceSummary.lastFrame = { sceneRenders: t.sceneRenders, encodedObjects: t.encodedObjects,
-    encodeCalls: t.encodeCalls, bundleGroups: t.bundleGroups, scenes: t.scenes };
+    encodeCalls: t.encodeCalls, bundleGroups: t.bundleGroups, timed: t.timed,
+    // Counts, not times: the refresh branch, the distinct materials of the frame, and what the
+    // backend was asked to create or write.
+    refreshes: t.refreshes, refreshChecks: t.refreshChecks, uniqueMaterials: t.uniqueMaterials,
+    bindingCreates: t.bindingCreates, bindingWrites: t.bindingWrites, bindingWriteBytes: t.bindingWriteBytes,
+    attributeWrites: t.attributeWrites, attributeWriteBytes: t.attributeWriteBytes,
+    scenes: t.scenes };
   // Read, never cleared here: the frame a capture ends on is not the frame that dipped, and the
   // encode's max is four to five times its median. Cleared when a capture starts, below.
   traceSummary.worstFrame = renderTrace.worst;

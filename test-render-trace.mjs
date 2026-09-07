@@ -30,8 +30,55 @@ function fakeRenderer({ onEncode = null, beforeObjects = null, onBundle = null }
     },
     _renderObjectDirect(object, material, cost) { clock += (cost ?? 3); onEncode?.(renderer); },
     _renderBundle() { clock += 4; onBundle?.(renderer); },
+    // The managers the sub-phase hooks live on. Empty bodies: the flat-frame cases never call them,
+    // and the sub-phase cases below drive them directly.
+    _nodes: { updateBefore() {}, updateForRender() {}, needsRefresh() { return true; } },
+    _geometries: { updateForRender() {} },
+    _bindings: { updateForRender() {} },
+    _pipelines: { updateForRender() {} },
+    backend: { draw() {}, createBindings() {}, updateBinding() {}, updateAttribute() {} },
   };
   return { renderer, list };
+}
+
+// A renderer whose encode runs the real six-stage chain, each stage costing what the case names.
+function subPhaseRenderer({ cost = {}, refresh = () => true, onBindings = null } = {}) {
+  const spend = (key, fallback) => { clock += cost[key] ?? fallback; };
+  const list = { sort() {} };
+  const renderer = {
+    _renderLists: { get() { return list; } },
+    _renderScene(scene, camera, drawn) { this._renderObjects(drawn); },
+    _projectObject() {},
+    _renderObjects(drawn) { for (const item of drawn) this._renderObjectDirect(item.object, item.material); },
+    _renderObjectDirect(object, material) {
+      const renderObject = { object, material };
+      const needsRefresh = this._nodes.needsRefresh(renderObject);
+      if (needsRefresh) {
+        this._nodes.updateBefore(renderObject);
+        this._geometries.updateForRender(renderObject);
+        this._nodes.updateForRender(renderObject);
+        this._bindings.updateForRender(renderObject);
+      }
+      this._pipelines.updateForRender(renderObject);
+      this.backend.draw(renderObject);
+    },
+    _renderBundle() {},
+    _nodes: {
+      updateBefore() { spend('nodesBefore', 1); },
+      updateForRender() { spend('nodesRender', 2); },
+      needsRefresh(renderObject) { return refresh(renderObject); },
+    },
+    _geometries: { updateForRender() { spend('geometries', 1); } },
+    _bindings: { updateForRender(renderObject) { spend('bindings', 5); onBindings?.(renderer, renderObject); } },
+    _pipelines: { updateForRender() { spend('pipelines', 1); } },
+    backend: {
+      draw() { spend('draw', 3); },
+      createBindings() {},
+      updateBinding() {},
+      updateAttribute() {},
+    },
+  };
+  return renderer;
 }
 
 // Runs `body` once, with a guard so the nested render does not itself nest forever.
@@ -430,6 +477,187 @@ function once(fn) {
   assert.ok(trace.missingHooks.includes('_renderScene'));
   assert.ok(trace.missingHooks.includes('_renderLists.get'));
   console.log('pass: a renderer without the private hooks reports them missing');
+}
+
+{
+  // The six stages inside one object's encode, in the order _renderObjectDirect calls them.
+  const standard = { type: 'MeshStandardNodeMaterial' };
+  const basic = { type: 'MeshBasicNodeMaterial' };
+  const drawn = [
+    { object: { name: 'terrain' }, material: standard },
+    { object: { name: 'sky' }, material: basic },
+  ];
+  const renderer = subPhaseRenderer();
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  assert.deepEqual(trace.missingHooks, [], 'every manager hook was found on the fake renderer');
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, drawn);
+  const t = trace.take();
+  const [entry] = t.scenes;
+
+  assert.equal(entry.draws, 2);
+  assert.equal(entry.nodesBeforeMs, 2, 'one millisecond per object');
+  assert.equal(entry.geometriesMs, 2);
+  assert.equal(entry.nodesRenderMs, 4);
+  assert.equal(entry.bindingsMs, 10);
+  assert.equal(entry.pipelinesMs, 2);
+  assert.equal(entry.drawMs, 6);
+  assert.equal(entry.encodeMs, 26, 'the six stages are inside the encode, and are the whole of it here');
+  assert.equal(entry.nodesBeforeMs + entry.geometriesMs + entry.nodesRenderMs
+    + entry.bindingsMs + entry.pipelinesMs + entry.drawMs, entry.encodeMs,
+    'the stages add up to the encode when nothing else runs inside it');
+  assert.equal(t.bindingsMs, 10, 'and the totals sum them over the scene entries');
+  assert.equal(t.timed, true, 'this frame was timed, not an overhead run');
+
+  assert.equal(entry.refreshChecks, 2);
+  assert.equal(entry.refreshes, 2, 'both objects took the refresh branch');
+  assert.equal(entry.uniqueMaterials, 2);
+  assert.equal(t.uniqueMaterials, 2);
+
+  assert.deepEqual(entry.topBindings.map(row => row.name), ['terrain', 'sky'],
+    'the bindings phase names the objects it spent its time on');
+  assert.deepEqual(entry.topBindings[0], { name: 'terrain', material: 'MeshStandardNodeMaterial', ms: 5, calls: 1 });
+  assert.equal(entry.topBindingsShare, 1);
+  // Both nodes stages share one table: 1 + 2 per object.
+  assert.deepEqual(entry.topNodes[0], { name: 'terrain', material: 'MeshStandardNodeMaterial', ms: 3, calls: 2 });
+  assert.equal(entry.topNodesShare, 1);
+  console.log('pass: the six encode stages are timed separately and nodes and bindings name their objects');
+}
+
+{
+  // Only some objects take the refresh branch, and only those run the four gated stages.
+  const shared = { type: 'M' };   // one material instance, three objects
+  const drawn = [
+    { object: { name: 'a' }, material: shared },
+    { object: { name: 'b' }, material: shared },
+    { object: { name: 'c' }, material: shared },
+  ];
+  const renderer = subPhaseRenderer({ refresh: renderObject => renderObject.object.name === 'b' });
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, drawn);
+  const entry = trace.take().scenes[0];
+  assert.equal(entry.refreshChecks, 3, 'every object is asked');
+  assert.equal(entry.refreshes, 1, 'only the truthy answers are counted');
+  assert.equal(entry.bindingsMs, 5, 'and only that object paid for a binding update');
+  assert.equal(entry.pipelinesMs, 3, 'while the pipeline stage runs for all three, outside the gate');
+  assert.equal(entry.uniqueMaterials, 1, 'three objects sharing one material are one material');
+  console.log('pass: the refresh counter counts truthy answers, not calls');
+}
+
+{
+  // A scene render nested inside a binding update -- what a reflector does from a node's
+  // updateBefore -- comes out of the parent's bindings timer and out of nothing else.
+  const child = [{ object: { name: 'mirror-mesh' }, material: { type: 'M' } }];
+  let inside = false;
+  const renderer = subPhaseRenderer({
+    onBindings: (r) => {
+      if (inside) return;
+      inside = true;
+      try { r._renderScene({ name: 'mirror' }, { type: 'PerspectiveCamera' }, child); }
+      finally { inside = false; }
+    },
+  });
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' },
+    [{ object: { name: 'water' }, material: { type: 'M' } }]);
+  const t = trace.take();
+  assert.equal(t.scenes.length, 2);
+  const [parent, mirror] = t.scenes;
+  assert.equal(mirror.name, 'mirror');
+  assert.equal(mirror.ms, 13, 'the child costs one full object chain');
+  assert.equal(mirror.exclusiveMs, 13);
+  assert.equal(mirror.bindingsMs, 5, 'its own binding update is its own');
+  assert.equal(parent.bindingsMs, 5, 'the parent binding timer excludes the render nested inside it');
+  assert.equal(parent.encodeMs, 13, 'and so does the encode that contained it');
+  assert.equal(parent.ms, 26, 'the parent still contains the child inclusively');
+  assert.equal(parent.exclusiveMs, 13);
+  assert.equal(parent.topBindings[0].ms, 5, 'the water row is its own binding cost, not the mirror render');
+  console.log('pass: a nested scene render is subtracted from the parent bindings phase');
+}
+
+{
+  // Re-entrancy: a manager method that calls itself is timed once, by the outermost call.
+  const inner = { object: { name: 'inner' }, material: { type: 'M' } };
+  const renderer = subPhaseRenderer();
+  const base = renderer._bindings.updateForRender.bind(renderer._bindings);
+  let depth = 0;
+  renderer._bindings.updateForRender = function (renderObject) {
+    base(renderObject);
+    if (depth === 0) { depth++; try { renderer._bindings.updateForRender(inner); } finally { depth--; } }
+  };
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' },
+    [{ object: { name: 'outer' }, material: { type: 'M' } }]);
+  const entry = trace.take().scenes[0];
+  assert.equal(entry.bindingsMs, 10, 'the outer call is timed once and contains the inner five');
+  assert.equal(entry.topBindings.length, 1, 'and the re-entrant call opens no second row');
+  assert.equal(entry.topBindings[0].name, 'outer');
+  console.log('pass: a re-entrant sub-phase call is not timed twice');
+}
+
+{
+  // What the backend was asked to send. Counted, not timed, so a missing byteLength reads as zero
+  // bytes rather than as no write.
+  const renderer = subPhaseRenderer();
+  renderer._bindings.updateForRender = function (renderObject) {
+    clock += 5;
+    renderer.backend.createBindings({});
+    renderer.backend.updateBinding({ byteLength: 256 });
+    renderer.backend.updateBinding({});                          // a binding with no size to report
+  };
+  renderer._geometries.updateForRender = function () {
+    clock += 1;
+    renderer.backend.updateAttribute({ array: { byteLength: 1024 } });
+  };
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' },
+    [{ object: { name: 'a' }, material: { type: 'M' } }]);
+  const t = trace.take();
+  const entry = t.scenes[0];
+  assert.equal(entry.bindingCreates, 1);
+  assert.equal(entry.bindingWrites, 2);
+  assert.equal(entry.bindingWriteBytes, 256, 'bytes only where the argument reported some');
+  assert.equal(entry.attributeWrites, 1);
+  assert.equal(entry.attributeWriteBytes, 1024, 'an attribute reports through its array');
+  assert.equal(t.bindingWrites, 2, 'and the totals carry them too');
+  assert.equal(t.attributeWriteBytes, 1024);
+  console.log('pass: binding creations and buffer writes are counted, with bytes where they are known');
+}
+
+{
+  // Overhead mode: every wrapper installed, every timer reading zero. Run the same frame twice and
+  // the difference in wall time is what the instrumentation costs.
+  const drawn = [
+    { object: { name: 'a' }, material: { type: 'M' } },
+    { object: { name: 'b' }, material: { type: 'M' } },
+  ];
+  const renderer = subPhaseRenderer();
+  const trace = createRenderTrace({ now, timePhases: false });
+  trace.attach(renderer);
+  assert.equal(trace.timed, false, 'the trace says which mode it is in');
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, drawn);
+  const t = trace.take();
+  const entry = t.scenes[0];
+  assert.equal(t.timed, false, 'and so does the frame');
+  for (const key of ['sceneMs', 'encodeMs', 'bindingsMs', 'nodesBeforeMs', 'nodesRenderMs',
+    'geometriesMs', 'pipelinesMs', 'drawMs']) assert.equal(t[key], 0, `${key} reads zero without timing`);
+  assert.equal(entry.ms, 0);
+  assert.equal(entry.draws, 2, 'the counters still count');
+  assert.equal(entry.refreshes, 2);
+  assert.equal(entry.uniqueMaterials, 2);
+  assert.equal(entry.topBindings.length, 2, 'the rows are still named, at zero milliseconds');
+  assert.equal(entry.topBindings[0].ms, 0);
+  console.log('pass: overhead mode counts everything and times nothing');
 }
 
 console.log('render-trace: all tests passed');

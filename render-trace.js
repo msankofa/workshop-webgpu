@@ -27,6 +27,15 @@
 //
 // Private methods are a deliberate trade: they are the only seam Three gives here, so `attach`
 // reports which hooks it actually found and the caller records that beside the numbers.
+//
+// The per-object encode is itself six stages (`_renderObjectDirect` at three.webgpu.js:61284 calls
+// `needsRefresh` and then nodes/geometries/nodes/bindings updates, `Pipelines.updateForRender`
+// unconditionally, and `backend.draw`), so those six are wrapped on the renderer's own manager
+// instances as further phases. Nodes and bindings also keep per-(object, material) rows, because
+// those two are where the sampling profile put the render path's largest named slice.
+//
+// `timePhases: false` installs every wrapper and every counter but makes each timer read zero, so a
+// capture can be run twice and say what the instrumentation itself costs.
 
 function round3(v) {
   return Math.round((Number.isFinite(v) ? v : 0) * 1000) / 1000;
@@ -41,20 +50,41 @@ function newEntry(name, camera, cameraType) {
     objectListCalls: 0, objectsMs: 0,
     objects: 0, draws: 0, encodeMs: 0,
     bundles: 0, bundleMs: 0,
+    // The six stages inside one object's encode, each an exclusive timer like the phases above.
+    nodesBeforeMs: 0, geometriesMs: 0, nodesRenderMs: 0, bindingsMs: 0, pipelinesMs: 0, drawMs: 0,
+    // Counters, not times: how many objects took the needsRefresh branch, how many distinct
+    // materials this pass saw, and what the backend was asked to create or write.
+    refreshes: 0, refreshChecks: 0,
+    bindingCreates: 0, bindingWrites: 0, bindingWriteBytes: 0,
+    attributeWrites: 0, attributeWriteBytes: 0,
+    materials: new Set(),
     // Re-entry counters, per scene: projection recurses, and a phase must not be timed twice.
-    depth: { project: 0, objects: 0, encode: 0, bundle: 0, sort: 0 },
+    depth: newPhaseCounters(),
     // Time nested scene renders spent inside each phase timer of this entry, subtracted on close.
-    childInPhase: { project: 0, objects: 0, encode: 0, bundle: 0, sort: 0 },
+    childInPhase: newPhaseCounters(),
     // What each drawn object cost in this scene render: descriptor -> { ms, calls }.
     perObject: new Map(),
+    // The same shape for the two heaviest new phases, kept apart so the tables stay readable.
+    perNodes: new Map(),
+    perBindings: new Map(),
   };
 }
 
 // What a scene render is: three renames the scene to `Shadow Map [ <light> ]` across a shadow pass,
 // and the post chain's output quad renders a QuadMesh with an orthographic camera, so the name and
 // the camera together tell main, shadow, mirror and quad apart in the record.
-const PHASES = ['project', 'sort', 'objects', 'encode', 'bundle'];
-const PHASE_MS = { project: 'projectMs', sort: 'sortMs', objects: 'objectsMs', encode: 'encodeMs', bundle: 'bundleMs' };
+const PHASES = ['project', 'sort', 'objects', 'encode', 'bundle',
+  'nodesBefore', 'geometries', 'nodesRender', 'bindings', 'pipelines', 'draw'];
+const PHASE_MS = { project: 'projectMs', sort: 'sortMs', objects: 'objectsMs', encode: 'encodeMs', bundle: 'bundleMs',
+  nodesBefore: 'nodesBeforeMs', geometries: 'geometriesMs', nodesRender: 'nodesRenderMs',
+  bindings: 'bindingsMs', pipelines: 'pipelinesMs', draw: 'drawMs' };
+
+// One zeroed slot per phase, used for both the re-entry depths and the child subtraction.
+function newPhaseCounters() {
+  const out = {};
+  for (const phase of PHASES) out[phase] = 0;
+  return out;
+}
 
 function describe(scene, camera) {
   const name = scene?.name || scene?.type || 'scene';
@@ -104,20 +134,46 @@ function mainScene(entries) {
   return best;
 }
 
-// The heaviest objects of one scene render, and how much of its encode they account for.
-function topObjects(entry) {
+// The heaviest objects of one map, and how much of `phaseMs` they account for.
+function topRows(map, phaseMs) {
   const rows = [];
-  for (const [descriptor, cost] of entry.perObject) {
+  for (const [descriptor, cost] of map) {
     rows.push({ name: descriptor.name, material: descriptor.material, ms: cost.ms, calls: cost.calls });
   }
   rows.sort((a, b) => b.ms - a.ms);
   const top = rows.slice(0, TOP_OBJECTS);
   let sum = 0;
   for (const row of top) { sum += row.ms; row.ms = round3(row.ms); }
-  return { top, topShare: entry.encodeMs > 0 ? round3(sum / entry.encodeMs) : 0 };
+  return { top, share: phaseMs > 0 ? round3(sum / phaseMs) : 0 };
 }
 
-export function createRenderTrace({ now = () => performance.now() } = {}) {
+// The heaviest objects of one scene render, and how much of its encode they account for.
+function topObjects(entry) {
+  const encode = topRows(entry.perObject, entry.encodeMs);
+  const nodes = topRows(entry.perNodes, entry.nodesBeforeMs + entry.nodesRenderMs);
+  const bindings = topRows(entry.perBindings, entry.bindingsMs);
+  return {
+    top: encode.top, topShare: encode.share,
+    // The two heaviest new phases keep their own rows; the other four are per-scene totals only,
+    // so the table does not sextuple.
+    topNodes: nodes.top, topNodesShare: nodes.share,
+    topBindings: bindings.top, topBindingsShare: bindings.share,
+  };
+}
+
+// A number a caller may or may not have: a byte count only where the argument exposes one.
+function byteLengthOf(value) {
+  if (!value || typeof value !== 'object') return 0;
+  const direct = value.byteLength;
+  if (Number.isFinite(direct)) return direct;
+  const array = value.array?.byteLength;
+  return Number.isFinite(array) ? array : 0;
+}
+
+export function createRenderTrace({ now = () => performance.now(), timePhases = true } = {}) {
+  // Overhead mode: every wrapper and every counter is installed, but the clock is a constant, so a
+  // capture run this way carries the wrappers' own cost and nothing else. Reported as `timed`.
+  const tick = timePhases ? now : () => 0;
   let scenes = [];
   // Work outside any scene render still has to land somewhere; this entry is reported only if it
   // was actually used.
@@ -135,21 +191,65 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
 
   // A phase inside whichever scene render is on top of the stack. Nested scene renders push their
   // own entry, so a phase always belongs to the innermost one.
-  function wrapPhase(target, name, key, msField, before) {
-    const original = target[name];
-    if (typeof original !== 'function') { missing.push(name); return; }
+  function wrapPhase(target, name, key, msField, before, label = name) {
+    const original = target?.[name];
+    if (typeof original !== 'function') { missing.push(label); return; }
     target[name] = function (...args) {
       const entry = current();
       if (entry.depth[key] > 0) return original.apply(this, args);
       before?.(entry, args);
       entry.depth[key]++;
-      const t0 = now();
+      const t0 = tick();
       try {
         return original.apply(this, args);
       } finally {
         entry.depth[key]--;
-        entry[msField] += now() - t0;
+        entry[msField] += tick() - t0;
       }
+    };
+    restore.push(() => { target[name] = original; });
+  }
+
+  // A phase inside the per-object encode. Same timing rule, plus per-(object, material) rows when
+  // `mapField` is given: these methods take the RenderObject, which carries both.
+  function wrapObjectPhase(target, name, key, msField, label, mapField = null) {
+    const original = target?.[name];
+    if (typeof original !== 'function') { missing.push(label); return; }
+    target[name] = function (renderObject, ...rest) {
+      const entry = current();
+      if (entry.depth[key] > 0) return original.call(this, renderObject, ...rest);
+      if (renderObject?.material !== undefined) entry.materials.add(renderObject.material);
+      entry.depth[key]++;
+      const childBefore = entry.childMs;
+      const t0 = tick();
+      try {
+        return original.call(this, renderObject, ...rest);
+      } finally {
+        entry.depth[key]--;
+        const ms = tick() - t0;
+        entry[msField] += ms;
+        if (mapField !== null) {
+          // A nested scene render started inside this stage comes back out, the same rule the
+          // encode rows use, so a reflector's whole world render is not one object's binding cost.
+          const own = ms - (entry.childMs - childBefore);
+          const descriptor = describeObject(renderObject?.object, renderObject?.material);
+          const cost = entry[mapField].get(descriptor);
+          if (cost === undefined) entry[mapField].set(descriptor, { ms: own, calls: 1 });
+          else { cost.ms += own; cost.calls++; }
+        }
+      }
+    };
+    restore.push(() => { target[name] = original; });
+  }
+
+  // Counters, not timers: the wrapped call is not timed, only counted, so these cost one call.
+  function wrapCounter(target, name, label, count) {
+    const original = target?.[name];
+    if (typeof original !== 'function') { missing.push(label); return; }
+    target[name] = function (...args) {
+      const result = original.apply(this, args);
+      count(current(), result, args);
+      return result;
     };
     restore.push(() => { target[name] = original; });
   }
@@ -166,12 +266,12 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       const openPhases = PHASES.filter(phase => parent.depth[phase] > 0);
       scenes.push(entry);
       stack.push(entry);
-      const t0 = now();
+      const t0 = tick();
       try {
         return original.apply(this, args);
       } finally {
         stack.pop();
-        entry.ms = now() - t0;
+        entry.ms = tick() - t0;
         // Its own children come out of its own numbers: all of them out of the scene time, and each
         // out of exactly the phases that were open around it.
         entry.exclusiveMs = entry.ms - entry.childMs;
@@ -192,14 +292,15 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       const entry = current();
       if (entry.depth.encode > 0) return original.call(this, object, material, ...rest);
       entry.draws++;
+      entry.materials.add(material);   // so the unique-material count survives a missing manager hook
       entry.depth.encode++;
       const childBefore = entry.childMs;
-      const t0 = now();
+      const t0 = tick();
       try {
         return original.call(this, object, material, ...rest);
       } finally {
         entry.depth.encode--;
-        const ms = now() - t0;
+        const ms = tick() - t0;
         entry.encodeMs += ms;
         // What this one object cost, with any nested scene render taken back out, so the post
         // chain's quad does not report itself as the most expensive object in the frame.
@@ -228,9 +329,9 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
           if (entry.depth.sort > 0) return originalSort.apply(this, sortArgs);
           entry.sortCalls++;
           entry.depth.sort++;
-          const t0 = now();
+          const t0 = tick();
           try { return originalSort.apply(this, sortArgs); }
-          finally { entry.depth.sort--; entry.sortMs += now() - t0; }
+          finally { entry.depth.sort--; entry.sortMs += tick() - t0; }
         };
         list.sort = patchedSort;
         list.__traceSort = true;
@@ -256,8 +357,17 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       objectListCalls: 0, objectsMs: 0,
       encodedObjects: 0, encodeCalls: 0, encodeMs: 0,
       bundleGroups: 0, bundleMs: 0,
+      // The six encode stages, and the counters that go with them.
+      nodesBeforeMs: 0, geometriesMs: 0, nodesRenderMs: 0, bindingsMs: 0, pipelinesMs: 0, drawMs: 0,
+      refreshes: 0, refreshChecks: 0, uniqueMaterials: 0,
+      bindingCreates: 0, bindingWrites: 0, bindingWriteBytes: 0,
+      attributeWrites: 0, attributeWriteBytes: 0,
+      // Which mode this frame ran in: false means the wrappers were installed and every timer read
+      // zero, so the frame time is the instrumentation's own cost.
+      timed: timePhases,
       scenes: [],
     };
+    const allMaterials = new Set();
     for (const entry of [...scenes, outside]) {
       // sceneMs sums the EXCLUSIVE times, so a nesting frame does not count the same work twice.
       out.sceneMs += entry.exclusiveMs;
@@ -266,8 +376,20 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       out.objectListCalls += entry.objectListCalls; out.objectsMs += entry.objectsMs;
       out.encodedObjects += entry.objects; out.encodeCalls += entry.draws; out.encodeMs += entry.encodeMs;
       out.bundleGroups += entry.bundles; out.bundleMs += entry.bundleMs;
+      out.nodesBeforeMs += entry.nodesBeforeMs; out.geometriesMs += entry.geometriesMs;
+      out.nodesRenderMs += entry.nodesRenderMs; out.bindingsMs += entry.bindingsMs;
+      out.pipelinesMs += entry.pipelinesMs; out.drawMs += entry.drawMs;
+      out.refreshes += entry.refreshes; out.refreshChecks += entry.refreshChecks;
+      out.bindingCreates += entry.bindingCreates;
+      out.bindingWrites += entry.bindingWrites; out.bindingWriteBytes += entry.bindingWriteBytes;
+      out.attributeWrites += entry.attributeWrites; out.attributeWriteBytes += entry.attributeWriteBytes;
+      for (const material of entry.materials) allMaterials.add(material);
     }
-    for (const key of ['sceneMs', 'projectMs', 'sortMs', 'objectsMs', 'encodeMs', 'bundleMs']) out[key] = round3(out[key]);
+    // Frame-wide, not the sum of the per-scene counts: the same material drawn in the shadow pass
+    // and the main pass is one material.
+    out.uniqueMaterials = allMaterials.size;
+    for (const key of ['sceneMs', 'projectMs', 'sortMs', 'objectsMs', 'encodeMs', 'bundleMs',
+      'nodesBeforeMs', 'geometriesMs', 'nodesRenderMs', 'bindingsMs', 'pipelinesMs', 'drawMs']) out[key] = round3(out[key]);
     // One row per scene render, in the order they ran: the post chain's quad, then the shadow map,
     // the mirror and the main pass nested inside it.
     out.scenes = scenes.map(entry => ({
@@ -276,7 +398,18 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       objects: entry.objects, draws: entry.draws, bundles: entry.bundles,
       projectMs: round3(entry.projectMs), sortMs: round3(entry.sortMs),
       objectsMs: round3(entry.objectsMs), encodeMs: round3(entry.encodeMs),
-      // The heaviest objects this pass encoded, and how much of its encode they were.
+      // The six stages inside this pass's encode. Like the phases above they are not a partition:
+      // all six sit inside encodeMs, which sits inside objectsMs.
+      nodesBeforeMs: round3(entry.nodesBeforeMs), geometriesMs: round3(entry.geometriesMs),
+      nodesRenderMs: round3(entry.nodesRenderMs), bindingsMs: round3(entry.bindingsMs),
+      pipelinesMs: round3(entry.pipelinesMs), drawMs: round3(entry.drawMs),
+      refreshes: entry.refreshes, refreshChecks: entry.refreshChecks,
+      uniqueMaterials: entry.materials.size,
+      bindingCreates: entry.bindingCreates,
+      bindingWrites: entry.bindingWrites, bindingWriteBytes: entry.bindingWriteBytes,
+      attributeWrites: entry.attributeWrites, attributeWriteBytes: entry.attributeWriteBytes,
+      // The heaviest objects this pass encoded, and how much of its encode they were, plus the
+      // same for the two heaviest new phases.
       ...topObjects(entry),
     }));
     return out;
@@ -284,6 +417,8 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
 
   return {
     get attached() { return attachedTo !== null; },
+    // False in overhead mode: the wrappers ran, the timers read zero.
+    get timed() { return timePhases; },
     get missingHooks() { return [...missing]; },
     attach(renderer) {
       if (attachedTo) return this.attached;
@@ -298,6 +433,32 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       wrapEncode(renderer);
       wrapPhase(renderer, '_renderBundle', 'bundle', 'bundleMs', entry => { entry.bundles++; });
       patchLists(renderer);
+      // The six stages of one object's encode, on the renderer's own manager instances. Wrapping
+      // the instance shadows the prototype method, so nothing else that uses the class is touched.
+      wrapObjectPhase(renderer._nodes, 'updateBefore', 'nodesBefore', 'nodesBeforeMs', '_nodes.updateBefore', 'perNodes');
+      wrapObjectPhase(renderer._geometries, 'updateForRender', 'geometries', 'geometriesMs', '_geometries.updateForRender');
+      wrapObjectPhase(renderer._nodes, 'updateForRender', 'nodesRender', 'nodesRenderMs', '_nodes.updateForRender', 'perNodes');
+      wrapObjectPhase(renderer._bindings, 'updateForRender', 'bindings', 'bindingsMs', '_bindings.updateForRender', 'perBindings');
+      wrapObjectPhase(renderer._pipelines, 'updateForRender', 'pipelines', 'pipelinesMs', '_pipelines.updateForRender');
+      wrapObjectPhase(renderer.backend, 'draw', 'draw', 'drawMs', 'backend.draw');
+      // Counted, not timed: which objects took the refresh branch at all.
+      wrapCounter(renderer._nodes, 'needsRefresh', '_nodes.needsRefresh', (entry, result) => {
+        entry.refreshChecks++;
+        if (result) entry.refreshes++;
+      });
+      // What the backend was actually asked to send. `updateBinding` and `updateAttribute` are
+      // called only for buffers three decided are stale, so these are submitted writes rather than
+      // dirty ranges -- but one `updateAttribute` can become several `writeBuffer` calls inside the
+      // backend when the attribute carries update ranges, so the call count is a lower bound.
+      wrapCounter(renderer.backend, 'createBindings', 'backend.createBindings', entry => { entry.bindingCreates++; });
+      wrapCounter(renderer.backend, 'updateBinding', 'backend.updateBinding', (entry, result, args) => {
+        entry.bindingWrites++;
+        entry.bindingWriteBytes += byteLengthOf(args[0]);
+      });
+      wrapCounter(renderer.backend, 'updateAttribute', 'backend.updateAttribute', (entry, result, args) => {
+        entry.attributeWrites++;
+        entry.attributeWriteBytes += byteLengthOf(args[0]);
+      });
       attachedTo = restore.length ? renderer : null;
       return this.attached;
     },
@@ -331,6 +492,13 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
           metric: 'mainSceneEncodeMs', metricMs: main ? main.encodeMs : 0,
           mainScene: main ? main.name : null,
           sceneMs: out.sceneMs, encodeMs: out.encodeMs, scenes: out.scenes,
+          timed: timePhases,
+          bindingsMs: out.bindingsMs, nodesMs: round3(out.nodesBeforeMs + out.nodesRenderMs),
+          pipelinesMs: out.pipelinesMs, drawMs: out.drawMs, geometriesMs: out.geometriesMs,
+          refreshes: out.refreshes, refreshChecks: out.refreshChecks, uniqueMaterials: out.uniqueMaterials,
+          bindingCreates: out.bindingCreates, bindingWrites: out.bindingWrites,
+          bindingWriteBytes: out.bindingWriteBytes,
+          attributeWrites: out.attributeWrites, attributeWriteBytes: out.attributeWriteBytes,
         };
         if (worstEncode === null || record.metricMs > worstEncode.metricMs) worstEncode = record;
         if (worst === null || out.sceneMs > worst.sceneMs) worst = record;

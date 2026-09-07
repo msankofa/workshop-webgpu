@@ -431,11 +431,25 @@ inside it), plus `passTraceBundleMs` for render-bundle replay. They are never fo
 comparable -- except that the hooks themselves cost a wrapped call per drawn object, which is why
 the flag is off by default and logs a warning when it is on.
 
+Since 2026-09-07 the encode is split further, into the six stages `_renderObjectDirect` runs per
+object: `passTraceNodesMs` (`Nodes.updateBefore` plus `Nodes.updateForRender`),
+`passTraceGeometriesMs`, `passTraceBindingsMs`, `passTracePipelinesMs` and `passTraceDrawMs`. All
+six sit inside `passTraceEncodeMs`, so they are a breakdown of it and never an addition to it.
+`?trace=1&tracephases=0` installs every hook and counter but leaves each timer reading zero, which
+is how the instrumentation's own per-frame cost is measured: run the same route twice and compare.
+Every trace result and worst-frame record carries `timed` saying which mode it was.
+
 `context.render.trace` in the saved entry carries the counts rather than the times: `lastFrame`
 (the last traced frame's scene renders, encoded objects, draw calls, bundle groups, and one entry
 per whole scene render) and the means over every traced frame. The object counts come from the
 renderer's own render lists, not from `sceneCensus()`, so they say what each pass actually
-encoded.
+encoded. `lastFrame` also carries the frame's counters -- `refreshes`/`refreshChecks` (how many
+objects took the `needsRefresh` branch), `uniqueMaterials`, `bindingCreates`, and the binding and
+attribute write counts and bytes -- and each scene row repeats them for that pass, alongside
+`topNodes` and `topBindings`, the per-(object, material) rows for the two heaviest new stages.
+Which of those are exact and which are approximations is in `docs/subsystems/infra.md`. Row
+alignment is unchanged: the render work belongs to the rAF interval that follows the row's
+`frameMs`, not to it.
 
 Read `lastFrame.scenes` before the slot totals. Base Game renders through the post chain whenever
 depth of field, a visor mode or Hi-Z is on, so the outermost scene render is the full-screen output
@@ -1673,6 +1687,14 @@ scale; `buildPlane` at 1x), posed from yaw/pitch/bank the way v3's `poseDroneCra
 interpolated through `createRemoteTrack`; the chase camera is the flight sim's chase branch. Solo
 runs the same module in `stepSoloDrones` so it works without the relay. No client prediction of the
 drone; it renders at the interpolated server pose like a remote player.
+
+Every craft built through this page's `CRAFT_MATERIALS` shares its materials: `flight-meshes.js`
+caches them per factory table, keyed on colour, emissive/opacity and side, so a second drone of the
+same tint allocates none (see `docs/subsystems/flight.md`). The materials belong to that cache, not
+to a craft, so `disposeMesh` here frees geometry and skips anything `isCachedCraftMaterial` claims.
+The AGM mesh at `base-game.html:2846` passes its factory as a fresh object literal per call, so its
+materials are not shared between missiles; hoisting that literal to a module-level `const` would
+opt it in.
 
 **Flight parity audit (2026-08-27).** The user reported the flying was "not even close" to the
 flight sim; a four-reader adversarial Sonnet pass with a skeptic per finding confirmed nine real

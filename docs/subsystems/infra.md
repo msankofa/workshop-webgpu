@@ -49,7 +49,7 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 | `frame-profiler.js` | Tracks CPU pass timings (sync/async) and GPU timestamp/await totals per frame, with EMA smoothing and a flat snapshot for logging/HUD consumption. | 140 |
 | `gpu-pipeline-meter.js` | Wraps a `GPUDevice`'s four pipeline factories to report how much of a frame went into building WebGPU pipelines, and how many arrived. Node-tested against a fake device (`test-gpu-pipeline-meter.mjs`). | 55 |
 | `render-matrix-walk.js` | Takes the per-frame world-matrix walk off three (`scene.matrixWorldAutoUpdate = false`) and skips the roots declared static, wrapping their `add`/`remove` at every depth so streamed-in children are still placed, with a periodic re-walk and a `touchAll()` for origin rebases. Node-tested (`test-render-matrix-walk.mjs`). | 100 |
-| `render-trace.js` | Wraps five private renderer methods (`_renderScene`, `_projectObject`, `_renderObjects`, `_renderObjectDirect`, `_renderBundle`) and each render list's `sort` to split one frame of `renderer.render` into scene walk, list sort, per-object encode and bundle replay. Scene renders nest (a post chain's output quad runs the world render inside its one object's encode), so they are kept on a stack: one entry per scene render, named by scene and camera, timed exclusively. Node-tested (`test-render-trace.mjs`). | 185 |
+| `render-trace.js` | Wraps five private renderer methods (`_renderScene`, `_projectObject`, `_renderObjects`, `_renderObjectDirect`, `_renderBundle`) and each render list's `sort` to split one frame of `renderer.render` into scene walk, list sort, per-object encode and bundle replay. Scene renders nest (a post chain's output quad runs the world render inside its one object's encode), so they are kept on a stack: one entry per scene render, named by scene and camera, timed exclusively. Also wraps the six stages inside one object's encode on the renderer's manager instances (`Nodes.updateBefore`/`updateForRender`, `Geometries.updateForRender`, `Bindings.updateForRender`, `Pipelines.updateForRender`, `backend.draw`) with per-object rows for nodes and bindings, plus refresh, material, binding-creation and buffer-write counters, and a `timePhases: false` mode that counts without timing. Node-tested (`test-render-trace.mjs`). | 531 |
 | `render-pass-recorder.js` | Wraps the renderer's inspector to name every whole scene render in a frame, shadow passes included (three renames the scene to `Shadow Map [ <light> ]` across one). Turns `renderCalls` from a count into a list. Node-tested (`test-render-pass-recorder.mjs`). | 57 |
 | `environment-ui.js` | Builds the six-destination `#workshop-ui` in-game inspector (World, Entities, Player, Assets, Audio, Tools), re-parents the existing live panels, and builds the performance, preset, and audio control content. | 1300 |
 | `world-map.js` | Bakes the authored terrain map into a selectable data overlay (biome/elevation/slope/material/water/grass/tree) and projects it into the heading-up minimap and the north-up full-screen (M) map. Pure bake/affine/overlay math is unit-tested (`test-world-map.mjs`); canvas/DOM wrappers are browser-only. | 295 |
@@ -58,7 +58,7 @@ pages into Chrome's JS self-profiling API (`new Profiler(...)`) for ad-hoc perf 
 | `server-tool.py` | Local stdlib-only HTTP controller for starting/stopping `serve.py` and `server/server.js`, polling status, and capturing per-process logs. | 244 |
 | `server-tool.html` | Browser dashboard served by `server-tool.py`; exposes Start/Restart/Stop/Clear controls, useful launch links, and live logs for each managed server. | 296 |
 | `audit-doc.js` | Pure parser (no DOM, no deps) for the `improve-webgpu` audit-doc shape — frontmatter + `## F-NN` findings + prose. Node-testable by design. | 175 |
-| `audit-viewer.html` | Browsable UI for audit-doc files: rollup header (counts, `steps_not_run`/`steps_partial`), filterable/searchable finding list, per-finding detail with deep-linking. | 300 |
+| `audit-viewer.html` | Browsable UI for audit-doc files: rollup header (counts, `steps_not_run`/`steps_partial`), filterable/searchable finding list, per-finding detail with deep-linking. | 531 |
 | `tools/filesystem-map.html` | Standalone holographic 3D **node-link** map of the repo filesystem — WebGPURenderer + TSL `PostProcessing`/`bloom`/`dof` (repo convention, not the WebGL EffectComposer addons; DOF via three's own `dof()` TSL node reading the scene pass's real depth buffer, not the hand-rolled CoC pass from `demos/sdf-bug-v2.html` that inspired it — that demo raymarches and has no depth buffer to read). Directories are laid out with a Coulomb-repulsion + Hooke-spring simulation in 3D (organic volumetric clustering, not a flat ring/grid), damped rather than cooling-scheduled so it can also run live or be scoped to an `active[]` subset; each folder's files are scattered onto a Fibonacci sphere stored as a *local offset* from its hub (so a moving hub carries its files for free), never entering the O(n²) physics themselves. Node materials are opaque (not additive) with real depth writes so dense clusters stay legible instead of clipping to a white blob; tone mapping is ACES; fog is linear and tied to camera range, not layout radius. The Render/DOF/Layout/Style HUD panel (collapsible, like Filters) exposes live sliders for exposure/bloom/DOF focus-distance-focal-length-bokeh (with an auto-focus-on-orbit-target option) and edge length, a "live rearrange" toggle, shuffle/re-layout buttons, and toggles for node size (file size vs. uniform) and color (extension vs. relative/absolute file age). A separate Growth Timeline panel replays the repo's construction in chronological order using each file's creation time (`ctime` — best-effort, not authoritative; see `/api/fs-scan` below) as its "birth": directories reveal and physically emerge from their already-active parent as playback crosses their birth time, restricting `forceStep()` to the currently-active subset so the graph visibly reorganizes as it grows, not just reveals at pre-settled positions. Clicking a node smoothly flies the camera to focus on it (position+target lerp composes with `OrbitControls.update()` since it re-derives its spherical state from `camera.position` each call). Filters by file extension, modified-date range, and name; fetches `GET /api/fs-scan` live, no manifest to regenerate. | 830 |
 | `tools/filesystem-map.html` (scope) | Takes an optional `?scope=<name>` that narrows the scan before anything is built from it, so every panel, filter and count is about that subsystem. `pokemon` loads `pokemon-map-scope.js` and adds a Groups panel filtered live through the existing `matchesFilter`, the way extensions already are. `pokemon-lab.html`'s Map tab is this page in an iframe with that parameter. Without it the page is unchanged. | +45 |
 
@@ -101,10 +101,54 @@ renderTrace.take();                // per-frame result, then reset
 // { sceneRenders, sceneMs, projectCalls, projectMs, sortCalls, sortMs,
 //   objectListCalls, objectsMs, encodedObjects, encodeCalls, encodeMs,
 //   bundleGroups, bundleMs,
+//   nodesBeforeMs, geometriesMs, nodesRenderMs, bindingsMs, pipelinesMs, drawMs,
+//   refreshes, refreshChecks, uniqueMaterials, timed,
+//   bindingCreates, bindingWrites, bindingWriteBytes, attributeWrites, attributeWriteBytes,
 //   scenes: [{ name, camera, ms, exclusiveMs, objects, draws, bundles,
 //              projectMs, sortMs, objectsMs, encodeMs,
-//              top: [{ name, material, ms, calls }], topShare }] }
+//              nodesBeforeMs, geometriesMs, nodesRenderMs, bindingsMs, pipelinesMs, drawMs,
+//              refreshes, refreshChecks, uniqueMaterials, bindingCreates, bindingWrites, ...,
+//              top: [{ name, material, ms, calls }], topShare,
+//              topNodes, topNodesShare, topBindings, topBindingsShare }] }
 ```
+
+**The six stages inside one object's encode.** `_renderObjectDirect` (three.webgpu.js:61284) asks
+`Nodes.needsRefresh` and, if the answer is yes, runs `Nodes.updateBefore`,
+`Geometries.updateForRender`, `Nodes.updateForRender` and `Bindings.updateForRender`; then
+`Pipelines.updateForRender` unconditionally, then `backend.draw`. Those six are wrapped on the
+renderer's own manager instances (`renderer._nodes`, `_geometries`, `_bindings`, `_pipelines`,
+`renderer.backend`) with the same `wrapPhase` rule — one depth counter each so a re-entrant call is
+timed once, the time charged to the innermost scene entry — and they are members of `PHASES`, so the
+nested-scene subtraction covers them: a reflector that renders a scene from inside a binding update
+comes out of the parent's `bindingsMs`, its `encodeMs` and its `objectsMs`, and out of nothing else.
+Wrapping the instance shadows the prototype method, so nothing else using those classes is touched.
+**They are not a partition either**: all six sit inside `encodeMs`, which sits inside `objectsMs`.
+
+`nodesBeforeMs + nodesRenderMs` and `bindingsMs` also keep per-(object, material) rows —
+`topNodes` / `topBindings`, same shape and cap as `top` — because the DevTools sampling put the
+binding path at the largest named slice of the render path. The other four stages are per-scene
+totals only, so the table does not sextuple.
+
+Counters per scene entry, and summed per frame:
+
+| Counter | What it is | Exact or approximate |
+|---|---|---|
+| `refreshChecks` / `refreshes` | `Nodes.needsRefresh` calls, and how many returned truthy | Exact: one wrapped call per check, truthy results counted |
+| `uniqueMaterials` | distinct material identities (a `Set`) — per scene on the entry, per frame on the totals, where the same material in the shadow and main pass is one | Exact for identity; it is not a "how many bind groups" count |
+| `draws` | RenderObjects encoded (unchanged) | Exact |
+| `bindingCreates` | `backend.createBindings` calls | Exact as a call count; each call may build several bind groups |
+| `bindingWrites` / `bindingWriteBytes` | `backend.updateBinding` calls and `binding.byteLength` where the argument has one | Calls are the writes three decided to submit, not dirty ranges. Bytes are the buffer's whole size, an upper bound on what a partial write moved, and 0 where nothing reported a length |
+| `attributeWrites` / `attributeWriteBytes` | `backend.updateAttribute` calls and `attribute.array.byteLength` | Approximate as a write count: `WebGPUAttributeUtils.updateAttribute` issues one `writeBuffer` per update range, so one call can be several GPU writes — the count is a lower bound |
+
+`createRenderTrace({ timePhases: false })` installs every wrapper and every counter but makes each
+timer read a constant, so the counters still count and every millisecond reads zero. Running the
+same route twice, once each way, is how the instrumentation's own cost is measured; `timed` is on
+the trace, on every `take()` result and on each retained worst-frame record, so a capture always
+says which mode it ran in.
+
+**Frame alignment is unchanged**: a sample's interval precedes its stamp (see `attachLongTasks`),
+and the render work a trace row describes belongs to the rAF interval that FOLLOWS the row's
+`frameMs`, not to it. The sub-phase numbers inherit that convention exactly as the encode ones do.
 
 **Scene renders nest, and that is the whole design.** A page rendering through a `RenderPipeline`
 draws a full-screen output quad, and the real world render happens inside that single object's
