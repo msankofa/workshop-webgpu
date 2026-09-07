@@ -603,7 +603,7 @@ column sums to at most the task's duration. `heapMB` is
 `performance.memory.usedJSHeapSize` where the browser exposes it (Chrome and Edge), `null`
 elsewhere; `context.render.longTaskObserverInstalled` and `heapReported` say whether either was
 available, so a browser that cannot report them is not read as a quiet main thread.
-`terrainInFlight` (added 2026-09-07 after `heapMB`) is the number of terrain worker jobs outstanding at frame time (queued at a worker or running); `terrainBusyWorkers` beside it is the exact number of terrain worker threads executing at that moment, which is the column to read frame time against. The worker-count A/B across captures was confounded by route and session drift, and outstanding jobs alone cannot distinguish a backlog from concurrency.
+`terrainInFlight` (added 2026-09-07 after `heapMB`) is the number of terrain worker jobs outstanding at frame time (queued at a worker or running); `terrainBusyWorkers` beside it is the number of terrain workers holding unacknowledged work at that moment (posted, reply not yet handled); with jobs of 0.25-1.7 s and frames of tens of ms it approximates the threads executing, but a stalled main thread inflates it by at most one frame's worth of replies, so it is not a thread-CPU measurement. The worker-count A/B across captures was confounded by route and session drift, and outstanding jobs alone cannot distinguish a backlog from concurrency.
 
 **A row's fields do not all describe the same span, and correlating a dip depends on knowing which
 way each points.** The host measures `frameMs` as the distance from the previous frame's start to

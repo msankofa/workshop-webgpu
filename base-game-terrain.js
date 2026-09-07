@@ -1282,7 +1282,7 @@ export function createBaseGameTerrain({
       frameCostOut.maxItemMs = lastMaxItemMs; frameCostOut.colorizePassCount = lastColorizePassCount;
       frameCostOut.queued = queuedTotal(); frameCostOut.queuedBytes = queuedBytesTotal();
       frameCostOut.inFlight = inFlightBudget.count;   // jobs outstanding: queued at a worker or running
-      frameCostOut.busyWorkers = workerPool?.busyWorkers ?? 0;   // threads executing right now, exact
+      frameCostOut.busyWorkers = workerPool?.busyWorkers ?? 0;   // workers holding unacknowledged work; approximates threads executing
       frameCostOut.workerTintMs = lastWorkerTintMs; frameCostOut.overruns = lastOverruns;
       frameCostOut.queuedOldestMs = queuedOldestTotal();
       return frameCostOut;

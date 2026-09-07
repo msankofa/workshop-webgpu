@@ -44,7 +44,7 @@ export function createTerrainWorkerPool({ count = 0, cap = 4, url = new URL('./t
     get count() { return workers.length; },
     get available() { return alive && workers.length > 0; },
     get owners() { return owners.size; },
-    // Workers with a job posted and not yet answered: exactly the threads executing right now.
+    // Workers holding unacknowledged work (posted, reply not yet handled here): approximates the threads executing.
     get busyWorkers() { let n = 0; for (const c of outstanding) if (c > 0) n++; return n; },
     get outstanding() { return outstanding.slice(); },
     // A per-system facade. Messages are stamped with the owner id; terminate() only detaches.
