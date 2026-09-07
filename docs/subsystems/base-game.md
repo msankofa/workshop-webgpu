@@ -422,7 +422,10 @@ Read `lastFrame.scenes` before the slot totals. Base Game renders through the po
 depth of field, a visor mode or Hi-Z is on, so the outermost scene render is the full-screen output
 quad -- one object -- and the world, shadow and mirror renders are nested inside its encode. Each
 is its own row with its own scene name, camera and object count; `exclusiveMs` is that row's own
-cost and `ms` includes whatever nested inside it. The first `?trace=1` captures reported
+cost and `ms` includes whatever nested inside it. Each row's `top` names the heaviest objects that
+pass encoded, with `topShare` for how much of its encode they were: with trees and grass off the
+main scene encoded 93 objects in the same 11-12 ms it takes for 202, so the cost is not
+proportional to the count and `top` is where to look for the few objects that own it. The first `?trace=1` captures reported
 scenes = 1, objects = 1 and the whole 15-27 ms frame as one object's encode, which was the trace
 collapsing that nesting rather than a real finding.
 

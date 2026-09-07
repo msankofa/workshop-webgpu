@@ -1195,6 +1195,8 @@ function recordRenderTrace() {
   traceTotals.objects += t.encodedObjects;
   traceTotals.draws += t.encodeCalls;
   traceTotals.scenes += t.sceneRenders;
+  // scenes carries each pass's `top` rows and `topShare` with it, so the capture says which objects
+  // owned the encode, not just how many there were.
   traceSummary.lastFrame = { sceneRenders: t.sceneRenders, encodedObjects: t.encodedObjects,
     encodeCalls: t.encodeCalls, bundleGroups: t.bundleGroups, scenes: t.scenes };
   traceSummary.meanObjects = +(traceTotals.objects / traceSummary.frames).toFixed(1);

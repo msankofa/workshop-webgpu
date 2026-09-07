@@ -102,7 +102,8 @@ renderTrace.take();                // per-frame result, then reset
 //   objectListCalls, objectsMs, encodedObjects, encodeCalls, encodeMs,
 //   bundleGroups, bundleMs,
 //   scenes: [{ name, camera, ms, exclusiveMs, objects, draws, bundles,
-//              projectMs, sortMs, objectsMs, encodeMs }] }
+//              projectMs, sortMs, objectsMs, encodeMs,
+//              top: [{ name, material, ms, calls }], topShare }] }
 ```
 
 **Scene renders nest, and that is the whole design.** A page rendering through a `RenderPipeline`
@@ -135,6 +136,17 @@ inside none of the phases, or inside a bundle replay. Charging every child to `e
 `objectsMs` regardless made a parent that had not encoded anything yet report time it never spent.
 Nothing is clamped to zero, so an accounting mistake surfaces as a negative number rather than as a
 plausible-looking one.
+
+Each scene entry also carries `top`: what its heaviest objects cost, as up to twelve
+`{ name, material, ms, calls }` rows sorted by time, with `topShare` saying how much of that pass's
+`encodeMs` they account for. It exists because encode cost turned out not to track object count --
+Base Game's main scene cost the same 11-12 ms with 93 objects as with 202 -- so the question is
+which objects are expensive. `name` is `object.name || object.type` and `material` is the material
+type; the same object and material accumulate across draws (a two-group geometry is one row, two
+calls), and draws with no object behind them fold into a single `unknown` row. A scene render
+nested inside one object's encode is subtracted from that object's row, so the post chain's quad
+does not report itself as the most expensive thing in the frame. The hot path is two map lookups
+against a `WeakMap` of cached descriptors -- no string building per draw.
 
 `detach()` restores the wrapped methods and also unpatches every render list whose `sort` it
 wrapped, clearing `__traceSort` -- render lists are cached per (scene, camera) and outlive a trace,

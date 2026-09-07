@@ -3,6 +3,7 @@ import { createRenderTrace } from './render-trace.js';
 
 let clock = 0;
 const now = () => clock;
+const round3 = v => Math.round(v * 1000) / 1000;
 
 // A stand-in with the same call shape as the WebGPU renderer: render a scene, project the graph
 // recursively, sort the list, then encode each object. The three hooks are the three places a
@@ -25,9 +26,9 @@ function fakeRenderer({ onEncode = null, beforeObjects = null, onBundle = null }
     },
     _renderObjects(objects) {
       clock += 1;
-      for (const _ of objects) this._renderObjectDirect();
+      for (const drawn of objects) this._renderObjectDirect(drawn?.object ?? null, drawn?.material ?? null, drawn?.cost);
     },
-    _renderObjectDirect() { clock += 3; onEncode?.(renderer); },
+    _renderObjectDirect(object, material, cost) { clock += (cost ?? 3); onEncode?.(renderer); },
     _renderBundle() { clock += 4; onBundle?.(renderer); },
   };
   return { renderer, list };
@@ -52,6 +53,8 @@ function once(fn) {
   clock = 0;
   renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, 2);
   renderer._renderBundle();
+  // Two draws with no object behind them fold into one 'unknown' row rather than two.
+
   const t = trace.take();
   assert.equal(t.sceneRenders, 1);
   assert.equal(t.projectCalls, 1, 'recursion is counted once, not per node');
@@ -70,6 +73,9 @@ function once(fn) {
   assert.equal(t.scenes[0].name, 'base-game');
   assert.equal(t.scenes[0].camera, 'PerspectiveCamera', 'the entry says which camera drew it');
   assert.equal(t.scenes[0].objects, 2, 'the object count comes from the render list that pass encoded');
+  assert.deepEqual(t.scenes[0].top, [{ name: 'unknown', material: 'none', ms: 6, calls: 2 }],
+    'draws with no object share one row');
+  assert.equal(t.scenes[0].topShare, 1);
   console.log('pass: a flat frame attributes the phases and does not double count recursion');
 
   const empty = trace.take();
@@ -208,6 +214,62 @@ function once(fn) {
   third.detach();
   assert.equal(list.sort, theirs, 'detach leaves a hook installed after ours alone');
   console.log('pass: detach unpatches the render lists it patched, and only those');
+}
+
+{
+  // Per-object attribution. With trees and grass off, 93 objects cost the same encode as 202, so
+  // the useful question is which objects are expensive, not how many there are.
+  const standard = { type: 'MeshStandardNodeMaterial' };
+  const prop = { name: 'prop' };   // one mesh drawn twice, as a two-group geometry is
+  const list = [
+    { object: { name: 'terrain' }, material: standard, cost: 9 },
+    { object: { name: 'water' }, material: { type: 'MeshPhysicalNodeMaterial' }, cost: 4 },
+    { object: prop, material: standard, cost: 1 },
+    { object: prop, material: standard, cost: 2 },
+    { object: { name: 'sky' }, material: { type: 'MeshBasicNodeMaterial' }, cost: 6 },
+  ];
+  const { renderer } = fakeRenderer();
+  renderer._renderScene = function (scene, camera) {
+    clock += 1;
+    this._projectObject({ depth: 0 });
+    this._renderLists.get().sort();
+    this._renderObjects(list);
+  };
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' });
+  const t = trace.take();
+  const [entry] = t.scenes;
+
+  assert.equal(entry.draws, 5);
+  assert.equal(entry.encodeMs, 22, '9 + 4 + 1 + 2 + 6');
+  assert.deepEqual(entry.top.map(row => row.name), ['terrain', 'sky', 'water', 'prop'],
+    'heaviest first, and the two prop draws are one row');
+  assert.deepEqual(entry.top[0], { name: 'terrain', material: 'MeshStandardNodeMaterial', ms: 9, calls: 1 });
+  assert.deepEqual(entry.top.at(-1), { name: 'prop', material: 'MeshStandardNodeMaterial', ms: 3, calls: 2 },
+    'the same object and material accumulate across calls');
+  assert.equal(entry.topShare, 1, 'four rows cover the whole encode here');
+  console.log('pass: the heaviest objects of a scene render are named, in order, with their share');
+
+  // More objects than the cap: the rows are the heaviest, and the share says what they miss.
+  const many = [];
+  for (let i = 0; i < 20; i++) many.push({ object: { name: `mesh${i}` }, material: { type: 'M' }, cost: i + 1 });
+  const second = fakeRenderer().renderer;
+  second._renderScene = function () { this._renderObjects(many); };   // set before attach, or the hook is lost
+  const cappedTrace = createRenderTrace({ now });
+  cappedTrace.attach(second);
+  clock = 0;
+  second._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' });
+  const capped = cappedTrace.take().scenes[0];
+  assert.equal(capped.top.length, 12, 'capped at twelve rows');
+  assert.equal(capped.top[0].name, 'mesh19');
+  assert.equal(capped.top.at(-1).name, 'mesh8');
+  // 20 + 19 + ... + 9 = 174, of 1 + ... + 20 = 210, plus the 1 ms the object loop itself costs.
+  assert.equal(capped.encodeMs, 210);
+  assert.equal(capped.objectsMs, 211, 'the object loop is the draws plus its own millisecond');
+  assert.equal(capped.topShare, round3(174 / 210), 'the share says how much the rows account for');
+  console.log('pass: the rows are capped and topShare says what they leave out');
 }
 
 {

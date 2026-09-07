@@ -12,6 +12,10 @@
 // `scenes` is the primary output and the totals are sums over it. Without that, one frame reads as
 // a single object costing the whole render.
 //
+// The encode hook also attributes its time per (object, material), because a scene's encode cost has
+// turned out not to be proportional to its object count -- 93 objects cost the same 11-12 ms as 202
+// -- so the question is which few objects are expensive, not how many there are.
+//
 // A child is charged only to the parent phases that were open when it started: a nested render can
 // begin before the parent reaches its object loop, and subtracting it from a timer it never ran
 // inside would understate that timer. Nothing is clamped, so an accounting mistake shows up as a
@@ -37,6 +41,8 @@ function newEntry(name, camera) {
     depth: { project: 0, objects: 0, encode: 0, bundle: 0, sort: 0 },
     // Time nested scene renders spent inside each phase timer of this entry, subtracted on close.
     childInPhase: { project: 0, objects: 0, encode: 0, bundle: 0, sort: 0 },
+    // What each drawn object cost in this scene render: descriptor -> { ms, calls }.
+    perObject: new Map(),
   };
 }
 
@@ -50,6 +56,41 @@ function describe(scene, camera) {
   const name = scene?.name || scene?.type || 'scene';
   const cam = camera ? (camera.name || camera.type || 'camera') : 'none';
   return { name, camera: cam };
+}
+
+// How many rows a scene entry reports. Long enough to show a heavy handful, short enough that a
+// capture stays readable.
+const TOP_OBJECTS = 12;
+
+// One descriptor per (object, material) pair, built once and reused every frame, so the hot path
+// costs two map lookups and no string work. Weak on the object, so a disposed mesh is collectable.
+const descriptorCache = new WeakMap();
+
+const UNKNOWN_OBJECT = { name: 'unknown', material: 'none' };
+
+function describeObject(object, material) {
+  if (!object) return UNKNOWN_OBJECT;   // one shared descriptor, so unnamed draws fold into one row
+  let byMaterial = descriptorCache.get(object);
+  if (byMaterial === undefined) { byMaterial = new Map(); descriptorCache.set(object, byMaterial); }
+  let descriptor = byMaterial.get(material);
+  if (descriptor === undefined) {
+    descriptor = { name: object.name || object.type || 'object', material: material?.type ?? 'none' };
+    byMaterial.set(material, descriptor);
+  }
+  return descriptor;
+}
+
+// The heaviest objects of one scene render, and how much of its encode they account for.
+function topObjects(entry) {
+  const rows = [];
+  for (const [descriptor, cost] of entry.perObject) {
+    rows.push({ name: descriptor.name, material: descriptor.material, ms: cost.ms, calls: cost.calls });
+  }
+  rows.sort((a, b) => b.ms - a.ms);
+  const top = rows.slice(0, TOP_OBJECTS);
+  let sum = 0;
+  for (const row of top) { sum += row.ms; row.ms = round3(row.ms); }
+  return { top, topShare: entry.encodeMs > 0 ? round3(sum / entry.encodeMs) : 0 };
 }
 
 export function createRenderTrace({ now = () => performance.now() } = {}) {
@@ -112,6 +153,36 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       }
     };
     restore.push(() => { renderer._renderScene = original; });
+  }
+
+  // The per-object hook. Same shape as wrapPhase, plus the per-(object, material) accumulation and
+  // the subtraction of any scene render that nested inside this one draw.
+  function wrapEncode(renderer) {
+    const original = renderer._renderObjectDirect;
+    if (typeof original !== 'function') { missing.push('_renderObjectDirect'); return; }
+    renderer._renderObjectDirect = function (object, material, ...rest) {
+      const entry = current();
+      if (entry.depth.encode > 0) return original.call(this, object, material, ...rest);
+      entry.draws++;
+      entry.depth.encode++;
+      const childBefore = entry.childMs;
+      const t0 = now();
+      try {
+        return original.call(this, object, material, ...rest);
+      } finally {
+        entry.depth.encode--;
+        const ms = now() - t0;
+        entry.encodeMs += ms;
+        // What this one object cost, with any nested scene render taken back out, so the post
+        // chain's quad does not report itself as the most expensive object in the frame.
+        const own = ms - (entry.childMs - childBefore);
+        const descriptor = describeObject(object, material);
+        const cost = entry.perObject.get(descriptor);
+        if (cost === undefined) entry.perObject.set(descriptor, { ms: own, calls: 1 });
+        else { cost.ms += own; cost.calls++; }
+      }
+    };
+    restore.push(() => { renderer._renderObjectDirect = original; });
   }
 
   // Each render list is created once per (scene, camera) and reused, so its sort is patched on
@@ -177,6 +248,8 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
       objects: entry.objects, draws: entry.draws, bundles: entry.bundles,
       projectMs: round3(entry.projectMs), sortMs: round3(entry.sortMs),
       objectsMs: round3(entry.objectsMs), encodeMs: round3(entry.encodeMs),
+      // The heaviest objects this pass encoded, and how much of its encode they were.
+      ...topObjects(entry),
     }));
     return out;
   }
@@ -194,7 +267,7 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
         entry.objectListCalls++;
         entry.objects += Array.isArray(args[0]) ? args[0].length : 0;
       });
-      wrapPhase(renderer, '_renderObjectDirect', 'encode', 'encodeMs', entry => { entry.draws++; });
+      wrapEncode(renderer);
       wrapPhase(renderer, '_renderBundle', 'bundle', 'bundleMs', entry => { entry.bundles++; });
       patchLists(renderer);
       attachedTo = restore.length ? renderer : null;
