@@ -64,7 +64,7 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   // completion is what the inbox bound is for.
   maxInFlight: 24,
   // Terrain worker THREADS, shared by the near system and every cascade level. 0 = sized from the
-  // machine (cores/2 - 1, at most 4). Four systems each spawning min(4, cores-2) made 16 threads,
+  // machine (cores/2 - 1, at most 2; 4 measured as halving the frame while they run). Four systems each spawning min(4, cores-2) made 16 threads,
   // and a boundary crossing lighting them all starved the main thread (trace 2026-09-07).
   terrainWorkers: 0,
   // Per-chunk frustum culling in the batches. Measured both ways 2026-08-26: turning it off skips

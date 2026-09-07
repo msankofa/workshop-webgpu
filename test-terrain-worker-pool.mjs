@@ -17,10 +17,10 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 
 console.log('\n[1] sizing from the machine');
 ok(defaultTerrainWorkerCount(4) === 1, `4 cores -> 1 worker (${defaultTerrainWorkerCount(4)})`);
-ok(defaultTerrainWorkerCount(8) === 3, `8 cores -> 3 workers (${defaultTerrainWorkerCount(8)})`);
-ok(defaultTerrainWorkerCount(12) === 4, `12 cores -> capped at 4 (${defaultTerrainWorkerCount(12)})`);
-ok(defaultTerrainWorkerCount(32) === 4, `32 cores -> still 4 (${defaultTerrainWorkerCount(32)})`);
-ok(defaultTerrainWorkerCount(undefined, 2) <= 2, 'the cap is honoured');
+ok(defaultTerrainWorkerCount(6) === 2, `6 cores -> 2 workers (${defaultTerrainWorkerCount(6)})`);
+ok(defaultTerrainWorkerCount(8) === 2, `8 cores -> capped at 2 (${defaultTerrainWorkerCount(8)})`);
+ok(defaultTerrainWorkerCount(32) === 2, `32 cores -> still 2 (${defaultTerrainWorkerCount(32)})`);
+ok(defaultTerrainWorkerCount(8, 4) === 3, 'a wider cap is honoured when asked for');
 
 console.log('\n[2] one pool, four owners, replies routed home');
 {

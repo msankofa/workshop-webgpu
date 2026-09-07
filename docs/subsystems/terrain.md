@@ -482,7 +482,7 @@ GPU upload into `renderer.render` where a terrain-pass-only comparison would not
 ### One worker pool for all four streamers (2026-09-07)
 
 `terrain-worker-pool.js` — `createTerrainWorkerPool({ count = 0, cap = 4 })` spawns `count` terrain
-workers (0 = `defaultTerrainWorkerCount()` = cores/2 − 1, at least 1, at most `cap`) and hands each
+workers (0 = `defaultTerrainWorkerCount()` = cores/2 − 1, at least 1, at most `cap` = 2 since 2026-09-07 evening: at 4 the frame ran 61 ms against 28 idle while the workers held work, at 2 it ran 17.6 against 17.7 and the queue still drained on foot; vehicle speed untested) and hands each
 system a facade from `attach(onMessage, onError)` with the shape the systems already used:
 `{ count, postMessage, terminate }`. The pool counts jobs outstanding per worker (posted, not yet
 answered; a worker runs one at a time), so `pool.busyWorkers` is the number of workers holding unacknowledged work: a
@@ -499,7 +499,8 @@ Why: the DevTools trace of 2026-09-07 showed four systems × min(4, cores−2) =
 (40 worker threads on the page in all), tiles of 0.25–1.7 s each, bursts of 10–16 busy workers on a
 boundary crossing, and 104 of 106 long main-thread frames overlapping such a burst; a quarter of a
 long frame's time was the main thread scheduled out, rising with the number of busy workers. The
-pool is the A/B for that hypothesis (`?terrainworkers=N` on Base Game), not yet a measured fix.
+`?terrainworkers=N` flag remains the override; the cap of 2 is measured on one machine and one
+walking route, so a vehicle run or a different machine may want it revisited.
 The field, plan, clipmap, sea-depth, road and palette workers keep their own single threads.
 
 Tests: `test-terrain-worker-pool.mjs` (sizing, four owners on three threads with replies routed

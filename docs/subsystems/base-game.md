@@ -12,8 +12,10 @@ walk at 1, at the default, and at 4 says whether the dips are CPU contention.
 That A/B (2026-09-07, 11 captures) favoured 1 worker in every group but two 4-worker groups with
 identical settings differed by as much as the arms, and the reply clumps counted by `terrainInstalls`
 turned out to arrive during frames that were already slow; so the capture series gained
-`terrainInFlight` (worker jobs outstanding at frame time) to read frame time against concurrency
-inside one capture. The default stays 4 until that read is in.
+`terrainInFlight` and `terrainBusyWorkers` to read frame time against worker load inside one
+capture. That read (14:35Z and 15:32Z): at 4 workers, frames with all four holding work ran 61 ms
+against 28 idle and 79% dipped under 20 fps; at 2 workers, 17.6 against 17.7 with no dips and the
+queue drained. The default cap is now 2; `?terrainworkers=4` restores the old count.
 
 
 Terrain arrivals no longer land in the frame they arrive in. Worker results wait in a bounded

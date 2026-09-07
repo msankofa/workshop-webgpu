@@ -9,14 +9,15 @@
 // to the system that asked. A facade from attach() has the same shape the systems already use:
 // { count, postMessage(msg), terminate() }, where terminate() detaches this owner only.
 
-// cores/2 - 1, at least 1, at most `cap`: leaves the main thread, the GPU process and the other
-// pools (fields, clipmap, sea depth, roads, palette) their own cores.
-export function defaultTerrainWorkerCount(cores = globalThis.navigator?.hardwareConcurrency || 4, cap = 4) {
+// cores/2 - 1, at least 1, at most `cap`. Cap 2, measured 2026-09-07 on a 10+ logical-core machine:
+// with 4 threads holding work the frame ran 61 ms against 28 idle; with 2 it ran 17.6 against 17.7,
+// and 2 still drained the queue on foot. ?terrainworkers=N overrides it.
+export function defaultTerrainWorkerCount(cores = globalThis.navigator?.hardwareConcurrency || 4, cap = 2) {
   const n = Math.floor((Number(cores) || 4) / 2) - 1;
   return Math.max(1, Math.min(cap, n));
 }
 
-export function createTerrainWorkerPool({ count = 0, cap = 4, url = new URL('./terrain-worker.js', import.meta.url), WorkerCtor = globalThis.Worker } = {}) {
+export function createTerrainWorkerPool({ count = 0, cap = 2, url = new URL('./terrain-worker.js', import.meta.url), WorkerCtor = globalThis.Worker } = {}) {
   const size = count > 0 ? Math.floor(count) : defaultTerrainWorkerCount(undefined, cap);
   const owners = new Map();   // owner id -> { onMessage, onError }
   const workers = [];
