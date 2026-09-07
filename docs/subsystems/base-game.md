@@ -9,6 +9,11 @@
 each system spawned its own min(4, cores−2) threads, 16 in all, and the DevTools trace showed the
 sub-20 fps dips coinciding with bursts of 10–16 busy terrain workers. Treat `N` as the A/B: the same
 walk at 1, at the default, and at 4 says whether the dips are CPU contention.
+That A/B (2026-09-07, 11 captures) favoured 1 worker in every group but two 4-worker groups with
+identical settings differed by as much as the arms, and the reply clumps counted by `terrainInstalls`
+turned out to arrive during frames that were already slow; so the capture series gained
+`terrainInFlight` (worker jobs outstanding at frame time) to read frame time against concurrency
+inside one capture. The default stays 4 until that read is in.
 
 
 Terrain arrivals no longer land in the frame they arrive in. Worker results wait in a bounded

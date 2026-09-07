@@ -621,7 +621,7 @@ export function createBaseGameTerrain({
   const perSecond = { installs: 0, window: 0, rate: 0 };
   const frameCostOut = { installMs: 0, foldMs: 0, fieldMs: 0, installCount: 0, colorizeMs: 0, batchMs: 0, colliderMs: 0,
     integrateMs: 0, integrateItems: 0, maxItemMs: 0, queued: 0, queuedBytes: 0, colorizePassCount: 0,
-    workerTintMs: 0, overruns: 0, queuedOldestMs: 0 };
+    workerTintMs: 0, overruns: 0, queuedOldestMs: 0, inFlight: 0 };
   let lastIntegrateMs = 0;     // everything the scheduler ran this frame, on one deadline
   let lastOverruns = 0;        // frames' worth of the one-item overrun rule firing
   let lastMaxItemMs = 0;       // the single most expensive operation, usually a collider BVH
@@ -1281,6 +1281,7 @@ export function createBaseGameTerrain({
       frameCostOut.integrateMs = lastIntegrateMs; frameCostOut.integrateItems = lastItemCount;
       frameCostOut.maxItemMs = lastMaxItemMs; frameCostOut.colorizePassCount = lastColorizePassCount;
       frameCostOut.queued = queuedTotal(); frameCostOut.queuedBytes = queuedBytesTotal();
+      frameCostOut.inFlight = inFlightBudget.count;   // jobs the workers hold right now: the concurrency a frame ran beside
       frameCostOut.workerTintMs = lastWorkerTintMs; frameCostOut.overruns = lastOverruns;
       frameCostOut.queuedOldestMs = queuedOldestTotal();
       return frameCostOut;

@@ -6263,6 +6263,7 @@ function frameEvents() {
     terrainFoldMs: terrain.frameCost?.foldMs ?? 0,
     terrainIntegrateMs: terrain.frameCost?.integrateMs ?? 0,
     terrainQueued: terrain.frameCost?.queued ?? 0,
+    terrainInFlight: terrain.frameCost?.inFlight ?? 0,   // worker jobs outstanding at frame time, for frame-vs-concurrency reads
     // A delta, like the reculls beside it. Fed cumulatively, it was present on every frame, so its
     // spike share read 1 everywhere and it explained nothing; the running total is in the context.
     terrainOverruns: Math.max(0, next.terrainOverruns - eventCounters.terrainOverruns),

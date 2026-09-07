@@ -603,6 +603,7 @@ column sums to at most the task's duration. `heapMB` is
 `performance.memory.usedJSHeapSize` where the browser exposes it (Chrome and Edge), `null`
 elsewhere; `context.render.longTaskObserverInstalled` and `heapReported` say whether either was
 available, so a browser that cannot report them is not read as a quiet main thread.
+`terrainInFlight` (added 2026-09-07 after `heapMB`) is the number of terrain worker jobs outstanding at frame time, so frame time can be read against worker concurrency within one capture; the worker-count A/B across captures was confounded by route and session drift.
 
 **A row's fields do not all describe the same span, and correlating a dip depends on knowing which
 way each points.** The host measures `frameMs` as the distance from the previous frame's start to

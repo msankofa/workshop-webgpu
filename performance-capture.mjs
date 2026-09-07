@@ -46,6 +46,9 @@ export const SERIES_KEYS = Object.freeze(['tMs', 'frameMs', 'postRenderMs', 'spe
   // the gap is 25-57 ms against a normal 6-10 (the vsync wait), with everything inside the frame
   // accounted for, so the cost is a task this page does not own.
   'betweenMs', 'longTaskMs', 'heapMB',
+  // Terrain worker jobs outstanding at frame time: the concurrency this frame ran beside, so frame
+  // time can be read against worker load inside one capture instead of across arms.
+  'terrainInFlight',
   // The frame's own passes. The long tasks turned out to be the page's own rAF task, so the dip is
   // inside animate() and the render call is only about half of it; without these the other half --
   // forest, grass, terrain, sim, bodies, sky -- could not be attributed. The remaining slots stay
@@ -79,6 +82,7 @@ export function buildPerformanceSeries(samples) {
       round(Number(sample.betweenMs) || 0),
       round(Number(sample.longTaskMs) || 0),
       round(Number(sample.heapMB) || 0, 1),
+      Math.round(Number(events.terrainInFlight) || 0),
       ...Object.keys(SERIES_SLOTS).map(key => round(Number(sample.slots?.[SERIES_SLOTS[key]]) || 0)),
     ]);
   }
