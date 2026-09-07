@@ -11,6 +11,76 @@ const BUILDERS = {};
 export function registerCraftMesh(kind, build) { BUILDERS[kind] = build; return build; }
 export const CRAFT_KINDS = ['plane', 'drone', 'bird', 'recon', 'ugv', 'buggy', 'sentinel', 'agm'];
 
+// ── shared craft materials ──────────────────────────────────────────────────
+// Every builder below asks for the same handful of materials with the same literal colours, so a
+// second drone used to allocate a second identical `dark`. In r184 identical materials still share
+// the compiled pipeline (programs are keyed on shader source), but each one owns a bind group and a
+// uniform buffer, so the duplicates cost GPU memory and per-object binding bookkeeping.
+//
+// The compatibility key is: the caller's factory table (object identity) + which factory (standard
+// or basic) + colour + emissive/opacity + any extra property the third argument bakes in (`side`).
+// Anything differing in any of those stays a separate material. Roughness/metalness are not in the
+// key because the factory bakes them in as constants — a factory that varied them per call would
+// need them added here.
+//
+// Ownership: the cache owns these materials for the life of the module (the page). A craft's
+// teardown must not dispose them, so `dispose()` is replaced with a no-op on cached materials —
+// callers that traverse a craft disposing everything (bot-viewer-v3, demos/flight-sim) stay correct
+// without changing. `disposeCraftMaterials()` is the one path that really frees them.
+const MATERIAL_CACHES = new Set();          // every per-factory cache, for disposeCraftMaterials
+const CACHE_BY_FACTORY = new WeakMap();     // factory table -> Map(key -> material)
+const CACHED_MATERIALS = new WeakSet();
+const REAL_DISPOSE = new WeakMap();
+const noop = () => {};
+const colorKey = (c) => (typeof c === 'number' ? c.toString(16) : (c && c.isColor ? c.getHexString() : String(c)));
+const optsKey = (o) => (o ? Object.keys(o).sort().map(k => `${k}=${o[k]}`).join(',') : '');
+
+// True for a material this module owns. A per-craft dispose path should skip these.
+export function isCachedCraftMaterial(material) { return !!material && CACHED_MATERIALS.has(material); }
+
+// Frees every shared craft material. For page teardown only; any craft still in the scene is left
+// pointing at a disposed material.
+export function disposeCraftMaterials() {
+  for (const cache of MATERIAL_CACHES) {
+    for (const mat of cache.values()) {
+      const real = REAL_DISPOSE.get(mat);
+      delete mat.dispose;
+      if (real) real();
+      CACHED_MATERIALS.delete(mat);
+    }
+    cache.clear();
+  }
+  MATERIAL_CACHES.clear();
+}
+
+// Wraps a caller's `{ standard, basic }` table so repeated requests return one material. The third
+// argument is this module's, not the caller's: the caller's factory never sees it, the wrapper
+// applies it and keys on it (that is how a double-sided panel stays distinct from the hull).
+export function shareCraftMaterials(m) {
+  if (!m || typeof m.standard !== 'function' || typeof m.basic !== 'function') return m;
+  let cache = CACHE_BY_FACTORY.get(m);
+  if (!cache) { cache = new Map(); CACHE_BY_FACTORY.set(m, cache); MATERIAL_CACHES.add(cache); }
+  const take = (key, make, opts) => {
+    const hit = cache.get(key);
+    if (hit) return hit;
+    const mat = make();
+    if (opts) for (const k of Object.keys(opts)) mat[k] = opts[k];
+    if (typeof mat?.dispose === 'function') { REAL_DISPOSE.set(mat, mat.dispose.bind(mat)); mat.dispose = noop; }
+    if (mat) CACHED_MATERIALS.add(mat);
+    cache.set(key, mat);
+    return mat;
+  };
+  return {
+    ...m,
+    standard: (color, emissive = 0x000000, opts = null) =>
+      take(`s|${colorKey(color)}|${colorKey(emissive)}|${optsKey(opts)}`, () => m.standard(color, emissive), opts),
+    basic: (color, opacity = 1, opts = null) =>
+      take(`b|${colorKey(color)}|${opacity}|${optsKey(opts)}`, () => m.basic(color, opacity), opts),
+  };
+}
+
+const DOUBLE_SIDED = { side: THREE.DoubleSide };
+
 export function buildPlane(tint, m) {
   const g = new THREE.Group();
   const body = m.standard(tint), dark = m.standard(0x2a3038), glass = m.standard(0x121a24, 0x0a1520);
@@ -308,7 +378,8 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
   const g = new THREE.Group();
   const body = m.standard(tint), dark = m.standard(0x1b1e22), rim = m.standard(0x54595f);
   const deckMat = m.standard(0x3d4248), lens = m.standard(0x18303a, 0x2a5f6e);
-  const panel = m.standard(tint); panel.side = THREE.DoubleSide;
+  // Same colour as the hull but double-sided, so it must stay a separate material from `body`.
+  const panel = m.standard(tint, 0x000000, DOUBLE_SIDED); panel.side = THREE.DoubleSide;
   const mats = { tyre: dark, rim, dark };
 
   // Tyre diameter is 0.55 x wheelbase, the reference's own tyre-to-body relationship. Y(f) puts a
@@ -564,7 +635,8 @@ export function buildBuggy(tint, m, dims = BUGGY_DIMS) {
   const g = new THREE.Group();
   const body = m.standard(tint), dark = m.standard(0x1e2126), rim = m.standard(0x71787f);
   const seatMat = m.standard(0x39322a), lamp = m.standard(0x203038, 0x9fd8ff);
-  const panel = m.standard(tint); panel.side = THREE.DoubleSide;
+  // As in buildUgv: hull colour, double-sided, and a distinct material from `body`.
+  const panel = m.standard(tint, 0x000000, DOUBLE_SIDED); panel.side = THREE.DoubleSide;
   const mats = { tyre: dark, rim, dark };
 
   const r = clear * 0.9;
@@ -947,7 +1019,7 @@ registerCraftMesh('agm', buildAgm);
 export function buildCraftMesh(kind, tint, materials, dims = undefined) {
   const build = BUILDERS[kind];
   if (!build) throw new Error(`no craft mesh for '${kind}'. Registered: ${Object.keys(BUILDERS).join(', ')}`);
-  const g = build(tint, materials, dims);
+  const g = build(tint, shareCraftMaterials(materials), dims);
   g.traverse((o) => { o.frustumCulled = false; });
   return g;
 }

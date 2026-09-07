@@ -4,7 +4,7 @@
 // Render-local placement only; every input position is global.
 import * as THREE from 'three';
 import { MeshStandardNodeMaterial, MeshBasicNodeMaterial } from 'three/webgpu';
-import { buildCraftMesh } from './flight-meshes.js';
+import { buildCraftMesh, isCachedCraftMaterial } from './flight-meshes.js';
 import { createRemoteTrack } from './base-game-remote-players.js';
 import { BASE_GAME_DRONE_DEFS, quatFromHeading } from './base-game-drones.js';
 import { BASE_GAME_VEHICLE_DEFS } from './base-game-vehicles.js';
@@ -62,7 +62,9 @@ export function createBaseGameDroneView({ scene, worldCoordinates, tintFor = () 
   function disposeMesh(mesh) {
     if (!mesh) return;
     scene.remove(mesh);
-    mesh.traverse((o) => { o.geometry?.dispose(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()); });
+    // Geometry is this craft's; materials mostly are not — flight-meshes.js shares them across every
+    // craft built from CRAFT_MATERIALS, so disposing one craft's would blank the others.
+    mesh.traverse((o) => { o.geometry?.dispose(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { if (!isCachedCraftMaterial(m)) m.dispose(); }); });
   }
 
   // One list of wire states at one server time: the snapshot online, the local stepper solo.

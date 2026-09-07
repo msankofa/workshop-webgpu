@@ -28,7 +28,7 @@ Tests: `test-flight-model.mjs`, `test-flight-terrain.mjs`, `test-flight-terrain-
 `test-flight-terrain-stream.mjs`, `test-ground-look.mjs`, `test-flight-ai.mjs`, `test-flight-combat.mjs`, `test-flight-drones.mjs`,
 `test-flight-autopilot.mjs`, `test-water-hybrid.mjs`, `test-water-waves.mjs`,
 `test-flight-meshes-recon.mjs`, `test-flight-meshes-sentinel.mjs`, `test-vehicle-meshes.mjs`,
-`test-vehicle-parts.mjs`. Plain Node, no framework, per repo convention.
+`test-vehicle-parts.mjs`, `test-flight-meshes.mjs`. Plain Node, no framework, per repo convention.
 
 ## Editing a craft in a modelling tool
 
@@ -124,6 +124,27 @@ Two dispatches are now keyed on capability rather than identity, and both got be
   `registerCraftMesh(kind, fn)` adds one. `dims` is optional and only the two ground vehicles read
   it: Base Game passes the vehicle's simulation def so the wheels are drawn on the same wheelbase,
   track and clearance the ground fit samples. Aircraft callers pass three arguments as before.
+- **Craft materials are shared, and the module owns them.** `buildCraftMesh` wraps the caller's
+  `{ standard, basic }` table in `shareCraftMaterials(m)` (`flight-meshes.js`), which memoizes on a
+  compatibility key: **the factory table's object identity + which factory + colour + emissive (or
+  opacity) + any property the optional third argument bakes in** (only `side` so far). Anything that
+  differs in any of those stays a separate material. Roughness and metalness are not in the key
+  because every caller's factory bakes them in as constants; a factory that varied them per call
+  would have to add them. The third argument is this module's own — the caller's factory never sees
+  it — which is how the UGV's and buggy's double-sided `panel` stays distinct from the hull it
+  matches in colour. Keying on factory identity is what keeps the flight demo's heat-tagged
+  materials out of Base Game's cache and vice versa.
+  A craft used to allocate a fresh copy of every literal-coloured slot: three drones cost 21 material
+  builds, now 4 (plane 12 → 4, bird 9 → 3, recon 6 → 2, ugv/buggy 18 → 6, sentinel 6 → 2, agm 9 → 3).
+  In r184 that was never a shader-compile saving — identical materials already share a compiled
+  pipeline, keyed on shader source — but each one owned a bind group and a uniform buffer.
+  **Ownership rule: the cache owns these materials for the life of the module, so no craft's teardown
+  may dispose them.** `isCachedCraftMaterial(mat)` says which ones; cached materials also have
+  `dispose()` replaced by a no-op, so the existing "traverse and dispose everything" teardowns in
+  `demos/flight-sim.html` and `bot-viewer-v3.html` stay correct unchanged. `disposeCraftMaterials()`
+  is the one path that really frees them, for page teardown. A caller that passes a **fresh** factory
+  object each call gets no sharing (its cache is keyed on an object nobody else holds) — hoist the
+  literal to a module-level `const` to opt in. Pinned by `test-flight-meshes.mjs`.
 - `mergeByMaterial(root, skip)` bakes static parts into one geometry per material, relative to
   `root` rather than the world so a nested animated group keeps its own offset. The ground vehicles
   use it via `finishVehicle(g, wheels, groups)`; assembled from loose primitives they were 44 and 85
