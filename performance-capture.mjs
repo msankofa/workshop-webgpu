@@ -45,7 +45,16 @@ export const SERIES_KEYS = Object.freeze(['tMs', 'frameMs', 'postRenderMs', 'spe
   // next, how much of that gap the browser attributed to a long task, and the JS heap. In the dips
   // the gap is 25-57 ms against a normal 6-10 (the vsync wait), with everything inside the frame
   // accounted for, so the cost is a task this page does not own.
-  'betweenMs', 'longTaskMs', 'heapMB']);
+  'betweenMs', 'longTaskMs', 'heapMB',
+  // The frame's own passes. The long tasks turned out to be the page's own rAF task, so the dip is
+  // inside animate() and the render call is only about half of it; without these the other half --
+  // forest, grass, terrain, sim, bodies, sky -- could not be attributed. The remaining slots stay
+  // in the sample's `slots` object rather than widening every row.
+  'forestMs', 'grassMs', 'terrainMs', 'simMs', 'bodiesMs', 'skyMs']);
+
+// Series column -> profiler slot name.
+const SERIES_SLOTS = Object.freeze({ forestMs: 'forestGpu', grassMs: 'grassGpu', terrainMs: 'terrain',
+  simMs: 'playerSim', bodiesMs: 'bodies', skyMs: 'sky' });
 
 export function buildPerformanceSeries(samples) {
   const rows = [];
@@ -70,6 +79,7 @@ export function buildPerformanceSeries(samples) {
       round(Number(sample.betweenMs) || 0),
       round(Number(sample.longTaskMs) || 0),
       round(Number(sample.heapMB) || 0, 1),
+      ...Object.keys(SERIES_SLOTS).map(key => round(Number(sample.slots?.[SERIES_SLOTS[key]]) || 0)),
     ]);
   }
   return rows;
@@ -192,6 +202,18 @@ export function summarizeSpikeEvents(samples, { percentile: fraction = 0.95 } = 
     return values.length ? round(values.reduce((sum, v) => sum + v, 0) / values.length, 2) : null;
   };
   const withLongTask = list => list.filter(s => (Number(s.longTaskMs) || 0) > 0).length;
+  // Which pass inflates in the slow frames. A slot whose spike mean is several times its ordinary
+  // mean is what the dip is made of; one that barely moves is not, however large it is.
+  const slotNames = new Set();
+  for (const sample of usable) if (sample.slots) for (const name of Object.keys(sample.slots)) slotNames.add(name);
+  const slots = {};
+  for (const name of [...slotNames].sort()) {
+    const mean = list => {
+      const values = list.map(s => Number(s.slots?.[name])).filter(Number.isFinite);
+      return values.length ? round(values.reduce((sum, v) => sum + v, 0) / values.length) : null;
+    };
+    slots[name] = { meanInSpikes: mean(spikes), meanInOthers: mean(rest) };
+  }
   return { thresholdMs: round(threshold), spikeFrames: spikes.length, quietSpikeFrames: quiet, tellingEvents: telling,
     speedInSpikes: meanSpeed(spikes), speedInOthers: meanSpeed(rest),
     // The gap before each frame started, and whether the browser called that gap a long task. If
@@ -199,6 +221,7 @@ export function summarizeSpikeEvents(samples, { percentile: fraction = 0.95 } = 
     // this page's frame entirely.
     meanBetweenInSpikes: meanOf(spikes, 'betweenMs'), meanBetweenInOthers: meanOf(rest, 'betweenMs'),
     longTaskSpikeFrames: withLongTask(spikes), longTaskOtherFrames: withLongTask(rest),
+    slots: slotNames.size ? slots : null,
     events };
 }
 

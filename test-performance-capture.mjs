@@ -99,8 +99,10 @@ console.log('Performance capture statistics tests passed.');
   assert.equal(rows.length, 3, 'one row per sample');
   assert.deepEqual(SERIES_KEYS, ['tMs', 'frameMs', 'postRenderMs', 'speed', 'terrainInstalls',
     'terrainIntegrateMs', 'terrainQueued', 'forestReculls', 'grassReculls', 'pipelinesBuilt',
-    'betweenMs', 'longTaskMs', 'heapMB']);
-  assert.deepEqual(rows[1], [16.4, 62.5, 47.9, 4.83, 3, 4.25, 7, 1, 1, 2, 0, 0, 0], 'the dip row, in key order');
+    'betweenMs', 'longTaskMs', 'heapMB',
+    'forestMs', 'grassMs', 'terrainMs', 'simMs', 'bodiesMs', 'skyMs']);
+  assert.deepEqual(rows[1], [16.4, 62.5, 47.9, 4.83, 3, 4.25, 7, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    'the dip row, in key order');
   assert.deepEqual(rows.map(r => r[0]), [0, 16.4, 78.9], 'order is preserved and tMs is the sample offset');
   assert.ok(rows.every(row => row.length === SERIES_KEYS.length && row.every(Number.isFinite)),
     'every row is numbers only, one per key');
@@ -108,7 +110,8 @@ console.log('Performance capture statistics tests passed.');
   // A capture taken before atMs existed still lines up: tMs falls back to the running frame time.
   const older = buildPerformanceSeries([{ frameMs: 10 }, { frameMs: 20 }]);
   assert.deepEqual(older.map(r => r[0]), [10, 30], 'without atMs the rows carry the running elapsed time');
-  assert.deepEqual(older[0], [10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'and missing fields read as zero, not undefined');
+  assert.deepEqual(older[0], [10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    'and missing fields read as zero, not undefined');
 
   const measurement = buildPerformanceMeasurement(samples, {});
   assert.deepEqual(measurement.seriesKeys, SERIES_KEYS, 'the saved entry names the keys once');
@@ -216,4 +219,36 @@ console.log('Performance capture statistics tests passed.');
   assert.equal(measurement.longTasks.count, 1, 'the saved entry carries the long tasks of the window');
   assert.equal(measurement.series[1][SERIES_KEYS.indexOf('longTaskMs')], 48, 'and the rows carry the overlap');
   console.log('between frames: the gap, the long tasks in it, and the heap');
+}
+
+// Which pass the dip is made of: the slots, in the rows and in the summary.
+{
+  const { buildPerformanceSeries, SERIES_KEYS, summarizeSpikeEvents } = await import('./performance-capture.mjs');
+  const quiet = () => ({ forestGpu: 2.1, grassGpu: 1.4, terrain: 0.9, playerSim: 0.8, bodies: 1.2, sky: 0.3, water: 0.4 });
+  const samples = [];
+  for (let i = 0; i < 20; i++) samples.push({ frameMs: 16, atMs: (i + 1) * 16, slots: quiet(), events: { terrainInstalls: 0 } });
+  // Two dips: the forest slot is what inflates, terrain moves a little, the rest do not move.
+  samples.push({ frameMs: 70, atMs: 336, slots: { ...quiet(), forestGpu: 44, terrain: 4 }, events: { terrainInstalls: 1 } });
+  samples.push({ frameMs: 66, atMs: 402, slots: { ...quiet(), forestGpu: 38, terrain: 6 }, events: { terrainInstalls: 0 } });
+
+  const rows = buildPerformanceSeries(samples);
+  const at = key => SERIES_KEYS.indexOf(key);
+  assert.equal(rows.at(-2)[at('forestMs')], 44, 'the forest slot is a column of its own');
+  assert.equal(rows.at(-2)[at('terrainMs')], 4);
+  assert.equal(rows.at(-2)[at('simMs')], 0.8);
+  assert.equal(rows.at(-2)[at('skyMs')], 0.3);
+  assert.equal(rows[0][at('forestMs')], 2.1, 'and an ordinary frame carries it too');
+  assert.equal(rows[0].length, SERIES_KEYS.length, 'every row is still one number per key');
+
+  const spikes = summarizeSpikeEvents(samples);
+  assert.equal(spikes.slots.forestGpu.meanInSpikes, 41, 'the forest averages 41 ms in the dips');
+  assert.equal(spikes.slots.forestGpu.meanInOthers, 2.1, 'against 2.1 in the ordinary frames');
+  assert.equal(spikes.slots.terrain.meanInSpikes, 5, 'terrain moves, but by a little');
+  assert.equal(spikes.slots.sky.meanInSpikes, spikes.slots.sky.meanInOthers, 'a slot that does not move says so');
+  assert.ok(spikes.slots.water, 'a slot outside the series columns is still in the summary');
+  assert.equal(summarizeSpikeEvents([
+    { frameMs: 16, events: { a: 0 } }, { frameMs: 16, events: { a: 0 } },
+    { frameMs: 16, events: { a: 0 } }, { frameMs: 70, events: { a: 1 } },
+  ]).slots, null, 'no slots recorded, no slot table');
+  console.log('pass slots: the rows carry the six busiest passes and the summary names which one inflates');
 }

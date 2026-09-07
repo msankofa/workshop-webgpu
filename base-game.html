@@ -6431,6 +6431,15 @@ async function finishPerformanceCapture(capture, finishedAt) {
   }
 }
 
+// The frame's profiler slots, keyed by slot name rather than by capture key, for the series columns
+// and the worst-frame record. Read from the snapshot the sample already took.
+function frameSlotTimes(passes) {
+  const snapshot = passes ?? frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES);
+  const out = {};
+  for (const name of BASE_GAME_FRAME_SLOTS) out[name] = snapshot[BASE_GAME_PASS_PREFIXES[name]] ?? 0;
+  return out;
+}
+
 // Horizontal speed of the body in m/s: the same motion the terrain scheduler derives its own speed
 // from, rounded to the precision a capture row needs.
 function bodySpeed() {
@@ -6462,7 +6471,12 @@ function recordPerformanceFrame(frameStart, frameMs) {
     // vsync wait; in a dip it is the frame's biggest single number and none of it is ours.
     betweenMs: lastAnimateEndAt ? +Math.max(0, frameStart - lastAnimateEndAt).toFixed(2) : 0,
     heapMB: heapMB(),
+    // The frame's passes by slot name. `passes` above already holds them under their capture keys,
+    // but a dip has to be attributed inside animate() -- the long tasks are our own rAF task, so
+    // the render call is only about half of it -- and that means every slot, not just the encode.
+    slots: null,   // filled from the snapshot above, so the profiler is read once per frame
   };
+  sample.slots = frameSlotTimes(sample.passes);
   // Not a measurement: frame-profiler defines it as a sum that degenerates to passPostMs here.
   delete sample.passes.passGpuAwaitMs;
 
@@ -6477,6 +6491,7 @@ function recordPerformanceFrame(frameStart, frameMs) {
       atCaptureMs: sample.atMs,
       sampleIndex: capture.samples.length - 1,
       frameMs: sample.frameMs, speed: sample.speed, events: sample.events,
+      betweenMs: sample.betweenMs, longTaskMs: sample.longTaskMs ?? null, slots: sample.slots,
     });
   }
   const now = performance.now();

@@ -582,7 +582,16 @@ same frame, or told apart from a standing frame. `buildPerformanceMeasurement` n
   always the same width. `tMs` is the sample's own `atMs` offset when the host stamped one and the
   running sum of frame times otherwise, so older captures still line up in order.
 
-Three of those columns are about the time the page does **not** control. `betweenMs` is the gap from
+Six of the columns are the frame's own passes -- `forestMs`, `grassMs`, `terrainMs`, `simMs`,
+`bodiesMs`, `skyMs` -- read from the sample's `slots` object, which carries every frame slot by
+name. They exist because the long tasks turned out to be the page's own rAF task: the dip is inside
+`animate()`, and the render encode is only about half of it, so the other half had to be
+attributable too. The slots outside those six stay in `slots` rather than widening every row, and
+`summarizeSpikeEvents` reports `meanInSpikes` against `meanInOthers` for **every** slot, which is
+what names the pass a dip is made of -- a slot several times its ordinary mean in the slow frames,
+against one that barely moves however large it is.
+
+Three of the columns are about the time the page does **not** control. `betweenMs` is the gap from
 the end of one frame's work to the start of the next: normally the vsync wait, 6 to 10 ms, but 25 to
 57 ms in the dips, with everything inside the frame accounted for -- so the main thread is busy
 between frames with work this page did not schedule. `longTaskMs` is how much of that frame's

@@ -519,7 +519,8 @@ bundles can save is the command encode, not the whole per-object cost. `?trace=1
 Since 2026-09-07 an entry also keeps its frames, not only their summary: `performance.series` is
 one numeric row per rendered frame in `performance.seriesKeys` order (time into the capture, frame
 time, render encode, player speed, terrain installs, terrain integrate time, queue depth, forest
-and grass reculls, pipelines built, the gap before the frame started, long-task overlap and JS heap),
+and grass reculls, pipelines built, the gap before the frame started, long-task overlap, JS heap, and
+the frame's forest, grass, terrain, sim, bodies and sky passes),
 and `performance.spikes` says the mean speed of the slow frames against the rest, the mean gap
 before them, and how many carried a long task.
 
@@ -528,7 +529,15 @@ end of `animate()` and the next rAF is 25-57 ms where a normal frame waits 6-10 
 `passOtherMs` inside the frame is 0.3 ms. Nothing of ours is running in that gap, and the user sees
 mouse input arrive in bursts through it, so the main thread is busy with work this page did not
 schedule. A `PerformanceObserver` on `longtask` names what it is where the browser can attribute it;
-`performance.longTasks` in the entry is that list. Each sample carries `speed` and `atMs` for it. The format is in
+`performance.longTasks` in the entry is that list.
+
+What those captures then showed (11:42-11:45): the long tasks are `self`/`unknown` with
+`longTaskMs` about equal to `frameMs` and `betweenMs` only 4-6 ms -- the long task IS our own rAF
+task. So the dip is inside `animate()` after all, and since the render encode is only about half of
+it, every sample now carries `slots`, the frame's profiler slots by name, with six of them as
+series columns and all of them compared spikes-against-others in `performance.spikes.slots`. The
+2026-09-07 captures put `passForestMs` at 29-59 ms max (p95 43 in one run), terrain up to 25 and
+`playerSim` up to 12, which is the half the encode does not explain. Each sample carries `speed` and `atMs` for it. The format is in
 `docs/subsystems/infra.md`.
 
 The browser sends one completed entry to `serve.py`, which atomically prepends it to
