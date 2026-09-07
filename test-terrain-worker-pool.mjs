@@ -31,12 +31,15 @@ console.log('\n[2] one pool, four owners, replies routed home');
   const facades = got.map((list) => pool.attach(data => list.push(data)));
   ok(pool.owners === 4, 'four owners attached');
   ok(facades.every(f => f && f.count === 3), 'every facade reports the shared thread count');
-  facades[0].postMessage({ key: 'a' }); facades[1].postMessage({ key: 'b' }); facades[2].postMessage({ key: 'c' }); facades[3].postMessage({ key: 'd' }); facades[0].postMessage({ key: 'e' });
+  facades[0].postMessage({ key: 'a' });
+  ok(pool.busyWorkers === 1 && pool.outstanding.join() === '1,0,0', 'one job posted: exactly one worker is busy until it replies');
+  facades[1].postMessage({ key: 'b' }); facades[2].postMessage({ key: 'c' }); facades[3].postMessage({ key: 'd' }); facades[0].postMessage({ key: 'e' });
   await tick();
   ok(got[0].map(d => d.key).join() === 'a,e' && got[1].map(d => d.key).join() === 'b' && got[2].map(d => d.key).join() === 'c' && got[3].map(d => d.key).join() === 'd', `each system got only its own replies (${got.map(l => l.map(d => d.key).join('+')).join(' | ')})`);
   const perWorker = spawned.map(w => w.sent.length);
   ok(perWorker.join() === '2,2,1', `jobs round-robin across the shared threads (${perWorker.join('/')})`);
   ok(spawned.every(w => w.sent.every(m => typeof m.owner === 'number')), 'every job carries its owner tag');
+  ok(pool.busyWorkers === 0, 'once every job has been answered no worker is busy');
 
   // Detach one system: its threads live on for the others, its late replies are dropped.
   facades[1].terminate();

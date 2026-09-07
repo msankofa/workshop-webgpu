@@ -484,8 +484,10 @@ GPU upload into `renderer.render` where a terrain-pass-only comparison would not
 `terrain-worker-pool.js` — `createTerrainWorkerPool({ count = 0, cap = 4 })` spawns `count` terrain
 workers (0 = `defaultTerrainWorkerCount()` = cores/2 − 1, at least 1, at most `cap`) and hands each
 system a facade from `attach(onMessage, onError)` with the shape the systems already used:
-`{ count, postMessage, terminate }`. Jobs are stamped with an `owner` id, `terrain-worker.js` echoes
-it in every reply, and the pool routes the reply to that owner; `terminate()` on a facade only
+`{ count, postMessage, terminate }`. The pool counts jobs outstanding per worker (posted, not yet
+answered; a worker runs one at a time), so `pool.busyWorkers` is the exact number of threads
+executing, and every reply carries `jobMs`, the worker-clock duration of that job. Jobs are stamped
+with an `owner` id, `terrain-worker.js` echoes it in every reply, and the pool routes the reply to that owner; `terminate()` on a facade only
 detaches its owner, `dispose()` on the pool kills the threads. `terrain-system.js` takes
 `options.workerPool` and uses it in `initWorker()` instead of spawning; a system without one is
 unchanged. `base-game-terrain.js` creates the one pool (`cfg.terrainWorkers`, 0 = auto) for the near

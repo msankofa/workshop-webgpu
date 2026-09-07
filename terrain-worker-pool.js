@@ -20,6 +20,7 @@ export function createTerrainWorkerPool({ count = 0, cap = 4, url = new URL('./t
   const size = count > 0 ? Math.floor(count) : defaultTerrainWorkerCount(undefined, cap);
   const owners = new Map();   // owner id -> { onMessage, onError }
   const workers = [];
+  const outstanding = [];   // per worker: jobs posted and not yet replied to; a worker runs one at a time
   let next = 0, nextOwner = 1, alive = true;
   const route = (data) => {
     const owner = owners.get(data?.owner);
@@ -28,7 +29,9 @@ export function createTerrainWorkerPool({ count = 0, cap = 4, url = new URL('./t
   try {
     for (let i = 0; i < size; i++) {
       const w = new WorkerCtor(url, { type: 'module' });
-      w.onmessage = e => route(e.data);
+      const slot = i;
+      outstanding.push(0);
+      w.onmessage = e => { outstanding[slot] = Math.max(0, outstanding[slot] - 1); route(e.data); };
       w.onerror = () => { for (const o of owners.values()) o.onError?.(); };
       workers.push(w);
     }
@@ -41,6 +44,9 @@ export function createTerrainWorkerPool({ count = 0, cap = 4, url = new URL('./t
     get count() { return workers.length; },
     get available() { return alive && workers.length > 0; },
     get owners() { return owners.size; },
+    // Workers with a job posted and not yet answered: exactly the threads executing right now.
+    get busyWorkers() { let n = 0; for (const c of outstanding) if (c > 0) n++; return n; },
+    get outstanding() { return outstanding.slice(); },
     // A per-system facade. Messages are stamped with the owner id; terminate() only detaches.
     attach(onMessage, onError = null) {
       if (!alive || !workers.length) return null;
@@ -50,6 +56,7 @@ export function createTerrainWorkerPool({ count = 0, cap = 4, url = new URL('./t
         count: workers.length,
         postMessage: (msg) => {
           if (!owners.has(id)) return;
+          outstanding[next]++;
           workers[next].postMessage({ ...msg, owner: id });
           next = (next + 1) % workers.length;
         },

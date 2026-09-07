@@ -99,9 +99,9 @@ console.log('Performance capture statistics tests passed.');
   assert.equal(rows.length, 3, 'one row per sample');
   assert.deepEqual(SERIES_KEYS, ['tMs', 'frameMs', 'postRenderMs', 'speed', 'terrainInstalls',
     'terrainIntegrateMs', 'terrainQueued', 'forestReculls', 'grassReculls', 'pipelinesBuilt',
-    'betweenMs', 'longTaskMs', 'heapMB', 'terrainInFlight',
+    'betweenMs', 'longTaskMs', 'heapMB', 'terrainInFlight', 'terrainBusyWorkers',
     'forestMs', 'grassMs', 'terrainMs', 'simMs', 'bodiesMs', 'skyMs']);
-  assert.deepEqual(rows[1], [16.4, 62.5, 47.9, 4.83, 3, 4.25, 7, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  assert.deepEqual(rows[1], [16.4, 62.5, 47.9, 4.83, 3, 4.25, 7, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     'the dip row, in key order');
   assert.deepEqual(rows.map(r => r[0]), [0, 16.4, 78.9], 'order is preserved and tMs is the sample offset');
   assert.ok(rows.every(row => row.length === SERIES_KEYS.length && row.every(Number.isFinite)),
@@ -110,7 +110,7 @@ console.log('Performance capture statistics tests passed.');
   // A capture taken before atMs existed still lines up: tMs falls back to the running frame time.
   const older = buildPerformanceSeries([{ frameMs: 10 }, { frameMs: 20 }]);
   assert.deepEqual(older.map(r => r[0]), [10, 30], 'without atMs the rows carry the running elapsed time');
-  assert.deepEqual(older[0], [10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  assert.deepEqual(older[0], [10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     'and missing fields read as zero, not undefined');
 
   const measurement = buildPerformanceMeasurement(samples, {});
