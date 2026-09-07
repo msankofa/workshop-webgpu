@@ -458,5 +458,25 @@ console.log('\n[10] scattered structures: the room streams a building at a plan 
   }
 }
 
+console.log('\n[11] volumetric room with the spawn building: it seats on the density surface and the room spawns on its plaza');
+{
+  const { createSpawnBuildingModel, SPAWN_BUILDING_PROVIDER_ID } = await import('./base-game-spawn-collider.js');
+  const descriptor = v5Descriptor(v5Project(23));
+  const cfg = sanitizeBaseGameTerrainConfig({ kind: 'terrain', descriptor: JSON.parse(JSON.stringify(descriptor)), volumetric: true, spawnBuilding: true });
+  ok(!cfg.error && cfg.config.volumetric && cfg.config.spawnBuilding && cfg.config.worldVersion.includes(':volume') && cfg.config.worldVersion.includes(':spawnbld1'), 'volumetric plus the building is one accepted world identity');
+  const service = createBaseGameRoomService({ now: () => 1000 });
+  const ws = new FakeSocket();
+  service.handle(ws, { type: 'base:create', protocol: P, room: 'VBLD', world: { waterEnabled: false }, terrain: { kind: 'terrain', descriptor, volumetric: true, spawnBuilding: true } });
+  await service.ensureWorld();
+  const room = service.rooms.get('VBLD');
+  const src = createSource(descriptor);
+  const model = createSpawnBuildingModel((x, z) => src.surfaceYAt(x, z), { seaLevel: descriptor.seaLevel ?? 0 });
+  ok(room.sim.volume && room.sim.building, 'the room has both the volume collision and the building');
+  ok(Math.abs(room.sim.spawn[1] - (model.spawn[1] + 1.5)) < 1e-6 && room.sim.spawn[0] === model.spawn[0] && room.sim.spawn[2] === model.spawn[2], 'the room spawns on the plaza, 1.5 m up');
+  ok(model.site.baseY >= model.site.maxY - 1e-6 && model.site.maxY >= src.surfaceYAt(model.spawn[0], model.spawn[2]) - 1e-6, 'the plaza sits at or above the density surface under it, not the heightfield');
+  const hit = room.sim.worldQuery.raycast({ origin: [model.spawn[0], model.spawn[1] + 3, model.spawn[2]], direction: [0, -1, 0], maxDistance: 20 });
+  ok(hit && hit.providerId === SPAWN_BUILDING_PROVIDER_ID && Math.abs(hit.point[1] - model.spawn[1]) < 0.02, 'a ray down at the spawn lands on the building floor');
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);
 process.exit(failures === 0 ? 0 : 1);

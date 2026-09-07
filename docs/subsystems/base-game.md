@@ -3740,8 +3740,12 @@ change reseats the building once.
 **Page wiring** (phase 3). `base-game.html` builds it right after the traversal lab on the
 terrain's `groundHeight` and `seaLevel`, reseats it with `syncSpawnBuilding()` after every
 `terrain.setSource` (an online join, a runtime project apply), spawns on the plaza 1.5 m up like
-the server (`worldSpawn`), shows it only on heightfield terrain (`spawnBuildingWanted()`: online it
-follows the room's `spawnBuilding` flag, Solo it is on unless the terrain is volumetric), rains on
+the server (`worldSpawn`), shows it on every terrain world (`spawnBuildingWanted()`: online it
+follows the room's `spawnBuilding` flag, Solo it is always on; since 2026-09-07 volumetric ground
+seats it on the density surface through `groundHeight`, the same height the structures and the
+spawn use, and the room server registers the same static collider beside the volume provider in
+its volumetric branch, so a site over a cave seats on the cave roof with the plinths reaching down
+`plinthDepth` below the lowest sampled surface), rains on
 its concrete through `applyWetSurface` (the concrete has a colour graph to darken; the plain
 materials take the lab's route), moves its root with the render-origin rebase like the lab's
 (the collider stays global), and asks for it in the rooms it creates (`pickRoomTerrainConfig`).

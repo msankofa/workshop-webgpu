@@ -792,9 +792,8 @@ function pickRoomTerrainConfig() {
     : menuProject ? v5Descriptor(menuProject)
     : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
   const volumetric = settings.terrainVolumetric && (simulationReady ? !!terrain.source?.densityAt : !!menuProject);
-  // The spawn building rides on heightfield terrain only; volumetric rooms keep the bare spawn.
-  // Scattered structures seat on groundHeight (the density surface when volumetric); seed and spacing are world identity.
-  return { kind: 'terrain', descriptor, volumetric, spawnBuilding: !volumetric,
+  // The spawn building and the scattered structures seat on groundHeight (the density surface when volumetric); seed and spacing are world identity.
+  return { kind: 'terrain', descriptor, volumetric, spawnBuilding: true,
     structures: settings.structuresEnabled, structureSeed: settings.structureSeed, structureSpacing: settings.structureSpacing,
     structureChance: settings.structureChance, structureScatter: settings.structureScatter, structureReach: settings.structureReach };
 }
@@ -1424,12 +1423,12 @@ const traversalLab = createBaseGameTraversalLab({ scene, worldQuery, layout: shi
 // Online it exists only when the room's terrain config says so; Solo heightfield terrain always has it.
 // The instance is created below the terrain (it samples it); these functions are hoisted.
 // In the spawn-area world (the old traversal-lab mode) the building is the world; on terrain it
-// is opt-in per room, and volumetric rooms keep the bare spawn.
+// is opt-in per room; volumetric ground seats it on the density surface like the structures.
 function spawnBuildingWanted() {
   if (settings.worldMode === 'traversalLab') return true;
   if (settings.worldMode !== 'terrain') return false;
   if (isOnline()) return roomTerrainConfig?.spawnBuilding === true;
-  return !(settings.terrainVolumetric && !!terrain.source?.densityAt);
+  return true;
 }
 // The ground the building seats on: the flat slab in the spawn area, the terrain otherwise.
 function spawnBuildingGround() {
