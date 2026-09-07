@@ -430,8 +430,8 @@ proportional to the count and `top` is where to look for the few objects that ow
 `lastFrame` is the frame the capture ended on, which is never the frame that dipped: the encode's
 p50 is about 12 ms and its max 40 to 64 ms in every capture so far. So the record also carries
 `worstFrame` and `worstEncodeFrame` -- the heaviest frame of the capture by total scene time and by
-the **main scene render's encode** (the pass that encoded the most objects; the record names the
-metric), each with its full per-pass rows and per-object `top`. Both are cleared when a capture
+the **main scene render's encode** (the perspective-camera pass that issued the most draws; the
+record names the metric), each with its full per-pass rows and per-object `top`. Both are cleared when a capture
 starts, so they always name a frame from inside the measured window, and each carries what else
 happened in that frame: its frame number, its index in the samples, how many ms into the capture it
 was, its `frameMs`, the player's `speed`, and that frame's event deltas. A spike therefore arrives

@@ -32,9 +32,9 @@ function round3(v) {
   return Math.round((Number.isFinite(v) ? v : 0) * 1000) / 1000;
 }
 
-function newEntry(name, camera) {
+function newEntry(name, camera, cameraType) {
   return {
-    name, camera,
+    name, camera, cameraType,
     ms: 0, exclusiveMs: 0, childMs: 0,
     projectCalls: 0, projectMs: 0,
     sortCalls: 0, sortMs: 0,
@@ -59,7 +59,9 @@ const PHASE_MS = { project: 'projectMs', sort: 'sortMs', objects: 'objectsMs', e
 function describe(scene, camera) {
   const name = scene?.name || scene?.type || 'scene';
   const cam = camera ? (camera.name || camera.type || 'camera') : 'none';
-  return { name, camera: cam };
+  // The type as well as the label: a named camera reports its name, and the main-scene rule has to
+  // ask what kind of camera it is, not what it is called.
+  return { name, camera: cam, cameraType: camera?.type ?? 'none' };
 }
 
 // How many rows a scene entry reports. Long enough to show a heavy handful, short enough that a
@@ -84,11 +86,21 @@ function describeObject(object, material) {
   return descriptor;
 }
 
-// The main scene render of a frame: the one that encoded the most objects. Picking by time would
-// always pick the post chain's quad, which encodes one object and wraps the world render.
+// The main scene render of a frame: the perspective-camera pass that ISSUED the most draws.
+// Not `objects`, which is the render list's length: a shadow pass can list 240 objects and draw 32
+// of them, and picking by list length labelled that the main scene over a world render of 206
+// listed and 218 drawn, reporting an 11 ms shadow encode as the frame's worst instead of 58 ms.
+// Not time either, or the post chain's quad -- one draw, wrapping everything -- always wins.
 function mainScene(entries) {
   let best = null;
-  for (const entry of entries) if (best === null || entry.objects > best.objects) best = entry;
+  for (const entry of entries) {
+    if (entry.cameraType !== 'PerspectiveCamera') continue;
+    if (best === null || entry.draws > best.draws) best = entry;
+  }
+  if (best !== null) return best;
+  // No perspective pass at all (a shadow-only frame, or a camera three did not name): the most
+  // draws of anything, which is still nearer the truth than the longest list.
+  for (const entry of entries) if (best === null || entry.draws > best.draws) best = entry;
   return best;
 }
 
@@ -109,7 +121,7 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
   let scenes = [];
   // Work outside any scene render still has to land somewhere; this entry is reported only if it
   // was actually used.
-  let outside = newEntry('outside', 'none');
+  let outside = newEntry('outside', 'none', 'none');
   const stack = [];
   const current = () => stack[stack.length - 1] ?? outside;
   let attachedTo = null;
@@ -146,8 +158,8 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
     const original = renderer._renderScene;
     if (typeof original !== 'function') { missing.push('_renderScene'); return; }
     renderer._renderScene = function (...args) {
-      const { name, camera } = describe(args[0], args[1]);
-      const entry = newEntry(name, camera);
+      const { name, camera, cameraType } = describe(args[0], args[1]);
+      const entry = newEntry(name, camera, cameraType);
       const parent = current();
       // Which of the parent's phases this child runs inside, read as it starts: the depth counters
       // already say which of the parent's timers are open.
@@ -259,7 +271,7 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
     // One row per scene render, in the order they ran: the post chain's quad, then the shadow map,
     // the mirror and the main pass nested inside it.
     out.scenes = scenes.map(entry => ({
-      name: entry.name, camera: entry.camera,
+      name: entry.name, camera: entry.camera, cameraType: entry.cameraType,
       ms: round3(entry.ms), exclusiveMs: round3(entry.exclusiveMs),
       objects: entry.objects, draws: entry.draws, bundles: entry.bundles,
       projectMs: round3(entry.projectMs), sortMs: round3(entry.sortMs),
@@ -324,7 +336,7 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
         if (worst === null || out.sceneMs > worst.sceneMs) worst = record;
       }
       scenes = [];
-      outside = newEntry('outside', 'none');
+      outside = newEntry('outside', 'none', 'none');
       stack.length = 0;
       return out;
     },

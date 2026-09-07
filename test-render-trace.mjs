@@ -348,7 +348,68 @@ function once(fn) {
   trace.take();
   assert.equal(trace.worstEncode.mainScene, 'base-game', 'the world render, not the quad that contains it');
   assert.equal(trace.worstEncode.metricMs, 12, 'and the metric is that scene encode, four objects at 3 ms');
-  console.log('pass: the main scene is the one that encoded the most objects');
+  console.log('pass: the main scene is the world render, not the quad that wraps it');
+}
+
+{
+  // A shadow pass LISTS more objects than the world pass and draws a fraction of them. Choosing by
+  // list length labelled the shadow map the main scene and reported its 11 ms encode as the frame's
+  // worst, while the world pass that actually cost 58 ms went unnamed.
+  const list = { sort() {} };
+  const renderer = {
+    _renderLists: { get() { return list; } },
+    // `listed` is what the render list held; `drawn` is what was encoded, each costing `each`.
+    _renderScene(scene, camera, listed, drawn, each) {
+      this._renderObjects(new Array(listed).fill(0), drawn, each);
+    },
+    _projectObject() {},
+    _renderObjects(objects, drawn, each) {
+      for (let i = 0; i < drawn; i++) this._renderObjectDirect({ name: 'mesh' }, { type: 'M' }, each);
+    },
+    _renderObjectDirect(object, material, cost) { clock += cost; },
+    _renderBundle() {},
+  };
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'Shadow Map [ sun ]' }, { type: 'OrthographicCamera' }, 240, 32, 0.35);
+  renderer._renderScene({ name: 'Scene' }, { type: 'PerspectiveCamera' }, 206, 218, 0.269);
+  const t = trace.take();
+
+  const shadow = t.scenes[0], world = t.scenes[1];
+  assert.equal(shadow.objects, 240, 'the shadow pass listed the most objects');
+  assert.equal(shadow.draws, 32, 'and drew the fewest');
+  assert.equal(world.objects, 206);
+  assert.equal(world.draws, 218);
+  assert.ok(world.encodeMs > shadow.encodeMs * 4, `world ${world.encodeMs} ms vs shadow ${shadow.encodeMs} ms`);
+
+  const kept = trace.worstEncode;
+  assert.equal(kept.mainScene, 'Scene', 'the world pass is the main scene, by draws and not by list length');
+  assert.equal(kept.metricMs, world.encodeMs, 'so the metric is the encode that actually cost the frame');
+  assert.notEqual(kept.metricMs, shadow.encodeMs);
+  console.log('pass: a shadow pass that lists more objects than it draws is not the main scene');
+}
+
+{
+  // No perspective pass in the frame at all: fall back to the most draws of anything, rather than
+  // reporting no main scene.
+  const list = { sort() {} };
+  const renderer = {
+    _renderLists: { get() { return list; } },
+    _renderScene(scene, camera, drawn) { this._renderObjects(new Array(drawn).fill(0)); },
+    _projectObject() {},
+    _renderObjects(objects) { for (const _ of objects) this._renderObjectDirect({ name: 'mesh' }, { type: 'M' }, 1); },
+    _renderObjectDirect(object, material, cost) { clock += cost; },
+    _renderBundle() {},
+  };
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'Shadow Map [ sun ]' }, { type: 'OrthographicCamera' }, 4);
+  renderer._renderScene({ name: 'Shadow Map [ lamp ]' }, { type: 'OrthographicCamera' }, 9);
+  trace.take();
+  assert.equal(trace.worstEncode.mainScene, 'Shadow Map [ lamp ]', 'the heaviest of what there is');
+  console.log('pass: with no perspective pass, the most draws of anything is the main scene');
 }
 
 {

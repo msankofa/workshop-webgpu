@@ -149,13 +149,23 @@ does not report itself as the most expensive thing in the frame. The hot path is
 against a `WeakMap` of cached descriptors -- no string building per draw.
 
 One frame is kept aside: `worst` is the heaviest frame by total scene time since the trace was last
-cleared and `worstEncode` the heaviest by encode time, each the whole `scenes` array with its `top`
+cleared and `worstEncode` the heaviest by the main scene render's encode time, each the whole `scenes` array with its `top`
 rows, plus the frame number and the clock reading so it can be lined up against that frame's other
 events. Two records rather than one because "worst" has two meanings here and choosing silently
 would hide the other; they are the same object when one frame is worst by both. Reading either
 getter does not clear it, so a host can keep a running copy every frame; `takeWorst()` returns both
 and clears, which is what a capture does when it starts so the spike it reports comes from inside
 its own window.
+
+**The main scene is the perspective-camera pass that issued the most draws**, and the record names
+that metric. Not the longest render list: a shadow pass lists everything that might cast and draws a
+fraction of it, and in one captured frame that was 240 listed / 32 drawn against the world pass's
+206 listed / 218 drawn -- so picking by list length called the shadow map the main scene and
+reported its 11.2 ms encode as the frame's worst while the 58.6 ms that actually cost the frame went
+unnamed. Not time either, or the post chain's quad, one draw wrapping everything, always wins. Each
+entry therefore records `cameraType` beside its `camera` label, because a named camera reports its
+name and the rule has to ask what kind it is. A frame with no perspective pass falls back to the
+most draws of anything.
 
 `detach()` restores the wrapped methods and also unpatches every render list whose `sort` it
 wrapped, clearing `__traceSort` -- render lists are cached per (scene, camera) and outlive a trace,
