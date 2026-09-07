@@ -40,7 +40,12 @@ export function summarizePasses(samples) {
 // player was moving, or what arrived in the same frame. Rows are arrays of plain numbers with the
 // keys named once, which keeps ~400 of them small enough to live in every entry.
 export const SERIES_KEYS = Object.freeze(['tMs', 'frameMs', 'postRenderMs', 'speed', 'terrainInstalls',
-  'terrainIntegrateMs', 'terrainQueued', 'forestReculls', 'grassReculls', 'pipelinesBuilt']);
+  'terrainIntegrateMs', 'terrainQueued', 'forestReculls', 'grassReculls', 'pipelinesBuilt',
+  // What happened BETWEEN frames: the gap from the end of one frame's work to the start of the
+  // next, how much of that gap the browser attributed to a long task, and the JS heap. In the dips
+  // the gap is 25-57 ms against a normal 6-10 (the vsync wait), with everything inside the frame
+  // accounted for, so the cost is a task this page does not own.
+  'betweenMs', 'longTaskMs', 'heapMB']);
 
 export function buildPerformanceSeries(samples) {
   const rows = [];
@@ -62,9 +67,56 @@ export function buildPerformanceSeries(samples) {
       Math.round(Number(events.forestReculls) || 0),
       Math.round(Number(events.grassReculls) || 0),
       Math.round(Number(sample.pipelinesBuilt) || 0),
+      round(Number(sample.betweenMs) || 0),
+      round(Number(sample.longTaskMs) || 0),
+      round(Number(sample.heapMB) || 0, 1),
     ]);
   }
   return rows;
+}
+
+// How much of each frame's wall-clock interval the browser was inside a long task. A task that
+// spans two frames counts its overlapping part in each: both frames waited on it, so both should
+// say so, and the column then sums to more than the task's own duration.
+//
+// Frames are placed by `atMs` (their start, relative to the capture) and `frameMs`; long tasks
+// arrive in the `performance.now()` timebase, so `startedAt` converts them.
+export function attachLongTasks(samples, longTasks = [], startedAt = 0) {
+  if (!Array.isArray(longTasks) || !longTasks.length) return samples;
+  const tasks = longTasks
+    .map(task => ({ start: Number(task.startTime) - startedAt, end: Number(task.startTime) - startedAt + (Number(task.duration) || 0) }))
+    .filter(task => Number.isFinite(task.start) && Number.isFinite(task.end));
+  let elapsed = 0;
+  for (const sample of samples) {
+    const frameMs = Number(sample.frameMs) || 0;
+    const start = Number.isFinite(sample.atMs) ? sample.atMs : elapsed;
+    elapsed += frameMs;
+    const end = start + frameMs;
+    let overlap = 0;
+    for (const task of tasks) overlap += Math.max(0, Math.min(end, task.end) - Math.max(start, task.start));
+    sample.longTaskMs = round(overlap);
+  }
+  return samples;
+}
+
+// The long tasks of the window, in the capture's own timebase, newest work last. Capped: a bad
+// window can hold hundreds and the list is for reading, not for statistics -- the per-sample
+// `longTaskMs` column is what carries all of them.
+export function summarizeLongTasks(longTasks = [], { startedAt = 0, finishedAt = Infinity, limit = 100 } = {}) {
+  if (!Array.isArray(longTasks) || !longTasks.length) return null;
+  const inside = longTasks
+    .filter(task => Number.isFinite(task.startTime) && task.startTime >= startedAt && task.startTime <= finishedAt)
+    .sort((a, b) => a.startTime - b.startTime);
+  if (!inside.length) return null;
+  const rows = inside.slice(0, limit).map(task => ({
+    tMs: round(task.startTime - startedAt, 1),
+    ms: round(task.duration),
+    // 'self' is the page's own main thread, 'script'/'layout'/'unknown' come from the attribution,
+    // and the container fields name the frame or script when the browser knows it.
+    name: task.name ?? 'unknown',
+    attribution: task.attribution ?? null,
+  }));
+  return { count: inside.length, listed: rows.length, totalMs: round(inside.reduce((sum, t) => sum + (Number(t.duration) || 0), 0)), tasks: rows };
 }
 
 export function summarizePerformanceSeries(values, { integer = false } = {}) {
@@ -130,8 +182,19 @@ export function summarizeSpikeEvents(samples, { percentile: fraction = 0.95 } = 
     const speeds = list.map(s => Number(s.speed)).filter(Number.isFinite);
     return speeds.length ? round(speeds.reduce((sum, v) => sum + v, 0) / speeds.length, 2) : null;
   };
+  const meanOf = (list, key) => {
+    const values = list.map(s => Number(s[key])).filter(Number.isFinite);
+    return values.length ? round(values.reduce((sum, v) => sum + v, 0) / values.length, 2) : null;
+  };
+  const withLongTask = list => list.filter(s => (Number(s.longTaskMs) || 0) > 0).length;
   return { thresholdMs: round(threshold), spikeFrames: spikes.length, quietSpikeFrames: quiet, tellingEvents: telling,
-    speedInSpikes: meanSpeed(spikes), speedInOthers: meanSpeed(rest), events };
+    speedInSpikes: meanSpeed(spikes), speedInOthers: meanSpeed(rest),
+    // The gap before each frame started, and whether the browser called that gap a long task. If
+    // the spikes wait longer than the ordinary frames and carry long tasks, the cost is outside
+    // this page's frame entirely.
+    meanBetweenInSpikes: meanOf(spikes, 'betweenMs'), meanBetweenInOthers: meanOf(rest, 'betweenMs'),
+    longTaskSpikeFrames: withLongTask(spikes), longTaskOtherFrames: withLongTask(rest),
+    events };
 }
 
 export function buildPerformanceMeasurement(samples, {
@@ -140,9 +203,13 @@ export function buildPerformanceMeasurement(samples, {
   finishedAt,
   droppedFramesStart = 0,
   droppedFramesEnd = droppedFramesStart,
+  longTasks = [],
 } = {}) {
   const usable = samples.filter(sample => Number.isFinite(sample?.frameMs) && sample.frameMs > 0);
   if (!usable.length) throw new Error('No rendered frames were available for this performance capture');
+  // Before anything is summarised: the per-frame long-task overlap the spike table and the series
+  // both read.
+  attachLongTasks(usable, longTasks, startedAt);
   const frameMs = usable.map(sample => sample.frameMs);
   const elapsedFrameMs = frameMs.reduce((sum, value) => sum + value, 0);
   const frameFps = frameMs.map(value => 1000 / value);
@@ -174,6 +241,8 @@ export function buildPerformanceMeasurement(samples, {
     // Every frame of the window, one numeric row each, in the order they were rendered.
     seriesKeys: SERIES_KEYS,
     series: buildPerformanceSeries(usable),
+    // The browser's own account of what ran on the main thread between the frames.
+    longTasks: summarizeLongTasks(longTasks, { startedAt, finishedAt }),
     droppedFrames: {
       start: Math.max(0, Math.round(droppedFramesStart || 0)),
       end: Math.max(0, Math.round(droppedFramesEnd || 0)),

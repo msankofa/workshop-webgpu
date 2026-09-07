@@ -98,8 +98,9 @@ console.log('Performance capture statistics tests passed.');
   const rows = buildPerformanceSeries(samples);
   assert.equal(rows.length, 3, 'one row per sample');
   assert.deepEqual(SERIES_KEYS, ['tMs', 'frameMs', 'postRenderMs', 'speed', 'terrainInstalls',
-    'terrainIntegrateMs', 'terrainQueued', 'forestReculls', 'grassReculls', 'pipelinesBuilt']);
-  assert.deepEqual(rows[1], [16.4, 62.5, 47.9, 4.83, 3, 4.25, 7, 1, 1, 2], 'the dip row, in key order');
+    'terrainIntegrateMs', 'terrainQueued', 'forestReculls', 'grassReculls', 'pipelinesBuilt',
+    'betweenMs', 'longTaskMs', 'heapMB']);
+  assert.deepEqual(rows[1], [16.4, 62.5, 47.9, 4.83, 3, 4.25, 7, 1, 1, 2, 0, 0, 0], 'the dip row, in key order');
   assert.deepEqual(rows.map(r => r[0]), [0, 16.4, 78.9], 'order is preserved and tMs is the sample offset');
   assert.ok(rows.every(row => row.length === SERIES_KEYS.length && row.every(Number.isFinite)),
     'every row is numbers only, one per key');
@@ -107,7 +108,7 @@ console.log('Performance capture statistics tests passed.');
   // A capture taken before atMs existed still lines up: tMs falls back to the running frame time.
   const older = buildPerformanceSeries([{ frameMs: 10 }, { frameMs: 20 }]);
   assert.deepEqual(older.map(r => r[0]), [10, 30], 'without atMs the rows carry the running elapsed time');
-  assert.deepEqual(older[0], [10, 10, 0, 0, 0, 0, 0, 0, 0, 0], 'and missing fields read as zero, not undefined');
+  assert.deepEqual(older[0], [10, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'and missing fields read as zero, not undefined');
 
   const measurement = buildPerformanceMeasurement(samples, {});
   assert.deepEqual(measurement.seriesKeys, SERIES_KEYS, 'the saved entry names the keys once');
@@ -125,4 +126,73 @@ console.log('Performance capture statistics tests passed.');
     { frameMs: 16, events: { a: 0 } }, { frameMs: 70, events: { a: 1 } },
   ]).speedInSpikes, null, 'no speed recorded, no claim made');
   console.log('per-frame series: the rows, their keys, and whether the dips were moving');
+}
+
+// Between the frames: the gap the page does not own, and what the browser called it.
+{
+  const { attachLongTasks, summarizeLongTasks, summarizeSpikeEvents, SERIES_KEYS, buildPerformanceSeries } =
+    await import('./performance-capture.mjs');
+  const startedAt = 1000;   // the capture's performance.now() origin
+  // Three frames: a quiet one, a dip that a 48 ms long task runs into, and a quiet one after.
+  const samples = [
+    { frameMs: 16, atMs: 0, betweenMs: 7.4, heapMB: 512.5, passes: { passPostMs: 11 } },
+    { frameMs: 64, atMs: 16, betweenMs: 41.2, heapMB: 540.25, passes: { passPostMs: 48 } },
+    { frameMs: 17, atMs: 80, betweenMs: 8.1, heapMB: 541, passes: { passPostMs: 12 } },
+  ];
+  // In the page's timebase: starts at 1020 (20 ms into the capture), runs 48 ms to 1068.
+  const longTasks = [
+    { startTime: 1020, duration: 48, name: 'self', attribution: 'script terrain-worker.js' },
+    { startTime: 900, duration: 30, name: 'self', attribution: 'unknown' },   // before the capture
+  ];
+
+  attachLongTasks(samples, longTasks, startedAt);
+  assert.equal(samples[0].longTaskMs, 0, 'the quiet frame before the task overlaps nothing');
+  assert.equal(samples[1].longTaskMs, 48, 'the dip frame is inside the task for its whole length');
+  assert.equal(samples[2].longTaskMs, 0, 'and the frame after it is clear');
+
+  // A task spanning two frames counts its overlapping part in each: both waited on it.
+  const split = [
+    { frameMs: 20, atMs: 0 },
+    { frameMs: 20, atMs: 20 },
+  ];
+  attachLongTasks(split, [{ startTime: startedAt + 10, duration: 20 }], startedAt);
+  assert.equal(split[0].longTaskMs, 10);
+  assert.equal(split[1].longTaskMs, 10, 'the halves add up to the task, one frame each');
+
+  const listed = summarizeLongTasks(longTasks, { startedAt, finishedAt: startedAt + 100 });
+  assert.equal(listed.count, 1, 'a task that started before the capture is not in the window');
+  assert.equal(listed.totalMs, 48);
+  assert.deepEqual(listed.tasks[0], { tMs: 20, ms: 48, name: 'self', attribution: 'script terrain-worker.js' },
+    'in the capture timebase, with the attribution the browser gave');
+  assert.equal(summarizeLongTasks([], { startedAt }), null, 'no tasks, no section');
+  const many = [];
+  for (let i = 0; i < 150; i++) many.push({ startTime: startedAt + i, duration: 51 });
+  const capped = summarizeLongTasks(many, { startedAt, finishedAt: startedAt + 1000 });
+  assert.equal(capped.count, 150, 'the count is all of them');
+  assert.equal(capped.listed, 100, 'the list is capped');
+
+  const rows = buildPerformanceSeries(samples);
+  assert.equal(rows[1][SERIES_KEYS.indexOf('betweenMs')], 41.2, 'the gap before the dip is a column');
+  assert.equal(rows[1][SERIES_KEYS.indexOf('longTaskMs')], 48);
+  assert.equal(rows[1][SERIES_KEYS.indexOf('heapMB')], 540.3, 'the heap, to a tenth of a megabyte');
+
+  // The summary itself answers the question: did the dips wait longer, and was a long task running?
+  const window = [];
+  for (let i = 0; i < 20; i++) window.push({ frameMs: 16, betweenMs: 7, longTaskMs: 0, events: { terrainInstalls: 0 } });
+  window.push({ frameMs: 70, betweenMs: 40, longTaskMs: 35, events: { terrainInstalls: 1 } });
+  window.push({ frameMs: 66, betweenMs: 44, longTaskMs: 30, events: { terrainInstalls: 0 } });
+  const spikes = summarizeSpikeEvents(window);
+  assert.equal(spikes.meanBetweenInSpikes, 42, 'the dips waited 42 ms before they started');
+  assert.equal(spikes.meanBetweenInOthers, 7, 'the ordinary frames waited 7');
+  assert.equal(spikes.longTaskSpikeFrames, 2, 'and both dips had a long task running into them');
+  assert.equal(spikes.longTaskOtherFrames, 0);
+  assert.equal(summarizeSpikeEvents([
+    { frameMs: 16, events: { a: 0 } }, { frameMs: 16, events: { a: 0 } },
+    { frameMs: 16, events: { a: 0 } }, { frameMs: 70, events: { a: 1 } },
+  ]).meanBetweenInSpikes, null, 'nothing recorded, nothing claimed');
+
+  const measurement = buildPerformanceMeasurement(samples, { startedAt, finishedAt: startedAt + 100, longTasks });
+  assert.equal(measurement.longTasks.count, 1, 'the saved entry carries the long tasks of the window');
+  assert.equal(measurement.series[1][SERIES_KEYS.indexOf('longTaskMs')], 48, 'and the rows carry the overlap');
+  console.log('between frames: the gap, the long tasks in it, and the heap');
 }

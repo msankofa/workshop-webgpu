@@ -1169,6 +1169,33 @@ const pipelineMeter = createPipelineMeter(renderer.backend?.device);
 // renames the scene to `Shadow Map [ <light> ]` across a shadow pass, so each one names its light.
 const renderPasses = createRenderPassRecorder(renderer);
 let lastRenderPassSummary = '';
+// What ran on the main thread BETWEEN our frames. In the dips the gap from the end of animate() to
+// the next rAF is 25-57 ms against a normal 6-10 (the vsync wait) with everything inside the frame
+// accounted for, so the cost is a task this page does not own -- a worker message, a socket, a
+// timer, GC or the browser itself. The observer is the only thing that can name it.
+const LONG_TASK_LIMIT = 600;   // a ring: a bad minute produces hundreds and only the window matters
+const longTasks = [];
+let longTaskObserver = null;
+try {
+  longTaskObserver = new PerformanceObserver(list => {
+    for (const entry of list.getEntries()) {
+      // The attribution names the kind of work (script, layout, unknown) and, when the browser
+      // knows it, the script or frame behind it. That string is the whole point of this.
+      const source = entry.attribution?.[0];
+      longTasks.push({
+        startTime: +entry.startTime.toFixed(1),
+        duration: +entry.duration.toFixed(1),
+        name: entry.name || 'unknown',
+        attribution: source ? `${source.name || 'unknown'} ${source.containerSrc || source.containerName || ''}`.trim() : null,
+      });
+      if (longTasks.length > LONG_TASK_LIMIT) longTasks.splice(0, longTasks.length - LONG_TASK_LIMIT);
+    }
+  });
+  longTaskObserver.observe({ type: 'longtask', buffered: false });
+} catch { /* no longtask support (Safari); the betweenMs column still says a gap was there */ }
+// Chrome and Edge only, and coarse: enough to see the heap climb across a capture, not a profiler.
+const heapMB = () => (performance.memory ? +(performance.memory.usedJSHeapSize / 1048576).toFixed(1) : null);
+
 // ?trace=1 splits the render encode into scene walk, list sort and per-object encode. Off by
 // default and its slots are separate from passPost*, so a warm capture with the flag is still
 // comparable with one without it -- the hooks themselves cost a call per drawn object.
@@ -6179,6 +6206,7 @@ function drawSeatHud() {
 // --------------------- frame + stats ---------------------
 const statsEl = document.getElementById('stats');
 let frameBusy = false;
+let lastAnimateEndAt = 0;   // stamped at the end of every frame; see betweenMs
 let lastFrameStart = performance.now();
 // Frame cap. The animation loop still fires at the display's rate; a capped frame returns before any
 // work, so what it costs is one comparison and a longer dt for the next frame that does run. The
@@ -6285,6 +6313,10 @@ function captureContext() {
       passes: lastRenderPassSummary,
       pipelineMeterInstalled: pipelineMeter.installed,
       passRecorderInstalled: renderPasses.installed,
+      // A browser without longtask support reads the same zeros as a quiet main thread; these two
+      // keep those apart.
+      longTaskObserverInstalled: longTaskObserver !== null,
+      heapReported: performance.memory !== undefined,
       // ?trace=1 only. The milliseconds are per-frame slots in `passes`; these are the counts the
       // renderer's own render lists reported, per whole scene render.
       trace: { ...traceSummary, attached: renderTrace.attached, missingHooks: renderTrace.missingHooks },
@@ -6370,6 +6402,9 @@ async function finishPerformanceCapture(capture, finishedAt) {
       finishedAt,
       droppedFramesStart: capture.droppedFramesStart,
       droppedFramesEnd,
+      // The whole ring: buildPerformanceMeasurement keeps the ones inside the window and works out
+      // how much of each frame they overlapped.
+      longTasks: longTasks.slice(),
     });
     const entry = {
       format: 'pcw-base-game-performance-capture',
@@ -6423,6 +6458,10 @@ function recordPerformanceFrame(frameStart, frameMs) {
     // Where in the capture this frame happened, so the saved per-frame rows are a timeline rather
     // than a list.
     atMs: +Math.max(0, frameStart - capture.startedAt).toFixed(1),
+    // The gap between the end of the last frame's work and the start of this one. Normally the
+    // vsync wait; in a dip it is the frame's biggest single number and none of it is ours.
+    betweenMs: lastAnimateEndAt ? +Math.max(0, frameStart - lastAnimateEndAt).toFixed(2) : 0,
+    heapMB: heapMB(),
   };
   // Not a measurement: frame-profiler defines it as a sum that degenerates to passPostMs here.
   delete sample.passes.passGpuAwaitMs;
@@ -6987,6 +7026,9 @@ async function animate() {
     recordPerformanceFrame(frameStart, frameMs);
   } finally {
     frameBusy = false;
+    // When our work ended. The next frame's betweenMs is measured from here, so a gap before the
+    // next rAF is visible even though nothing of ours is running in it.
+    lastAnimateEndAt = performance.now();
   }
 }
 

@@ -582,11 +582,26 @@ same frame, or told apart from a standing frame. `buildPerformanceMeasurement` n
   always the same width. `tMs` is the sample's own `atMs` offset when the host stamped one and the
   running sum of frame times otherwise, so older captures still line up in order.
 
+Three of those columns are about the time the page does **not** control. `betweenMs` is the gap from
+the end of one frame's work to the start of the next: normally the vsync wait, 6 to 10 ms, but 25 to
+57 ms in the dips, with everything inside the frame accounted for -- so the main thread is busy
+between frames with work this page did not schedule. `longTaskMs` is how much of that frame's
+interval the browser was inside a long task, from a `PerformanceObserver` on `longtask`, and
+`performance.longTasks` lists the ones inside the window (`tMs` from the capture start, duration,
+and the attribution: the kind of work and the script or frame behind it, which is the name we
+cannot get any other way). A task spanning two frames counts its overlapping part in each, so the
+column can sum to more than the task's duration -- both frames waited on it. `heapMB` is
+`performance.memory.usedJSHeapSize` where the browser exposes it (Chrome and Edge), `null`
+elsewhere; `context.render.longTaskObserverInstalled` and `heapReported` say whether either was
+available, so a browser that cannot report them is not read as a quiet main thread.
+
 `summarizeSpikeEvents` also reports `speedInSpikes` and `speedInOthers`, the mean speed of the slow
 frames and of the rest, or `null` when no sample recorded a speed. The terrain only streams while
 the body moves, so spikes that are faster than the ordinary frames point at streaming before
 anything else does -- and that is now a number in the summary rather than something to be inferred
-from the rows.
+from the rows. Beside them, `meanBetweenInSpikes` against `meanBetweenInOthers` says whether the
+slow frames waited longer before they even started, and `longTaskSpikeFrames` against
+`longTaskOtherFrames` how many of each had a long task running into them.
 
 ## Perf capture auto-save (2026-07-09)
 
