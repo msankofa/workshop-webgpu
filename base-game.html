@@ -786,9 +786,12 @@ let receiveNetworkStatus = status => { networkStatus = status; };
 // Room terrain is chosen by the creator from their current Solo ground. Volumetric stays local.
 function pickRoomTerrainConfig() {
   if (settings.worldMode !== 'terrain') return { kind: 'traversalLab' };
-  // Before the game exists (start menu) the only possible terrain is the analytic default.
-  const descriptor = simulationReady ? activeTerrainDescriptor : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
-  const volumetric = simulationReady && settings.terrainVolumetric && !!terrain.source?.densityAt;
+  // Before the game exists (start menu) the ground is the shipped project when there is one, else the analytic default.
+  const menuProject = simulationReady ? null : terrainStore.activeProject;
+  const descriptor = simulationReady ? activeTerrainDescriptor
+    : menuProject ? v5Descriptor(menuProject)
+    : analyticDescriptor({ key: 'base-game-analytic', sourceVersion: '1', seaLevel: settings.terrainSeaLevel });
+  const volumetric = settings.terrainVolumetric && (simulationReady ? !!terrain.source?.densityAt : !!menuProject);
   // The spawn building rides on heightfield terrain only; volumetric rooms keep the bare spawn.
   // Scattered structures seat on groundHeight (the density surface when volumetric); seed and spacing are world identity.
   return { kind: 'terrain', descriptor, volumetric, spawnBuilding: !volumetric,

@@ -290,7 +290,11 @@ Four persistence paths share the exact same capture/apply functions:
    `assignLoadedSettings` right after `DEFAULT_SETTINGS`, its terrain project is restored into the
    terrain store as soon as the store exists (so the ground textures read its material slots), and
    `syncTerrainSourceFromStore` swaps the project in once the simulation is up, Solo only; online
-   the room decides the ground. `?defaults=stock` skips the file. Nothing else changes: the
+   the room decides the ground, and a room created from the start menu is created from the shipped
+   project too: `pickRoomTerrainConfig` reads `terrainStore.activeProject` (a `v5Descriptor` with the
+   project body inline, which the relay stores by hash) and `terrainVolumetric` when the
+   simulation is not up yet, instead of the analytic default it fell back to before 2026-09-07.
+   `?defaults=stock` skips the file. Nothing else changes: the
    autosave, the slots and the JSON import still layer on top through their buttons, and the
    built-in `DEFAULT_SETTINGS` stand wherever the file is absent or a key fails its checks.
    The file also appears in the slot dropdown as a starred, read-only preset, so it can be
