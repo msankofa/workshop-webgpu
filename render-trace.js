@@ -12,6 +12,10 @@
 // `scenes` is the primary output and the totals are sums over it. Without that, one frame reads as
 // a single object costing the whole render.
 //
+// One frame is kept aside: the worst the trace has seen since it was last cleared, with its whole
+// scenes array. The frame a capture button lands on is not the frame that dipped, and the encode's
+// p50 and its max are 12 ms and 60 ms apart, so without this the spikes are never named.
+//
 // The encode hook also attributes its time per (object, material), because a scene's encode cost has
 // turned out not to be proportional to its object count -- 93 objects cost the same 11-12 ms as 202
 // -- so the question is which few objects are expensive, not how many there are.
@@ -80,6 +84,14 @@ function describeObject(object, material) {
   return descriptor;
 }
 
+// The main scene render of a frame: the one that encoded the most objects. Picking by time would
+// always pick the post chain's quad, which encodes one object and wraps the world render.
+function mainScene(entries) {
+  let best = null;
+  for (const entry of entries) if (best === null || entry.objects > best.objects) best = entry;
+  return best;
+}
+
 // The heaviest objects of one scene render, and how much of its encode they account for.
 function topObjects(entry) {
   const rows = [];
@@ -103,6 +115,10 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
   let attachedTo = null;
   let restore = [];
   let patchedLists = [];
+  // Two worst frames, because "worst" has two meanings here and picking one silently would hide
+  // the other: `worst` is the heaviest total scene time, `worstEncode` the heaviest encode.
+  let worst = null, worstEncode = null;
+  let frameCount = 0;
   const missing = [];
 
   // A phase inside whichever scene render is on top of the stack. Nested scene renders push their
@@ -291,9 +307,44 @@ export function createRenderTrace({ now = () => performance.now() } = {}) {
     // counting a nested render inside its parent as well.
     take() {
       const out = totals();
+      // The heaviest frames since the last clear, kept whole -- rows included -- because a capture
+      // otherwise only ever reports the frame its button happened to land on. The frame number and
+      // the clock reading come with them, so a spike can be lined up against the frame's other
+      // events.
+      frameCount++;
+      if (out.sceneRenders > 0) {
+        const main = mainScene(out.scenes);
+        const record = {
+          frame: frameCount, at: round3(now()),
+          metric: 'mainSceneEncodeMs', metricMs: main ? main.encodeMs : 0,
+          mainScene: main ? main.name : null,
+          sceneMs: out.sceneMs, encodeMs: out.encodeMs, scenes: out.scenes,
+        };
+        if (worstEncode === null || record.metricMs > worstEncode.metricMs) worstEncode = record;
+        if (worst === null || out.sceneMs > worst.sceneMs) worst = record;
+      }
       scenes = [];
       outside = newEntry('outside', 'none');
       stack.length = 0;
+      return out;
+    },
+    // The retained worst frames, or null. Reading does not clear, so a caller can keep a running
+    // copy every frame. `worst` is by total scene time, `worstEncode` by the main scene's encode
+    // time, which is the metric the record names; they are one record when a frame is worst by both.
+    get worst() { return worst; },
+    get worstEncode() { return worstEncode; },
+    // Fields the host knows and the trace does not -- the frame's event deltas, its speed, how far
+    // into a capture it happened -- attached to whichever retained record is the frame just taken.
+    annotateWorst(fields) {
+      if (worst !== null && worst.frame === frameCount) Object.assign(worst, fields);
+      if (worstEncode !== null && worstEncode.frame === frameCount) Object.assign(worstEncode, fields);
+    },
+    // Both records, and the trace starts looking again: called when a capture begins, so the spike
+    // reported is one from inside the measured window.
+    takeWorst() {
+      const out = { worst, worstEncode };
+      worst = null;
+      worstEncode = null;
       return out;
     },
   };

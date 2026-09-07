@@ -425,7 +425,25 @@ is its own row with its own scene name, camera and object count; `exclusiveMs` i
 cost and `ms` includes whatever nested inside it. Each row's `top` names the heaviest objects that
 pass encoded, with `topShare` for how much of its encode they were: with trees and grass off the
 main scene encoded 93 objects in the same 11-12 ms it takes for 202, so the cost is not
-proportional to the count and `top` is where to look for the few objects that own it. The first `?trace=1` captures reported
+proportional to the count and `top` is where to look for the few objects that own it.
+
+`lastFrame` is the frame the capture ended on, which is never the frame that dipped: the encode's
+p50 is about 12 ms and its max 40 to 64 ms in every capture so far. So the record also carries
+`worstFrame` and `worstEncodeFrame` -- the heaviest frame of the capture by total scene time and by
+the **main scene render's encode** (the pass that encoded the most objects; the record names the
+metric), each with its full per-pass rows and per-object `top`. Both are cleared when a capture
+starts, so they always name a frame from inside the measured window, and each carries what else
+happened in that frame: its frame number, its index in the samples, how many ms into the capture it
+was, its `frameMs`, the player's `speed`, and that frame's event deltas. A spike therefore arrives
+already lined up against terrain installs, integrate time, queue depth, reculls, pipelines and
+motion, instead of being a number with no context.
+
+Two related capture fixes went in with it. Every sample now carries `speed`, the body's horizontal
+velocity in m/s, so a dip can be told from a standing frame -- read from `playerController`, not
+`terrain.stats.speed`, whose getter walks every terrain child to count draws. And `terrainOverruns`
+is fed to `events` as a per-frame delta like the reculls beside it: as a cumulative counter it was
+non-zero on every frame, so its spike share read 1 everywhere and it explained nothing. The running
+total is still in `context.terrainCost`. The first `?trace=1` captures reported
 scenes = 1, objects = 1 and the whole 15-27 ms frame as one object's encode, which was the trace
 collapsing that nesting rather than a real finding.
 

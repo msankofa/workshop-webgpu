@@ -1179,7 +1179,7 @@ else if (RENDER_TRACE) console.warn('[base-game] ?trace=1 is on: the encode is i
 // The last traced frame, plus the mean over the traced frames so far: the per-frame slots below
 // carry the milliseconds, this carries the object counts the renderer's own render lists reported.
 const traceSummary = { enabled: RENDER_TRACE, attached: renderTrace.attached, missingHooks: renderTrace.missingHooks,
-  frames: 0, lastFrame: null, meanObjects: 0, meanDraws: 0, meanScenes: 0 };
+  frames: 0, lastFrame: null, worstFrame: null, worstEncodeFrame: null, meanObjects: 0, meanDraws: 0, meanScenes: 0 };
 const traceTotals = { objects: 0, draws: 0, scenes: 0 };
 // Drained every traced frame, profiling or not: the totals reset on take, so skipping a frame would
 // hand the next one two frames of encode.
@@ -1199,6 +1199,10 @@ function recordRenderTrace() {
   // owned the encode, not just how many there were.
   traceSummary.lastFrame = { sceneRenders: t.sceneRenders, encodedObjects: t.encodedObjects,
     encodeCalls: t.encodeCalls, bundleGroups: t.bundleGroups, scenes: t.scenes };
+  // Read, never cleared here: the frame a capture ends on is not the frame that dipped, and the
+  // encode's max is four to five times its median. Cleared when a capture starts, below.
+  traceSummary.worstFrame = renderTrace.worst;
+  traceSummary.worstEncodeFrame = renderTrace.worstEncode;
   traceSummary.meanObjects = +(traceTotals.objects / traceSummary.frames).toFixed(1);
   traceSummary.meanDraws = +(traceTotals.draws / traceSummary.frames).toFixed(1);
   traceSummary.meanScenes = +(traceTotals.scenes / traceSummary.frames).toFixed(2);
@@ -6218,17 +6222,20 @@ let worstPeak = 0;
 let shownWorst = 0;
 let lastRenderInfo = { drawCalls: 0, triangles: 0, renderCalls: 0, pipelinesBuilt: 0, pipelineMs: 0 };
 // Cumulative counters read last frame, so a capture sample can carry this frame's deltas.
-const eventCounters = { forestReculls: 0, forestRebuilds: 0, grassReculls: 0 };
+const eventCounters = { forestReculls: 0, forestRebuilds: 0, grassReculls: 0, terrainOverruns: 0 };
 function frameEvents() {
   const gpu = forest.forestGPU?.summary;
   const grassStats = flora.stats;
-  const next = { forestReculls: gpu?.reculls ?? 0, forestRebuilds: gpu?.rebuilds ?? 0, grassReculls: grassStats?.reculls ?? 0 };
+  const next = { forestReculls: gpu?.reculls ?? 0, forestRebuilds: gpu?.rebuilds ?? 0, grassReculls: grassStats?.reculls ?? 0,
+    terrainOverruns: terrain.frameCost?.overruns ?? 0 };
   const events = {
     terrainInstalls: terrain.frameCost?.installCount ?? 0,
     terrainFoldMs: terrain.frameCost?.foldMs ?? 0,
     terrainIntegrateMs: terrain.frameCost?.integrateMs ?? 0,
     terrainQueued: terrain.frameCost?.queued ?? 0,
-    terrainOverruns: terrain.frameCost?.overruns ?? 0,
+    // A delta, like the reculls beside it. Fed cumulatively, it was present on every frame, so its
+    // spike share read 1 everywhere and it explained nothing; the running total is in the context.
+    terrainOverruns: Math.max(0, next.terrainOverruns - eventCounters.terrainOverruns),
     forestReculls: Math.max(0, next.forestReculls - eventCounters.forestReculls),
     forestRebuilds: Math.max(0, next.forestRebuilds - eventCounters.forestRebuilds),
     grassReculls: Math.max(0, next.grassReculls - eventCounters.grassReculls),
@@ -6389,6 +6396,13 @@ async function finishPerformanceCapture(capture, finishedAt) {
   }
 }
 
+// Horizontal speed of the body in m/s: the same motion the terrain scheduler derives its own speed
+// from, rounded to the precision a capture row needs.
+function bodySpeed() {
+  const v = playerController.getVelocity();
+  return +Math.hypot(v[0], v[2]).toFixed(2);
+}
+
 function recordPerformanceFrame(frameStart, frameMs) {
   const capture = activePerformanceCapture;
   if (!capture) return;   // idle frames allocate no sample and take no pass snapshot
@@ -6402,6 +6416,10 @@ function recordPerformanceFrame(frameStart, frameMs) {
     pipelinesBuilt: lastRenderInfo.pipelinesBuilt,
     passes: frameProfiler.snapshot(BASE_GAME_PASS_PREFIXES),
     events: frameEvents(),
+    // Whether the player was moving. Without it a dip cannot be told from a standing frame, and the
+    // terrain only streams while the body moves. From the velocity, not terrain.stats.speed: that
+    // getter walks every terrain child to count draws and is not a per-frame read.
+    speed: bodySpeed(),
   };
   // Not a measurement: frame-profiler defines it as a sum that degenerates to passPostMs here.
   delete sample.passes.passGpuAwaitMs;
@@ -6410,6 +6428,15 @@ function recordPerformanceFrame(frameStart, frameMs) {
   // pre-capture time to the requested measurement window.
   if (capture.samples.length === 0) sample.frameMs = Math.min(frameMs, Math.max(0.001, frameStart - capture.startedAt));
   capture.samples.push(sample);
+  // The trace kept this frame if it was the worst so far; only here is what else happened in it
+  // known, so the spike arrives with its installs, queue depth, reculls and motion attached.
+  if (RENDER_TRACE) {
+    renderTrace.annotateWorst({
+      atCaptureMs: +Math.max(0, frameStart - capture.startedAt).toFixed(1),
+      sampleIndex: capture.samples.length - 1,
+      frameMs: sample.frameMs, speed: sample.speed, events: sample.events,
+    });
+  }
   const now = performance.now();
   if (now - capture.lastProgressAt >= 500) {
     const remaining = Math.max(0, capture.endsAt - now) / 1000;
@@ -6443,6 +6470,7 @@ recordPerformanceButton.addEventListener('click', () => {
   // Even an instantaneous capture waits for one newly profiled frame. Idle frames deliberately do
   // not carry pass timing, so reusing the previous frame would produce a misleading zero map.
   frameProfiler.setEnabled(true);
+  renderTrace.takeWorst();   // the spike this capture reports has to be one from inside its window
   activePerformanceCapture = capture;
   const description = label ? `“${label}”` : 'performance';
   captureStatus.textContent = `Measuring ${description}… ${requestedWindowSeconds.toFixed(1)} s remaining`;

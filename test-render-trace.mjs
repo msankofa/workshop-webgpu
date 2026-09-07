@@ -273,6 +273,85 @@ function once(fn) {
 }
 
 {
+  // The worst frame is kept aside with its rows. A capture reports the frame its button landed on,
+  // which is never the frame that dipped, so the encode spikes were never named.
+  const mesh = { name: 'terrain' };
+  const material = { type: 'MeshStandardNodeMaterial' };
+  // A renderer whose whole frame is one object costing what the case asks for, so sceneMs is that
+  // number exactly.
+  const list = { sort() {} };
+  const renderer = {
+    _renderLists: { get() { return list; } },
+    _renderScene(scene, camera, cost) { this._renderObjects([cost]); },
+    _projectObject() {},
+    _renderObjects(costs) { for (const cost of costs) this._renderObjectDirect(mesh, material, cost); },
+    _renderObjectDirect(object, mat, cost) { clock += cost; },
+    _renderBundle() {},
+  };
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  assert.equal(trace.worst, null, 'nothing retained before the first frame');
+
+  for (const cost of [5, 30, 10]) {
+    clock = 0;
+    renderer._renderScene({ name: `frame-${cost}` }, { type: 'PerspectiveCamera' }, cost);
+    trace.take();
+  }
+
+  const kept = trace.worst;
+  assert.ok(kept, 'a worst frame is retained');
+  assert.equal(kept.sceneMs, 30, 'the heaviest of the three, not the last');
+  assert.equal(kept.encodeMs, 30);
+  assert.equal(kept.scenes.length, 1);
+  assert.equal(kept.scenes[0].name, 'frame-30', 'and it is that frame, whole');
+  assert.deepEqual(kept.scenes[0].top, [{ name: 'terrain', material: 'MeshStandardNodeMaterial', ms: 30, calls: 1 }],
+    'with its per-object rows');
+  assert.equal(trace.worst.sceneMs, 30, 'reading it does not clear it');
+
+  assert.equal(kept.frame, 2, 'the record says which frame it was');
+  assert.equal(kept.metric, 'mainSceneEncodeMs', 'the record names the metric it was chosen by');
+  assert.equal(kept.metricMs, 30);
+  assert.equal(kept.mainScene, 'frame-30', 'and which scene render that was');
+  assert.equal(trace.worstEncode.sceneMs, 30, 'worst by encode too, when one frame is worst by both');
+
+  // The host attaches what only it knows about that frame.
+  trace.annotateWorst({ atCaptureMs: 4210, speed: 5.2, events: { terrainInstalls: 3 } });
+  assert.equal(trace.worst.atCaptureMs, undefined, 'a frame that is no longer the current one is left alone');
+
+  const taken = trace.takeWorst();
+  assert.equal(taken.worst.sceneMs, 30);
+  assert.equal(taken.worstEncode.sceneMs, 30);
+  assert.equal(trace.worst, null, 'takeWorst clears, so the next capture starts looking again');
+  assert.equal(trace.worstEncode, null);
+
+  clock = 0;
+  renderer._renderScene({ name: 'frame-2' }, { type: 'PerspectiveCamera' }, 2);
+  trace.take();
+  assert.equal(trace.worst.sceneMs, 2, 'and the next frame becomes the new worst');
+  trace.annotateWorst({ atCaptureMs: 120, speed: 4.5, events: { terrainInstalls: 2 } });
+  assert.equal(trace.worst.atCaptureMs, 120, 'the frame just taken can be annotated by the host');
+  assert.equal(trace.worst.speed, 4.5);
+  assert.deepEqual(trace.worst.events, { terrainInstalls: 2 });
+  console.log('pass: the worst frame is retained whole, read without clearing, and cleared on demand');
+}
+
+{
+  // Which entry is the main scene: the one that encoded the most objects. The post chain's quad
+  // encodes one and wraps the world render, so picking by time would always pick the quad.
+  const { renderer } = fakeRenderer({
+    onEncode: once(r => r._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, 4)),
+  });
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'post' }, { type: 'OrthographicCamera' }, 1);
+  trace.take();
+  assert.equal(trace.worstEncode.mainScene, 'base-game', 'the world render, not the quad that contains it');
+  assert.equal(trace.worstEncode.metricMs, 12, 'and the metric is that scene encode, four objects at 3 ms');
+  console.log('pass: the main scene is the one that encoded the most objects');
+}
+
+{
   const { renderer } = fakeRenderer();
   const trace = createRenderTrace({ now });
   const before = renderer._renderScene;

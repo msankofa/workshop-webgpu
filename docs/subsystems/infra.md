@@ -148,6 +148,15 @@ nested inside one object's encode is subtracted from that object's row, so the p
 does not report itself as the most expensive thing in the frame. The hot path is two map lookups
 against a `WeakMap` of cached descriptors -- no string building per draw.
 
+One frame is kept aside: `worst` is the heaviest frame by total scene time since the trace was last
+cleared and `worstEncode` the heaviest by encode time, each the whole `scenes` array with its `top`
+rows, plus the frame number and the clock reading so it can be lined up against that frame's other
+events. Two records rather than one because "worst" has two meanings here and choosing silently
+would hide the other; they are the same object when one frame is worst by both. Reading either
+getter does not clear it, so a host can keep a running copy every frame; `takeWorst()` returns both
+and clears, which is what a capture does when it starts so the spike it reports comes from inside
+its own window.
+
 `detach()` restores the wrapped methods and also unpatches every render list whose `sort` it
 wrapped, clearing `__traceSort` -- render lists are cached per (scene, camera) and outlive a trace,
 so a hook left behind would keep collecting into a discarded trace and the next trace would skip
