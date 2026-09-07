@@ -23,7 +23,7 @@ function sourceFor(descriptor) {
 }
 
 self.onmessage = (e) => {
-  const { key, epoch, xMin, zMin, size, segments, params, computeNormals, jobType, texelWorld, apron, tint } = e.data;
+  const { key, epoch, xMin, zMin, size, segments, params, computeNormals, jobType, texelWorld, apron, tint, owner } = e.data;   // owner: echoed so a shared pool can route the reply
 
   if (jobType === 'sourceTile') {
     const { descriptor, request } = e.data;
@@ -35,11 +35,11 @@ self.onmessage = (e) => {
       const transfer = tileTransferables(tile);
       if (finished?.colors) transfer.push(finished.colors.buffer);
       self.postMessage(
-        { ...tile, ...(finished || {}), key: k, epoch, jobType, sourceKey: source.descriptor.key, sourceVersion: source.descriptor.sourceVersion },
+        { ...tile, ...(finished || {}), key: k, epoch, jobType, owner, sourceKey: source.descriptor.key, sourceVersion: source.descriptor.sourceVersion },
         transfer,
       );
     } catch (err) {
-      self.postMessage({ key, epoch, jobType, error: String((err && err.message) || err), contractError: err instanceof TerrainSourceError });
+      self.postMessage({ key, epoch, jobType, owner, error: String((err && err.message) || err), contractError: err instanceof TerrainSourceError });
     }
     return;
   }
@@ -47,7 +47,7 @@ self.onmessage = (e) => {
   if (jobType === 'heightTile') {
     const tile = buildHeightTile(xMin, zMin, size, texelWorld, params, apron);
     self.postMessage(
-      { key, epoch, jobType, heights: tile.heights, texels: tile.texels, intervals: tile.intervals, step: tile.step, apron: tile.apron, xMin, zMin, size, originX: tile.originX, originZ: tile.originZ },
+      { key, epoch, jobType, owner, heights: tile.heights, texels: tile.texels, intervals: tile.intervals, step: tile.step, apron: tile.apron, xMin, zMin, size, originX: tile.originX, originZ: tile.originZ },
       [tile.heights.buffer],
     );
     return;
@@ -69,7 +69,7 @@ self.onmessage = (e) => {
   }
 
   self.postMessage(
-    { key, epoch, positions: a.positions, normals: a.normals, uvs: a.uvs, index: a.index, colors, bounds, tintRevision: tint ? tint.revision : null, tintMs },
+    { key, epoch, owner, positions: a.positions, normals: a.normals, uvs: a.uvs, index: a.index, colors, bounds, tintRevision: tint ? tint.revision : null, tintMs },
     transfer,
   );
 };

@@ -91,7 +91,7 @@ console.log('\n[4] a stale-revision reply is re-tinted on commit, a current one 
         if (!this._alive || !this.onmessage || msg.jobType !== 'sourceTile') return;
         const tile = createSource(msg.descriptor).buildTile(msg.request);
         const finished = msg.tint ? { colors: tintTileColors(tile, msg.tint.seaLevel), tintRevision: msg.tint.revision, tintMs: 0.5 } : {};
-        this.onmessage({ data: { ...tile, ...finished, key: msg.key, epoch: msg.epoch, jobType: 'sourceTile', sourceKey: msg.descriptor.key, sourceVersion: msg.descriptor.sourceVersion } });
+        this.onmessage({ data: { ...tile, ...finished, key: msg.key, epoch: msg.epoch, owner: msg.owner, jobType: 'sourceTile', sourceKey: msg.descriptor.key, sourceVersion: msg.descriptor.sourceVersion } });
       }, 0);
     }
     terminate() { this._alive = false; }

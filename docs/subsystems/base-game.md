@@ -3,6 +3,14 @@
 
 ### Terrain integration queue (2026-09-07)
 
+**Terrain worker threads (2026-09-07).** The near system and the three cascade levels share one
+`terrain-worker-pool.js` pool, sized from the machine (cores/2 − 1, at most 4) unless
+`?terrainworkers=N` sets it; the panel's terrain line shows `… in flight on N workers`. Before this
+each system spawned its own min(4, cores−2) threads, 16 in all, and the DevTools trace showed the
+sub-20 fps dips coinciding with bursts of 10–16 busy terrain workers. Treat `N` as the A/B: the same
+walk at 1, at the default, and at 4 says whether the dips are CPU contention.
+
+
 Terrain arrivals no longer land in the frame they arrive in. Worker results wait in a bounded
 inbox and one scheduler commits them under a single `integrateBudgetMs` (2 ms) deadline shared by
 the near system, every cascade level and the colliders; the unbudgeted `cascadeChanged` fold is

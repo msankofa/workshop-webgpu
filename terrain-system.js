@@ -218,6 +218,7 @@ class TerrainSystem {
     this.inboxBytes = 0;
     this.staleDrops = 0;         // results discarded at enqueue or at commit because they no longer apply
     this.inFlightBudget = options.inFlightBudget ?? null;
+    this.workerPool = options.workerPool ?? null;   // shared pool (terrain-worker-pool.js); null = spawn our own
     this.keepKeys = new Set();   // targetKeys plus the hysteresis margin: what is NOT unloaded
     this.velocity = [0, 0];      // m/s, set by the host via setMotion; drives the prefetch lead
     this.prefetchKeys = 0;       // observable: how many keys the lead added this recompute
@@ -230,6 +231,11 @@ class TerrainSystem {
   // A small pool behind one `worker` facade (round-robin postMessage): volume tiles cost tens
   // of milliseconds each, and a full restream at a wide draw radius is a thousand of them.
   initWorker() {
+    // A shared pool routes replies back here by owner tag; the facade has the shape below.
+    if (this.workerPool) {
+      const facade = this.workerPool.attach(data => this.onWorkerChunk(data), () => this.disableWorker());
+      if (facade) { this.worker = facade; this.workers = []; return; }
+    }
     try {
       const count = Math.max(1, Math.floor(this.params.workerCount || Math.min(4, Math.max(1, (globalThis.navigator?.hardwareConcurrency || 4) - 2))));
       const workers = [];

@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { MeshNormalNodeMaterial } from 'three/webgpu';
 import { Fn, float, vec3, mix as tslMix, clamp as tslClamp, select, uniform as tslUniform } from 'three/tsl';
 import { createTerrainSystem } from './terrain-system.js';
+import { createTerrainWorkerPool } from './terrain-worker-pool.js';
 import { TERRAIN_TINT, TERRAIN_TINT_BANDS, terrainTintAt } from './terrain-tint.js';
 import { createSource } from './terrain-source.js';
 import { createHeightfieldWorldQueryProvider } from './world-query-heightfield-provider.js';
@@ -62,6 +63,10 @@ export const BASE_GAME_TERRAIN_DEFAULTS = Object.freeze({
   // cannot put four times the work in flight. Bounds outstanding jobs only; simultaneous
   // completion is what the inbox bound is for.
   maxInFlight: 24,
+  // Terrain worker THREADS, shared by the near system and every cascade level. 0 = sized from the
+  // machine (cores/2 - 1, at most 4). Four systems each spawning min(4, cores-2) made 16 threads,
+  // and a boundary crossing lighting them all starved the main thread (trace 2026-09-07).
+  terrainWorkers: 0,
   // Per-chunk frustum culling in the batches. Measured both ways 2026-08-26: turning it off skips
   // BatchedMesh's per-instance cull loop but doubles submitted draws, and the A/B said p50 encode
   // is a wash (postPlain 3.0-6.1 off vs 3.2-6.9 on) while the tail is much worse without it
@@ -129,10 +134,11 @@ export function createBaseGameTerrain({
   const clock = typeof now === 'function' ? now : (() => performance.now());
   // Shared by every streamer below: one budget, not one each.
   const inFlightBudget = { max: Math.max(1, cfg.maxInFlight | 0), count: 0 };
+  const workerPool = useWorker ? createTerrainWorkerPool({ count: cfg.terrainWorkers | 0 }) : null;
   const streamParams = { prefetchChunks: cfg.prefetchChunks, prefetchVehicleChunks: cfg.prefetchVehicleChunks, vehicleSpeed: cfg.vehicleSpeed, unloadMargin: cfg.unloadMargin };
   const system = createTerrainSystem({
     params: { chunkSize: cfg.chunkSize, renderRadius: cfg.renderRadius, maxChunksPerUpdate: cfg.maxChunksPerUpdate, maxUnloadsPerUpdate: cfg.maxUnloadsPerUpdate, useWorker, integrateExternally: true, ...streamParams },
-    source, now: clock, inFlightBudget,
+    source, now: clock, inFlightBudget, workerPool,
   });
   // Tint bands sit on the sea level (descriptor.seaLevel, 0 without one); chunks recolour on change.
   let seaLevel = system.source?.descriptor?.seaLevel ?? 0;
@@ -338,7 +344,7 @@ export function createBaseGameTerrain({
     cfg.volumeLod.forEach((spec, i) => {
       const lvl = createTerrainSystem({
         params: { chunkSize: spec.chunkSize, renderRadius: spec.renderRadius, segmentsPerChunk: spec.segments, lod: i + 1, volumetric: true, maxChunksPerUpdate: 1, maxUnloadsPerUpdate: 2, useWorker, integrateExternally: true, ...streamParams },
-        source: system.source, now: clock, inFlightBudget,
+        source: system.source, now: clock, inFlightBudget, workerPool,
       });
       lvl.setTint({ seaLevel, revision: tintRevision });
       lvl.material = groundMaterial();   // chunks pick it up at creation: same look, same wireframe
@@ -1328,6 +1334,7 @@ export function createBaseGameTerrain({
         integrateBudgetMs: cfg.integrateBudgetMs,
         inFlight: inFlightBudget.count,
         maxInFlight: inFlightBudget.max,
+        workers: workerPool?.count ?? system.worker?.count ?? 0,
         prefetchKeys: system.prefetchKeys,
         collisionReadyDistance: collisionReadyDistance(),
         workerTintMs: +lastWorkerTintMs.toFixed(2),
@@ -1389,6 +1396,7 @@ export function createBaseGameTerrain({
       for (const cb of cascadeBatchers.values()) cb.batcher.dispose();
       for (const c of cascade) { c.system.dispose(); c.group.removeFromParent(); }
       system.dispose();
+      workerPool?.dispose();
     },
   };
   applyProviders();   // inactive until the host selects the terrain world mode

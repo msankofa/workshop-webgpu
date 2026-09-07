@@ -1477,9 +1477,11 @@ const TERRAIN_SOURCE_DESCRIPTOR = analyticDescriptor({ key: 'base-game-analytic'
 // submits every resident chunk. A reload-scoped A/B rather than a live toggle, because turning
 // culling off at runtime would leave BatchedMesh's draw list holding the last culled subset.
 const BATCH_FRUSTUM_CULLED = readFlagDefaultTrue('chunkcull');
+// ?terrainworkers=N: terrain worker threads shared by all four streamers; 0 = sized from the machine.
+const TERRAIN_WORKERS = Math.max(0, parseInt(readFlagValue('terrainworkers') ?? '0', 10) || 0);
 const terrain = createBaseGameTerrain({
   scene, worldQuery, worldCoordinates, source: TERRAIN_SOURCE_DESCRIPTOR,
-  params: { batchFrustumCulled: BATCH_FRUSTUM_CULLED },
+  params: { batchFrustumCulled: BATCH_FRUSTUM_CULLED, terrainWorkers: TERRAIN_WORKERS },
 });
 const spawnBuilding = (() => {
   const g = spawnBuildingGround();
@@ -4549,7 +4551,7 @@ function refreshTerrainRuntimeLine() {
   const lead = st.prefetchKeys ? ` Leading ${st.prefetchKeys} chunks at ${st.speed} m/s.` : '';
   const coll = st.collisionReadyDistance ? ` Nearest uncollided ground ${st.collisionReadyDistance} m.` : '';
   setTextIfChanged(terrainRuntimeLine, st.active
-    ? `${st.volumetric ? 'volumetric' : 'heightfield'}: ${st.residentTiles}/${st.targetTiles} tiles resident, ${st.queuedTiles} queued, ${st.inFlightTiles}/${st.maxInFlight} in flight, ${st.draws} draws / ${st.triangles} tris, update ${st.lastUpdateMs.toFixed(2)} ms${st.lastSourceError ? `, error: ${st.lastSourceError}` : ''}${volNote} ${q}${lead}${coll}${far}`
+    ? `${st.volumetric ? 'volumetric' : 'heightfield'}: ${st.residentTiles}/${st.targetTiles} tiles resident, ${st.queuedTiles} queued, ${st.inFlightTiles}/${st.maxInFlight} in flight on ${st.workers} workers, ${st.draws} draws / ${st.triangles} tris, update ${st.lastUpdateMs.toFixed(2)} ms${st.lastSourceError ? `, error: ${st.lastSourceError}` : ''}${volNote} ${q}${lead}${coll}${far}`
     : `Terrain inactive.${volNote}`);
 }
 refreshTerrainRuntimeLine();

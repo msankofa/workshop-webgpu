@@ -37,7 +37,7 @@ function landAll() {
     if (msg.jobType !== 'sourceTile') continue;
     const tile = createSource(msg.descriptor).buildTile(msg.request);
     // Charge the install cost when the geometry is actually built, i.e. at commit, not here.
-    worker.onmessage({ data: { ...tile, key: msg.key, epoch: msg.epoch, jobType: 'sourceTile' } });
+    worker.onmessage({ data: { ...tile, key: msg.key, epoch: msg.epoch, owner: msg.owner, jobType: 'sourceTile' } });
   }
   return batch.length;
 }
@@ -217,7 +217,7 @@ console.log('\n[8] an untinted arrival is tinted inside the scheduled operation,
     if (msg.jobType !== 'sourceTile') continue;
     const tile = createSource(msg.descriptor).buildTile(msg.request);
     delete tile.normals;
-    worker.onmessage({ data: { ...tile, colors: null, key: msg.key, epoch: msg.epoch, jobType: 'sourceTile' } });
+    worker.onmessage({ data: { ...tile, colors: null, key: msg.key, epoch: msg.epoch, owner: msg.owner, jobType: 'sourceTile' } });
   }
   const queued = terrain.system.queuedCount;
   ok(queued > 100, `${queued} results queued with no worker colours`);

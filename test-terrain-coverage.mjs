@@ -29,7 +29,7 @@ function landAll() {
     if (!worker._alive || !worker.onmessage || msg.jobType !== 'sourceTile') continue;
     const tile = createSource(msg.descriptor).buildTile(msg.request);
     const finished = msg.tint ? { tintRevision: msg.tint.revision } : {};
-    worker.onmessage({ data: { ...tile, ...finished, key: msg.key, epoch: msg.epoch, jobType: 'sourceTile' } });
+    worker.onmessage({ data: { ...tile, ...finished, key: msg.key, epoch: msg.epoch, owner: msg.owner, jobType: 'sourceTile' } });
     n++;
   }
   return n;
