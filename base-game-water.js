@@ -11,6 +11,11 @@ import {
   screenUV, positionView, positionWorld, positionGeometry, cameraPosition, cameraNear, cameraFar, cameraViewMatrix, cameraProjectionMatrix,
   viewportDepthTexture, viewportSharedTexture, perspectiveDepthToViewZ, reflector, getScreenPosition, Fn, If, Loop, Break, exp, clamp, length,
 } from 'three/tsl';
+// The scene depth the water reads is copied from the bound framebuffer each render. With a reversed
+// depth buffer that framebuffer (canvas or scene pass) is depth32float, so the copy target must be
+// float too: three's shared default is depth24plus and the copy is refused every frame.
+const sceneDepthTexture = new THREE.DepthTexture(1, 1);
+sceneDepthTexture.type = THREE.FloatType;
 import { MeshBasicNodeMaterial } from 'three/webgpu';
 import { makeWaterProfile, applyWaterPreset, rebuildWaveTable, createOceanSurface, makeWaveFns } from './water-hybrid.js';
 import { surfaceAt } from './water-waves.js';
@@ -88,7 +93,7 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
     // water does not write depth), along the view ray, scaled to a vertical depth for a flat bed.
     // The water ends exactly where the drawn ground rises through it, not at a 16 m post.
     thicknessAt: () => {
-      const sceneZ = perspectiveDepthToViewZ(viewportDepthTexture(screenUV), cameraNear, cameraFar);
+      const sceneZ = perspectiveDepthToViewZ(viewportDepthTexture(screenUV, null, sceneDepthTexture), cameraNear, cameraFar);
       const ray = max(positionView.z.sub(sceneZ), 0.0);
       const viewY = abs(normalize(cameraPosition.sub(positionWorld)).y);
       return ray.mul(max(viewY, 0.08));
@@ -130,7 +135,7 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
           const p = p0.add(Rv.mul(dist));
           const uv = getScreenPosition(p, cameraProjectionMatrix);
           If(uv.x.lessThan(0.0).or(uv.x.greaterThan(1.0)).or(uv.y.lessThan(0.0)).or(uv.y.greaterThan(1.0)), () => { Break(); });
-          const sceneZ = perspectiveDepthToViewZ(viewportDepthTexture(uv), cameraNear, cameraFar);
+          const sceneZ = perspectiveDepthToViewZ(viewportDepthTexture(uv, null, sceneDepthTexture), cameraNear, cameraFar);
           const diff = sceneZ.sub(p.z);   // positive when the ray point is behind the scene surface
           If(diff.greaterThan(0.0).and(diff.lessThan(profile.ssrThickness)), () => { hitUV.assign(uv); hit.assign(1.0); Break(); });
         });
@@ -152,7 +157,7 @@ export function createBaseGameWater({ scene, terrain, sky, rig, worldCoordinates
   const uFogColor = uniform(new THREE.Color(0x0c2e3d));
   const fogMat = new MeshBasicNodeMaterial({ transparent: true, depthTest: false, depthWrite: false, fog: false });
   fogMat.vertexNode = vec4(positionGeometry.xy, 0.9999, 1.0);
-  const sceneDist = perspectiveDepthToViewZ(viewportDepthTexture(screenUV), cameraNear, cameraFar).negate();
+  const sceneDist = perspectiveDepthToViewZ(viewportDepthTexture(screenUV, null, sceneDepthTexture), cameraNear, cameraFar).negate();
   fogMat.colorNode = uFogColor;
   fogMat.opacityNode = clamp(oneMinus(exp(sceneDist.mul(uFogDensity).negate())), 0.0, uFogMax);
   const fogQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fogMat);
