@@ -83,3 +83,46 @@ console.log('Performance capture statistics tests passed.');
   assert.equal(buildPerformanceMeasurement([{ frameMs: 16, drawCalls: 1, triangles: 1 }], {}).spikes, null);
   console.log('spike attribution: slow frames name the events they carried');
 }
+
+// The per-frame series: a saved capture keeps its frames, not only their summary.
+{
+  const { buildPerformanceSeries, SERIES_KEYS, summarizeSpikeEvents } = await import('./performance-capture.mjs');
+  const samples = [
+    { frameMs: 16.4, atMs: 0, speed: 0, passes: { passPostMs: 11.2 }, pipelinesBuilt: 0,
+      events: { terrainInstalls: 0, terrainIntegrateMs: 0, terrainQueued: 0, forestReculls: 0, grassReculls: 1 } },
+    { frameMs: 62.5, atMs: 16.4, speed: 4.83, passes: { passPostMs: 47.9 }, pipelinesBuilt: 2,
+      events: { terrainInstalls: 3, terrainIntegrateMs: 4.25, terrainQueued: 7, forestReculls: 1, grassReculls: 1 } },
+    { frameMs: 17.1, atMs: 78.9, speed: 4.8, passes: { passPostMs: 12 }, pipelinesBuilt: 0,
+      events: { terrainInstalls: 0, terrainIntegrateMs: 0, terrainQueued: 5, forestReculls: 0, grassReculls: 0 } },
+  ];
+  const rows = buildPerformanceSeries(samples);
+  assert.equal(rows.length, 3, 'one row per sample');
+  assert.deepEqual(SERIES_KEYS, ['tMs', 'frameMs', 'postRenderMs', 'speed', 'terrainInstalls',
+    'terrainIntegrateMs', 'terrainQueued', 'forestReculls', 'grassReculls', 'pipelinesBuilt']);
+  assert.deepEqual(rows[1], [16.4, 62.5, 47.9, 4.83, 3, 4.25, 7, 1, 1, 2], 'the dip row, in key order');
+  assert.deepEqual(rows.map(r => r[0]), [0, 16.4, 78.9], 'order is preserved and tMs is the sample offset');
+  assert.ok(rows.every(row => row.length === SERIES_KEYS.length && row.every(Number.isFinite)),
+    'every row is numbers only, one per key');
+
+  // A capture taken before atMs existed still lines up: tMs falls back to the running frame time.
+  const older = buildPerformanceSeries([{ frameMs: 10 }, { frameMs: 20 }]);
+  assert.deepEqual(older.map(r => r[0]), [10, 30], 'without atMs the rows carry the running elapsed time');
+  assert.deepEqual(older[0], [10, 10, 0, 0, 0, 0, 0, 0, 0, 0], 'and missing fields read as zero, not undefined');
+
+  const measurement = buildPerformanceMeasurement(samples, {});
+  assert.deepEqual(measurement.seriesKeys, SERIES_KEYS, 'the saved entry names the keys once');
+  assert.equal(measurement.series.length, 3, 'and carries the rows');
+
+  // Whether the dips are moving frames is now a number in the summary.
+  const moving = [];
+  for (let i = 0; i < 20; i++) moving.push({ frameMs: 16, speed: 0.2, events: { terrainInstalls: 0 } });
+  for (let i = 0; i < 2; i++) moving.push({ frameMs: 70, speed: 5, events: { terrainInstalls: 2 } });
+  const spikes = summarizeSpikeEvents(moving);
+  assert.equal(spikes.speedInSpikes, 5, 'the spikes were moving frames');
+  assert.equal(spikes.speedInOthers, 0.2, 'the ordinary ones were not');
+  assert.equal(summarizeSpikeEvents([
+    { frameMs: 16, events: { a: 0 } }, { frameMs: 16, events: { a: 0 } },
+    { frameMs: 16, events: { a: 0 } }, { frameMs: 70, events: { a: 1 } },
+  ]).speedInSpikes, null, 'no speed recorded, no claim made');
+  console.log('per-frame series: the rows, their keys, and whether the dips were moving');
+}

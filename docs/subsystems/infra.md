@@ -557,6 +557,27 @@ of the `water*` columns already existed before this task (see `water.md`'s Publi
 only adds the two columns above plus the water URL flags/setters that let their values actually
 move.
 
+## Capture series (`performance-capture.mjs`, 2026-09-07)
+
+A saved capture used to be a ten-second summary only: its per-frame samples were thrown away, so a
+dip could be seen in `max` and `p99` but never placed in time, lined up against what arrived in the
+same frame, or told apart from a standing frame. `buildPerformanceMeasurement` now also returns:
+
+- `seriesKeys` -- `['tMs', 'frameMs', 'postRenderMs', 'speed', 'terrainInstalls',
+  'terrainIntegrateMs', 'terrainQueued', 'forestReculls', 'grassReculls', 'pipelinesBuilt']`,
+  named once for the whole entry.
+- `series` -- one row per rendered frame, in order, as an array of plain numbers in that key order.
+  Arrays rather than objects because a ten-second capture is about 400 rows and the key names would
+  otherwise be repeated 4000 times. Missing fields read as `0`, never `undefined`, so a row is
+  always the same width. `tMs` is the sample's own `atMs` offset when the host stamped one and the
+  running sum of frame times otherwise, so older captures still line up in order.
+
+`summarizeSpikeEvents` also reports `speedInSpikes` and `speedInOthers`, the mean speed of the slow
+frames and of the rest, or `null` when no sample recorded a speed. The terrain only streams while
+the body moves, so spikes that are faster than the ordinary frames point at streaming before
+anything else does -- and that is now a number in the summary rather than something to be inferred
+from the rows.
+
 ## Perf capture auto-save (2026-07-09)
 
 Perf CSVs used to require a manual "CSV" button download followed by moving/renaming the file

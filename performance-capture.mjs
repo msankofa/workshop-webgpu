@@ -35,6 +35,38 @@ export function summarizePasses(samples) {
   return Object.keys(out).length ? out : null;
 }
 
+// One compact row per rendered frame, so a saved capture is not only a ten-second summary: the
+// dips are in the tail of the distribution and a summary cannot say when they happened, whether the
+// player was moving, or what arrived in the same frame. Rows are arrays of plain numbers with the
+// keys named once, which keeps ~400 of them small enough to live in every entry.
+export const SERIES_KEYS = Object.freeze(['tMs', 'frameMs', 'postRenderMs', 'speed', 'terrainInstalls',
+  'terrainIntegrateMs', 'terrainQueued', 'forestReculls', 'grassReculls', 'pipelinesBuilt']);
+
+export function buildPerformanceSeries(samples) {
+  const rows = [];
+  let elapsed = 0;
+  for (const sample of samples) {
+    const events = sample.events ?? {};
+    // tMs is the sample's own offset when the caller stamped one, and the running sum of frame
+    // times otherwise, so a capture taken before `atMs` existed still lines up in order.
+    elapsed += Number(sample.frameMs) || 0;
+    const at = Number.isFinite(sample.atMs) ? sample.atMs : elapsed;
+    rows.push([
+      round(at, 1),
+      round(sample.frameMs),
+      round(Number(sample.passes?.passPostMs) || 0),
+      round(Number(sample.speed) || 0, 2),
+      Math.round(Number(events.terrainInstalls) || 0),
+      round(Number(events.terrainIntegrateMs) || 0),
+      Math.round(Number(events.terrainQueued) || 0),
+      Math.round(Number(events.forestReculls) || 0),
+      Math.round(Number(events.grassReculls) || 0),
+      Math.round(Number(sample.pipelinesBuilt) || 0),
+    ]);
+  }
+  return rows;
+}
+
 export function summarizePerformanceSeries(values, { integer = false } = {}) {
   const finite = values.filter(Number.isFinite);
   if (!finite.length) return { latest: 0, average: 0, min: 0, max: 0, p50: 0, p95: 0, p99: 0, stdDev: 0 };
@@ -92,7 +124,14 @@ export function summarizeSpikeEvents(samples, { percentile: fraction = 0.95 } = 
   // that are rare on ordinary frames count toward an explained spike.
   const telling = [...names].filter(n => events[n].otherShare < 0.5);
   const quiet = spikes.filter(s => !telling.some(n => (Number(s.events?.[n]) || 0) > 0)).length;
-  return { thresholdMs: round(threshold), spikeFrames: spikes.length, quietSpikeFrames: quiet, tellingEvents: telling, events };
+  // Was the player moving? The terrain only streams while the body moves, so a spike population
+  // that is faster than the ordinary frames points at streaming before anything else does.
+  const meanSpeed = list => {
+    const speeds = list.map(s => Number(s.speed)).filter(Number.isFinite);
+    return speeds.length ? round(speeds.reduce((sum, v) => sum + v, 0) / speeds.length, 2) : null;
+  };
+  return { thresholdMs: round(threshold), spikeFrames: spikes.length, quietSpikeFrames: quiet, tellingEvents: telling,
+    speedInSpikes: meanSpeed(spikes), speedInOthers: meanSpeed(rest), events };
 }
 
 export function buildPerformanceMeasurement(samples, {
@@ -132,6 +171,9 @@ export function buildPerformanceMeasurement(samples, {
     passes: summarizePasses(usable),
     // Slow frames and the per-frame events they carried; null when no sample recorded events.
     spikes: summarizeSpikeEvents(usable),
+    // Every frame of the window, one numeric row each, in the order they were rendered.
+    seriesKeys: SERIES_KEYS,
+    series: buildPerformanceSeries(usable),
     droppedFrames: {
       start: Math.max(0, Math.round(droppedFramesStart || 0)),
       end: Math.max(0, Math.round(droppedFramesEnd || 0)),

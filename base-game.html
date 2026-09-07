@@ -6420,6 +6420,9 @@ function recordPerformanceFrame(frameStart, frameMs) {
     // terrain only streams while the body moves. From the velocity, not terrain.stats.speed: that
     // getter walks every terrain child to count draws and is not a per-frame read.
     speed: bodySpeed(),
+    // Where in the capture this frame happened, so the saved per-frame rows are a timeline rather
+    // than a list.
+    atMs: +Math.max(0, frameStart - capture.startedAt).toFixed(1),
   };
   // Not a measurement: frame-profiler defines it as a sum that degenerates to passPostMs here.
   delete sample.passes.passGpuAwaitMs;
@@ -6432,7 +6435,7 @@ function recordPerformanceFrame(frameStart, frameMs) {
   // known, so the spike arrives with its installs, queue depth, reculls and motion attached.
   if (RENDER_TRACE) {
     renderTrace.annotateWorst({
-      atCaptureMs: +Math.max(0, frameStart - capture.startedAt).toFixed(1),
+      atCaptureMs: sample.atMs,
       sampleIndex: capture.samples.length - 1,
       frameMs: sample.frameMs, speed: sample.speed, events: sample.events,
     });

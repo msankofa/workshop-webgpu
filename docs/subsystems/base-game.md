@@ -516,6 +516,13 @@ every recorded object each frame to update bindings and node uniforms, so the ce
 bundles can save is the command encode, not the whole per-object cost. `?trace=1`'s
 `passTraceEncodeMs` against `passTraceObjectsMs` is what separates the two.
 
+Since 2026-09-07 an entry also keeps its frames, not only their summary: `performance.series` is
+one numeric row per rendered frame in `performance.seriesKeys` order (time into the capture, frame
+time, render encode, player speed, terrain installs, terrain integrate time, queue depth, forest
+and grass reculls, pipelines built), and `performance.spikes` says the mean speed of the slow frames
+against the rest. Each sample carries `speed` and `atMs` for it. The format is in
+`docs/subsystems/infra.md`.
+
 The browser sends one completed entry to `serve.py`, which atomically prepends it to
 `research/stats/base-game-performance-log.json`; newest results therefore appear first and an old
 browser tab never sends an old copy of the log back to the server. The file uses the
