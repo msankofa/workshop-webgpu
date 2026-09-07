@@ -589,11 +589,22 @@ between frames with work this page did not schedule. `longTaskMs` is how much of
 interval the browser was inside a long task, from a `PerformanceObserver` on `longtask`, and
 `performance.longTasks` lists the ones inside the window (`tMs` from the capture start, duration,
 and the attribution: the kind of work and the script or frame behind it, which is the name we
-cannot get any other way). A task spanning two frames counts its overlapping part in each, so the
-column can sum to more than the task's duration -- both frames waited on it. `heapMB` is
+cannot get any other way). A task spanning two frames splits between them, so the
+column sums to at most the task's duration. `heapMB` is
 `performance.memory.usedJSHeapSize` where the browser exposes it (Chrome and Edge), `null`
 elsewhere; `context.render.longTaskObserverInstalled` and `heapReported` say whether either was
 available, so a browser that cannot report them is not read as a quiet main thread.
+
+**A row's fields do not all describe the same span, and correlating a dip depends on knowing which
+way each points.** The host measures `frameMs` as the distance from the previous frame's start to
+this one and stamps `atMs` at that same moment, so on sample *i*: `frameMs` and `betweenMs` describe
+the time **before** `atMs`, while `postRenderMs`, the pass slots and the event deltas describe the
+`animate()` work that runs **after** it. So the long tasks that belong to a dip are the ones
+overlapping `[atMs - frameMs, atMs]` -- which is what `longTaskMs` computes -- and the terrain
+installs, reculls and pipelines that ran inside that same span are on the **previous** row, not on
+the dip's own. Reading the intervals forwards instead makes them overlap and gap under variable
+frame lengths, and counts one task into two rows; read backwards they abut exactly, so a task
+spanning two frames splits between them and the column sums to at most the task's duration.
 
 `summarizeSpikeEvents` also reports `speedInSpikes` and `speedInOthers`, the mean speed of the slow
 frames and of the rest, or `null` when no sample recorded a speed. The terrain only streams while

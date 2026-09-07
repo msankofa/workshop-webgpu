@@ -75,12 +75,16 @@ export function buildPerformanceSeries(samples) {
   return rows;
 }
 
-// How much of each frame's wall-clock interval the browser was inside a long task. A task that
-// spans two frames counts its overlapping part in each: both frames waited on it, so both should
-// say so, and the column then sums to more than the task's own duration.
+// How much of each frame's wall-clock interval the browser was inside a long task.
 //
-// Frames are placed by `atMs` (their start, relative to the capture) and `frameMs`; long tasks
-// arrive in the `performance.now()` timebase, so `startedAt` converts them.
+// A sample's interval PRECEDES its stamp. The host measures `frameMs` as the distance from the last
+// frame's start to this one's and stamps `atMs` at that same moment, so the time the row describes
+// is [atMs - frameMs, atMs], not the span after it. Reading it forwards misattributed every task
+// under variable frame lengths -- the forward intervals overlap each other and leave gaps -- and a
+// task could be counted in two rows at once. Read backwards the intervals abut exactly, so a task
+// spanning two frames splits between them and the column sums to at most the task's duration.
+//
+// Long tasks arrive in the `performance.now()` timebase; `startedAt` converts them.
 export function attachLongTasks(samples, longTasks = [], startedAt = 0) {
   if (!Array.isArray(longTasks) || !longTasks.length) return samples;
   const tasks = longTasks
@@ -89,9 +93,10 @@ export function attachLongTasks(samples, longTasks = [], startedAt = 0) {
   let elapsed = 0;
   for (const sample of samples) {
     const frameMs = Number(sample.frameMs) || 0;
-    const start = Number.isFinite(sample.atMs) ? sample.atMs : elapsed;
+    // Without atMs, the running sum ends at this sample, matching the series' own tMs fallback.
     elapsed += frameMs;
-    const end = start + frameMs;
+    const end = Number.isFinite(sample.atMs) ? sample.atMs : elapsed;
+    const start = Math.max(0, end - frameMs);
     let overlap = 0;
     for (const task of tasks) overlap += Math.max(0, Math.min(end, task.end) - Math.max(start, task.start));
     sample.longTaskMs = round(overlap);

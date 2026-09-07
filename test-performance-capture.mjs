@@ -133,11 +133,12 @@ console.log('Performance capture statistics tests passed.');
   const { attachLongTasks, summarizeLongTasks, summarizeSpikeEvents, SERIES_KEYS, buildPerformanceSeries } =
     await import('./performance-capture.mjs');
   const startedAt = 1000;   // the capture's performance.now() origin
-  // Three frames: a quiet one, a dip that a 48 ms long task runs into, and a quiet one after.
+  // Three frames: a quiet one, a dip that a 48 ms long task runs into, and a quiet one after. A
+  // sample's interval PRECEDES its atMs -- the dip below ran from 16 ms to 80 ms into the capture.
   const samples = [
-    { frameMs: 16, atMs: 0, betweenMs: 7.4, heapMB: 512.5, passes: { passPostMs: 11 } },
-    { frameMs: 64, atMs: 16, betweenMs: 41.2, heapMB: 540.25, passes: { passPostMs: 48 } },
-    { frameMs: 17, atMs: 80, betweenMs: 8.1, heapMB: 541, passes: { passPostMs: 12 } },
+    { frameMs: 16, atMs: 16, betweenMs: 7.4, heapMB: 512.5, passes: { passPostMs: 11 } },
+    { frameMs: 64, atMs: 80, betweenMs: 41.2, heapMB: 540.25, passes: { passPostMs: 48 } },
+    { frameMs: 17, atMs: 97, betweenMs: 8.1, heapMB: 541, passes: { passPostMs: 12 } },
   ];
   // In the page's timebase: starts at 1020 (20 ms into the capture), runs 48 ms to 1068.
   const longTasks = [
@@ -150,14 +151,33 @@ console.log('Performance capture statistics tests passed.');
   assert.equal(samples[1].longTaskMs, 48, 'the dip frame is inside the task for its whole length');
   assert.equal(samples[2].longTaskMs, 0, 'and the frame after it is clear');
 
-  // A task spanning two frames counts its overlapping part in each: both waited on it.
+  // A task spanning two frames splits between them: intervals abut, so the halves add up to the
+  // task and never to more than it.
   const split = [
-    { frameMs: 20, atMs: 0 },
     { frameMs: 20, atMs: 20 },
+    { frameMs: 20, atMs: 40 },
   ];
   attachLongTasks(split, [{ startTime: startedAt + 10, duration: 20 }], startedAt);
   assert.equal(split[0].longTaskMs, 10);
   assert.equal(split[1].longTaskMs, 10, 'the halves add up to the task, one frame each');
+
+  // The regression: variable frame lengths. Read forwards, these three rows overlap each other and
+  // the task lands in the first two (60 and 10 ms of a 60 ms task). Read backwards, only the frame
+  // that actually ran from 110 to 200 was inside it.
+  const uneven = [
+    { atMs: 100, frameMs: 100 },
+    { atMs: 110, frameMs: 10 },
+    { atMs: 200, frameMs: 90 },
+  ];
+  attachLongTasks(uneven, [{ startTime: 110, duration: 60 }], 0);
+  assert.deepEqual(uneven.map(sample => sample.longTaskMs), [0, 0, 60],
+    'a sample interval ends at its stamp, so the task belongs to the frame that ran through it');
+
+  // Without atMs the fallback ends at the sample too, so the two agree.
+  const noStamp = [{ frameMs: 100 }, { frameMs: 10 }, { frameMs: 90 }];
+  attachLongTasks(noStamp, [{ startTime: 110, duration: 60 }], 0);
+  assert.deepEqual(noStamp.map(sample => sample.longTaskMs), [0, 0, 60],
+    'the running-sum fallback places frames the same way');
 
   const listed = summarizeLongTasks(longTasks, { startedAt, finishedAt: startedAt + 100 });
   assert.equal(listed.count, 1, 'a task that started before the capture is not in the window');
@@ -172,6 +192,7 @@ console.log('Performance capture statistics tests passed.');
   assert.equal(capped.listed, 100, 'the list is capped');
 
   const rows = buildPerformanceSeries(samples);
+  assert.equal(rows[1][SERIES_KEYS.indexOf('tMs')], 80, 'the row is stamped at the end of its frame');
   assert.equal(rows[1][SERIES_KEYS.indexOf('betweenMs')], 41.2, 'the gap before the dip is a column');
   assert.equal(rows[1][SERIES_KEYS.indexOf('longTaskMs')], 48);
   assert.equal(rows[1][SERIES_KEYS.indexOf('heapMB')], 540.3, 'the heap, to a tenth of a megabyte');
@@ -191,7 +212,7 @@ console.log('Performance capture statistics tests passed.');
     { frameMs: 16, events: { a: 0 } }, { frameMs: 70, events: { a: 1 } },
   ]).meanBetweenInSpikes, null, 'nothing recorded, nothing claimed');
 
-  const measurement = buildPerformanceMeasurement(samples, { startedAt, finishedAt: startedAt + 100, longTasks });
+  const measurement = buildPerformanceMeasurement(samples, { startedAt, finishedAt: startedAt + 120, longTasks });
   assert.equal(measurement.longTasks.count, 1, 'the saved entry carries the long tasks of the window');
   assert.equal(measurement.series[1][SERIES_KEYS.indexOf('longTaskMs')], 48, 'and the rows carry the overlap');
   console.log('between frames: the gap, the long tasks in it, and the heap');
