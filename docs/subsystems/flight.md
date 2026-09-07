@@ -19,6 +19,7 @@ and AI fly the same model.
 | `flight-drones.js` | The three releasable mini drones | three, combat |
 | `flight-autopilot.js` | Player-selectable orbit for any airframe, on `steerToward` | three, ai, terrain |
 | `flight-meshes.js` | The craft as groups (jet, quad, bird, recon UAV, two ground vehicles, the Sentinel wing); materials come from the caller | three |
+| `bake-vehicle-parts.mjs` | Writes `docs/vehicle-parts.md`: every kind, every named part, its size and position | three, `flight-meshes.js` |
 | `water-hybrid.js` | Optional ocean surface: Gerstner swell, foam, depth colour (shared with `demos/water-demo.html`) | three, `water-waves.js` |
 | `water-config.json` | The water settings themselves: written by `demos/water-demo.html`, read here | data |
 | `demos/flight-sim.html` | The viewer: meshes, HUD, audio, FX, panel, clipmap | all of the above |
@@ -26,7 +27,25 @@ and AI fly the same model.
 Tests: `test-flight-model.mjs`, `test-flight-terrain.mjs`, `test-flight-terrain-baked.mjs`,
 `test-flight-terrain-stream.mjs`, `test-ground-look.mjs`, `test-flight-ai.mjs`, `test-flight-combat.mjs`, `test-flight-drones.mjs`,
 `test-flight-autopilot.mjs`, `test-water-hybrid.mjs`, `test-water-waves.mjs`,
-`test-flight-meshes-recon.mjs`, `test-flight-meshes-sentinel.mjs`, `test-vehicle-meshes.mjs`. Plain Node, no framework, per repo convention.
+`test-flight-meshes-recon.mjs`, `test-flight-meshes-sentinel.mjs`, `test-vehicle-meshes.mjs`,
+`test-vehicle-parts.mjs`. Plain Node, no framework, per repo convention.
+
+## Editing a craft in a modelling tool
+
+`finishVehicle()` merges every mesh into one draw per material, which is right at runtime and
+useless for a round trip: an exported model opens as eight lumps named `Mesh_0`…`Mesh_7`, and an
+edit made to them cannot be read back. `setMeshAuthoring(true)` turns the merge off, so a build
+carries all its parts under the names `docs/vehicle-parts.md` lists — `ugv-barrel`, `buggy-cage-a-pillar-l`,
+`recon-wing-r` and the rest. The UGV viewer's **export GLB** button builds a second authoring copy
+for export and leaves the drawn model merged.
+
+Reading an edit back: match by name, not by shape. Bounding boxes are not enough to tell a long
+flat cowl from a tall short one, and fitting to them produces numbers that agree while the model
+does not. Names survive everything in Blender except joining objects, which renames the result
+after one of its inputs.
+
+After changing a builder, run `node bake-vehicle-parts.mjs`; `test-vehicle-parts.mjs` fails if the
+doc and the code disagree, or if any part is left unnamed.
 
 The demo needs a server (`python serve.py`) because of the ES module imports, then
 `http://127.0.0.1:8080/demos/flight-sim.html`. Add `?terrain=<name>` to fly a bake instead of the

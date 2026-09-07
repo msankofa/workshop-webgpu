@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 import zipfile
 
@@ -377,6 +378,26 @@ def save_shot_spread(body_bytes):
     with open(target, 'wb') as f:
         f.write(body_bytes)
     return 'shot-spread.json'
+
+
+def save_scratchpad_capture(body_bytes):
+    # viewer.html in scratchpads/sablynx-ugv posts its view snapshots and GLB exports here, so the
+    # scratchpad needs no server of its own. `dir` picks shots/ or export/, both under that folder.
+    body = json.loads(body_bytes.decode('utf-8'))
+    kind = body.get('dir')
+    if kind not in ('shots', 'export'):
+        raise ValueError('dir must be shots or export')
+    ext = 'png' if kind == 'shots' else 'glb'
+    name = slugify(body.get('name') or 'capture')
+    out_dir = os.path.join(ROOT, 'scratchpads', 'sablynx-ugv', kind)
+    os.makedirs(out_dir, exist_ok=True)
+    if kind == 'shots':
+        name = f"{name}-{time.strftime('%Y%m%d-%H%M%S')}"
+    data = body['data'].split(',', 1)[-1]
+    target = os.path.join(out_dir, f'{name}.{ext}')
+    with open(target, 'wb') as f:
+        f.write(base64.b64decode(data))
+    return os.path.relpath(target, ROOT).replace(os.sep, '/')
 
 
 def save_bot_state_trace(raw_name, body_bytes):
@@ -882,6 +903,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if self.path.startswith('/api/save-shot-spread'):
             return self._handle_save_shot_spread()
+        if self.path.startswith('/api/save-scratchpad-capture'):
+            return self._handle_save_scratchpad_capture()
         if self.path.startswith('/api/save-base-game-default'):
             return self._handle_save_base_game_default()
         if self.path.startswith('/api/save-ordination'):
@@ -1235,6 +1258,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # POST /api/save-shot-spread -- base-game.html's weapon-spread tuning. One file overwritten in
     # place; both the page and the relay read it on startup, so they fire the same cone.
+    def _handle_save_scratchpad_capture(self):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if length <= 0 or length > 64_000_000:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            rel_path = save_scratchpad_capture(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
     def _handle_save_shot_spread(self):
         length = int(self.headers.get('content-length', '0') or 0)
         if length <= 0 or length > 1_000_000:

@@ -15,20 +15,28 @@ export function buildPlane(tint, m) {
   const g = new THREE.Group();
   const body = m.standard(tint), dark = m.standard(0x2a3038), glass = m.standard(0x121a24, 0x0a1520);
   const fuse = new THREE.Mesh(new THREE.CapsuleGeometry(0.62, 6.2, 6, 12), body);
+  fuse.name = 'plane-fuselage';
   fuse.rotation.x = Math.PI / 2; g.add(fuse);
   const nose = new THREE.Mesh(new THREE.ConeGeometry(0.62, 2.2, 12), body);
+  nose.name = 'plane-nose';
   nose.rotation.x = -Math.PI / 2; nose.position.z = -4.6; g.add(nose);
   const wing = new THREE.Mesh(new THREE.BoxGeometry(11.5, 0.22, 2.6), body);
+  wing.name = 'plane-wing';
   wing.position.set(0, -0.15, 0.4); g.add(wing);
   const stab = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.18, 1.2), body);
+  stab.name = 'plane-stabiliser';
   stab.position.set(0, 0.1, 3.5); g.add(stab);
   const fin = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.9, 1.5), body);
+  fin.name = 'plane-fin';
   fin.position.set(0, 1.05, 3.5); g.add(fin);
   const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.55, 12, 8), glass);
+  canopy.name = 'plane-canopy';
   canopy.scale.set(1, 0.75, 2.1); canopy.position.set(0, 0.5, -1.4); g.add(canopy);
   const intake = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.62, 1.1, 12), dark);
+  intake.name = 'plane-intake';
   intake.rotation.x = Math.PI / 2; intake.position.z = 3.3; g.add(intake);
   const flame = new THREE.Mesh(new THREE.ConeGeometry(0.44, 2.6, 10), m.basic(0x8fd0ff, 0.85));
+  flame.name = 'plane-flame';
   flame.rotation.x = Math.PI / 2; flame.position.z = 4.6; g.add(flame);
   g.userData.flame = flame;
   return g;
@@ -37,22 +45,28 @@ export function buildPlane(tint, m) {
 export function buildDrone(tint, m) {
   const g = new THREE.Group();
   const body = m.standard(tint), dark = m.standard(0x1d2228);
-  const hull = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.07, 0.26), body); g.add(hull);
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.07, 0.26), body);
+  hull.name = 'drone-hull'; g.add(hull);
   const rotors = [];
   for (let i = 0; i < 4; i++) {
     const sx = i < 2 ? 1 : -1, sz = i % 2 === 0 ? 1 : -1;
     const arm = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.018, 0.26), dark);
+    arm.name = `drone-arm-${i}`;
     arm.position.set(sx * 0.11, 0, sz * 0.13);
     arm.rotation.y = sx * sz * 0.62; g.add(arm);
     const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.03, 8), dark);
+    hub.name = `drone-hub-${i}`;
     hub.position.set(sx * 0.20, 0.02, sz * 0.20); g.add(hub);
     const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.115, 0.004, 16), m.basic(0xbfd8ee, 0.30));
+    disc.name = `drone-disc-${i}`;
     disc.position.set(sx * 0.20, 0.038, sz * 0.20); g.add(disc);
     const blade = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.004, 0.018), dark);
+    blade.name = `drone-blade-${i}`;
     blade.position.copy(disc.position); g.add(blade);
     rotors.push(blade);
   }
   const cam = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 8), m.standard(0x0d1116, 0x102030));
+  cam.name = 'drone-camera';
   cam.position.set(0, -0.045, -0.09); g.add(cam);
   g.userData.rotors = rotors;
   return g;
@@ -62,18 +76,23 @@ export function buildBird(tint, m) {
   const g = new THREE.Group();
   const body = m.standard(tint), dark = m.standard(0x25201c);
   const torso = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 10), body);
+  torso.name = 'bird-torso';
   torso.scale.set(1, 0.9, 2.4); g.add(torso);
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.085, 10, 8), body);
+  head.name = 'bird-head';
   head.position.set(0, 0.06, -0.38); g.add(head);
   const beak = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.16, 7), m.standard(0xc8a33f));
+  beak.name = 'bird-beak';
   beak.rotation.x = -Math.PI / 2; beak.position.set(0, 0.04, -0.52); g.add(beak);
   const tail = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.02, 0.34), dark);
+  tail.name = 'bird-tail';
   tail.position.set(0, 0.02, 0.44); g.add(tail);
   const wings = [];
   for (const side of [1, -1]) {
     const pivot = new THREE.Group();
     pivot.position.set(side * 0.10, 0.05, -0.02);
     const wing = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.018, 0.30), body);
+    wing.name = `bird-wing-${side < 0 ? 'l' : 'r'}`;
     wing.position.set(side * 0.36, 0, 0.02);
     pivot.add(wing); g.add(pivot);
     wings.push({ pivot, side, wing });
@@ -84,6 +103,25 @@ export function buildBird(tint, m) {
 
 // A cylinder spanning two points, for tube frames and roll cages. `a` and `b` are [x, y, z].
 const _tubeA = new THREE.Vector3(), _tubeDir = new THREE.Vector3(), _tubeUp = new THREE.Vector3(0, 1, 0);
+// A solid between two quads that need not be parallel or the same size: a tapered strut. `a` and
+// `b` are four points each, in the same rotational order. Double-sided material, so winding is free.
+function hexa(a, b, material) {
+  const tri = (p, q, r) => [...p, ...q, ...r];
+  const pos = [];
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4;
+    pos.push(...tri(a[i], b[i], b[j]), ...tri(a[i], b[j], a[j]));
+  }
+  pos.push(...tri(a[0], a[1], a[2]), ...tri(a[0], a[2], a[3]));
+  pos.push(...tri(b[0], b[2], b[1]), ...tri(b[0], b[3], b[2]));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  return new THREE.Mesh(geo, material);
+}
+
+const name = (mesh, n) => { mesh.name = n; return mesh; };
+
 function tube(a, b, radius, material, seg = 8) {
   _tubeA.set(a[0], a[1], a[2]);
   _tubeDir.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
@@ -96,6 +134,16 @@ function tube(a, b, radius, material, seg = 8) {
 
 // A side silhouette extruded across the vehicle's width. Points are [z, y] in metres, nose at -Z;
 // the result is centred on X so the caller places it by its own axis like every other part.
+// Several extruded profiles as one geometry, for a part built from more than one shell.
+function mergeGeos(geos) {
+  const pos = [];
+  for (const g of geos) pos.push(...g.attributes.position.array);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
 function bodyProfile(points, width) {
   const shape = new THREE.Shape();
   shape.moveTo(points[0][0], points[0][1]);
@@ -109,21 +157,26 @@ function bodyProfile(points, width) {
 
 // Tyre, rim face and hub as three radii, so a wheel reads as a wheel at gameplay distance instead
 // of as a black cylinder. The pivot steers, the spin group rolls; the view animates both.
-function vehicleWheel(x, y, z, radius, width, mats, front, wheels) {
+function vehicleWheel(x, y, z, radius, width, mats, front, wheels, label = 'wheel') {
   const pivot = new THREE.Group();
   pivot.position.set(x, y, z);
   const spin = new THREE.Group();
+  spin.name = `${label}-spin`;
   const tyre = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, width * 0.86, 16), mats.tyre);
   tyre.rotation.z = Math.PI / 2;
+  tyre.name = `${label}-tyre`;
   spin.add(tyre);
   const shoulder = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.93, radius * 0.93, width, 16), mats.tyre);
   shoulder.rotation.z = Math.PI / 2;
+  shoulder.name = `${label}-shoulder`;
   spin.add(shoulder);
   const rim = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.6, radius * 0.6, width * 1.04, 12), mats.rim);
   rim.rotation.z = Math.PI / 2;
+  rim.name = `${label}-rim`;
   spin.add(rim);
   const hub = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.2, radius * 0.2, width * 1.14, 8), mats.dark);
   hub.rotation.z = Math.PI / 2;
+  hub.name = `${label}-hub`;
   spin.add(hub);
   pivot.add(spin);
   if (wheels) wheels.push({ pivot, spin, front, radius });
@@ -177,15 +230,21 @@ function mergeByMaterial(root, skip = null) {
   return root;
 }
 
+let AUTHORING = false;
+// Turn on before building a model that is going out to a modelling tool, off again afterwards.
+export function setMeshAuthoring(on) { AUTHORING = !!on; }
+
 // Merges the hull into one draw per material and each wheel's four rings into one per material,
 // leaving the pivots free to steer and roll.
 function finishVehicle(g, wheels, named = {}) {
   const groups = Object.values(named).filter(Boolean);
   const skip = new Set(wheels.map(w => w.pivot));
   for (const group of groups) skip.add(group);
-  mergeByMaterial(g, skip);
-  for (const wheel of wheels) mergeByMaterial(wheel.spin);
-  for (const group of groups) mergeByMaterial(group, skip);
+  if (!AUTHORING) {
+    mergeByMaterial(g, skip);
+    for (const wheel of wheels) mergeByMaterial(wheel.spin);
+    for (const group of groups) mergeByMaterial(group, skip);
+  }
   g.userData.wheels = wheels;
   for (const [name, group] of Object.entries(named)) if (group) g.userData[name] = group;
   return g;
@@ -257,10 +316,10 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
   const D = wb * 0.55, r = D / 2, wheelW = D * 0.32;
   const Y = (f) => f * D - clear;
   const axleY = Y(0.5), tubFloor = Y(0.55), sideLow = Y(0.66), deckY = Y(1.42);
-  const railLow = Y(1.45), railTop = Y(1.71), pedTop = Y(1.95), rwsY = Y(2.45);
-  const gunY = Y(2.62), mastPlateY = Y(2.85), domeY = Y(3.0), antTopY = Y(3.4);
+  const railLow = Y(1.45), railTop = Y(1.71), pedTop = Y(1.70), rwsY = Y(2.08);
+  const gunY = Y(2.25), mastPlateY = Y(2.874), antTopY = Y(3.425);
   const halfWb = wb / 2, halfTrack = track / 2;
-  const nose = -(halfWb + 0.27), tail = halfWb + 0.31, hullHalf = halfTrack * 0.75;
+  const nose = -(halfWb + 0.27), tail = halfWb + 0.31, hullHalf = halfTrack * 0.88;
 
   // ── hull tub ───────────────────────────────────────────────────────────────
   const T =    [0, 0.05, 0.12, 0.26, 0.45, 0.64, 0.80, 0.90, 0.96, 1.0];
@@ -278,45 +337,58 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
   // Bolted flange along each hull top edge, and the expanded-metal deck inside it.
   for (const sx of [-1, 1]) {
     const flange = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.026, (tail - nose) * 0.9), deckMat);
+    flange.name = `ugv-flange-${sx < 0 ? 'l' : 'r'}`;
     flange.position.set(sx * hullHalf, deckY + 0.012, (nose + tail) / 2); g.add(flange);
   }
   const deck = new THREE.Mesh(new THREE.BoxGeometry(hullHalf * 1.86, 0.02, (tail - nose) * 0.86), deckMat);
+  deck.name = 'ugv-deck';
   deck.position.set(0, deckY + 0.011, (nose + tail) / 2 + 0.01); g.add(deck);
 
   // ── perimeter cargo rail: lower tube at deck level, posts, upper tube ──────
   const railHalf = hullHalf * 1.02, railZ0 = nose + 0.10, railZ1 = tail - 0.08, tubeR = D * 0.037;
-  for (const y of [railLow, railTop]) {
-    for (const sx of [-1, 1]) g.add(tube([sx * railHalf, y, railZ0], [sx * railHalf, y, railZ1], tubeR, body));
-    for (const z of [railZ0, railZ1]) g.add(tube([-railHalf, y, z], [railHalf, y, z], tubeR, body));
+  for (const [yi, y] of [railLow, railTop].entries()) {
+    const lvl = yi ? 'top' : 'low';
+    for (const sx of [-1, 1]) g.add(name(tube([sx * railHalf, y, railZ0], [sx * railHalf, y, railZ1], tubeR, body),
+      `ugv-rail-${lvl}-side-${sx < 0 ? 'l' : 'r'}`));
+    for (const [zi, z] of [railZ0, railZ1].entries()) g.add(name(tube([-railHalf, y, z], [railHalf, y, z], tubeR, body),
+      `ugv-rail-${lvl}-end-${zi ? 'rear' : 'front'}`));
   }
-  for (const sx of [-1, 1]) for (const z of [railZ0, railZ0 * 0.36 + railZ1 * 0.64, railZ1]) {
-    g.add(tube([sx * railHalf, railLow, z], [sx * railHalf, railTop, z], tubeR * 0.92, body));
+  for (const sx of [-1, 1]) for (const [zi, z] of [railZ0, railZ0 * 0.36 + railZ1 * 0.64, railZ1].entries()) {
+    g.add(name(tube([sx * railHalf, railLow, z], [sx * railHalf, railTop, z], tubeR * 0.92, body),
+      `ugv-rail-post-${sx < 0 ? 'l' : 'r'}${zi}`));
   }
-  for (const z of [railZ0, railZ1]) for (const sx of [-1, 1]) {
-    g.add(tube([sx * railHalf * 0.45, railLow, z], [sx * railHalf * 0.45, railTop, z], tubeR * 0.85, body));
+  for (const [zi, z] of [railZ0, railZ1].entries()) for (const sx of [-1, 1]) {
+    g.add(name(tube([sx * railHalf * 0.45, railLow, z], [sx * railHalf * 0.45, railTop, z], tubeR * 0.85, body),
+      `ugv-rail-inner-post-${zi ? 'rear' : 'front'}-${sx < 0 ? 'l' : 'r'}`));
   }
   // Slotted mounting plates between the rails, and the clamp blocks bolted to them.
   for (const sx of [-1, 1]) for (const zf of [0.26, 0.68]) {
     const z = railZ0 + (railZ1 - railZ0) * zf;
     const plate = new THREE.Mesh(new THREE.BoxGeometry(0.016, (railTop - railLow) * 0.82, 0.30), body);
+    plate.name = `ugv-rail-plate-${sx < 0 ? 'l' : 'r'}${zf}`;
     plate.position.set(sx * railHalf, (railLow + railTop) / 2, z); g.add(plate);
     const block = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.085, 0.085), body);
+    block.name = `ugv-rail-block-${sx < 0 ? 'l' : 'r'}${zf}`;
     block.position.set(sx * (railHalf + 0.02), (railLow + railTop) / 2, z); g.add(block);
     const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.05, 8), dark);
     knob.rotation.z = Math.PI / 2;
+    knob.name = `ugv-rail-knob-${sx < 0 ? 'l' : 'r'}${zf}`;
     knob.position.set(sx * (railHalf + 0.075), (railLow + railTop) / 2, z); g.add(knob);
   }
 
   // ── mudguards, tow eyes, wheels ────────────────────────────────────────────
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    g.add(wheelArch(sx * halfTrack, axleY, sz * halfWb, r * 1.2, wheelW * 1.5, panel));
+    g.add(name(wheelArch(sx * halfTrack, axleY, sz * halfWb, r * 1.2, wheelW * 1.5, panel),
+      `ugv-mudguard-${sx < 0 ? 'l' : 'r'}${sz < 0 ? 'f' : 'b'}`));
     const eye = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.011, 5, 9), body);
+    eye.name = `ugv-tow-eye-${sx < 0 ? 'l' : 'r'}${sz < 0 ? 'f' : 'b'}`;
     eye.position.set(sx * hullHalf * 0.92, sideLow + 0.05, sz * (halfWb + 0.20));
     eye.rotation.y = Math.PI / 2; g.add(eye);
   }
   const wheels = [];
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    g.add(vehicleWheel(sx * halfTrack, axleY, sz * halfWb, r, wheelW, mats, sz < 0, wheels));
+    const wn = `ugv-wheel-${sx < 0 ? 'l' : 'r'}${sz < 0 ? 'f' : 'b'}`;
+    g.add(name(vehicleWheel(sx * halfTrack, axleY, sz * halfWb, r, wheelW, mats, sz < 0, wheels, wn), wn));
   }
 
   // ── remote weapon station, on its own group so it can be trained later ─────
@@ -324,10 +396,13 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
   turret.position.set(0, deckY, -0.05);
   const ty = (y) => y - deckY;   // turret-local height
   const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.16, pedTop - deckY, 14), body);
+  ped.name = 'ugv-pedestal';
   ped.position.y = ty((deckY + pedTop) / 2); turret.add(ped);
   const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.135, 0.05, 14), dark);
+  collar.name = 'ugv-collar';
   collar.position.y = ty(pedTop - 0.01); turret.add(collar);
   const yoke = new THREE.Mesh(new THREE.BoxGeometry(0.19, (rwsY - pedTop) * 1.15, 0.20), body);
+  yoke.name = 'ugv-yoke';
   yoke.position.y = ty((pedTop + rwsY) / 2 + 0.02); turret.add(yoke);
 
   // The gun elevates about its trunnion, so everything that moves in pitch hangs off its own group
@@ -336,42 +411,62 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
   elevation.position.set(0, ty(gunY), 0);
   turret.add(elevation);
   const ey = (y) => y - gunY;   // elevation-local height
-  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.14, 0.52), dark);
-  receiver.position.set(0, ey(gunY - 0.035), -0.10); elevation.add(receiver);
-  const cowl = new THREE.Mesh(bodyProfile([
-    [-0.34, ey(gunY + 0.10)], [-0.20, ey(gunY + 0.155)], [0.20, ey(gunY + 0.15)], [0.26, ey(gunY + 0.03)],
-    [0.10, ey(gunY - 0.08)], [-0.28, ey(gunY - 0.02)],
-  ], 0.23), body);
+  const GUN_Z = 0.165;
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.14, 0.75), dark);
+  receiver.name = 'ugv-receiver';
+  receiver.position.set(0, ey(gunY - 0.035), -0.047); elevation.add(receiver);
+  // The cowl is a shroud over the gun, not a solid: an inverted U in cross-section — a roof with a
+  // wall down each side and open below. Built as those three slabs so it stays that shape at any
+  // scale. `COWL` is the outer silhouette, [z, y] about the trunnion; the cavity roof is at +0.055.
+  const COWL = [[0.098, -0.080], [-0.509, -0.020], [-0.605, 0.100],
+                [-0.382, 0.155], [0.258, 0.150], [0.354, 0.030]];
+  const COWL_ROOF = [[-0.569, 0.055], [-0.605, 0.100], [-0.382, 0.155], [0.258, 0.150], [0.334, 0.055]];
+  const cowlHalf = 0.115, cowlWall = 0.032;
+  const cowlSide = (pts, width, x) => {
+    const geo = bodyProfile(pts.map(([z, dy]) => [z, ey(gunY + dy)]), width);
+    if (x) geo.translate(x, 0, 0);
+    return geo;
+  };
+  const cowl = new THREE.Mesh(mergeGeos([
+    cowlSide(COWL, cowlWall, -(cowlHalf - cowlWall / 2)),
+    cowlSide(COWL, cowlWall, cowlHalf - cowlWall / 2),
+    cowlSide(COWL_ROOF, cowlHalf * 2, 0),
+  ]), body);
+  cowl.name = 'ugv-cowl';
   elevation.add(cowl);
-  for (let i = 0; i < 6; i++) {
-    const slot = new THREE.Mesh(new THREE.BoxGeometry(0.245, 0.055, 0.016), dark);
-    slot.position.set(0, ey(gunY + 0.095), -0.24 + i * 0.055); elevation.add(slot);
-  }
   const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.105, 0.17, 14), body);
   drum.rotation.z = Math.PI / 2;
-  drum.position.set(0.10, ey(rwsY + 0.02), 0.06); elevation.add(drum);
+  drum.name = 'ugv-drum';
+  drum.position.set(0.10, ey(rwsY + 0.02), -0.002); elevation.add(drum);
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.021, 0.78, 9), dark);
   barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 0, -0.71); elevation.add(barrel);
+  barrel.name = 'ugv-barrel';
+  barrel.position.set(0, 0, -0.538); elevation.add(barrel);
   const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.024, 0.09, 9), dark);
   muzzle.rotation.x = Math.PI / 2;
-  muzzle.position.set(0, 0, -1.07); elevation.add(muzzle);
+  muzzle.name = 'ugv-muzzle';
+  muzzle.position.set(0, 0, -0.898); elevation.add(muzzle);
   const optic = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.10, 0.30), dark);
-  optic.position.set(0, ey(gunY - 0.15), -0.36); elevation.add(optic);
+  optic.name = 'ugv-optic';
+  optic.position.set(0, ey(gunY - 0.15), -0.36 + GUN_Z); elevation.add(optic);
   const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 0.02, 12), lens);
   glass.rotation.x = Math.PI / 2;
-  glass.position.set(0, ey(gunY - 0.15), -0.52); elevation.add(glass);
+  glass.name = 'ugv-optic-glass';
+  glass.position.set(0, ey(gunY - 0.15), -0.52 + GUN_Z); elevation.add(glass);
   for (const sx of [-1, 1]) {
     const railBar = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.05, 0.44), dark);
-    railBar.position.set(sx * 0.115, ey(gunY - 0.10), -0.06); elevation.add(railBar);
+    railBar.name = `ugv-gun-rail-${sx < 0 ? 'l' : 'r'}`;
+    railBar.position.set(sx * 0.102, ey(gunY - 0.10), -0.122); elevation.add(railBar);
   }
   // A light and a laser module ride the rails either side of the optic, so they train with the gun.
   for (const sx of [-1, 1]) {
     const module = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.16), dark);
-    module.position.set(sx * 0.155, ey(gunY - 0.10), -0.30); elevation.add(module);
+    module.name = sx > 0 ? 'ugv-gun-light' : 'ugv-gun-laser';
+    module.position.set(sx * 0.134, ey(gunY - 0.10), -0.30 + GUN_Z); elevation.add(module);
     const face = new THREE.Mesh(new THREE.CylinderGeometry(sx > 0 ? 0.02 : 0.012, sx > 0 ? 0.02 : 0.012, 0.012, 10), lens);
     face.rotation.x = Math.PI / 2;
-    face.position.set(sx * 0.155, ey(gunY - 0.10), -0.385); elevation.add(face);
+    face.name = sx > 0 ? 'ugv-gun-light-face' : 'ugv-gun-laser-face';
+    face.position.set(sx * 0.134, ey(gunY - 0.10), -0.385 + GUN_Z); elevation.add(face);
   }
   g.add(turret);
 
@@ -379,43 +474,71 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
   for (const sx of [-1, 1]) {
     const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.03, 12), dark);
     cup.rotation.x = Math.PI / 2;
+    cup.name = `ugv-headlamp-${sx < 0 ? 'l' : 'r'}`;
     cup.position.set(sx * hullHalf * 0.32, deckY - 0.07, nose + 0.01); g.add(cup);
     const face = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 0.012, 12), lens);
     face.rotation.x = Math.PI / 2;
+    face.name = `ugv-headlamp-face-${sx < 0 ? 'l' : 'r'}`;
     face.position.set(sx * hullHalf * 0.32, deckY - 0.07, nose - 0.008); g.add(face);
   }
 
-  // ── sensor mast: post at the rear, arm forward, camera, whips and dome ─────
-  const mastX = hullHalf * 0.62, mastZ = tail - 0.20;
-  const post = new THREE.Mesh(new THREE.BoxGeometry(0.055, mastPlateY - railLow, 0.055), body);
-  post.position.set(mastX, (railLow + mastPlateY) / 2, mastZ); g.add(post);
-  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.03, 0.60), body);
-  arm.position.set(mastX * 0.55, mastPlateY, mastZ - 0.29); g.add(arm);
+  // ── rear rack: a post each side, the plate across them, camera, whips and dome ─────
+  // Positions read out of the Blender edit (scratchpads/sablynx-ugv/export/ugv-3.glb) by part name;
+  // heights are still fractions of tyre diameter and x still scales with the hull, so the rack
+  // follows the simulation's wheelbase and track like the rest of the vehicle.
+  const mastZ = tail - 0.20, postTopY = Y(2.684), postBaseY = Y(1.440);
+  const postX0 = hullHalf * 0.807, postX1 = hullHalf * 0.926, postHalfZ = 0.0275;
+  for (const sx of [-1, 1]) {
+    const sd = sx < 0 ? 'l' : 'r';
+    const post = new THREE.Mesh(new THREE.BoxGeometry(postX1 - postX0, postTopY - postBaseY, postHalfZ * 2), body);
+    post.name = `ugv-mast-post-${sd}`;
+    post.position.set(sx * (postX0 + postX1) / 2, (postBaseY + postTopY) / 2, mastZ); g.add(post);
+    // The brace is a tapered strut, not a box: a flat face against the arm, splaying out and down
+    // onto the whole top of the post. Its eight corners are the edit's, to the millimetre.
+    const ax = sx * hullHalf * (sx < 0 ? 0.630 : 0.649), topHalfZ = 0.079;
+    const y0 = mastPlateY - 0.015, y1 = mastPlateY + 0.015;
+    const brace = hexa(
+      [[ax, y0, mastZ - topHalfZ], [ax, y0, mastZ + topHalfZ],
+       [ax, y1, mastZ + topHalfZ], [ax, y1, mastZ - topHalfZ]],
+      [[sx * postX0, postTopY, mastZ - 0.025], [sx * postX0, postTopY, mastZ + 0.025],
+       [sx * postX1, postTopY, mastZ + 0.025], [sx * postX1, postTopY, mastZ - 0.025]],
+      panel);
+    brace.name = `ugv-mast-brace-${sd}`; g.add(brace);
+  }
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.592, 0.03, 0.16), body);
+  arm.name = 'ugv-mast-arm';
+  arm.position.set(0.004, mastPlateY, mastZ); g.add(arm);
   const workLamp = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.05, 0.07), dark);
-  workLamp.position.set(mastX * 0.55, mastPlateY - 0.04, mastZ - 0.36); g.add(workLamp);
+  workLamp.name = 'ugv-work-lamp';
+  workLamp.position.set(-hullHalf * 0.435, Y(2.936), mastZ); g.add(workLamp);
   const workFace = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.035, 0.008), lens);
-  workFace.position.set(mastX * 0.55, mastPlateY - 0.045, mastZ - 0.40); g.add(workFace);
-  const brace = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.19), body);
-  brace.position.set(mastX, mastPlateY - 0.055, mastZ - 0.09);
-  brace.rotation.x = 0.72; g.add(brace);
+  workFace.name = 'ugv-work-lamp-face';
+  workFace.position.set(-hullHalf * 0.435, Y(2.934), mastZ - 0.038); g.add(workFace);
   const camBox = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.085, 0.075), body);
-  camBox.position.set(mastX * 0.55, mastPlateY + 0.055, mastZ - 0.50); g.add(camBox);
+  camBox.name = 'ugv-mast-camera';
+  camBox.position.set(0.002, Y(2.966), mastZ); g.add(camBox);
   const camLens = new THREE.Mesh(new THREE.CylinderGeometry(0.021, 0.021, 0.02, 10), lens);
   camLens.rotation.x = Math.PI / 2;
-  camLens.position.set(mastX * 0.55, mastPlateY + 0.058, mastZ - 0.54); g.add(camLens);
+  camLens.name = 'ugv-mast-camera-lens';
+  camLens.position.set(0.002, Y(2.971), mastZ - 0.045); g.add(camLens);
   const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.030, 0.06, 10), body);
-  stalk.position.set(mastX * 0.55, mastPlateY + 0.04, mastZ - 0.06); g.add(stalk);
+  stalk.name = 'ugv-dome-stalk';
+  stalk.position.set(hullHalf * 0.511, Y(2.941), mastZ); g.add(stalk);
   const dome = new THREE.Mesh(new THREE.SphereGeometry(0.052, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.62), dark);
-  dome.position.set(mastX * 0.55, domeY - 0.045, mastZ - 0.06); g.add(dome);
-  for (const zf of [-0.40, -0.20]) {
+  dome.name = 'ugv-dome';
+  dome.position.set(hullHalf * 0.511, Y(2.950), mastZ); g.add(dome);
+  for (const wx of [-hullHalf * 0.266, hullHalf * 0.247]) {
     const whip = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.014, antTopY - mastPlateY, 6), dark);
-    whip.position.set(mastX * 0.55, (mastPlateY + antTopY) / 2, mastZ + zf); g.add(whip);
+    whip.name = `ugv-whip-${wx < 0 ? 'l' : 'r'}`;
+    whip.position.set(wx, (mastPlateY + antTopY) / 2, mastZ); g.add(whip);
     const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.07, 8), dark);
-    boot.position.set(mastX * 0.55, mastPlateY + 0.035, mastZ + zf); g.add(boot);
+    boot.name = `ugv-whip-boot-${wx < 0 ? 'l' : 'r'}`;
+    boot.position.set(wx, Y(2.932), mastZ); g.add(boot);
   }
   // Corrugated conduit dropping from the turret base to the deck.
   for (const sx of [-1, 1]) {
-    g.add(tube([sx * 0.10, pedTop - 0.06, 0.06], [sx * 0.20, deckY + 0.03, 0.30], 0.021, dark, 6));
+    g.add(name(tube([sx * 0.053, 0.756 - clear + 0.25, -0.053], [sx * 0.247, 0.602 - clear + 0.25, 0.413], 0.021, dark, 6),
+      `ugv-conduit-${sx < 0 ? 'l' : 'r'}`));
   }
 
   const out = finishVehicle(g, wheels, { turret, elevation });
@@ -423,9 +546,9 @@ export function buildUgv(tint, m, dims = UGV_DIMS) {
   // draws there. `parent` names the group a light hangs off so it trains with the gun.
   out.userData.lights = {
     head: { pos: [0, deckY - 0.07, nose - 0.02], dir: [0, -0.06, -1] },
-    lamp: { pos: [mastX * 0.55, mastPlateY - 0.08, mastZ - 0.40] },
-    turretLight: { pos: [0.155, ey(gunY - 0.10), -0.40], dir: [0, 0, -1], parent: 'elevation' },
-    turretLaser: { pos: [-0.155, ey(gunY - 0.10), -0.40], dir: [0, 0, -1], parent: 'elevation' },
+    lamp: { pos: [-hullHalf * 0.435, Y(2.90), mastZ] },
+    turretLight: { pos: [0.134, ey(gunY - 0.10), -0.40 + GUN_Z], dir: [0, 0, -1], parent: 'elevation' },
+    turretLaser: { pos: [-0.134, ey(gunY - 0.10), -0.40 + GUN_Z], dir: [0, 0, -1], parent: 'elevation' },
   };
   return out;
 }
@@ -458,35 +581,44 @@ export function buildBuggy(tint, m, dims = BUGGY_DIMS) {
   const driverSide = (Number(seat[0]) || -1) < 0 ? -1 : 1;
 
   const floor = new THREE.Mesh(new THREE.BoxGeometry(railX * 2.1, 0.06, wb * 0.86), dark);
+  floor.name = 'buggy-floor';
   floor.position.y = floorY; g.add(floor);
-  for (const x of [-railX, railX]) {
-    g.add(tube([x, floorY + 0.03, nose + 0.3], [x, floorY + 0.03, tail - 0.2], 0.045, rim));
+  for (const [xi, x] of [-railX, railX].entries()) {
+    g.add(name(tube([x, floorY + 0.03, nose + 0.3], [x, floorY + 0.03, tail - 0.2], 0.045, rim),
+      `buggy-frame-rail-${xi ? 'r' : 'l'}`));
   }
-  for (const z of [-halfWb * 0.85, 0.05, halfWb * 0.9]) {
-    g.add(tube([-railX, floorY + 0.03, z], [railX, floorY + 0.03, z], 0.04, rim));
+  for (const [zi, z] of [-halfWb * 0.85, 0.05, halfWb * 0.9].entries()) {
+    g.add(name(tube([-railX, floorY + 0.03, z], [railX, floorY + 0.03, z], 0.04, rim), `buggy-crossmember-${zi}`));
   }
 
   const bonnet = new THREE.Mesh(bodyProfile([
     [nose, clear * 0.5], [nose + 0.18, clear * 1.15], [nose + 0.85, clear * 1.4],
     [nose + 1.2, clear * 1.25], [nose + 1.2, floorY], [nose + 0.08, floorY * 0.7],
   ], railX * 1.85), body);
+  bonnet.name = 'buggy-bonnet';
   g.add(bonnet);
   const skid = new THREE.Mesh(new THREE.BoxGeometry(railX * 1.7, 0.03, 0.9), rim);
+  skid.name = 'buggy-skid-plate';
   skid.position.set(0, floorY * 0.5, nose + 0.6); g.add(skid);
 
   const guardY = clear * 1.85;
-  for (const x of [-railX * 0.86, railX * 0.86]) {
-    g.add(tube([x, clear * 0.45, nose + 0.02], [x, guardY, nose + 0.08], 0.045, dark));
+  for (const [xi, x] of [-railX * 0.86, railX * 0.86].entries()) {
+    g.add(name(tube([x, clear * 0.45, nose + 0.02], [x, guardY, nose + 0.08], 0.045, dark),
+      `buggy-bullbar-upright-${xi ? 'r' : 'l'}`));
   }
-  g.add(tube([-railX * 0.86, guardY, nose + 0.08], [railX * 0.86, guardY, nose + 0.08], 0.045, dark));
-  for (const x of [-railX * 0.3, railX * 0.3]) {
-    g.add(tube([x, clear * 0.5, nose + 0.05], [x, guardY, nose + 0.08], 0.032, dark));
+  g.add(name(tube([-railX * 0.86, guardY, nose + 0.08], [railX * 0.86, guardY, nose + 0.08], 0.045, dark),
+    'buggy-bullbar-top'));
+  for (const [xi, x] of [-railX * 0.3, railX * 0.3].entries()) {
+    g.add(name(tube([x, clear * 0.5, nose + 0.05], [x, guardY, nose + 0.08], 0.032, dark),
+      `buggy-bullbar-inner-${xi ? 'r' : 'l'}`));
   }
   const lightBar = new THREE.Mesh(new THREE.BoxGeometry(railX * 1.3, 0.1, 0.09), dark);
+  lightBar.name = 'buggy-light-bar';
   lightBar.position.set(0, guardY + 0.1, nose + 0.06); g.add(lightBar);
   for (const i of [-1.5, -0.5, 0.5, 1.5]) {
     const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.02, 10), lamp);
     lens.rotation.x = Math.PI / 2;
+    lens.name = `buggy-headlamp-${i}`;
     lens.position.set(i * railX * 0.36, guardY + 0.1, nose + 0.01); g.add(lens);
   }
 
@@ -495,64 +627,79 @@ export function buildBuggy(tint, m, dims = BUGGY_DIMS) {
   const aBase = -halfWb * 0.46, aTop = -halfWb * 0.13, bZ = halfWb * 0.52, braceZ = tail - 0.18;
   for (const sx of [-1, 1]) {
     const x = sx * cageX;
-    g.add(tube([x, clear * 1.25, aBase], [x, roofY, aTop], 0.05, dark));
-    g.add(tube([x, floorY + 0.05, bZ], [x, roofY, bZ], 0.05, dark));
-    g.add(tube([x, roofY, aTop], [x, roofY, bZ], 0.05, dark));
-    g.add(tube([x, roofY, bZ], [x, clear * 0.8, braceZ], 0.05, dark));
-    g.add(tube([x, clear * 1.3, aBase + 0.05], [x, clear * 1.1, bZ - 0.05], 0.04, dark));
+    const sd = sx < 0 ? 'l' : 'r';
+    g.add(name(tube([x, clear * 1.25, aBase], [x, roofY, aTop], 0.05, dark), `buggy-cage-a-pillar-${sd}`));
+    g.add(name(tube([x, floorY + 0.05, bZ], [x, roofY, bZ], 0.05, dark), `buggy-cage-b-pillar-${sd}`));
+    g.add(name(tube([x, roofY, aTop], [x, roofY, bZ], 0.05, dark), `buggy-cage-roof-rail-${sd}`));
+    g.add(name(tube([x, roofY, bZ], [x, clear * 0.8, braceZ], 0.05, dark), `buggy-cage-rear-brace-${sd}`));
+    g.add(name(tube([x, clear * 1.3, aBase + 0.05], [x, clear * 1.1, bZ - 0.05], 0.04, dark), `buggy-cage-side-bar-${sd}`));
   }
-  g.add(tube([-cageX, roofY, aTop], [cageX, roofY, aTop], 0.05, dark));
+  g.add(name(tube([-cageX, roofY, aTop], [cageX, roofY, aTop], 0.05, dark), 'buggy-cage-front-hoop'));
   // A work lamp clamped to the front roof rail, lensed down and forward over the bonnet.
   const roofLamp = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.07, 0.09), dark);
+  roofLamp.name = 'buggy-roof-lamp';
   roofLamp.position.set(0, roofY + 0.06, aTop - 0.02); g.add(roofLamp);
   const roofFace = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 0.01), lamp);
+  roofFace.name = 'buggy-roof-lamp-face';
   roofFace.position.set(0, roofY + 0.06, aTop - 0.07); g.add(roofFace);
-  g.add(tube([-cageX, roofY, bZ], [cageX, roofY, bZ], 0.05, dark));
-  g.add(tube([-cageX, roofY - 0.06, bZ + 0.06], [cageX, clear * 1.0, braceZ - 0.05], 0.035, dark));
-  g.add(tube([cageX, roofY - 0.06, bZ + 0.06], [-cageX, clear * 1.0, braceZ - 0.05], 0.035, dark));
+  g.add(name(tube([-cageX, roofY, bZ], [cageX, roofY, bZ], 0.05, dark), 'buggy-cage-rear-hoop'));
+  g.add(name(tube([-cageX, roofY - 0.06, bZ + 0.06], [cageX, clear * 1.0, braceZ - 0.05], 0.035, dark), 'buggy-cage-x-brace-l'));
+  g.add(name(tube([cageX, roofY - 0.06, bZ + 0.06], [-cageX, clear * 1.0, braceZ - 0.05], 0.035, dark), 'buggy-cage-x-brace-r'));
 
   const dash = new THREE.Mesh(new THREE.BoxGeometry(cageX * 1.9, 0.2, 0.14), dark);
+  dash.name = 'buggy-dash';
   dash.position.set(0, clear * 1.8, -halfWb * 0.35); g.add(dash);
   for (const sx of [-1, 1]) {
     const x = sx * seatX;
     const pan = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.09, 0.46), seatMat);
+    pan.name = `buggy-seat-pan-${sx < 0 ? 'l' : 'r'}`;
     pan.position.set(x, clear * 1.3, seatZ); g.add(pan);
     const back = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.64, 0.11), seatMat);
+    back.name = `buggy-seat-back-${sx < 0 ? 'l' : 'r'}`;
     back.position.set(x, clear * 2.1, seatZ + 0.21); back.rotation.x = -0.15; g.add(back);
     const rest = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.17, 0.1), seatMat);
+    rest.name = `buggy-headrest-${sx < 0 ? 'l' : 'r'}`;
     rest.position.set(x, clear * 2.95, seatZ + 0.27); g.add(rest);
     for (const bx of [-1, 1]) {
       const bolster = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.3, 0.44), seatMat);
+      bolster.name = `buggy-bolster-${sx < 0 ? 'l' : 'r'}${bx < 0 ? 'i' : 'o'}`;
       bolster.position.set(x + bx * 0.22, clear * 1.7, seatZ + 0.02); g.add(bolster);
     }
   }
   const column = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.3, 6), rim);
+  column.name = 'buggy-steering-column';
   column.position.set(driverSide * seatX, clear * 2.0, seatZ - 0.32);
   column.rotation.x = 1.05; g.add(column);
   const steer = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.023, 6, 14), dark);
+  steer.name = 'buggy-steering-wheel';
   steer.position.set(driverSide * seatX, clear * 2.2, seatZ - 0.22);
   steer.rotation.x = 1.05; g.add(steer);
 
   const bed = new THREE.Mesh(new THREE.BoxGeometry(railX * 2, 0.05, wb * 0.3), rim);
+  bed.name = 'buggy-cargo-bed';
   bed.position.set(0, clear * 0.95, halfWb * 0.72); g.add(bed);
-  for (const x of [-railX, railX]) {
-    g.add(tube([x, clear * 1.1, halfWb * 0.56], [x, clear * 1.1, braceZ - 0.06], 0.032, dark));
+  for (const [xi, x] of [-railX, railX].entries()) {
+    g.add(name(tube([x, clear * 1.1, halfWb * 0.56], [x, clear * 1.1, braceZ - 0.06], 0.032, dark),
+      `buggy-bed-rail-${xi ? 'r' : 'l'}`));
   }
-  const spare = vehicleWheel(0, clear * 1.28, halfWb * 0.74, r * 0.92, wheelW, mats, false, null);
+  const spare = vehicleWheel(0, clear * 1.28, halfWb * 0.74, r * 0.92, wheelW, mats, false, null, 'buggy-spare');
+  spare.name = 'buggy-spare-wheel';
   spare.rotation.z = Math.PI / 2; g.add(spare);
-  g.add(tube([halfTrack * 0.4, clear * 0.7, halfWb * 0.8], [halfTrack * 0.42, clear * 0.95, tail], 0.04, rim));
+  g.add(name(tube([halfTrack * 0.4, clear * 0.7, halfWb * 0.8], [halfTrack * 0.42, clear * 0.95, tail], 0.04, rim), 'buggy-exhaust'));
 
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     const x = sx * halfTrack, z = sz * halfWb, ix = sx * railX;
-    g.add(tube([ix, axleY + 0.02, z], [x * 0.94, axleY - 0.02, z], 0.045, rim));
-    g.add(tube([ix, axleY + 0.32, z], [x * 0.92, axleY + 0.16, z], 0.04, rim));
-    g.add(tube([ix * 0.9, clear * 1.3, z - sz * 0.06], [x * 0.9, axleY + 0.04, z], 0.045, dark));
-    g.add(wheelArch(x, axleY, z, r * 1.22, wheelW * 1.4, panel));
+    const cnr = `${sx < 0 ? 'l' : 'r'}${sz < 0 ? 'f' : 'b'}`;
+    g.add(name(tube([ix, axleY + 0.02, z], [x * 0.94, axleY - 0.02, z], 0.045, rim), `buggy-lower-wishbone-${cnr}`));
+    g.add(name(tube([ix, axleY + 0.32, z], [x * 0.92, axleY + 0.16, z], 0.04, rim), `buggy-upper-wishbone-${cnr}`));
+    g.add(name(tube([ix * 0.9, clear * 1.3, z - sz * 0.06], [x * 0.9, axleY + 0.04, z], 0.045, dark), `buggy-damper-${cnr}`));
+    g.add(name(wheelArch(x, axleY, z, r * 1.22, wheelW * 1.4, panel), `buggy-mudguard-${cnr}`));
   }
 
   const wheels = [];
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    g.add(vehicleWheel(sx * halfTrack, axleY, sz * halfWb, r, wheelW, mats, sz < 0, wheels));
+    const wn = `buggy-wheel-${sx < 0 ? 'l' : 'r'}${sz < 0 ? 'f' : 'b'}`;
+    g.add(name(vehicleWheel(sx * halfTrack, axleY, sz * halfWb, r, wheelW, mats, sz < 0, wheels, wn), wn));
   }
   const out = finishVehicle(g, wheels, {});
   out.userData.lights = {
@@ -611,19 +758,23 @@ export function buildRecon(tint, m) {
   const g = new THREE.Group();
   const body = m.standard(tint), dark = m.standard(0x23252a);
 
-  g.add(reconTube(-0.31, 0.31, 0.065, 0.052, 12, body));                      // fuselage pod
-  g.add(reconTube(RECON.boomZ0, RECON.boomZ1, RECON.boomR0, RECON.boomR1, 10, body));   // tail boom
+  g.add(name(reconTube(-0.31, 0.31, 0.065, 0.052, 12, body), 'recon-fuselage'));
+  g.add(name(reconTube(RECON.boomZ0, RECON.boomZ1, RECON.boomR0, RECON.boomR1, 10, body), 'recon-tail-boom'));
 
   const nose = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), body);
+  nose.name = 'recon-nose';
   nose.scale.set(0.065, 0.065, 0.22); nose.position.z = -0.310; g.add(nose);
 
   const hatch = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.045, 0.115), dark);
+  hatch.name = 'recon-hatch';
   hatch.position.set(-0.055, -0.025, 0.020); g.add(hatch);
 
   for (const side of [1, -1]) {
     const wing = new THREE.Mesh(reconPanel(reconWingPoints(side > 0), RECON.thick), body);
+    wing.name = `recon-wing-${side < 0 ? 'l' : 'r'}`;
     wing.position.set(side * 0.5045, 0.005, -0.020); g.add(wing);
     const cap = new THREE.Mesh(new THREE.SphereGeometry(1, 8, 6), body);   // paddle tip
+    cap.name = `recon-wingtip-${side < 0 ? 'l' : 'r'}`;
     cap.scale.set(0.035, RECON.thick / 2, RECON.tipChord / 2);
     cap.position.set(side * 0.970, 0.005, -0.020); g.add(cap);
   }
@@ -637,24 +788,29 @@ export function buildRecon(tint, m) {
     const dx = side * Math.cos(RECON.vtDihedral), dy = Math.sin(RECON.vtDihedral);
     const arm = RECON_BOOM_R + RECON.vtHalf;
     const fin = new THREE.Mesh(vtGeo, body);
+    fin.name = `recon-fin-${side < 0 ? 'l' : 'r'}`;
     fin.position.set(dx * arm, dy * arm, RECON.vtStation);
     fin.rotation.z = Math.atan2(dy, dx);
     g.add(fin);
   }
 
   const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.0028, 0.0045, 0.142, 5), dark);
+  mast.name = 'recon-tip-mast';
   mast.position.set(-0.995, 0.008, -0.140); mast.rotation.x = -Math.PI / 2; g.add(mast);   // port tip mast
 
   const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.042, 0.050), body);
+  pylon.name = 'recon-pylon';
   pylon.position.z = 0.556; g.add(pylon);
 
   // The propeller is a child group so the spin is one rotation on the hub, not two on the blades.
   const prop = new THREE.Group();
   prop.position.z = 0.588;
   const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.020, 8), dark);
+  hub.name = 'recon-prop-hub';
   hub.rotation.x = Math.PI / 2; prop.add(hub);
   for (const side of [1, -1]) {
     const blade = new THREE.Mesh(new THREE.BoxGeometry(0.134, 0.006, 0.030), dark);
+    blade.name = `recon-prop-blade-${side < 0 ? 'l' : 'r'}`;
     blade.position.x = side * 0.079; blade.rotation.x = side * 0.34; prop.add(blade);
   }
   g.add(prop);
@@ -714,24 +870,29 @@ export function buildSentinel(tint, m) {
   const g = new THREE.Group();
   const body = m.standard(tint), dark = m.standard(0x23252a);
   const z = (a) => a + SENTINEL_NOSE_Z;
-  const blob = (sx, sy, sz, x, y, a, mat = body) => {
+  const blob = (sx, sy, sz, x, y, a, nm, mat = body) => {
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), mat);
+    mesh.name = nm;
     mesh.scale.set(sx, sy, sz); mesh.position.set(x, y, z(a)); g.add(mesh); return mesh;
   };
   const wing = new THREE.Mesh(sentinelWingGeometry(), body);
   wing.name = 'sentinel-wing'; g.add(wing);
-  blob(0.90, 0.62, 1.5, 0, -0.12, 2.3);            // dorsal hump, steep front
-  blob(0.62, 0.45, 1.9, 0, -0.15, 4.2);            // its tail fairing to the exhaust
+  blob(0.90, 0.62, 1.5, 0, -0.12, 2.3, 'sentinel-dorsal-hump');
+  blob(0.62, 0.45, 1.9, 0, -0.15, 4.2, 'sentinel-dorsal-fairing');
   const tail = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.45, 1.2), body);
+  tail.name = 'sentinel-exhaust-fairing';
   tail.position.set(0, -0.30, z(5.6)); g.add(tail);   // blunt exhaust fairing
   const exhaust = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.26, 0.4), dark);
+  exhaust.name = 'sentinel-exhaust';
   exhaust.position.set(0, -0.08, z(6.0)); g.add(exhaust);
   const intake = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.16, 0.4), dark);
+  intake.name = 'sentinel-intake';
   intake.position.set(0, 0.20, z(1.1)); g.add(intake);
   for (const side of [1, -1]) {
-    blob(0.50, 0.42, 0.65, side * 1.67, -0.02, 2.55);   // sensor blister, fat end forward
-    blob(0.34, 0.28, 1.0, side * 1.67, -0.10, 3.55);    // its taper aft
+    blob(0.50, 0.42, 0.65, side * 1.67, -0.02, 2.55, `sentinel-blister-${side < 0 ? 'l' : 'r'}`);
+    blob(0.34, 0.28, 1.0, side * 1.67, -0.10, 3.55, `sentinel-blister-taper-${side < 0 ? 'l' : 'r'}`);
     const roundel = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.01, 16), dark);
+    roundel.name = `sentinel-roundel-${side < 0 ? 'l' : 'r'}`;
     roundel.position.set(side * 5.0, 0.004, z((sentinelLE(5) + sentinelTE(5)) / 2)); g.add(roundel);
   }
   return g;
@@ -745,20 +906,26 @@ export function buildAgm(tint, m) {
   const g = new THREE.Group();
   const body = m.standard(tint ?? 0x4a4d52), dark = m.standard(0x1a1c20), glass = m.standard(0x101820, 0x0a1218);
   const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 1.34, 12), body);
+  tube.name = 'agm-body';
   tube.rotation.x = Math.PI / 2; g.add(tube);
   const nose = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.34, 12), body);
+  nose.name = 'agm-nose';
   nose.rotation.x = -Math.PI / 2; nose.position.z = -0.84; g.add(nose);
   const seeker = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 8), glass);
+  seeker.name = 'agm-seeker';
   seeker.position.z = -0.95; g.add(seeker);
   const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.062, 0.075, 0.10, 10), dark);
+  nozzle.name = 'agm-nozzle';
   nozzle.rotation.x = Math.PI / 2; nozzle.position.z = 0.70; g.add(nozzle);
   // Fins in two sets of four, rolled 45 degrees apart: tail for stability, canards up front.
   for (let i = 0; i < 4; i++) {
     const a = i * Math.PI / 2;
     const tail = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.20, 0.28), dark);
+    tail.name = `agm-tail-fin-${i}`;
     tail.position.set(Math.cos(a) * 0.16, Math.sin(a) * 0.16, 0.53);
     tail.rotation.z = a; g.add(tail);
     const canard = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.12, 0.16), dark);
+    canard.name = `agm-canard-${i}`;
     canard.position.set(Math.cos(a + Math.PI / 4) * 0.12, Math.sin(a + Math.PI / 4) * 0.12, -0.44);
     canard.rotation.z = a + Math.PI / 4; g.add(canard);
   }

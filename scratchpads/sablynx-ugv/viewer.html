@@ -5,11 +5,11 @@
 <title>Sablynx UGV — model beside reference</title>
 <style>
   :root { color-scheme: dark; }
-  body { margin: 0; background: #111417; color: #d7dde3; font: 13px/1.5 system-ui, sans-serif; }
+  body { margin: 0; overflow: hidden; background: #111417; color: #d7dde3; font: 13px/1.5 system-ui, sans-serif; }
   #wrap { display: grid; grid-template-columns: 1fr 1fr; height: 100vh; }
-  #refpane { display: flex; align-items: center; justify-content: center; background: #000; position: relative; }
-  #refpane img { max-width: 100%; max-height: 100vh; object-fit: contain; }
-  #stage { position: relative; }
+  #refpane { overflow: hidden; display: flex; align-items: center; justify-content: center; background: #000; position: relative; }
+  #refpane img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  #stage { position: relative; overflow: hidden; }
   canvas { display: block; }
   #bar { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 12px; background: #0009; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
   button { background: #222a31; color: #d7dde3; border: 1px solid #39424b; border-radius: 4px; padding: 4px 9px; font: inherit; cursor: pointer; }
@@ -36,18 +36,29 @@
     <button id="wire">wireframe</button>
     <button id="grid">ground grid</button>
     <button id="swapref">swap reference</button>
+    <button id="glb">export GLB</button>
+    <button id="shots">snapshot views</button>
+    <label>edited <select id="pick"><option value="">none</option></select></label>
+    <button id="show">show both</button>
+    <span id="glbmsg"></span>
   </div></div>
 </div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { buildCraftMesh } from '../../flight-meshes.js';
-import { BASE_GAME_VEHICLE_DEFS } from '../../base-game-vehicles.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+// Imported with a cache-buster: this page exists to look at edits to these two files, and a static
+// import leaves Chrome serving the copy it already has.
+const v = `?v=${Date.now()}`;
+const { buildCraftMesh, setMeshAuthoring } = await import('../../flight-meshes.js' + v);
+const { BASE_GAME_VEHICLE_DEFS } = await import('../../base-game-vehicles.js' + v);
 
 const KIND = new URLSearchParams(location.search).get('kind') || 'ugv';
+let wire = false;
 const def = BASE_GAME_VEHICLE_DEFS[KIND];
 const stage = document.getElementById('stage');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.setPixelRatio(Math.min(2, devicePixelRatio));
 stage.appendChild(renderer.domElement);
@@ -84,6 +95,45 @@ document.getElementById('info').textContent =
   `wheelbase ${def.wheelbase}  track ${def.track}  clearance ${def.clearance}\n` +
   `tyre dia ${D.toFixed(3)} m   top ${((box.max.y + def.clearance) / D).toFixed(2)}D`;
 
+// An edited model loads beside the code one. The picker lists whatever is in export/, and the
+// show button cycles which of the two the scene draws.
+const loader = new GLTFLoader();
+let edited = null, mode = 'both';
+const pick = document.getElementById('pick'), showBtn = document.getElementById('show');
+fetch('export/').then(r => r.text()).then(html => {
+  for (const m of html.matchAll(/href="([^"]+\.glb)"/g)) {
+    const o = document.createElement('option'); o.value = o.textContent = m[1]; pick.append(o);
+  }
+  // ?glb=<file> and ?only=1 drive the same picker, so a script sees what the buttons show. The page
+  // otherwise shows the code build, which is the current model; the picker is for comparing an edit.
+  const q = new URLSearchParams(location.search);
+  const want = (q.get('glb') || '').replace(/^export\//, '');
+  if (!want) return;
+  pick.value = want;
+  if (q.get('only') === '1') mode = 'edited';
+  pick.onchange();
+});
+function applyMode() {
+  model.visible = mode !== 'edited';
+  if (edited) edited.visible = mode !== 'code';
+  const apart = mode === 'both' && edited;
+  if (edited) edited.position.x = apart ? size.x * 1.15 : 0;
+  model.traverse(o => { if (o.material) o.material.wireframe = wire; });
+  showBtn.textContent = mode === 'both' ? 'show both' : mode === 'code' ? 'show code' : 'show edited';
+}
+showBtn.onclick = () => {
+  mode = mode === 'both' ? 'code' : mode === 'code' ? 'edited' : 'both';
+  applyMode();
+};
+let loading = Promise.resolve();
+pick.onchange = () => {
+  if (edited) { scene.remove(edited); edited = null; }
+  if (!pick.value) return applyMode();
+  loading = new Promise(done => loader.load('export/' + pick.value, (gltf) => {
+    edited = gltf.scene; scene.add(edited); applyMode(); done();
+  }));
+};
+
 const R = Math.max(size.x, size.y, size.z) * 1.5;
 const VIEWS = {
   side:    [0, mid.y, R],          // camera on +Z looks at the port side, nose to the left
@@ -99,13 +149,12 @@ function setView(name) {
   controls.target.copy(mid); controls.update();
 }
 for (const b of document.querySelectorAll('[data-view]')) b.onclick = () => setView(b.dataset.view);
-let wire = false;
 document.getElementById('wire').onclick = () => {
   wire = !wire;
   model.traverse(o => { if (o.material) o.material.wireframe = wire; });
 };
 document.getElementById('grid').onclick = () => { grid.visible = !grid.visible; };
-const REFS = ['ref/side-studio.jpeg', 'ref/front-field.jpeg', 'zones/z1-turret-mast.png', 'zones/z2-cage-deck.png', 'zones/z3-hull-wheels.png'];
+const REFS = ['ref/side-studio.jpeg', 'ref/front-field.jpeg', 'ref/side-operator.png', 'ref/rear34-field.png', 'ref/front34-studio.png', 'zones/z1-turret-mast.png', 'zones/z2-cage-deck.png', 'zones/z3-hull-wheels.png'];
 let refI = 0;
 document.getElementById('swapref').onclick = () => {
   refI = (refI + 1) % REFS.length;
@@ -115,12 +164,46 @@ document.getElementById('swapref').onclick = () => {
 
 function resize() {
   const w = stage.clientWidth, h = stage.clientHeight;
-  renderer.setSize(w, h, false);
+  renderer.setSize(w, h);
   camera.aspect = w / h; camera.updateProjectionMatrix();
 }
 addEventListener('resize', resize);
 resize(); setView('side');
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+// Export the model as a binary glTF: node names and materials survive, so Blender opens it whole.
+async function exportGlb() {
+  // Export a second build with the per-material merge off, so Blender opens named parts rather
+  // than one lump per material. The drawn model stays merged.
+  setMeshAuthoring(true);
+  const authored = buildCraftMesh(def.mesh, 0x5c6b3c, MATS, def);
+  setMeshAuthoring(false);
+  const buf = await new GLTFExporter().parseAsync(authored, { binary: true });
+  const bytes = new Uint8Array(buf);
+  let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  const r = await fetch('/api/save-scratchpad-capture', { method: 'POST',
+    body: JSON.stringify({ dir: 'export', name: `${KIND}-named`, data: btoa(bin) }) });
+  document.getElementById('glbmsg').textContent = (await r.json()).path;
+}
+document.getElementById('glb').onclick = exportGlb;
+
+// Render each named view and save the PNG through serve.py into shots/.
+async function takeShots(list) {
+  for (const name of list) {
+    setView(name);
+    renderer.render(scene, camera);
+    const png = renderer.domElement.toDataURL('image/png');
+    await fetch('/api/save-scratchpad-capture', { method: 'POST',
+      body: JSON.stringify({ dir: 'shots', name: `${KIND}-${name}`, data: png }) });
+  }
+  document.getElementById('glbmsg').textContent = `saved ${list.length} shots`;
+  document.title = 'SHOTS DONE';
+}
+const VIEW_SET = ['side', 'front', 'front34', 'rear34', 'top'];
+document.getElementById('shots').onclick = () => takeShots(VIEW_SET);
+const auto = new URLSearchParams(location.search).get('shot');
+if (auto) (async () => { await new Promise(r => setTimeout(r, 300)); await loading; takeShots(auto.split(',').map(s => s.trim())); })();
+
 </script>
 </body>
 </html>

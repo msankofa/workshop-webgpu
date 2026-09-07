@@ -28,7 +28,7 @@ export const BASE_GAME_VEHICLE_DEFS = Object.freeze({
     ...DEFAULT_ROAD_VEHICLE,
     kind: VEHICLE_UGV, label: 'UGV', mesh: 'ugv', autonomy: true, seat: 'remote', gadget: true,
     tint: 0x5c6b3c,   // the reference's olive; craft otherwise share the flight sim's pale sky skin
-    mass: 180, wheelbase: 1.1, track: 0.8, clearance: 0.25, cgHeight: 0.22, yawInertia: 72,
+    mass: 180, wheelbase: 1.1, track: 1.05, clearance: 0.25, cgHeight: 0.22, yawInertia: 72,
     engineForce: 1700, powerLimit: 9000, reverseForce: 1200, brakeForce: 2600, handbrakeForce: 2200,
     rollingResistance: 0.022, cdA: 0.34, cornerStiffnessFront: 15000, cornerStiffnessRear: 14000,
     maxSteer: 0.68, steerResponse: 10, steerSpeedFalloff: 0.07, maxSpeed: 7,
@@ -37,7 +37,7 @@ export const BASE_GAME_VEHICLE_DEFS = Object.freeze({
     // `bodyRadius` is the hull HALF-WIDTH and `hitHeight` its height above the wheel contact; see
     // the hit volume below for why a ground vehicle is not one sphere. Both are pinned against the
     // drawn hull by test-vehicle-meshes.mjs, so a mesh change that outgrows them fails a test.
-    hp: 40, bodyRadius: 0.6, hitHeight: 1.6, meshScale: 1, crashBlast: { radius: 3, damage: 20 },
+    hp: 40, bodyRadius: 0.7, hitHeight: 1.6, meshScale: 1, crashBlast: { radius: 3, damage: 20 },
     // A battery pack is one bang. The buggy's fuel is not: see `secondaries`.
     smokeAt: 0.55,
     seatOffset: [0, 0, 0], exitOffset: [-1.2, 0, 0],
@@ -47,7 +47,7 @@ export const BASE_GAME_VEHICLE_DEFS = Object.freeze({
     // draws it at -z because craft meshes point their nose down -Z. Its height is the mesh's own
     // gun-axis band, and test-vehicle-meshes.mjs asserts the drawn trunnion agrees with it.
     turret: Object.freeze({
-      pivot: [0, 1.335, 0.05], muzzle: 0.78,
+      pivot: [0, 1.111, 0.05], muzzle: 0.78,
       yawRate: 1.9, pitchRate: 1.2, pitchMin: -0.17, pitchMax: 0.79, tolerance: 0.02,
       weapon: 'ugv_mg', rps: 9, ammo: 400,
     }),
