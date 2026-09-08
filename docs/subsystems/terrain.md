@@ -136,7 +136,7 @@ one-worker-per-feature arrangement water and rain were heading toward.
   the deadline; the entry stays at the head and is handed back next pump, and the head entry always
   gets one call so a late frame still makes progress. One 80 ms reply handler measured on 2026-09-08
   was flora's per-texel derivation running inside `onmessage`. `stats.landed`, `delivered`,
-  `deliveriesPaused`, `lastDeliverMs`; `landedCount`, `deliverLanded(deadline)`.
+  `deliveriesPaused`, `lastDeliverMs`; `landedCount`, `deliverLanded(deadline)`. The budget grows one step per `deliverBacklog` (4) landed tiles, to four times, so a window that falls behind the player (trees waiting on a field that never comes, grass on stale heights: seen 2026-09-08) catches up instead of drifting.
 - `terrain-field-window.js` — `createFieldWindow({ source, scheduler, fields, post, lod, … })` wraps
   a payload window with one `THREE.DataTexture` per field and wrap-aware readers on both sides.
   `sampleAt(name, x, z)` and `ready(x, z)` on the CPU; `gpuSampler(name)` returns a TSL `Fn(xz,

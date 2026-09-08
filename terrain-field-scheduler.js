@@ -28,6 +28,7 @@ export const FIELD_SCHEDULER_DEFAULTS = Object.freeze({
   maxInFlight: 4,
   syncBudgetMs: 2,       // worker-less fallback: how long one pump may spend building tiles
   deliverBudgetMs: 2,    // how long one pump may spend handing landed tiles to their windows
+  deliverBacklog: 4,     // landed tiles per extra budget step: the budget grows with the backlog, to 4x
 });
 
 export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
@@ -167,8 +168,11 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
     if (disposed) return 0;
     const started = fill();
     if (landed.length) {
+      // A backlog means the windows are falling behind the player: trees wait on a field that never
+      // comes and grass stands on stale heights. Spend more per frame rather than let it grow.
+      const steps = Math.min(4, 1 + Math.floor(landed.length / Math.max(1, cfg.deliverBacklog)));
       const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-      deliverLanded(now + cfg.deliverBudgetMs);
+      deliverLanded(now + cfg.deliverBudgetMs * steps);
     }
     return started;
   }
