@@ -1957,3 +1957,15 @@ Mirrors the rocks wiring in `docs/subsystems/rocks.md`, on the SAME `createDress
 6. Snags: `params.speciesTable = buildSpeciesFromFamilies(withSnags(authoredFamilies))` on the
    forest params (the forest already consumes `params.speciesTable` when present) — snags then place
    through the normal forest pipeline at their low family density.
+
+## Uniform groups in the grass material (2026-09-07)
+
+TSL `uniform()` defaults to Three's per-object group, so a value written once per frame from JS is
+diffed and uploaded once per RenderObject that shares the material. The grass material is drawn by
+the tier-0 mesh and two child tier meshes, so its per-frame uniforms were uploaded three times with
+identical bytes. `uTime` and `uWorldOrigin` in `grass-compute.js` now sit in `renderGroup` (once per
+render pass per material). `uCam` stays per object on purpose: it also feeds the compute kernels,
+whose builder state gates a shared group on the version the render pass bumps, and that ordering
+was not verified in a browser. The same holds for `uRenderOrigin`/`uCamXZ` in `base-game-flora.js`,
+which the terrain sampler wrap feeds into placement compute. Size of the saving is unmeasured; the
+inventory behind it is `scratchpads/fps-churn/arch-review/09-binding-ownership-inventory.md`.

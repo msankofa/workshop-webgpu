@@ -2855,11 +2855,13 @@ const _projSample = { position: [0, 0, 0] };
 // A missile is 1.6 m of shaped body, not a spark: it gets the craft mesh and an attitude, because
 // the camera rides it and a sphere from three metres away is a bug report.
 const agmMeshes = [];
+// One factory table for every missile, so flight-meshes.js shares their materials across the pool.
+const AGM_MATERIALS = { standard: (c, e = 0x000000) => new THREE.MeshStandardMaterial({ color: c, emissive: e, roughness: 0.6, metalness: 0.2 }), basic: (c, o = 1) => new THREE.MeshBasicMaterial({ color: c, transparent: o < 1, opacity: o }) };
 const _agmDir = new THREE.Vector3(), _agmQuat = new THREE.Quaternion(), _agmUp = new THREE.Vector3(0, 0, -1);
 function agmMeshAt(index) {
   let mesh = agmMeshes[index];
   if (!mesh) {
-    mesh = buildCraftMesh('agm', 0x4a4d52, { standard: (c, e = 0x000000) => new THREE.MeshStandardMaterial({ color: c, emissive: e, roughness: 0.6, metalness: 0.2 }), basic: (c, o = 1) => new THREE.MeshBasicMaterial({ color: c, transparent: o < 1, opacity: o }) });
+    mesh = buildCraftMesh('agm', 0x4a4d52, AGM_MATERIALS);
     mesh.name = 'base-game-agm'; mesh.frustumCulled = false;
     scene.add(mesh); agmMeshes[index] = mesh;
   }

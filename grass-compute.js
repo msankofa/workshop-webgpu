@@ -24,6 +24,7 @@ import {
   Fn, If, instanceIndex, storage, uniform, attribute, float, bool, int, uint, bitcast, modInt,
   vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld, max, min,
   atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix, pow, select, sqrt, ceil, userData,
+  renderGroup,
 } from 'three/tsl';
 import { buildBladeGeometry, buildGrassNoiseFns, getGrassStyleAtlas } from './grass.js';
 import { createGrassLook } from './grass-look.js';
@@ -384,7 +385,8 @@ export function createComputeGrass(opts) {
   const uCellOriginZ = uniform(0, 'int');
   // Same problem for anything sampled at a world position in the material: wind phase, cloud
   // shadow, coverage. This is the render origin in metres.
-  const uWorldOrigin = uniform(new THREE.Vector2());
+  // Render-only, camera/clock-derived, shared by the tier meshes: one upload per pass, not one per mesh.
+  const uWorldOrigin = uniform(new THREE.Vector2()).setGroup(renderGroup);
   const uWaterMin = uniform(o.waterLevel + o.shoreMargin);
   const uDensityScale = uniform(1);            // anchor mode: live density / sampled base
   const uHardCap = uniform(CAP, 'uint');       // instance-buffer capacity (write + draw clamp)
@@ -402,7 +404,7 @@ export function createComputeGrass(opts) {
   const uBaseAmp  = uniform(o.baseAmp);
   const uLake     = uniform(o.lake);
   const uLakeDepth= uniform(o.lakeDepth);
-  const uTime     = uniform(0);
+  const uTime     = uniform(0).setGroup(renderGroup);
   const uWindSpeed= uniform(2.0);
   const uWindFreq = uniform(0.3);    // wind wave spatial freq per world unit (seam-free)
   const uTipDist  = uniform(0.3);
