@@ -628,6 +628,13 @@ function once(fn) {
   assert.equal(entry.bindingWriteBytes, 256, 'bytes only where the argument reported some');
   assert.equal(entry.attributeWrites, 1);
   assert.equal(entry.attributeWriteBytes, 1024, 'an attribute reports through its array');
+  // A ranged attribute counts what the backend will write, read before the call clears the ranges.
+  const ranged = { array: { byteLength: 65536, BYTES_PER_ELEMENT: 4 }, updateRanges: [{ start: 0, count: 96 }, { start: 400, count: 4 }] };
+  const originalUpdate = renderer.backend.updateAttribute;
+  renderer.backend.updateAttribute = function (attr) { const r = originalUpdate.call(this, attr); attr.updateRanges.length = 0; return r; };
+  renderer.backend.updateAttribute(ranged);
+  assert.equal(entry.attributeWriteBytes, 1024 + 400, 'ranged writes count their ranges times the element size, not the whole array');
+  renderer.backend.updateAttribute = originalUpdate;
   assert.equal(t.bindingWrites, 2, 'and the totals carry them too');
   assert.equal(t.attributeWriteBytes, 1024);
   console.log('pass: binding creations and buffer writes are counted, with bytes where they are known');

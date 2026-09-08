@@ -170,6 +170,19 @@ function byteLengthOf(value) {
   return Number.isFinite(array) ? array : 0;
 }
 
+// What WebGPUAttributeUtils.updateAttribute will write: one writeBuffer per update range, or the
+// whole array when there are none. Ranges count elements, so bytes follow the array's element size.
+function attributeBytesOf(attribute) {
+  const ranges = attribute?.updateRanges;
+  if (Array.isArray(ranges) && ranges.length > 0) {
+    const bpe = attribute.array?.BYTES_PER_ELEMENT ?? attribute.data?.array?.BYTES_PER_ELEMENT ?? 4;
+    let total = 0;
+    for (const r of ranges) total += (r.count | 0) * bpe;
+    return total;
+  }
+  return byteLengthOf(attribute);
+}
+
 export function createRenderTrace({ now = () => performance.now(), timePhases = true } = {}) {
   // Overhead mode: every wrapper and every counter is installed, but the clock is a constant, so a
   // capture run this way carries the wrappers' own cost and nothing else. Reported as `timed`.
@@ -243,12 +256,14 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
   }
 
   // Counters, not timers: the wrapped call is not timed, only counted, so these cost one call.
-  function wrapCounter(target, name, label, count) {
+  // `measure` reads the arguments BEFORE the call: the backend clears an attribute's update ranges as it uploads them.
+  function wrapCounter(target, name, label, count, measure = null) {
     const original = target?.[name];
     if (typeof original !== 'function') { missing.push(label); return; }
     target[name] = function (...args) {
+      const measured = measure ? measure(args) : undefined;
       const result = original.apply(this, args);
-      count(current(), result, args);
+      count(current(), result, args, measured);
       return result;
     };
     restore.push(() => { target[name] = original; });
@@ -455,10 +470,10 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
         entry.bindingWrites++;
         entry.bindingWriteBytes += byteLengthOf(args[0]);
       });
-      wrapCounter(renderer.backend, 'updateAttribute', 'backend.updateAttribute', (entry, result, args) => {
+      wrapCounter(renderer.backend, 'updateAttribute', 'backend.updateAttribute', (entry, result, args, bytes) => {
         entry.attributeWrites++;
-        entry.attributeWriteBytes += byteLengthOf(args[0]);
-      });
+        entry.attributeWriteBytes += bytes;
+      }, args => attributeBytesOf(args[0]));
       attachedTo = restore.length ? renderer : null;
       return this.attached;
     },

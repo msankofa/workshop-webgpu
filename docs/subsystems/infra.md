@@ -138,7 +138,7 @@ Counters per scene entry, and summed per frame:
 | `draws` | RenderObjects encoded (unchanged) | Exact |
 | `bindingCreates` | `backend.createBindings` calls | Exact as a call count; each call may build several bind groups |
 | `bindingWrites` / `bindingWriteBytes` | `backend.updateBinding` calls and `binding.byteLength` where the argument has one | Calls are the writes three decided to submit, not dirty ranges. Bytes are the buffer's whole size, an upper bound on what a partial write moved, and 0 where nothing reported a length |
-| `attributeWrites` / `attributeWriteBytes` | `backend.updateAttribute` calls and `attribute.array.byteLength` | Approximate as a write count: `WebGPUAttributeUtils.updateAttribute` issues one `writeBuffer` per update range, so one call can be several GPU writes — the count is a lower bound |
+| `attributeWrites` / `attributeWriteBytes` | `backend.updateAttribute` calls, and the bytes those calls write: the sum of the attribute's update ranges times its element size (one `writeBuffer` per range inside `WebGPUAttributeUtils.updateAttribute`), or the whole array when there are no ranges. Read before the call, because the backend clears the ranges as it uploads | Calls are a lower bound on GPU writes (one call, several ranges); bytes follow the backend's own rule, so a 8192-instance buffer with 40 live instances counts 40 × 64 B, not 512 KB |
 
 `createRenderTrace({ timePhases: false })` installs every wrapper and every counter but makes each
 timer read a constant, so the counters still count and every millisecond reads zero. Running the
