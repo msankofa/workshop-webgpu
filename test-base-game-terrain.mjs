@@ -277,5 +277,52 @@ console.log('[8] the fold-in budget');
   ok(Object.isFrozen(TERRAIN_TINT) && Object.isFrozen(TERRAIN_TINT_BANDS), 'and they are frozen');
 }
 
+console.log('\n[batch lifecycle] a long session, a source swap and the upload counters');
+{
+  const t = createBaseGameTerrain({ scene: new THREE.Scene(), worldQuery: createWorldQueryService(), worldCoordinates: createWorldCoordinateSpace(),
+    source: analyticDescriptor({ key: 'life', sourceVersion: '1' }), useWorker: false, params: { renderRadius: 2 } });
+  t.setActive(true);
+  for (let i = 0; i < 80; i++) t.update([0, 0, 0], 1 / 60);
+  const settled = t.stats;
+  ok(settled.residency.near.resident === t.system.chunks.size && settled.residency.near.target === t.system.targetChunkCount,
+    `residency reports resident ${settled.residency.near.resident} against target ${settled.residency.near.target}`);
+  ok(settled.residency.near.margin === settled.residency.near.resident - settled.residency.near.target,
+    `margin (${settled.residency.near.margin}) is what residency keeps past the target set`);
+  ok(settled.residency.near.batched === t.batcher.residentCount && settled.upload.total.firstUploads >= t.system.chunks.size,
+    `every resident chunk was uploaded once: ${settled.upload.total.firstUploads} first uploads for ${t.system.chunks.size} chunks`);
+  ok(settled.upload.total.firstUploadBytes > 0 && settled.upload.colorizeBytesTotal > 0,
+    `${(settled.upload.total.firstUploadBytes / 1024) | 0} KB of logical batch upload and ${(settled.upload.colorizeBytesTotal / 1024) | 0} KB of vertex colour behind it`);
+  // A settled frame uploads nothing: the counters are per frame, not a running total in disguise.
+  t.update([0, 0, 0], 1 / 60);
+  const quiet = t.frameCost;
+  ok(quiet.batchFirstUploads === 0 && quiet.batchCompactions === 0 && quiet.colorizeBytes === 0, 'a settled frame does no batch upload at all');
+  // 900 m of travel: the batch must track residency exactly, and nothing may accumulate
+  let peakBatches = t.batcher.batchCount, peakGroup = t.batcher.group.children.length;
+  for (let f = 0; f < 900; f++) {
+    t.update([f, 0, 0], 1 / 60);
+    peakBatches = Math.max(peakBatches, t.batcher.batchCount);
+    peakGroup = Math.max(peakGroup, t.batcher.group.children.length);
+  }
+  const walked = t.stats;
+  ok(t.batcher.chunkCount === t.system.chunks.size, `after 900 m: ${t.batcher.chunkCount} batched == ${t.system.chunks.size} resident`);
+  ok(peakGroup === peakBatches && peakBatches <= 2, `the batch group never held more than the ${peakBatches} batch mesh(es) in use`);
+  ok(walked.draws === t.batcher.drawCount, 'no chunk is left drawing its own mesh; every draw comes from a batch');
+  ok(walked.batches.removes > 0 && walked.batches.upload.firstUploads === walked.batches.adds,
+    `${walked.batches.removes} evictions and ${walked.batches.upload.firstUploads} first uploads, one per successful add`);
+  // The swap replaces every chunk under the same keys: stale entries must not survive it.
+  const beforeSwap = t.batcher.chunkCount;
+  t.setSource(analyticDescriptor({ key: 'life', sourceVersion: '2', params: { baseAmp: 2.2 } }));
+  for (let i = 0; i < 120; i++) t.update([900, 0, 0], 1 / 60);
+  const swapped = t.stats;
+  ok(t.batcher.chunkCount === t.system.chunks.size && t.batcher.batchCount <= 2,
+    `after the swap: ${t.batcher.chunkCount} batched == ${t.system.chunks.size} resident, still ${t.batcher.batchCount} batch(es)`);
+  ok(swapped.draws === t.batcher.drawCount && t.batcher.drawCount <= t.system.chunks.size,
+    'no orphan visible instance survived the swap');
+  ok(swapped.source.version === '2' && swapped.upload.total.firstUploads > walked.upload.total.firstUploads,
+    'the swapped chunks were uploaded as new first uploads, not mutated in place');
+  t.dispose();
+  ok(t.batcher.batchCount === 0 && t.batcher.group.parent === null, 'dispose frees every batch slot and detaches the group');
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);
 process.exit(failures === 0 ? 0 : 1);

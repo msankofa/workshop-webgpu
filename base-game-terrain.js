@@ -571,6 +571,7 @@ export function createBaseGameTerrain({
   }
   const TINT = TERRAIN_TINT;
   let colorizeWork = 0;        // per-vertex tints actually performed, counted wherever they happen
+  let colorizeBytes = 0;       // logical bytes of colour attribute written by those tints (cumulative)
   function colorizeGeometry(geo, force = false) {
     // A worker-tinted chunk is already done unless its revision is stale (the sea level moved
     // while it was in flight), in which case it is re-tinted here.
@@ -584,6 +585,7 @@ export function createBaseGameTerrain({
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.userData.tintRevision = tintRevision;
     colorizeWork++;
+    colorizeBytes += colors.byteLength;   // a fresh attribute on the CHUNK's geometry, never on a batch buffer
   }
 
   const normalMaterial = new MeshNormalNodeMaterial();
@@ -621,7 +623,22 @@ export function createBaseGameTerrain({
   const perSecond = { installs: 0, window: 0, rate: 0 };
   const frameCostOut = { installMs: 0, foldMs: 0, fieldMs: 0, installCount: 0, colorizeMs: 0, batchMs: 0, colliderMs: 0,
     integrateMs: 0, integrateItems: 0, maxItemMs: 0, queued: 0, queuedBytes: 0, colorizePassCount: 0,
-    workerTintMs: 0, overruns: 0, queuedOldestMs: 0, inFlight: 0, busyWorkers: 0 };
+    workerTintMs: 0, overruns: 0, queuedOldestMs: 0, inFlight: 0, busyWorkers: 0,
+    // Logical upload accounting for this frame: bytes/ranges this code marked dirty, NOT what the
+    // renderer submitted. Flat scalars, because the page shallow-copies this object.
+    batchFirstUploads: 0, batchFirstUploadBytes: 0, batchVisibilityFlips: 0, batchFallbacks: 0,
+    batchCompactions: 0, batchCompactionShifts: 0, batchCompactionBytes: 0, colorizeBytes: 0 };
+  // Batch upload accounting for the frame, summed over the near batcher and every cascade one.
+  // LOGICAL bytes: what this code marked dirty, not what the renderer submitted.
+  const batchUploadFields = ['firstUploads', 'firstUploadBytes', 'visibilityFlips', 'fallbacks', 'compactions', 'compactionShifts', 'compactionBytes'];
+  const lastBatchUpload = Object.fromEntries(batchUploadFields.map(k => [k, 0]));
+  let lastColorizeBytes = 0;
+  function collectBatchUpload() {
+    for (const k of batchUploadFields) lastBatchUpload[k] = 0;
+    const take = b => { const u = b.takeFrameUpload(); for (const k of batchUploadFields) lastBatchUpload[k] += u[k]; };
+    take(batcher);
+    for (const cb of cascadeBatchers.values()) take(cb.batcher);
+  }
   let lastIntegrateMs = 0;     // everything the scheduler ran this frame, on one deadline
   let lastOverruns = 0;        // frames' worth of the one-item overrun rule firing
   let lastMaxItemMs = 0;       // the single most expensive operation, usually a collider BVH
@@ -1212,6 +1229,7 @@ export function createBaseGameTerrain({
       if (perSecond.window >= 1) { perSecond.rate = perSecond.installs / perSecond.window; perSecond.installs = 0; perSecond.window = 0; }
       lastFoldMs = lastColorizeMs = lastBatchMs = lastColliderMs = lastIntegrateMs = 0;
       lastItemCount = lastColorizePassCount = 0;
+      const colorizeBytesMark = colorizeBytes;
       if (seaDepthActive) { seaDepth.recentre(globalPosition[0], globalPosition[2]); seaDepth.update(); }
       if (farLodMode && !volumetricMode && clipmap) {
         const t1 = performance.now();
@@ -1262,6 +1280,8 @@ export function createBaseGameTerrain({
         handoffPending = true;
         applyProviders();
       }
+      lastColorizeBytes = colorizeBytes - colorizeBytesMark;
+      collectBatchUpload();
       if (residencyMoved && tileBounds) refreshTileBounds();
       if (collisionDebug) {
         const hit = provider.groundProbe({ origin: [globalPosition[0], globalPosition[1] + 0.5, globalPosition[2]], maxDistance: 50, slopeLimitCos: -1 });
@@ -1285,6 +1305,14 @@ export function createBaseGameTerrain({
       frameCostOut.busyWorkers = workerPool?.busyWorkers ?? 0;   // workers holding unacknowledged work; approximates threads executing
       frameCostOut.workerTintMs = lastWorkerTintMs; frameCostOut.overruns = lastOverruns;
       frameCostOut.queuedOldestMs = queuedOldestTotal();
+      frameCostOut.batchFirstUploads = lastBatchUpload.firstUploads;
+      frameCostOut.batchFirstUploadBytes = lastBatchUpload.firstUploadBytes;
+      frameCostOut.batchVisibilityFlips = lastBatchUpload.visibilityFlips;
+      frameCostOut.batchFallbacks = lastBatchUpload.fallbacks;
+      frameCostOut.batchCompactions = lastBatchUpload.compactions;
+      frameCostOut.batchCompactionShifts = lastBatchUpload.compactionShifts;
+      frameCostOut.batchCompactionBytes = lastBatchUpload.compactionBytes;
+      frameCostOut.colorizeBytes = lastColorizeBytes;
       return frameCostOut;
     },
 
@@ -1360,6 +1388,23 @@ export function createBaseGameTerrain({
           queued: planScheduler.stats.queued, inFlight: planScheduler.stats.inFlight,
           extent: planWindow().extent } : null,
         batches: batcher.stats,
+        // Resident vs wanted, per streamer. resident - target is the margin/hysteresis overhang:
+        // chunks kept past the draw radius, which still draw while they are in view.
+        residency: {
+          near: { target: system.targetChunkCount, resident: system.chunks.size, batched: batcher.residentCount, margin: system.chunks.size - system.targetChunkCount },
+          levels: cascade.map(c => {
+            const cb = cascadeBatchers.get(c.system);
+            return { level: c.level, target: c.system.targetChunkCount, resident: c.system.chunks.size, batched: cb ? cb.batcher.residentCount : 0, margin: c.system.chunks.size - c.system.targetChunkCount };
+          }),
+        },
+        // Cumulative logical upload accounting over every batcher, plus this frame's slice.
+        upload: (() => {
+          const total = Object.fromEntries(batchUploadFields.map(k => [k, 0]));
+          const addFrom = b => { const u = b.stats.upload; for (const k of batchUploadFields) total[k] += u[k]; };
+          addFrom(batcher);
+          for (const cb of cascadeBatchers.values()) addFrom(cb.batcher);
+          return { total, frame: { ...lastBatchUpload }, colorizeBytesTotal: colorizeBytes, colorizeBytesFrame: lastColorizeBytes };
+        })(),
         farLod: !farLodMode ? null
           : volumetricMode
             ? { kind: 'volume-cascade', levels: cascade.map(c => ({ level: c.level, chunkSize: c.spec.chunkSize, spacing: +(c.spec.chunkSize / c.spec.segments).toFixed(2), resident: c.system.chunks.size, target: c.system.targetChunkCount, inFlight: c.system.inFlight.size, lastSourceError: c.system.lastSourceError ?? null })), outerHalfExtent: cascadeExtent(), triangles: cascade.reduce((n, c) => { for (const ch of c.system.group.children) if (ch.isMesh && ch.visible && ch.geometry.index) n += ch.geometry.index.count / 3; const cb = cascadeBatchers.get(c.system); if (cb) for (const chunk of cb.batched.values()) { const idx = chunk.mesh?.geometry.index; if (idx) n += idx.count / 3; } return n; }, 0), draws: cascade.reduce((n, c) => { n += c.system.group.children.filter(ch => ch.isMesh && ch.visible).length; const cb = cascadeBatchers.get(c.system); return n + (cb ? cb.batcher.drawCount : 0); }, 0), lastUpdateMs: +lastClipmapMs.toFixed(2) }

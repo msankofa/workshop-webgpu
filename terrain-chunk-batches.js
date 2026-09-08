@@ -15,7 +15,8 @@ export const CHUNK_BATCH_DEFAULTS = Object.freeze({
   indices: 3_600_000,     // heightfield chunks run ~5.5 indices per vertex
   maxBatches: 64,         // beyond this chunks fall back to their own mesh
   compactWhenUnusedFraction: 0.35,   // optimize() a batch once this much of its space is dead
-  maxCompactionsPerFrame: 0,         // optimize() rewrites the whole buffer; 0 = unlimited
+  maxCompactionsPerFrame: 0,         // optimize() shifts and re-uploads only the geometries after
+                                     // the earliest gap (one ranged write each); 0 = unlimited
                                      // Opt in with a positive value AND a beginFrame() per frame:
                                      // without the reset the ration would never refill.
   perObjectFrustumCulled: false,     // off: onBeforeRender early-outs (with sortObjects false)
@@ -32,17 +33,49 @@ export function createChunkBatcher({ material, name = 'terrain-chunk-batches', .
   const byKey = new Map();     // key -> batch
   let currentMaterial = material;
   const stats = { adds: 0, removes: 0, fallbacks: 0, compactions: 0, compactionsDeferred: 0 };
-  // optimize() rewrites every vertex and index in the batch and re-uploads it. More than one in a
-  // frame is what turns a chunk landing into a visible hitch, so they are rationed; a caller that
-  // cannot compact just leaves the chunk drawing its own mesh for a frame.
+  // Upload accounting. Every byte here is LOGICAL: the size of the update ranges this module made
+  // dirty, not what the renderer submitted. The backend issues one writeBuffer per range and does
+  // not coalesce, so submitted bytes are >= these; agent A counts the submitted side.
+  const newUpload = () => ({
+    firstUploads: 0, firstUploadBytes: 0,      // a chunk copied into a batch for the first time
+    visibilityFlips: 0,                        // setVisibleAt calls that changed a value
+    fallbacks: 0,                              // did not fit any batch: the chunk drew its own mesh
+    compactions: 0, compactionShifts: 0, compactionBytes: 0,   // geometries moved by optimize()
+  });
+  const upload = newUpload();       // cumulative since creation
+  const frameUpload = newUpload();  // since the last takeFrameUpload()
+  const bump = (field, n) => { upload[field] += n; frameUpload[field] += n; };
+  // Sum the update ranges a mutation appended to the batch geometry, in bytes. Ranges are cleared
+  // by the renderer after upload, so lengths are only compared inside one synchronous call.
+  function measureRanges(mesh, run) {
+    // Read the parts AFTER the run too: the first addGeometry is what creates them.
+    const partsOf = () => { const g = mesh.geometry; return [['index', g.index], ...Object.entries(g.attributes)].filter(p => p[1]); };
+    const before = new Map(partsOf().map(([k, p]) => [k, p.updateRanges.length]));
+    run();
+    let bytes = 0, ranges = 0;
+    for (const [k, p] of partsOf()) {
+      for (let i = before.get(k) ?? 0; i < p.updateRanges.length; i++) { bytes += p.updateRanges[i].count * p.array.BYTES_PER_ELEMENT; ranges++; }
+    }
+    return { bytes, ranges };
+  }
+  // optimize() shifts every geometry after the earliest gap and marks one range per shifted
+  // geometry; the worst case is the whole tail, the typical case is smaller and a batch whose only
+  // dead entries are trailing compacts for free. The throttle stays because the CPU copyWithin and
+  // that tail case are both real.
   let compactionsThisFrame = 0;
   const canCompact = () => cfg.maxCompactionsPerFrame <= 0 || compactionsThisFrame < cfg.maxCompactionsPerFrame;
   function compact(batch) {
-    batch.mesh.optimize();
+    // one position range per shifted geometry, so count position ranges rather than all attributes
+    const pos = batch.mesh.geometry.attributes.position;
+    const posBefore = pos ? pos.updateRanges.length : 0;
+    const m = measureRanges(batch.mesh, () => batch.mesh.optimize());
     batch.deadVertices = 0;
     batch.deadIndices = 0;
     stats.compactions++;
     compactionsThisFrame++;
+    bump('compactions', 1);
+    bump('compactionShifts', pos ? pos.updateRanges.length - posBefore : 0);
+    bump('compactionBytes', m.bytes);
   }
 
   function newBatch() {
@@ -68,14 +101,17 @@ export function createChunkBatcher({ material, name = 'terrain-chunk-batches', .
       compact(batch);
       if (batch.mesh.unusedVertexCount < verts || batch.mesh.unusedIndexCount < idx) return false;
     }
-    let geometryId;
-    try { geometryId = batch.mesh.addGeometry(geometry); }
+    let geometryId, wrote = 0;
+    const run = () => { const m = measureRanges(batch.mesh, () => { geometryId = batch.mesh.addGeometry(geometry); }); wrote = m.bytes; };
+    try { run(); }
     catch {
       // unused space exists but is fragmented: compact and retry once
       if (!canCompact()) { stats.compactionsDeferred++; return false; }
       compact(batch);
-      try { geometryId = batch.mesh.addGeometry(geometry); } catch { return false; }
+      try { run(); } catch { return false; }
     }
+    bump('firstUploads', 1);
+    bump('firstUploadBytes', wrote);
     const instanceId = batch.mesh.addInstance(geometryId);
     batch.entries.set(key, { geometryId, instanceId, vertices: verts, indices: idx });
     byKey.set(key, batch);
@@ -90,6 +126,7 @@ export function createChunkBatcher({ material, name = 'terrain-chunk-batches', .
     for (const batch of batches) if (tryAdd(batch, key, geometry)) { stats.adds++; return true; }
     if (batches.length < cfg.maxBatches && tryAdd(newBatch(), key, geometry)) { stats.adds++; return true; }
     stats.fallbacks++;
+    bump('fallbacks', 1);
     return false;
   }
 
@@ -123,7 +160,11 @@ export function createChunkBatcher({ material, name = 'terrain-chunk-batches', .
   function setVisible(key, visible) {
     const batch = byKey.get(key);
     if (!batch) return false;
-    batch.mesh.setVisibleAt(batch.entries.get(key).instanceId, !!visible);
+    const id = batch.entries.get(key).instanceId;
+    // A flip is the module's only in-place mutation: it costs a whole indirect-texture upload and
+    // an onBeforeRender that cannot early-out, so it is counted even though no attribute is dirtied.
+    if (batch.mesh.getVisibleAt(id) !== !!visible) bump('visibilityFlips', 1);
+    batch.mesh.setVisibleAt(id, !!visible);
     return true;
   }
 
@@ -137,9 +178,19 @@ export function createChunkBatcher({ material, name = 'terrain-chunk-batches', .
     add, remove, setVisible, isVisible, setMaterial,
     // Refills the per-frame compaction ration. Required whenever maxCompactionsPerFrame > 0.
     beginFrame() { compactionsThisFrame = 0; },
+    // Read-and-clear this frame's upload counters. Separate from beginFrame() on purpose: the page
+    // calls beginFrame twice per frame (two material passes), which would zero them mid-frame.
+    takeFrameUpload() {
+      const out = { ...frameUpload };
+      Object.assign(frameUpload, newUpload());
+      return out;
+    },
     has: key => byKey.has(key),
     get batchCount() { return batches.length; },
     get chunkCount() { return byKey.size; },
+    // Chunks currently holding a batch slot. Same number as chunkCount, named for the residency
+    // reading (resident vs the streamer's target set) that sizes margin-chunk overdraw.
+    get residentCount() { return byKey.size; },
     // GPU draw calls these batches submit: one drawIndexed per visible instance on WebGPU
     // (pre-frustum-cull upper bound when perObjectFrustumCulled is true).
     get drawCount() {
@@ -151,7 +202,8 @@ export function createChunkBatcher({ material, name = 'terrain-chunk-batches', .
     get stats() {
       let used = 0, capacity = 0;
       for (const b of batches) { used += cfg.vertices - b.mesh.unusedVertexCount; capacity += cfg.vertices; }
-      return { batches: batches.length, chunks: byKey.size, draws: this.drawCount, verticesUsed: used, verticesCapacity: capacity, ...stats };
+      return { batches: batches.length, chunks: byKey.size, resident: byKey.size, draws: this.drawCount,
+        verticesUsed: used, verticesCapacity: capacity, ...stats, upload: { ...upload } };
     },
     clear() { for (const b of batches) { group.remove(b.mesh); b.mesh.dispose(); } batches.length = 0; byKey.clear(); },
     dispose() { this.clear(); group.removeFromParent(); },

@@ -99,5 +99,72 @@ console.log('\n[3] per-chunk frustum culling is an option, off by default');
   bc.dispose();
 }
 
+console.log('\n[4] upload accounting: first uploads, compaction shifts, visibility flips');
+{
+  const b = createChunkBatcher({ material: new THREE.MeshBasicMaterial(), slots: 8, vertices: 8 * 600, indices: 8 * 3200, maxBatches: 1 });
+  const g = chunkGeo(24);
+  const bytesOf = geo => { let n = geo.index.count * geo.index.array.BYTES_PER_ELEMENT; for (const a of Object.values(geo.attributes)) n += a.count * a.itemSize * a.array.BYTES_PER_ELEMENT; return n; };
+  b.add('0,0', g);
+  let u = b.stats.upload;
+  ok(u.firstUploads === 1 && u.firstUploadBytes === bytesOf(g),
+    `one first upload of ${u.firstUploadBytes} logical bytes == the geometry's own size (${bytesOf(g)})`);
+  const frame = b.takeFrameUpload();
+  ok(frame.firstUploads === 1 && b.takeFrameUpload().firstUploads === 0, 'takeFrameUpload reads and clears; a second read is empty');
+  ok(b.stats.upload.firstUploads === 1, 'the cumulative total is not cleared by a frame read');
+  b.setVisible('0,0', false);
+  b.setVisible('0,0', false);
+  ok(b.takeFrameUpload().visibilityFlips === 1, 'only a flip that changes the value is counted');
+  // Full batch: a re-add now needs the dead space back, so it forces optimize(). Evicting the
+  // LAST geometry in the buffer shifts nothing; evicting the first shifts the whole tail.
+  for (let i = 1; i < 8; i++) b.add(`${i},0`, chunkGeo(24));
+  b.takeFrameUpload();
+  b.remove('7,0');
+  b.add('tail', chunkGeo(24));
+  const tail = b.takeFrameUpload();
+  ok(tail.compactions === 1 && tail.compactionShifts === 0 && tail.compactionBytes === 0,
+    'evicting the last entry in the buffer compacts for free: 0 geometries shifted');
+  b.remove('0,0');
+  b.add('head', chunkGeo(24));
+  const head = b.takeFrameUpload();
+  ok(head.compactions === 1 && head.compactionShifts === 7, `evicting the first shifts the tail: ${head.compactionShifts} geometries moved`);
+  ok(head.compactionBytes > 0 && head.compactionBytes <= head.compactionShifts * bytesOf(g),
+    `${head.compactionBytes} logical bytes moved, no more than the 7 shifted geometries hold`);
+  const overflow = createChunkBatcher({ material: new THREE.MeshBasicMaterial(), slots: 2, vertices: 2 * 600, indices: 2 * 3200, maxBatches: 1 });
+  for (let i = 0; i < 3; i++) overflow.add(`${i}`, chunkGeo(24));
+  ok(overflow.stats.upload.fallbacks === 1 && overflow.takeFrameUpload().fallbacks === 1, 'a chunk that fits nowhere is counted as a fallback, not an upload');
+  b.dispose(); overflow.dispose();
+}
+
+console.log('\n[5] lifecycle: slots are reused, nothing grows over a long session');
+{
+  const b = createChunkBatcher({ material: new THREE.MeshBasicMaterial(), slots: 8, vertices: 8 * 600, indices: 8 * 3200, maxBatches: 2 });
+  for (let i = 0; i < 8; i++) b.add(`a${i}`, chunkGeo(24));
+  const mesh = b.group.children[0];
+  const geoSlots = mesh._geometryInfo.length, instSlots = mesh._instanceInfo.length;
+  let peakGeo = geoSlots, peakInst = instSlots, peakBatches = b.batchCount;
+  for (let cycle = 0; cycle < 150; cycle++) {
+    for (let i = 0; i < 7; i++) b.remove(`a${i}`);
+    for (let i = 0; i < 7; i++) b.add(`a${i}`, chunkGeo(24));
+    const m = b.group.children[0];
+    peakGeo = Math.max(peakGeo, m._geometryInfo.length); peakInst = Math.max(peakInst, m._instanceInfo.length);
+    peakBatches = Math.max(peakBatches, b.batchCount);
+  }
+  ok(peakGeo === geoSlots && peakInst === instSlots,
+    `150 evict/refill cycles reuse slots: geometry slots ${peakGeo} (was ${geoSlots}), instance slots ${peakInst}`);
+  ok(peakBatches === 1 && b.chunkCount === 8 && b.residentCount === 8 && b.group.children.length === 1,
+    'and the batch list, the key map and the scene group all stay at their steady size');
+  ok(b.drawCount === 8, 'every surviving chunk is still a visible instance');
+  // a removed key leaves no visible instance behind, and no lookup either
+  b.remove('a3');
+  ok(b.drawCount === 7 && b.has('a3') === false && b.isVisible('a3') === false && b.setVisible('a3', true) === false,
+    'a removed chunk is gone from the draw list and from every lookup');
+  b.clear();
+  ok(b.batchCount === 0 && b.chunkCount === 0 && b.drawCount === 0 && b.group.children.length === 0, 'clear() empties every map and the group');
+  b.add('after-clear', chunkGeo(24));
+  ok(b.batchCount === 1 && b.chunkCount === 1, 'and the batcher is reusable afterwards');
+  b.dispose();
+  ok(b.group.parent === null && b.batchCount === 0, 'dispose() empties it and detaches the group');
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);
