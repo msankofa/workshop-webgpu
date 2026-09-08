@@ -1690,11 +1690,11 @@ drone; it renders at the interpolated server pose like a remote player.
 
 Every craft built through this page's `CRAFT_MATERIALS` shares its materials: `flight-meshes.js`
 caches them per factory table, keyed on colour, emissive/opacity and side, so a second drone of the
-same tint allocates none (see `docs/subsystems/flight.md`). The materials belong to that cache, not
-to a craft, so `disposeMesh` here frees geometry and skips anything `isCachedCraftMaterial` claims.
-The AGM mesh at `base-game.html:2846` passes its factory as a fresh object literal per call, so its
-materials are not shared between missiles; hoisting that literal to a module-level `const` would
-opt it in.
+same tint allocates none (see `docs/subsystems/flight.md`). Shared materials are reference counted
+there: `buildCraftMesh` takes one reference per mesh slot and a shared material's `dispose()` is a
+release, freed for real at zero, so `disposeMesh` here disposes geometry and materials normally and
+never blanks another craft. The AGM pool builds through one module-level `AGM_MATERIALS` table
+(since 2026-09-07), so missiles share their materials too.
 
 **Flight parity audit (2026-08-27).** The user reported the flying was "not even close" to the
 flight sim; a four-reader adversarial Sonnet pass with a skeptic per finding confirmed nine real

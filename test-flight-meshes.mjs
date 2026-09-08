@@ -1,7 +1,7 @@
 // The shared-material cache in flight-meshes.js: which materials one craft asks for, which of them
 // are reused by the next craft, and what stays distinct. Run: node test-flight-meshes.mjs
 import * as THREE from 'three';
-import { buildCraftMesh, CRAFT_KINDS, isCachedCraftMaterial, disposeCraftMaterials } from './flight-meshes.js';
+import { buildCraftMesh, CRAFT_KINDS, isCachedCraftMaterial, disposeCraftMaterials, releaseCraftMaterials, craftMaterialUses, craftMaterialCacheSize, CRAFT_MATERIAL_CACHE_LIMIT } from './flight-meshes.js';
 
 let failed = 0;
 function ok(msg, cond, detail = '') { console.log(`${cond ? 'ok  ' : 'FAIL'} ${msg}${detail ? '  ' + detail : ''}`); if (!cond) failed++; }
@@ -122,32 +122,114 @@ console.log('\n-- moving parts --');
   ok('recon: the propeller is its own group', !!g.userData.propeller && g.userData.propeller.children.length >= 3);
 }
 
-// ── disposing one craft leaves the shared materials alive ──
-console.log('\n-- disposal --');
+
+// ── ownership: a shared material lives exactly as long as the crafts using it ──
+// The teardown under test is the one every page already runs: walk the craft, dispose what you see.
+const tearDown = (g) => g.traverse(o => { o.geometry?.dispose(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()); });
+const watch = (mats) => { const seen = new Map(); for (const m of mats) { seen.set(m, 0); m.addEventListener('dispose', () => seen.set(m, seen.get(m) + 1)); } return seen; };
+
+console.log('\n-- ownership --');
 {
+  // Two crafts, tear one down: the other's materials must be untouched and still usable.
   const m = counter();
   const a = buildCraftMesh('drone', 0x8ea2b8, m);
   const b = buildCraftMesh('drone', 0x8ea2b8, m);
-  let disposed = 0;
-  for (const mat of materialsOf(a)) mat.addEventListener('dispose', () => disposed++);
-  // What a craft teardown does: dispose everything it can see.
-  a.traverse(o => { o.geometry?.dispose(); o.material?.dispose(); });
-  ok('no shared material was disposed with the craft', disposed === 0, `${disposed} disposed`);
-  const still = [...materialsOf(b)].every(isCachedCraftMaterial);
-  ok('the surviving craft still holds cached materials', still);
+  const shared = [...materialsOf(b)];
+  const seen = watch(shared);
+  ok('both crafts hold the same materials', [...materialsOf(a)].every(x => materialsOf(b).has(x)));
+  // References are counted per mesh slot, so a material drawn on 12 parts is held 12 times per craft.
+  const before = shared.map(craftMaterialUses);
+  ok('two crafts hold every material an even number of times', before.every(n => n > 0 && n % 2 === 0), before.join(','));
+  tearDown(a);
+  ok('tearing one craft down disposed nothing shared', shared.every(x => seen.get(x) === 0));
+  ok('the survivor still holds cached materials', shared.every(isCachedCraftMaterial));
+  ok('and exactly one craft worth of references came back', shared.every((x, i) => craftMaterialUses(x) === before[i] / 2), shared.map(craftMaterialUses).join(','));
   const c = buildCraftMesh('drone', 0x8ea2b8, m);
   ok('a craft built afterwards reuses them', m.made === EXPECT.drone && [...materialsOf(c)].every(x => materialsOf(b).has(x)), `made=${m.made}`);
+  // Last two go: now they must really be freed, exactly once each.
+  tearDown(b); tearDown(c);
+  ok('the last teardown disposed each material exactly once', shared.every(x => seen.get(x) === 1), [...seen.values()].join(','));
+  ok('and they are no longer claimed by the cache', shared.every(x => !isCachedCraftMaterial(x)));
+  ok('the cache is empty for that factory', craftMaterialCacheSize(m) === 0, `${craftMaterialCacheSize(m)}`);
+  const d = buildCraftMesh('drone', 0x8ea2b8, m);
+  ok('building again makes a fresh set', m.made === EXPECT.drone * 2 && [...materialsOf(d)].every(x => !shared.includes(x)), `made=${m.made}`);
+  tearDown(d);
 }
 {
-  // Page teardown: this is the one call that really frees them.
+  // Repeated create/destroy of N crafts must not grow anything.
+  const m = counter();
+  const alive = [];
+  for (let round = 0; round < 5; round++) {
+    for (let i = 0; i < 6; i++) alive.push(buildCraftMesh('recon', 0x8ea2b8, m));
+    while (alive.length) tearDown(alive.pop());
+  }
+  ok('30 crafts over 5 rounds: cache never grew past one set', craftMaterialCacheSize(m) === 0, `${craftMaterialCacheSize(m)}`);
+  // Each round rebuilds after the cache emptied, so the factory ran once per round, not once per craft.
+  ok('the factory ran once per round, not once per craft', m.made === EXPECT.recon * 5, `made=${m.made}`);
+}
+{
+  // Holding one craft across rounds keeps the set alive and stops any rebuild at all.
+  const m = counter();
+  const keep = buildCraftMesh('recon', 0x8ea2b8, m);
+  for (let round = 0; round < 5; round++) {
+    const g = [];
+    for (let i = 0; i < 6; i++) g.push(buildCraftMesh('recon', 0x8ea2b8, m));
+    while (g.length) tearDown(g.pop());
+    ok(`round ${round}: still one set of ${EXPECT.recon}`, m.made === EXPECT.recon && craftMaterialCacheSize(m) === EXPECT.recon, `made=${m.made} cache=${craftMaterialCacheSize(m)}`);
+  }
+  const mats = [...materialsOf(keep)];
+  ok('the held craft still has live materials', mats.every(x => craftMaterialUses(x) >= 1));
+  tearDown(keep);
+  ok('and releasing it empties the cache', craftMaterialCacheSize(m) === 0, `${craftMaterialCacheSize(m)}`);
+}
+{
+  // releaseCraftMaterials is the explicit spelling of the same thing.
   const m = counter();
   const g = buildCraftMesh('bird', 0x8ea2b8, m);
-  let disposed = 0;
-  for (const mat of materialsOf(g)) mat.addEventListener('dispose', () => disposed++);
-  const n = materialsOf(g).size;
+  const mats = [...materialsOf(g)];
+  const seen = watch(mats);
+  releaseCraftMaterials(g);
+  ok('releaseCraftMaterials frees a lone craft\'s materials', mats.every(x => seen.get(x) === 1));
+  ok('a second release is harmless', (releaseCraftMaterials(g), mats.every(x => seen.get(x) === 1)));
+}
+
+// ── the cache is bounded ──
+console.log('\n-- cache bound --');
+{
+  // A caller that tints every craft differently. Each craft is torn down, so eviction can reclaim.
+  const m = counter();
+  for (let i = 0; i < CRAFT_MATERIAL_CACHE_LIMIT * 4; i++) tearDown(buildCraftMesh('recon', 0x100000 + i, m));
+  ok('churned tints leave the cache empty', craftMaterialCacheSize(m) === 0, `${craftMaterialCacheSize(m)}`);
+}
+{
+  // Every craft kept alive: the cache stops at the limit and the overflow is per-craft, not cached.
+  const m = counter();
+  const live = [];
+  for (let i = 0; i < CRAFT_MATERIAL_CACHE_LIMIT * 2; i++) live.push(buildCraftMesh('recon', 0x200000 + i, m));
+  ok(`cache never exceeds ${CRAFT_MATERIAL_CACHE_LIMIT}`, craftMaterialCacheSize(m) <= CRAFT_MATERIAL_CACHE_LIMIT, `${craftMaterialCacheSize(m)}`);
+  const last = [...materialsOf(live[live.length - 1])];
+  ok('overflow materials are owned by their craft', last.some(x => !isCachedCraftMaterial(x)));
+  const seen = watch(last.filter(x => !isCachedCraftMaterial(x)));
+  tearDown(live[live.length - 1]);
+  // An uncached material behaves as it did before the cache: every mesh slot disposes it.
+  ok('and their dispose really disposes', seen.size > 0 && [...seen.values()].every(n => n >= 1), [...seen.values()].join(','));
+  for (const g of live.slice(0, -1)) tearDown(g);
+  ok('after every craft goes the cache is empty', craftMaterialCacheSize(m) === 0, `${craftMaterialCacheSize(m)}`);
+}
+
+// ── page teardown frees everything regardless of who is holding ──
+console.log('\n-- page teardown --');
+{
+  const m = counter();
+  const g = buildCraftMesh('bird', 0x8ea2b8, m);
+  const mats = [...materialsOf(g)];
+  const seen = watch(mats);
   disposeCraftMaterials();
-  ok('disposeCraftMaterials frees every cached material', disposed === n, `${disposed}/${n}`);
-  ok('and they are no longer claimed by the cache', [...materialsOf(g)].every(x => !isCachedCraftMaterial(x)));
+  ok('disposeCraftMaterials frees every cached material', [...seen.values()].every(n => n === 1), [...seen.values()].join(','));
+  ok('and they are no longer claimed by the cache', mats.every(x => !isCachedCraftMaterial(x)));
+  // dispose() is back to Three's own, so a stale teardown is a plain redundant dispose, not a crash.
+  let threw = false; try { tearDown(g); } catch { threw = true; }
+  ok('a stale teardown afterwards is harmless', !threw);
   const after = counter();
   buildCraftMesh('bird', 0x8ea2b8, after);
   ok('the next craft builds a fresh set', after.made === EXPECT.bird, `made=${after.made}`);

@@ -138,13 +138,39 @@ Two dispatches are now keyed on capability rather than identity, and both got be
   builds, now 4 (plane 12 → 4, bird 9 → 3, recon 6 → 2, ugv/buggy 18 → 6, sentinel 6 → 2, agm 9 → 3).
   In r184 that was never a shader-compile saving — identical materials already share a compiled
   pipeline, keyed on shader source — but each one owned a bind group and a uniform buffer.
-  **Ownership rule: the cache owns these materials for the life of the module, so no craft's teardown
-  may dispose them.** `isCachedCraftMaterial(mat)` says which ones; cached materials also have
-  `dispose()` replaced by a no-op, so the existing "traverse and dispose everything" teardowns in
-  `demos/flight-sim.html` and `bot-viewer-v3.html` stay correct unchanged. `disposeCraftMaterials()`
-  is the one path that really frees them, for page teardown. A caller that passes a **fresh** factory
-  object each call gets no sharing (its cache is keyed on an object nobody else holds) — hoist the
-  literal to a module-level `const` to opt in. Pinned by `test-flight-meshes.mjs`.
+  **Ownership rule: shared materials are reference counted, and `dispose()` on one is a release.**
+  `buildCraftMesh` takes one reference per *mesh slot* that points at a cached material (a material
+  drawn on twelve parts is held twelve times), and a cached material's `dispose()` drops one
+  reference and really frees the material — restoring Three's own `dispose` and running it — when the
+  count reaches zero. So the ordinary teardown, "traverse the craft and dispose everything you see",
+  is exactly balanced against the build: `demos/flight-sim.html` and `bot-viewer-v3.html`
+  (`disposeDroneCraft`) are correct with the code they already have, and no page needs a change.
+  `releaseCraftMaterials(root)` is the same operation spelled out for a caller that would rather say
+  it; use that **or** the traverse-dispose, never both on one craft. `isCachedCraftMaterial(mat)`
+  reports whether a material is shared, and a teardown must **not** skip disposing those — skipping
+  is what leaks, because the reference never comes back. `craftMaterialUses(mat)` and
+  `craftMaterialCacheSize(factory)` are for tests and diagnostics. `disposeCraftMaterials()` frees
+  everything regardless of who still holds a reference; it is for page teardown only, and after it a
+  stale craft teardown is a plain redundant `dispose()` rather than a crash. There is no call site
+  for it in this repo today — every page keeps its craft materials for its own lifetime, which the
+  bound below makes safe.
+
+  **Bound: `CRAFT_MATERIAL_CACHE_LIMIT` = 64 distinct materials per caller factory table.** The key
+  includes the tint, so a caller that tinted every craft differently would grow the cache without
+  limit. When a full cache is asked for a new key it first evicts entries no live mesh uses (real
+  dispose); if every entry is in use it hands the material back **uncached**, owned by the craft
+  exactly as before the cache existed, and warns once. In practice every caller's tints are a short
+  fixed list — Base Game's craft view passes one constant `CRAFT_TINT` plus a per-def vehicle tint,
+  its AGM pool one literal through its own factory, `bot-viewer-v3` two team colours plus a fallback,
+  `demos/flight-sim` four — so nobody is near the limit; the bound exists because `tintFor` is a
+  caller-supplied function and a future caller could pass anything.
+
+  A caller that passes a **fresh** factory object each call gets no sharing (its cache is keyed on an
+  object nobody else holds) — hoist the literal to a module-level `const` to opt in. A craft the
+  caller `.clone()`s shares materials without acquiring a reference, so clone the build call instead.
+  Pinned by `test-flight-meshes.mjs`, which covers repeated create/destroy staying flat, one craft's
+  teardown leaving another's materials alive and undisposed, exactly-once disposal when the last
+  craft goes, the cache bound with and without live users, and that distinct factories never share.
 - `mergeByMaterial(root, skip)` bakes static parts into one geometry per material, relative to
   `root` rather than the world so a nested animated group keeps its own offset. The ground vehicles
   use it via `finishVehicle(g, wheels, groups)`; assembled from loose primitives they were 44 and 85

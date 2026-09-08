@@ -23,34 +23,92 @@ export const CRAFT_KINDS = ['plane', 'drone', 'bird', 'recon', 'ugv', 'buggy', '
 // key because the factory bakes them in as constants — a factory that varied them per call would
 // need them added here.
 //
-// Ownership: the cache owns these materials for the life of the module (the page). A craft's
-// teardown must not dispose them, so `dispose()` is replaced with a no-op on cached materials —
-// callers that traverse a craft disposing everything (bot-viewer-v3, demos/flight-sim) stay correct
-// without changing. `disposeCraftMaterials()` is the one path that really frees them.
+// Ownership: shared materials are reference counted, not owned outright. `buildCraftMesh` acquires
+// one reference per mesh slot that points at a cached material, and `dispose()` on a cached material
+// is a *release*: it drops one reference and really frees the material at zero. So the ordinary
+// teardown — traverse the craft and dispose everything it can see — stays exactly correct with no
+// page change, and no material outlives the last craft using it. `releaseCraftMaterials(root)` is
+// the same thing spelled out; use one or the other for a craft, never both.
 const MATERIAL_CACHES = new Set();          // every per-factory cache, for disposeCraftMaterials
 const CACHE_BY_FACTORY = new WeakMap();     // factory table -> Map(key -> material)
 const CACHED_MATERIALS = new WeakSet();
 const REAL_DISPOSE = new WeakMap();
-const noop = () => {};
+const USE_COUNT = new WeakMap();            // cached material -> live mesh slots pointing at it
+const CACHE_OF = new WeakMap();             // cached material -> the Map it lives in
+const KEY_OF = new WeakMap();               // cached material -> its key in that Map
 const colorKey = (c) => (typeof c === 'number' ? c.toString(16) : (c && c.isColor ? c.getHexString() : String(c)));
 const optsKey = (o) => (o ? Object.keys(o).sort().map(k => `${k}=${o[k]}`).join(',') : '');
 
-// True for a material this module owns. A per-craft dispose path should skip these.
+// Hard bound on distinct materials per caller factory. A caller that tints every craft differently
+// would otherwise grow the cache without limit; past this, unused entries are evicted and, failing
+// that, the material is handed back uncached and owned by the craft as it was before the cache.
+export const CRAFT_MATERIAL_CACHE_LIMIT = 64;
+let warnedFull = false;
+
+// True for a material this module shares. Such a material's dispose() releases rather than frees.
 export function isCachedCraftMaterial(material) { return !!material && CACHED_MATERIALS.has(material); }
 
-// Frees every shared craft material. For page teardown only; any craft still in the scene is left
-// pointing at a disposed material.
+// Live reference count of a shared material, for tests and diagnostics.
+export function craftMaterialUses(material) { return USE_COUNT.get(material) ?? 0; }
+
+// Distinct materials currently cached for one caller factory table.
+export function craftMaterialCacheSize(factory) { return CACHE_BY_FACTORY.get(factory)?.size ?? 0; }
+
+function freeMaterial(mat) {
+  const cache = CACHE_OF.get(mat), key = KEY_OF.get(mat);
+  if (cache && cache.get(key) === mat) cache.delete(key);
+  const real = REAL_DISPOSE.get(mat);
+  delete mat.dispose;                       // back to the prototype's real dispose
+  CACHED_MATERIALS.delete(mat); USE_COUNT.delete(mat); REAL_DISPOSE.delete(mat);
+  if (real) real();
+}
+
+function releaseMaterial(mat) {
+  if (!CACHED_MATERIALS.has(mat)) return;
+  const n = USE_COUNT.get(mat) ?? 0;
+  if (n > 1) USE_COUNT.set(mat, n - 1); else freeMaterial(mat);
+}
+
+// One reference per mesh slot, so a teardown that disposes per mesh balances exactly.
+function acquireCraftMaterials(root) {
+  root.traverse((o) => {
+    const m = o.material;
+    if (!m) return;
+    for (const x of Array.isArray(m) ? m : [m]) if (CACHED_MATERIALS.has(x)) USE_COUNT.set(x, (USE_COUNT.get(x) ?? 0) + 1);
+  });
+}
+
+// Drops this craft's references; a material nothing else uses is really disposed. Equivalent to the
+// traverse-and-dispose teardown, for callers that would rather say it explicitly.
+export function releaseCraftMaterials(root) {
+  if (!root) return;
+  root.traverse((o) => {
+    const m = o.material;
+    if (!m) return;
+    for (const x of Array.isArray(m) ? m : [m]) releaseMaterial(x);
+  });
+}
+
+// Frees every shared craft material regardless of who still points at one. Page teardown only.
 export function disposeCraftMaterials() {
   for (const cache of MATERIAL_CACHES) {
-    for (const mat of cache.values()) {
-      const real = REAL_DISPOSE.get(mat);
-      delete mat.dispose;
-      if (real) real();
-      CACHED_MATERIALS.delete(mat);
-    }
+    for (const mat of [...cache.values()]) freeMaterial(mat);
     cache.clear();
   }
   MATERIAL_CACHES.clear();
+  warnedFull = false;
+}
+
+// Drops entries no live mesh uses, oldest first. Returns true if it made room.
+function evictUnused(cache) {
+  let freed = false;
+  for (const mat of [...cache.values()]) {
+    if ((USE_COUNT.get(mat) ?? 0) > 0) continue;
+    freeMaterial(mat);
+    freed = true;
+    if (cache.size < CRAFT_MATERIAL_CACHE_LIMIT) break;
+  }
+  return freed && cache.size < CRAFT_MATERIAL_CACHE_LIMIT;
 }
 
 // Wraps a caller's `{ standard, basic }` table so repeated requests return one material. The third
@@ -65,8 +123,15 @@ export function shareCraftMaterials(m) {
     if (hit) return hit;
     const mat = make();
     if (opts) for (const k of Object.keys(opts)) mat[k] = opts[k];
-    if (typeof mat?.dispose === 'function') { REAL_DISPOSE.set(mat, mat.dispose.bind(mat)); mat.dispose = noop; }
-    if (mat) CACHED_MATERIALS.add(mat);
+    if (!mat || typeof mat.dispose !== 'function') return mat;
+    // Full and nothing free: hand it back uncached, owned by the craft as before the cache existed.
+    if (cache.size >= CRAFT_MATERIAL_CACHE_LIMIT && !evictUnused(cache)) {
+      if (!warnedFull) { warnedFull = true; console.warn(`flight-meshes: craft material cache full at ${CRAFT_MATERIAL_CACHE_LIMIT} in-use materials; further materials are per-craft`); }
+      return mat;
+    }
+    REAL_DISPOSE.set(mat, mat.dispose.bind(mat));
+    mat.dispose = () => releaseMaterial(mat);
+    CACHED_MATERIALS.add(mat); USE_COUNT.set(mat, 0); CACHE_OF.set(mat, cache); KEY_OF.set(mat, key);
     cache.set(key, mat);
     return mat;
   };
@@ -1020,6 +1085,7 @@ export function buildCraftMesh(kind, tint, materials, dims = undefined) {
   const build = BUILDERS[kind];
   if (!build) throw new Error(`no craft mesh for '${kind}'. Registered: ${Object.keys(BUILDERS).join(', ')}`);
   const g = build(tint, shareCraftMaterials(materials), dims);
+  acquireCraftMaterials(g);                 // one reference per mesh slot; the teardown gives them back
   g.traverse((o) => { o.frustumCulled = false; });
   return g;
 }
