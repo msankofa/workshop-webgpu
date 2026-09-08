@@ -1103,3 +1103,20 @@ material colour mutated in place and a texture's version bumped in place, that n
 live object, that a one-ULP and a swapped-element matrix difference both hash apart, that `-0` is not
 a spurious change, that no `skipSafe` field survives anywhere in the record, and that 2,000 frames of
 the same objects retain nothing (the retention assertion runs only under `--expose-gc`).
+
+## Render pipeline map: Problem, Map, Stats, Tasks, Logs (2026-09-08)
+
+`docs/render-pipeline-map.html` is the one page for the render work. Problem is the plain-terms
+summary, Map the hover diagram, Stats the tables and figures that
+`scratchpads/fps-churn/build-stats-tab.mjs` regenerates from the capture log (run it after new
+captures), Tasks the checklist Fable assigns to the user, Logs Fable's progress entries.
+
+The Tasks tab is a `disk-store.js` document: it reads `/docs/render-tasks.json` and autosaves through
+`POST /api/save-render-tasks` (serve.py `save_render_tasks`, which refuses a body without a `tasks`
+list); `localStorage` is only the fallback for a page opened without the server. Each task carries
+`createdAt`, `title`, `criteria` (done when), `why`, `status`, `doneAt`, `notes`, `files` (typed paths or
+picked file names; a browser picker gives names, not paths). The Notify button flushes the store and
+`POST`s `/api/render-tasks-notify`, which appends one UTC-stamped line to
+`research/stats/render-tasks-notify.log`; Fable's session follows that file with `tail -F`, reads the
+task document, assigns the next tasks and updates the map and stats. Logs is read-only in the page:
+Fable appends entries to `docs/render-progress-log.json` (`{ at, title, body, commits[] }`).

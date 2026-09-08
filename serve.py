@@ -4,6 +4,7 @@ import hashlib
 import http.server
 import io
 import json
+import datetime
 import os
 import re
 import sys
@@ -309,15 +310,26 @@ def save_water_config(body_bytes):
     return 'water-config.json'
 
 
-def save_ordination(body_bytes):
-    # code-ordination.html's pipeline config plus the last sweep table. One file overwritten in
-    # place, same arrangement as water-config.json above -- the page reloads it on next open so a
-    # configuration that scored well is never trapped in browser storage.
+ORDINATION_FILES = {
+    'map': 'ordination-config.json',
+    'steps': 'ordination-steps-config.json',
+    'v2': 'code-ordinator-v2-config.json',
+}
+
+
+def save_ordination(body_bytes, name='map'):
+    # The ordination pages' settings. `map` is code-ordination.html's pipeline config plus the last
+    # sweep table; `steps` is ordination-steps.html's filters and per-step settings. One file each,
+    # overwritten in place, same arrangement as water-config.json above -- the page reloads it on
+    # next open so tuning is never trapped in browser storage.
+    filename = ORDINATION_FILES.get(name)
+    if filename is None:
+        raise ValueError('unknown ordination config: %s' % name)
     json.loads(body_bytes.decode('utf-8'))  # reject non-JSON bodies before writing
-    target = os.path.join(ROOT, 'ordination-config.json')
+    target = os.path.join(ROOT, filename)
     with open(target, 'wb') as f:
         f.write(body_bytes)
-    return 'ordination-config.json'
+    return filename
 
 
 def save_ground_look(body_bytes):
@@ -378,6 +390,36 @@ def save_shot_spread(body_bytes):
     with open(target, 'wb') as f:
         f.write(body_bytes)
     return 'shot-spread.json'
+
+
+def save_render_tasks(body_bytes):
+    # docs/render-pipeline-map.html's Tasks tab: the checklist Fable assigns and the user checks off,
+    # with notes and attached file names. One JSON document, autosaved through disk-store.js.
+    doc = json.loads(body_bytes.decode('utf-8'))
+    if not isinstance(doc, dict) or not isinstance(doc.get('tasks'), list):
+        raise ValueError('render tasks document needs a tasks list')
+    target = os.path.join(ROOT, 'docs', 'render-tasks.json')
+    with open(target, 'wb') as f:
+        f.write(body_bytes)
+    return 'docs/render-tasks.json'
+
+
+def append_render_tasks_notify(body_bytes):
+    # The Tasks tab's Notify button: one line per click, appended, so a session watching the file
+    # (tail -f) is told the task log changed and can read docs/render-tasks.json.
+    note = ''
+    if body_bytes:
+        try:
+            body = json.loads(body_bytes.decode('utf-8'))
+            note = str(body.get('note', ''))[:400] if isinstance(body, dict) else ''
+        except Exception:
+            note = ''
+    os.makedirs(os.path.join(ROOT, 'research', 'stats'), exist_ok=True)
+    target = os.path.join(ROOT, 'research', 'stats', 'render-tasks-notify.log')
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    with open(target, 'a', encoding='utf-8') as f:
+        f.write(stamp + ' notify ' + note.replace(chr(10), ' ') + chr(10))
+    return 'research/stats/render-tasks-notify.log'
 
 
 def save_scratchpad_capture(body_bytes):
@@ -922,6 +964,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith('/api/save-palette'):
             self._handle_save_palette()
             return
+        if self.path.startswith('/api/save-render-tasks'):
+            self._handle_simple_save(save_render_tasks, 2_000_000)
+            return
+        if self.path.startswith('/api/render-tasks-notify'):
+            self._handle_simple_save(append_render_tasks_notify, 10_000, allow_empty=True)
+            return
         dir_path = self.ROUTES.get(self.path)
         if dir_path is None:
             self.send_error(404)
@@ -1197,8 +1245,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if length <= 0 or length > 4_000_000:
             self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
             return
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        name = params.get('name', ['map'])[0]
         try:
-            rel_path = save_ordination(self.rfile.read(length))
+            rel_path = save_ordination(self.rfile.read(length), name)
             self._send_json({'ok': True, 'path': rel_path})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)
@@ -1265,6 +1315,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             rel_path = save_scratchpad_capture(self.rfile.read(length))
+            self._send_json({'ok': True, 'path': rel_path})
+        except Exception as exc:
+            self._send_json({'ok': False, 'error': str(exc)}, status=400)
+
+    # One shape for the small JSON-body routes: read, hand to a saver, answer with its path.
+    def _handle_simple_save(self, saver, max_len, allow_empty=False):
+        length = int(self.headers.get('content-length', '0') or 0)
+        if (length <= 0 and not allow_empty) or length > max_len:
+            self._send_json({'ok': False, 'error': 'bad content length'}, status=400)
+            return
+        try:
+            body = self.rfile.read(length) if length > 0 else b''
+            rel_path = saver(body)
             self._send_json({'ok': True, 'path': rel_path})
         except Exception as exc:
             self._send_json({'ok': False, 'error': str(exc)}, status=400)

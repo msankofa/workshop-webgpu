@@ -1,0 +1,47 @@
+{
+  "format": "pcw-render-tasks",
+  "version": 1,
+  "updatedAt": "2026-09-08T19:40:00Z",
+  "tasks": [
+    {
+      "id": "t1-trace-pair",
+      "createdAt": "2026-09-08T19:40:00Z",
+      "title": "Capture the trace pair on your usual route",
+      "criteria": "Two captures, same route: base-game.html?trace=1, then base-game.html?trace=1&tracephases=0. Both saved to the performance log.",
+      "why": "Gives the six encode stages as capture-wide percentiles, the instrumentation's own cost, the granted device limits, and names any shader compile.",
+      "status": "open", "doneAt": null, "notes": "", "files": []
+    },
+    {
+      "id": "t2-crafts-grass",
+      "createdAt": "2026-09-08T19:40:00Z",
+      "title": "Look at drones, vehicles and grass",
+      "criteria": "Spawn a drone and a vehicle and fire an AGM: no missing part, wrong colour, or see-through hull. Watch grass wind, walk across a rebase, then repeat with ?grassScope=object: no frozen wind, wrong rate, or grass jump in either run.",
+      "why": "These are the two shipped changes whose failure would be visible: shared craft materials and the render-group grass uniforms.",
+      "status": "open", "doneAt": null, "notes": "", "files": []
+    },
+    {
+      "id": "t3-refresh-audit",
+      "createdAt": "2026-09-08T19:40:00Z",
+      "title": "Run the refresh audit on the route",
+      "criteria": "base-game.html?refreshaudit=1 on the same route, then save a capture.",
+      "why": "It never skips; it reports where a skip of the refresh would have been wrong on the spawn building, structures and roads, and what its own check costs.",
+      "status": "open", "doneAt": null, "notes": "", "files": []
+    },
+    {
+      "id": "t4-forest-compact",
+      "createdAt": "2026-09-08T19:40:00Z",
+      "title": "Forest: default against 'One merged draw, compact'",
+      "criteria": "Tree look panel, LOD2 branch submission. Switch to 'One merged draw, compact' after tasks 1 to 3. Far trees still there and same shape as before. If they vanish or go black, note it and switch back.",
+      "why": "The pulled forest has compiled headless only; this is its first device compile and first render. The fallback should already have switched back on a validation error and the capture says why.",
+      "status": "open", "doneAt": null, "notes": "", "files": []
+    },
+    {
+      "id": "t5-push",
+      "createdAt": "2026-09-08T19:40:00Z",
+      "title": "Decide on pushing the branch",
+      "criteria": "Say push, or not. About 27 commits since 492de74 are local; the friend test runs off 492de74.",
+      "why": "Nothing since 492de74 is browser-seen; tasks 2 and 4 are the visible risks.",
+      "status": "open", "doneAt": null, "notes": "", "files": []
+    }
+  ]
+}
