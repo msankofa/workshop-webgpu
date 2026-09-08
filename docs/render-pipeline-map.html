@@ -577,7 +577,7 @@ function render() {
     const el = document.createElement('div'); el.className = 'task' + (t.status === 'done' ? ' done' : '');
     const files = (t.files || []).map((f, i) => '<span class="f">' + esc(f) + '<b data-i="' + i + '" title="remove">×</b></span>').join('');
     el.innerHTML = '<div class="head"><input type="checkbox" ' + (t.status === 'done' ? 'checked' : '') + ' title="done when the criteria are met"><span class="title">' + esc(t.title) + '</span><span class="meta">assigned ' + esc(when(t.createdAt)) + (t.doneAt ? ' · done ' + esc(when(t.doneAt)) : '') + '</span></div>'
-      + '<div class="crit"><b>Done when:</b> ' + esc(t.criteria) + '</div>' + (t.why ? '<div class="why">' + esc(t.why) + '</div>' : '')
+      + '<div class="crit"><b>Done when:</b> ' + esc(t.criteria) + '</div>' + (t.why ? '<div class="why">' + esc(t.why) + '</div>' : '') + (t.outcome ? '<div class="crit"><b>Fable read it:</b> ' + esc(t.outcome) + '</div>' : '')
       + '<textarea placeholder="notes: what you saw, anything odd">' + esc(t.notes) + '</textarea>'
       + '<div class="files">' + files + '<input type="text" placeholder="file path to attach, then Enter (or pick files)"><input type="file" multiple></div>';
     el.querySelector('input[type=checkbox]').addEventListener('change', e => { t.status = e.target.checked ? 'done' : 'open'; t.doneAt = e.target.checked ? new Date().toISOString() : null; save(); render(); });
