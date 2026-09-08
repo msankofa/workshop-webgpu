@@ -1275,6 +1275,8 @@ function recordRenderTrace() {
     refreshes: t.refreshes, refreshChecks: t.refreshChecks, uniqueMaterials: t.uniqueMaterials,
     bindingCreates: t.bindingCreates, bindingWrites: t.bindingWrites, bindingWriteBytes: t.bindingWriteBytes,
     attributeWrites: t.attributeWrites, attributeWriteBytes: t.attributeWriteBytes,
+    // Which uniforms were rewritten this frame, by group and name, most often first.
+    uniformWriteRows: t.uniformWriteRows,
     // Shader work this frame: pipeline cache misses with the material that asked, and the programs behind them.
     pipelineCreates: t.pipelineCreates, pipelineCreateMs: t.pipelineCreateMs, pipelineCreateRows: t.pipelineCreateRows,
     programCreates: t.programCreates, programCreateMs: t.programCreateMs,

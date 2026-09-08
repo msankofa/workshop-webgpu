@@ -159,6 +159,12 @@
       "title": "Structures on/off profiles: the clearance walked every slab in the world per texel",
       "body": "Two more allocation profiles from the user, walking with plants off, structures on and off (3.85 and 3.94 GB). On: base-game-structures-page clearanceAt is 1.33 GB (35%), called from flora-field derive for every texel of every arriving field tile, walking every resident building’s floor rects and allocating a destructured-default options object plus boxed doubles per call. Off: absent. Fix: rectsClearanceBounds per dressed tile (slabs expanded by margin + fade) and a skip outside it, exact because every rect answers 1 there (4000-point test); clearanceAgainstRects reads options without a default object. Structures tests green. The synchronous one-tile-per-frame structure build is not visible as an allocator; its frame cost needs a capture on the fixed build.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T00:30Z",
+      "title": "The trace names the uniforms rewritten per object",
+      "body": "The largest allocator standing still is Three allocating a range object and a Map entry per changed uniform per object per frame. That fires only when a value changed, so the question is which uniform changes on every object every frame; Three’s own per-object uniforms are matrices, so a per-frame Vector3 is most likely ours in the per-object group of a shared material. render-trace now tallies the changed uniforms by group and name from each updateBinding’s ranges (uniformWriteRows in the capture); test added. Task 15 asks for one standing ?trace=1 capture. Gemini’s storage-buffer advice was assessed: it describes what the big groups here already do and does not remove the per-RenderObject refresh; the applicable part is the render-group move.",
+      "commits": []
     }
   ]
 }

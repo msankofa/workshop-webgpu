@@ -57,6 +57,10 @@ function newEntry(name, camera, cameraType) {
     refreshes: 0, refreshChecks: 0,
     bindingCreates: 0, bindingWrites: 0, bindingWriteBytes: 0,
     attributeWrites: 0, attributeWriteBytes: 0,
+    // Which uniforms changed and were written, by group and name: a Vector3 in the per-object group
+    // that changes on every object every frame is rewritten once per object, and three allocates a
+    // range and a Map entry each time (the largest allocator standing still, 2026-09-08 profiles).
+    uniformWrites: new Map(),
     // Pipeline cache misses this pass: how many, how long, and which (object, material) asked, so a
     // frame that compiled a shader names the material. Programs are the shader modules behind them.
     pipelineCreates: 0, pipelineCreateMs: 0, pipelineCreateRows: [],
@@ -189,6 +193,22 @@ function rangedBytesOf(target, array) {
 const attributeBytesOf = attribute => rangedBytesOf(attribute, attribute?.array ?? attribute?.data?.array);
 // WebGPUBindingUtils.updateBinding follows the same rule over binding.buffer and binding.updateRanges.
 const bindingBytesOf = binding => rangedBytesOf(binding, binding?.buffer);
+// "group/uniform" for each update range of a uniforms group about to be written: the range starts
+// at the changed uniform's offset. Read before the call; the backend clears the ranges after it.
+export const UNIFORM_ROWS = 16;
+export function changedUniformNames(binding) {
+  const ranges = binding?.updateRanges, uniforms = binding?.uniforms;
+  if (!Array.isArray(ranges) || !ranges.length || !Array.isArray(uniforms)) return [];
+  const group = binding.name || '?';
+  const out = [];
+  for (const range of ranges) {
+    let name = null;
+    for (const u of uniforms) if (u && u.offset === range.start) { name = u.name; break; }
+    out.push(`${group}/${name ?? ('@' + range.start)}`);
+  }
+  return out;
+}
+const uniformRows = map => [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, UNIFORM_ROWS).map(([name, count]) => ({ name, count }));
 
 export function createRenderTrace({ now = () => performance.now(), timePhases = true } = {}) {
   // Overhead mode: every wrapper and every counter is installed, but the clock is a constant, so a
@@ -407,6 +427,7 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
       pipelineCreates: 0, pipelineCreateMs: 0, pipelineCreateRows: [], programCreates: 0, programCreateMs: 0,
       bindingCreates: 0, bindingWrites: 0, bindingWriteBytes: 0,
       attributeWrites: 0, attributeWriteBytes: 0,
+      uniformWrites: new Map(),
       // Which mode this frame ran in: false means the wrappers were installed and every timer read
       // zero, so the frame time is the instrumentation's own cost.
       timed: timePhases,
@@ -428,6 +449,7 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
       out.bindingCreates += entry.bindingCreates;
       out.bindingWrites += entry.bindingWrites; out.bindingWriteBytes += entry.bindingWriteBytes;
       out.attributeWrites += entry.attributeWrites; out.attributeWriteBytes += entry.attributeWriteBytes;
+      for (const [name, n] of entry.uniformWrites) out.uniformWrites.set(name, (out.uniformWrites.get(name) || 0) + n);
       out.pipelineCreates += entry.pipelineCreates; out.pipelineCreateMs += entry.pipelineCreateMs;
       out.programCreates += entry.programCreates; out.programCreateMs += entry.programCreateMs;
       for (const row of entry.pipelineCreateRows) if (out.pipelineCreateRows.length < PIPELINE_ROWS) out.pipelineCreateRows.push({ scene: entry.name, ...row });
@@ -456,6 +478,7 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
       bindingCreates: entry.bindingCreates,
       bindingWrites: entry.bindingWrites, bindingWriteBytes: entry.bindingWriteBytes,
       attributeWrites: entry.attributeWrites, attributeWriteBytes: entry.attributeWriteBytes,
+      uniformWriteRows: uniformRows(entry.uniformWrites),
       pipelineCreates: entry.pipelineCreates, pipelineCreateMs: round3(entry.pipelineCreateMs), pipelineCreateRows: entry.pipelineCreateRows,
       programCreates: entry.programCreates, programCreateMs: round3(entry.programCreateMs),
       // The heaviest objects this pass encoded, and how much of its encode they were, plus the
@@ -501,10 +524,11 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
       // dirty ranges -- but one `updateAttribute` can become several `writeBuffer` calls inside the
       // backend when the attribute carries update ranges, so the call count is a lower bound.
       wrapCounter(renderer.backend, 'createBindings', 'backend.createBindings', entry => { entry.bindingCreates++; });
-      wrapCounter(renderer.backend, 'updateBinding', 'backend.updateBinding', (entry, result, args, bytes) => {
+      wrapCounter(renderer.backend, 'updateBinding', 'backend.updateBinding', (entry, result, args, pre) => {
         entry.bindingWrites++;
-        entry.bindingWriteBytes += bytes;
-      }, args => bindingBytesOf(args[0]));
+        entry.bindingWriteBytes += pre.bytes;
+        for (const name of pre.names) entry.uniformWrites.set(name, (entry.uniformWrites.get(name) || 0) + 1);
+      }, args => ({ bytes: bindingBytesOf(args[0]), names: changedUniformNames(args[0]) }));
       wrapCounter(renderer.backend, 'updateAttribute', 'backend.updateAttribute', (entry, result, args, bytes) => {
         entry.attributeWrites++;
         entry.attributeWriteBytes += bytes;
@@ -557,6 +581,7 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
           bindingCreates: out.bindingCreates, bindingWrites: out.bindingWrites,
           bindingWriteBytes: out.bindingWriteBytes,
           attributeWrites: out.attributeWrites, attributeWriteBytes: out.attributeWriteBytes,
+          uniformWriteRows: uniformRows(out.uniformWrites),
           pipelineCreates: out.pipelineCreates, pipelineCreateMs: out.pipelineCreateMs, pipelineCreateRows: out.pipelineCreateRows,
           programCreates: out.programCreates, programCreateMs: out.programCreateMs,
         };

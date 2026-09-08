@@ -619,7 +619,7 @@ function once(fn) {
   };
   // A binding with update ranges (a UniformsGroup after two changed uniforms) counts the ranges,
   // read before the call because Bindings._update clears them after the upload.
-  const rangedBinding = { byteLength: 4096, buffer: { byteLength: 4096, BYTES_PER_ELEMENT: 4 }, updateRanges: [{ start: 0, count: 16 }, { start: 64, count: 4 }] };
+  const rangedBinding = { name: 'objectGroup', byteLength: 4096, buffer: { byteLength: 4096, BYTES_PER_ELEMENT: 4 }, updateRanges: [{ start: 0, count: 16 }, { start: 64, count: 4 }], uniforms: [{ name: 'modelViewMatrix', offset: 0 }, { name: 'uSunDir', offset: 64 }] };
   const realUpdateBinding = renderer.backend.updateBinding;
   renderer.backend.updateBinding = function (b) { if (b.updateRanges) b.updateRanges.length = 0; return realUpdateBinding?.call(this, b); };
   // A ranged attribute counts what the backend will write; the fake backend clears the ranges as the
@@ -640,6 +640,7 @@ function once(fn) {
   const entry = t.scenes[0];
   assert.equal(entry.bindingCreates, 1);
   assert.equal(entry.bindingWrites, 3);
+  assert.deepEqual(entry.uniformWriteRows, [{ name: 'objectGroup/modelViewMatrix', count: 1 }, { name: 'objectGroup/uSunDir', count: 1 }], 'the changed uniforms are named by group and name');
   assert.equal(entry.bindingWriteBytes, 256 + 80, 'whole buffers report byteLength, ranged groups their ranges times element size, sizeless ones zero');
   assert.equal(rangedBinding.updateRanges.length, 0, 'read before the call cleared the ranges');
   assert.equal(entry.attributeWrites, 2);
