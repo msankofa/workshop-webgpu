@@ -115,6 +115,7 @@ import { createPipelineMeter } from './gpu-pipeline-meter.js';
 import { createRenderPassRecorder } from './render-pass-recorder.js';
 import { createRenderTrace } from './render-trace.js';
 import { deviceLimits as forestDeviceLimits } from './forest-gpu.js';
+import { createRefreshAudit } from './render-refresh-audit.js';
 import { createMatrixWalk } from './render-matrix-walk.js';
 import { buildPerformanceMeasurement, changedPerformanceSettings } from './performance-capture.mjs';
 import { createSlotSection } from './bot-viewer-slots.js';
@@ -1215,6 +1216,30 @@ const TRACE_PHASES = readFlagDefaultTrue('tracephases');
 const renderTrace = createRenderTrace({ timePhases: TRACE_PHASES });
 if (RENDER_TRACE && !renderTrace.attach(renderer)) console.warn('[base-game] ?trace=1 found none of the renderer hooks:', renderTrace.missingHooks);
 else if (RENDER_TRACE) console.warn('[base-game] ?trace=1 is on: the encode is instrumented per object, so frame times are not comparable with an untraced capture.');
+// ?refreshaudit=1 scores the refresh-skip design's dependency check against what each declared
+// object's refresh actually changed. It never skips a refresh; it only reports where a skip would have been wrong.
+const REFRESH_AUDIT = readFlag('refreshaudit');
+// The opt-in class: static transforms, no runtime texture swap, no compute-written storage; found by ancestry.
+const REFRESH_AUDIT_ROOTS = ['spawn-building', 'structures', 'base-game-trails'];
+function refreshAuditDeclared(object) {
+  for (let node = object; node; node = node.parent) {
+    if (REFRESH_AUDIT_ROOTS.includes(node.name)) return true;
+    const n = node.name || '';
+    if (n.startsWith('road-core-') || n.startsWith('road-shoulder-') || n.startsWith('road-patch-') || n.startsWith('structure-')) return true;
+  }
+  return false;
+}
+const refreshAudit = createRefreshAudit({ declare: refreshAuditDeclared, origin: () => worldCoordinates.getOrigin() });
+if (REFRESH_AUDIT && !refreshAudit.attach(renderer)) console.warn('[base-game] ?refreshaudit=1 found none of the renderer hooks:', refreshAudit.missingHooks);
+const refreshAuditSummary = { enabled: REFRESH_AUDIT, attached: refreshAudit.attached, missingHooks: refreshAudit.missingHooks, frames: 0, lastFrame: null, skipWrongly: 0, skipSafe: 0 };
+function recordRefreshAudit() {
+  const a = refreshAudit.take();
+  frameProfiler.mark('refreshAudit', a.auditMs);
+  refreshAuditSummary.frames++;
+  refreshAuditSummary.skipSafe += a.skipSafe;
+  refreshAuditSummary.skipWrongly += a.skipWrongly;
+  refreshAuditSummary.lastFrame = a;
+}
 // The last traced frame, plus the mean over the traced frames so far: the per-frame slots below
 // carry the milliseconds, this carries the object counts the renderer's own render lists reported.
 const traceSummary = { enabled: RENDER_TRACE, attached: renderTrace.attached, missingHooks: renderTrace.missingHooks,
@@ -3828,6 +3853,8 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
   // The six stages inside traceEncode, so the capture carries their percentiles, not one frame of them.
   traceNodes: 'passTraceNodesMs', traceGeometries: 'passTraceGeometriesMs', traceBindings: 'passTraceBindingsMs',
   tracePipelines: 'passTracePipelinesMs', traceDraw: 'passTraceDrawMs',
+  // ?refreshaudit=1 only: the audit's own cost per frame, so it is known before any skip mode exists.
+  refreshAudit: 'passRefreshAuditMs',
   // ?matrixauto=0 only: the explicit world-matrix walk that replaces three's. It is outside the
   // render call, so unlike the trace slots it is a real frame cost and joins the residual's peers.
   matrixWalk: 'passMatrixWalkMs',
@@ -6363,6 +6390,7 @@ function captureContext() {
       // ?trace=1 only. The milliseconds are per-frame slots in `passes`; these are the counts the
       // renderer's own render lists reported, per whole scene render.
       trace: { ...traceSummary, attached: renderTrace.attached, missingHooks: renderTrace.missingHooks },
+      refreshAudit: { ...refreshAuditSummary, attached: refreshAudit.attached, missingHooks: refreshAudit.missingHooks },
       // ?matrixauto=0 only: how much of the scene the frame's matrix walk still covered.
       matrixWalk: { ...matrixWalk.stats },
       // ?bundles=1 only: how often each recorded bundle had to be thrown away and re-recorded.
@@ -7040,6 +7068,7 @@ async function animate() {
         frameProfiler.mark(chained ? 'postChain' : 'postDirect', encodeMs);
       }
       if (RENDER_TRACE) recordRenderTrace();
+      if (REFRESH_AUDIT) recordRefreshAudit();
     }
     // The pyramid reduces the frame just drawn; the culls test against it next frame.
     if (hiz.state.enabled) {

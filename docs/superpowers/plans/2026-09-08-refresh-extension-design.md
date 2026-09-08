@@ -211,3 +211,31 @@ where we think it is and the extension should be abandoned rather than tuned. Fi
 conditions: same seed, same route and camera path, same worker count, vegetation, flashlight and
 reflection settings, warm-up frames discarded — as specified in
 `docs/render-data-submission-improvement-plan.md` §0.
+
+---
+
+## STATUS (2026-09-08, D3)
+
+**Audit built. No skipping exists.** `render-refresh-audit.js` + `test-render-refresh-audit.mjs`
+implement §5(a)'s `?staticrefresh=audit` half only: seam (a) is wrapped on the renderer's own
+`_nodes.needsRefresh`, the dependency snapshot of §3 is computed per declared RenderObject per pass,
+Three's answer is returned untouched, and the module has no branch that returns `false`. Per Astra's
+review, the runtime skip stays out of the codebase until the contract is verified, and the reported
+`auditMs` / `auditMsPerObject` size the check's own cost alongside any work it might save.
+
+Two corrections to this document, made in the implementation:
+
+- §6's harness plan compared the candidate against Three's answer. That cannot validate anything,
+  since `needsRefresh` is always true here. The oracle implemented instead is **what the refresh
+  actually changed**: backend binding writes and attribute uploads issued during this object's
+  refresh, plus uniform and material values that differ between a pre-refresh and a post-refresh
+  snapshot (node callback side effects).
+- §3's camera row treats per-pass RenderObject identity as sufficient. It is not: one camera object
+  can move or have its projection changed between frames, and one render context can be reused. The
+  audit hashes `matrixWorldInverse` and `projectionMatrix` contents, and keys passes on context id
+  plus that hash.
+
+Not done, deliberately: the runtime skip, the `?staticrefresh=1` flag, and any change to
+`base-game.html` (the page lines the audit needs are reported, not applied). Coverage limits are in
+`docs/subsystems/infra.md` § "Refresh audit"; the short version is that the oracle sees writes and
+values, not `updateAfter` side effects, non-binding state mutation, or pixels.

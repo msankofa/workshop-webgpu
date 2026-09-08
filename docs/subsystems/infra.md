@@ -1008,3 +1008,66 @@ Two documented details of this file have drifted from the code and are worth fix
 touched: `createWorldMapOverlay` is documented with a `getOverlayLabel` parameter it does not have,
 and `bakeMapCanvas`'s documented return shape omits `terrainDetailCanvas`, which both host pages
 actually blit.
+
+## Refresh audit (`render-refresh-audit.js`, 2026-09-08)
+
+`NodeMaterialObserver.needsRefresh` (`three.webgpu.js` ~696) returns true for every node material, so
+every Base Game object takes the refresh branch every frame and `refreshes === refreshChecks` in every
+trace. The refresh-skip design (`docs/superpowers/plans/2026-09-08-refresh-extension-design.md`)
+proposes an opt-in dependency check that could answer `false` for declared-static objects. This module
+is the evidence step before any of that exists: it computes the candidate check and **never skips**.
+There is no skip path, not behind a flag.
+
+`createRefreshAudit({ now, declare, origin })` returns `attach(renderer)` / `detach()` / `take()`,
+plus `declare(object)` / `undeclare(object)` for marking the opt-in class explicitly when a predicate
+is not convenient. It wraps four methods on the renderer's own instances, the way `render-trace.js`
+does (an instance property shadows the prototype, so nothing else that uses the class is touched):
+`_nodes.needsRefresh` (the seam — snapshot taken, Three's answer returned untouched),
+`_bindings.updateForRender` (the last stage inside the refresh gate — the oracle is read there), and
+`backend.updateBinding` / `backend.updateAttribute` (counted while one declared object is refreshing).
+`attach` reports `missingHooks` and returns false if it found none.
+
+**What the check compares** — one snapshot per RenderObject per pass, from section 3 of the design:
+`matrixWorld` elements, `visible`/`layers.mask`/`castShadow`/`receiveShadow`, the material (version,
+the fields that change without a version bump such as `opacity` and `color`, and every node-valued
+property's `.value` plus every texture's uuid and version), geometry id and per-attribute id/version,
+the render context id, the **effective** camera dependency (`matrixWorldInverse` and
+`projectionMatrix` contents, not the camera's identity — a pass can reuse one camera with a moved
+view), the lights node's cache key, the render origin through the caller's `origin()` callback, and
+the value of every uniform in every bind group via `getBindings()`. `frameId`/`renderId` are recorded
+but never compared, because they always differ.
+
+**What the oracle is.** Not Three's answer — it is always true, so it cannot validate anything. The
+oracle is what the refresh actually did to this object: binding writes the backend was asked to
+issue, attribute uploads, and uniform or material values whose hash differs between the pre-refresh
+and post-refresh snapshot (a node with an `onFrameUpdate`/`onRenderUpdate`/`onObjectUpdate` callback
+wrote them mid-refresh). Each declared object per pass gets one of three verdicts:
+
+- `snapshotChanged` — the check saw a change, so the candidate would have refreshed. First sight of a
+  RenderObject is reported this way, with `firstSeen` among the changed fields.
+- `skipSafe` — the check saw nothing and the refresh did nothing observable.
+- `skipWrongly` — the check saw nothing but the refresh did something. Each of these is a hole in the
+  dependency contract, and `topDisagreements` names the object, the reasons (`bindingWrite`,
+  `attributeWrite`, `uniformValue`, `materialValue`) and, for changed snapshots, which fields moved.
+
+`take()` returns the frame's totals, one row per pass (`passRows`, keyed on context id plus the
+effective camera, so the same mesh in the main and shadow passes holds two independent verdicts), the
+bounded `topDisagreements` list, `audited`/`ignored` counts, and `skipped: 0`. It also returns
+`auditMs` and `auditMsPerObject`: the check's own exclusive cost, measured in the same style as the
+trace's phases, because a dependency check that costs more than the refresh it would skip is not
+worth having and that has to be known first.
+
+**What the oracle cannot see.** Effects that leave no trace in a binding, an attribute or a uniform
+value: a node callback that mutates renderer or scene state, a compute dispatch, a render-target
+write. `_nodes.updateAfter` runs after `backend.draw`, outside the window this audit closes at the end
+of `_bindings.updateForRender`, so an updateAfter side effect is not counted. A value rewritten with
+the same bytes reads as unchanged, and a hash collision reads as unchanged (the hash is FNV-style, not
+cryptographic). Visual equality is not provable here at all. So zero `skipWrongly` over a run is
+evidence that the contract held for the objects and frames that ran — it is not a proof that skipping
+is safe.
+
+Test: `node test-render-refresh-audit.mjs` (13 checks, exit 0 clean / 1 on failure). It drives a fake
+renderer with the call order of `_renderObjectDirect` and covers silent refresh, a binding write, a
+mid-refresh callback rewrite, a projection change on the same camera object, a between-frame uniform
+write, an origin rebase, a version-less material mutation, undeclared objects, the predicate form,
+two passes in one frame, the overhead counters, and that `detach` restores every method.
