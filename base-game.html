@@ -114,6 +114,7 @@ import { createFrameProfiler } from './frame-profiler.js';
 import { createPipelineMeter } from './gpu-pipeline-meter.js';
 import { createRenderPassRecorder } from './render-pass-recorder.js';
 import { createRenderTrace } from './render-trace.js';
+import { deviceLimits as forestDeviceLimits } from './forest-gpu.js';
 import { createMatrixWalk } from './render-matrix-walk.js';
 import { buildPerformanceMeasurement, changedPerformanceSettings } from './performance-capture.mjs';
 import { createSlotSection } from './bot-viewer-slots.js';
@@ -1149,9 +1150,14 @@ window.gpuTime = (on = true) => {
 const gpuAdapterLimits = await (async () => {
   try { return (await navigator.gpu?.requestAdapter?.())?.limits ?? null; } catch { return null; }
 })();
-const requiredLimits = gpuAdapterLimits && gpuAdapterLimits.maxSampledTexturesPerShaderStage > 16
+let requiredLimits = gpuAdapterLimits && gpuAdapterLimits.maxSampledTexturesPerShaderStage > 16
   ? { maxSampledTexturesPerShaderStage: Math.min(32, gpuAdapterLimits.maxSampledTexturesPerShaderStage) }
   : undefined;
+// The pulled forest binds four storage buffers in the vertex stage; ask for them when the adapter has them
+// (a default device may grant fewer), clamped to what it reports. forest-gpu.js falls back when it is short.
+if (gpuAdapterLimits && Number.isFinite(gpuAdapterLimits.maxStorageBuffersInVertexStage) && gpuAdapterLimits.maxStorageBuffersInVertexStage >= 4) {
+  (requiredLimits ?? (requiredLimits = {})).maxStorageBuffersInVertexStage = Math.min(8, gpuAdapterLimits.maxStorageBuffersInVertexStage);
+}
 const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, trackTimestamp: GPU_TIMESTAMPS, requiredLimits });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -6343,6 +6349,8 @@ function captureContext() {
     // frame that genuinely built nothing, and those must not be confused.
     render: {
       passes: lastRenderPassSummary,
+      // What the device granted, so a capture says whether the pulled forest could bind at all.
+      deviceLimits: forestDeviceLimits(renderer),
       pipelineMeterInstalled: pipelineMeter.installed,
       passRecorderInstalled: renderPasses.installed,
       // A browser without longtask support reads the same zeros as a quiet main thread; these two

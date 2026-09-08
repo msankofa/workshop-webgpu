@@ -1566,7 +1566,8 @@ placement.
 | `test-bot-trees.mjs` | `bot-trees-place.js`, `bot-trees.js`, and their integration with `forest-placement.js` / `bot-flora-place.js` | 92 assertions. Trunk-proxy budgeting including the counterfactual that rendered geometry would cap under 30 trees. Trunk dimensions track `radius[0]`/`length[0]` and the record scale. `stampCluster`: exact count, all points inside the radius, seed determinism, uniform-**by-area** distribution at falloff 0 versus visible centre-bunching at 1, every surviving pair honouring `minSeparation`, an over-tight ask thinning instead of spinning, and the accept gate. Auto placement on one arena chunk respects wall rects and is seed-reproducible; the family filter really does place only that family. Records carry no baked `y` — the same trees re-drape on different terrain. Placed records resolve by id across a changed family set and are dropped rather than remapped when their species is gone. Only `origin === 'placed'` serializes, and save→load→save is stable. Section 10 drives the **real** `bot-trees.js` with real THREE (three/tsl resolves in Node; TSL only builds a node graph, no GPU): builds, counts draws, cross-checks the reported collider triangle total against an independent traverse, plants a clump, erases, clears, disables and disposes. Mutation-checked: six edits (dropping the species guard, persisting auto trees, baking `y` flat, un-sqrt-ing the disc sampling, ignoring `minSeparation`, budgeting with render triangles) each make it fail. |
 | `test-forest-cull.mjs` | `forest-cull.js` (`cullInstance`, `classifyInstance`, `shouldRecull`) | `cullInstance`: 4 cases, in-range kept / beyond-maxDist culled / diagonal-beyond-radius culled / diagonal-within-radius kept (squared-distance circular cull). `classifyInstance` (Milestones 2-3): behind-camera instance rejected past the rear margin (both far-behind and near-but-behind); straight-ahead in-cone instance kept; an edge instance just outside the raw FOV but inside the padded cone (cone margin + per-instance angular canopy radius) kept, proving anti-pop padding; beyond-`maxDrawRadius` instance rejected via `farLive` even when dead-ahead, within-radius passes; `coneEnabled: false` keeps a behind-camera instance (backward compat). `shouldRecull` (Milestone 4): 0.01-unit drift does not recull, 2-unit move does, 3-degree turn does, NaN prev state (first/forced recull) always does, custom tighter thresholds honored — 23 assertions total. |
 | `test-forest-gpu-programs.mjs` | `forest-gpu.js` material graphs | Builds every variant mesh's WGSL with a stub renderer and asserts one distinct program per mesh role across variants (9 roles, 9 programs for 4 variants), 8 distinct material objects for the whole forest, and a numeric `userData.slotOffset` on every mesh; a per-variant constant or a per-variant material fails it. |
-| `test-forest-pulled-arena.mjs` | `forest-cull.js` (`pulledArenaSlots`, `packPulledArena`, `pulledVertexOffset`) and the `drawMode: 'pulled'` path in `forest-gpu.js` | Slots take the widest variant and ignore a null one; the packed arena is the uniform-slot size, every source position/normal/uv/colour round-trips out of it field by field, padding indices repeat the variant's first index so a padded triangle is degenerate, and a geometry too big for its slot returns `null` rather than truncating. The mapping: a live `k` resolves to the vertex that variant's OWN index buffer points at (offset checked arithmetically as well as by value), `k` past the count is not live and collapses onto `k = 0`, the widest variant stays live to the end of the slot, and a variant with no geometry is never live. Then the real module, headless against a stub renderer: `variants` builds no merged mesh and `pulled` builds exactly one extra object; the identity index buffer is the padded stride and really is the identity; the dummy attributes cover every index value (so no hardware fetch can go out of bounds); the merged geometry is indirect, instanced to the whole live list, and starts at zero instances; the merged mesh replaces every per-variant L2 branch mesh one for one and takes one draw off the main pass; an empty rung and a disabled rung both hide it and re-enabling brings it back; `installVariant` repacks without changing the stride and records no overflow; the merged mesh rides out with `variantMeshes(0)` and no other wave; pulled mode adds exactly two compute pipelines; dispose is clean in both modes. |
+| `test-forest-pulled-arena.mjs` | `forest-cull.js` (`pulledArenaSlots`, `packPulledArena`, `pulledVertexOffset`) and the `drawMode: 'pulled'` path in `forest-gpu.js` | Slots take the widest variant and ignore a null one; the packed arena is the uniform-slot size, every source position/normal/uv/colour round-trips out of it field by field, padding indices repeat the variant's first index so a padded triangle is degenerate, and a geometry too big for its slot returns `null` rather than truncating. The mapping: a live `k` resolves to the vertex that variant's OWN index buffer points at (offset checked arithmetically as well as by value), `k` past the count is not live and collapses onto `k = 0`, the widest variant stays live to the end of the slot, and a variant with no geometry is never live. Then the real module, headless against a stub renderer: `variants` builds no merged mesh and `pulled` builds exactly one extra object; the identity index buffer is the padded stride and really is the identity; the dummy attributes cover every index value (so no hardware fetch can go out of bounds); the merged geometry is indirect, instanced to the whole live list, and starts at zero instances; the merged mesh replaces every per-variant L2 branch mesh one for one and takes one draw off the main pass; an empty rung and a disabled rung both hide it and re-enabling brings it back; `installVariant` repacks without changing the stride and records no overflow; the merged mesh rides out with `variantMeshes(0)` and no other wave; pulled mode adds exactly two compute pipelines; dispose is clean in both modes. A final section does the slot-vs-compact invocation accounting (`pulledInvocationCost`): an even live mix over the default palette's real L2 index counts costs 2.19x at no slack, 2.74x at the 1.25 default and 4.39x at the original 2, a stand of only the widest variant wastes nothing, and an empty frame reports no ratio rather than dividing by zero. |
+| `test-forest-pulled-wgsl.mjs` | the WGSL both draw modes actually build, through the shipped `WGSLNodeBuilder` against a stub renderer (the `test-grass-wgsl-build.mjs` harness) | Every render mesh's vertex and fragment shader and every compute node builds, in BOTH modes, and the mode's reported `computePipelines` matches what it dispatched. For the merged material: it builds; the vertex stage binds exactly four storage buffers and the module's own `pulledStorageBindingsNeeded()` agrees; it reads `vertex_index` and `instance_index`; the padded index collapses onto k=0; uv, colour and the shading normal cross as varyings so the FRAGMENT stage binds zero storage buffers. With an authored bark set: bark colour and bark normal are both sampled, the tangent frame is built from screen derivatives of `v_pulledUv`, and the fragment stage still binds no storage buffer. A device with `maxStorageBuffersInVertexStage: 0` falls back to `variants-fallback`, says why, and builds no merged mesh. `--dump` writes the WGSL to `scratchpads/fps-churn/forest-pulled-wgsl/`. What it CANNOT do: validate the WGSL — no naga/tint in `node_modules`, so WGSL type errors and all device limits are invisible. |
 | `test-forest-gpu-rung-gate.mjs` | `forest-gpu.js` rung gate | Trees at known ranges draw only the rungs that can hold them; behind-camera trees keep their rung; a ring-boundary tree keeps both neighbours; shadow pair follows reach; `rungGate: false` restores 7 + 2 per variant. |
 | `test-forest-gpu-rebuild.mjs` | The `rebuild()` logic pattern in `forest-gpu.js` (reimplemented as a standalone harness, not imported from the real file) | `setChunks(map)` produces the same source/counts buffers as N sequential `setChunk()` calls but triggers exactly one rebuild instead of N; insertion order into the chunk map doesn't change final per-variant counts; an empty `setChunks(new Map())` is a no-op rebuild that leaves buffers zeroed. |
 | `test-forest-placement.mjs` | `forest-placement.js` (`placementRecords`, `buildSpeciesFromFamilies`) | Places between 1 and `count` trees on flat dry ground; identical output for two calls with the same seed/params (determinism); all placements within chunk bounds; positive `scale`; valid `speciesIdx` range; `yaw` present; submerged ground (`heightAt` returns -5) yields zero placements (water rejection); `buildSpeciesFromFamilies` flattens a family into a species table carrying `_tag`; with a `speciesTable` + an all-`'forest'` `biomeAt`, only the forest-tagged species is ever picked and `scale` stays within its `sizeRange`; without a `biomeAt`, every tagged species stays a density-weighted candidate everywhere. |
@@ -2044,8 +2045,14 @@ draw**:
 - **Arena.** Every variant's L2 branch geometry is packed into two storage buffers by
   `packPulledArena` in `forest-cull.js`: an interleaved float arena
   (`(px,py,pz,u) (nx,ny,nz,v) (r,g,b,_)`, 12 floats per vertex) and a u32 index arena. Slots are
-  **uniform** — every variant gets the widest variant's budget, times `opts.pulledSlack` (default 2)
-  so a progressive wave installing a bigger real geometry over its placeholder still fits.
+  **uniform** — every variant gets the widest variant's budget, times `opts.pulledSlack`
+  (**default 1.25** since 2026-09-08) so a progressive wave installing a bigger real geometry over
+  its placeholder still fits. The slack is paid on every instance of every variant: at slack 2 the
+  merged draw dispatched **4.39x** the vertex invocations of a compact live-count mapping on the
+  default palette, against 2.74x at 1.25 and 2.19x at no slack at all
+  (`pulledInvocationCost` in `forest-cull.js`, asserted in `test-forest-pulled-arena.mjs`).
+  A variant that still overflows falls back to its own mesh, so the slack only has to cover
+  seed-to-seed variation between siblings of one species.
 - **Identity index buffer.** The merged mesh's own index buffer is `0 … indexSlot-1`, so
   `@builtin(vertex_index)` hands the shader the local index `k` directly, and every hardware vertex
   fetch stays inside the mesh's small dummy attributes whatever attribute nodes Three still emits.
@@ -2078,11 +2085,21 @@ Memory (arithmetic from those counts): the tight arena is 21,798 vertices × 48 
 71,178 indices × 4 B = **285 KB**; at `pulledSlack: 2` the slots double both. The merged instance
 list is another `V*CAP × 32 B` (16 × 1024 → **512 KB**).
 
-**Known visual delta:** the merged material has no vertex attributes, so `normalMap` cannot be bound
-(Three derives its tangents from real attributes). `bindTreeMaterials` detects
-`material.userData.pulledNodes` and binds bark colour from the arena's uv/colour instead — procedural
-grain, or the bark photo sampled at the arena uv — with `normalMap = null`. This affects the LOD2
-rung only.
+**Bark shading.** `material.normalMap` still cannot be used, but not for the reason first written.
+The tree geometry has no `tangent` attribute at all, so three r184 falls back to its derivative
+tangent frame (`tangentViewFrame`, `three.webgpu.js:15935-16022`) built from `positionView` and the
+**`uv` attribute** — which on the merged mesh's dummy geometry is zeros, giving a degenerate frame.
+So `bindTreeMaterials` detects `material.userData.pulledNodes` and binds bark colour from the arena's
+uv/colour, and routes `set.barkNormalMap` through `pulledNodes.normalFor(map)` — the same derivative
+construction driven by the **arena** uv and world-position varyings. It returns an OBJECT-space
+normal, which is what `normalNode` wants (`transformNormalToView`); the merged mesh sits at the
+origin with a world-space `positionNode`, so object and world space coincide, and the material is
+FrontSide so the missing double-sided flip is not a gap.
+
+**uv, colour, the shading normal and the world position cross to the fragment stage as varyings**
+(`v_pulledUv`, `v_pulledColor`, `v_pulledNormal`, `v_pulledWorld`). Without them `normalNode` — which
+is evaluated in the fragment stage — re-ran the whole arena index chase per fragment and bound all
+four storage buffers there; the built WGSL now shows **zero** storage bindings in the fragment stage.
 
 ### Failure handling
 
@@ -2100,11 +2117,40 @@ rung only.
 changing it tears down and rebuilds. `base-game-forest.js` passes it to `createForestGPU` as
 `drawMode`. It is **local quality** and must never join `BASE_GAME_SHARED_KEYS`.
 
+### Device limits and the build-time gate
+
+The pulled vertex stage binds **four** storage buffers: the merged live list, the arena vertices, the
+arena indices, the per-variant counts. That count is exported as `PULLED_VERTEX_STORAGE_BINDINGS` /
+`pulledStorageBindingsNeeded()` from `forest-gpu.js` and asserted against the built WGSL in
+`test-forest-pulled-wgsl.mjs`. The fragment stage binds none.
+
+`deviceLimits(renderer)` (also `forest-gpu.js`) reads `renderer.backend.device.limits` and
+`backend.adapter.limits` and returns the relevant ones plus `pulledAdmitted`; it returns `null`
+before the renderer has a device, so `null` means unknown, not zero. `createForestGPU` checks the
+vertex-stage limit **before packing anything** and falls back to `'variants'` with a `console.warn`
+when the device will not admit four; `summary.drawMode` then reads `'variants-fallback'`.
+
+Three r184 requests its adapter with `featureLevel: 'compatibility'` and passes no `requiredLimits`
+unless the page supplies them (`three.webgpu.js:80040-80080`), so the device gets **default** limits.
+`maxStorageBuffersInVertexStage` is believed to default to **0** in WebGPU compatibility mode against
+8 per stage in core — believed, not verified against the spec text or a device, and it is the single
+thing most likely to decide whether this mode renders at all. `base-game.html` would need to widen
+its `requiredLimits` (line 1153, beside the grass cull's sampled-texture request) the way the design
+doc's addendum 2 spells out.
+
 ### What is still browser-only
 
-Nothing here has been rendered. `tsl-build-check.mjs` cannot reach this material — it is a GLSL
-builder and storage-buffer materials need a real backend (its own header says so). Outstanding
-acceptance checks, all needing a device:
+Nothing here has been rendered. Every program of both modes **does** now build to WGSL headless —
+`test-forest-pulled-wgsl.mjs` builds the merged material's vertex and fragment shaders (procedural
+and authored bark) and every compute node, through the shipped `WGSLNodeBuilder` against a stub
+renderer, and `--dump` writes them to `scratchpads/fps-churn/forest-pulled-wgsl/`. That catches TSL
+graph errors and nothing else: there is no WGSL validator in `node_modules`, so WGSL type errors and
+every device limit stay invisible. (`tsl-build-check.mjs` cannot reach this material at all — it is a
+GLSL builder and storage-buffer materials need a real backend.) Outstanding acceptance checks, all
+needing a device:
+
+0. **Does the device admit the bindings, and does it render at all** — read `summary.drawMode`; if it
+   says `variants-fallback` nothing else below is testable.
 
 1. **Placement** — LOD2 trees stand in the same places, yaw and scale, as `variants`.
 2. **Silhouettes** — per-variant shapes stay distinguishable. A wrong variant id or slot shows as one
@@ -2115,14 +2161,8 @@ acceptance checks, all needing a device:
 6. **Extremes** — the rung empty (walk out, or disable LOD2) and a dense stand near `capPerVariant`.
 7. **Rebase** — cross an origin-rebase boundary; the trees must not shift.
 8. **Pixel diff** — same seeded window and standing spot, `pulled` vs `variants`.
-9. **Cost** — whether the extra vertex invocations cost more than 16 fewer draws save. If they do,
-   the fallbacks in the design doc are an equal-stride bucketed arena, or merging only the two
-   shadow-only roles.
-
-Also unverified without a device: that the vertex stage's storage-buffer budget admits four storage
-bindings (merged list, vertex arena, index arena, count table) on top of what Three binds. r184
-requests the adapter with `featureLevel: 'compatibility'` and `requiredLimits: {}`
-(`three.webgpu.js:80040-80074`), so the device gets **default** limits, and the only limits the build
-reads at all are `maxUniformBufferBindingSize` and `maxComputeWorkgroupsPerDimension`. The existing
-forest material already binds one storage buffer in the vertex stage and works, so the capability is
-there; the headroom is inferred, not measured.
+9. **Cost** — whether the extra vertex invocations cost more than the fewer draws save. A GPU
+   timestamp on this rung, same spot and camera, three ways: `variants`, `pulled` at slack 1.25,
+   `pulled` at slack 2. If the two pulled runs differ by roughly their invocation ratio the rung is
+   vertex-bound and the compact live-count mapping is worth building; if they are within noise,
+   slots cost nothing here. The fewer draws are **not** on their own a reason to use this mode.

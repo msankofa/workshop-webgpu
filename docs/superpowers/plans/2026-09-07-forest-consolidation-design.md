@@ -1,9 +1,10 @@
 # Forest submission consolidation — design (agent C)
 
 Date 2026-09-07. **Status: the branchesL2 prototype is implemented behind `forestDrawMode`,
-default `'variants'`, and has never been rendered.** See the STATUS ADDENDUM at the end of this
-file for what was built instead of what section 4.3 proposed, and why. The original design text
-below is unedited.
+default `'variants'`. Every program of both modes now builds to WGSL headless; nothing has been
+validated as WGSL and nothing has been rendered.** See STATUS ADDENDUM (what was built instead of
+section 4.3, and why) and STATUS ADDENDUM 2 (the headless compile, device limits, normals, and the
+measured slot cost) at the end of this file. The original design text below is unedited.
 
 Original status: design only, nothing implemented. Read-only pass over `forest-gpu.js`,
 `forest-cull.js`, `base-game-forest.js`, `base-game.html`, `hiz-test.js`, `shared-draw-geometry.js`
@@ -478,3 +479,196 @@ uv and vertex colour and sets `normalMap = null`. LOD2 rung only.
    lines (see the report).
 7. The section 7 comparison — **not run**, needs a device.
 8. Docs + `agent_log.csv` — done.
+
+---
+
+# STATUS ADDENDUM 2 (agent F2, 2026-09-08) — compiled headless, limits, normals, mapping
+
+Answers the review of the prototype: "the vertex graph has not compiled, normal-map parity is
+knowingly absent, and uniform slots add ~1.64x vertex invocations instead of the planned live-count
+mapping."
+
+## What now compiles, and what that is worth
+
+`test-forest-pulled-wgsl.mjs` builds the pulled graphs to WGSL through the shipped
+`WGSLNodeBuilder` with a stub renderer — the same harness `test-grass-wgsl-build.mjs` uses. It
+builds, in **both** draw modes: every render mesh's vertex and fragment shader, the merged material
+in its procedural and its authored-bark bindings, and every compute node the mode dispatches (14 in
+`variants`, 16 in `pulled`). The WGSL is written to `scratchpads/fps-churn/forest-pulled-wgsl/`
+with `--dump`.
+
+**What this catches**: TSL graph errors — a missing node, a bad swizzle, a storage node the builder
+will not bind, an attribute that does not exist. **What it does not catch**: anything about the
+WGSL itself. There is no WGSL validator in `node_modules` (no naga, no tint, no wgsl package), so
+type errors the builder happens to emit are invisible, and every device limit is invisible. Whether
+a real device compiles and binds this is still an open browser question.
+
+Two real defects the harness found, now fixed:
+
+1. **The fragment stage bound all four storage buffers and re-ran the whole arena index chase per
+   fragment.** `normalNode` is evaluated in the fragment stage, and it was the raw arena node, so
+   every fragment repeated `instance -> variant -> index -> vertex`. uv, colour, the shading normal
+   and the world position now cross as varyings (`v_pulledUv`, `v_pulledColor`, `v_pulledNormal`,
+   `v_pulledWorld`), and the fragment stage binds **zero** storage buffers.
+2. **The normal map was silently degenerate.** See below.
+
+## Storage bindings the vertex stage needs: 4
+
+Counted from the built WGSL, asserted by the test, and exported as
+`PULLED_VERTEX_STORAGE_BINDINGS` / `pulledStorageBindingsNeeded()` from `forest-gpu.js`: the merged
+live-instance list, the arena vertices, the arena indices, the per-variant counts. The fragment
+stage needs none.
+
+## Limits
+
+`deviceLimits(renderer)` (exported from `forest-gpu.js`) returns `null` until the renderer has a
+device, and otherwise `compatibilityMode`, `maxStorageBuffersInVertexStage`,
+`maxStorageBuffersPerShaderStage`, `maxStorageBufferBindingSize`, `maxBufferSize`,
+`maxSampledTexturesPerShaderStage`, the same three from `backend.adapter.limits` where present, plus
+`pulledVertexBindingsNeeded` and `pulledAdmitted`.
+
+`createForestGPU` checks that limit **before packing anything** and falls back to `'variants'` with
+a `console.warn` when the device does not admit 4 vertex-stage storage buffers; `summary.drawMode`
+then reads `'variants-fallback'` and `summary.pulledError` says why. A test drives that path with
+`maxStorageBuffersInVertexStage: 0`.
+
+**Why this matters here, with its uncertainty.** Three r184 always requests its adapter with
+`featureLevel: 'compatibility'` (`three.webgpu.js:80040`) and then sets
+`compatibilityMode = !device.features.has('core-features-and-limits')` (`:80080`). It passes no
+`requiredLimits` unless the page supplies them, so the device gets **defaults**. My understanding of
+the WebGPU compatibility-mode spec is that `maxStorageBuffersInVertexStage` defaults to **0** there,
+against 8 per stage in core — which would mean the pulled draw cannot bind on a compat device unless
+the page asks for more. I have not verified that against the current spec text or a device, and it
+is the single thing most likely to decide whether this mode renders at all. The fallback above is
+written on the assumption it can be 0.
+
+The page already has the pattern for raising a limit (the grass cull's sampled-texture request).
+
+**base-game.html lines to add** — I do not edit that file:
+
+- Replacing lines 1153-1155 so a pulled forest can bind:
+
+      const requiredLimits = gpuAdapterLimits ? Object.fromEntries(Object.entries({
+        maxSampledTexturesPerShaderStage: gpuAdapterLimits.maxSampledTexturesPerShaderStage > 16
+          ? Math.min(32, gpuAdapterLimits.maxSampledTexturesPerShaderStage) : undefined,
+        // The pulled forest draw binds 4 storage buffers in the vertex stage; compatibility mode
+        // defaults that to 0. Clamped to the adapter, since asking for more fails outright.
+        maxStorageBuffersInVertexStage: gpuAdapterLimits.maxStorageBuffersInVertexStage >= 4
+          ? Math.min(8, gpuAdapterLimits.maxStorageBuffersInVertexStage) : undefined,
+      }).filter(([, v]) => v !== undefined)) : undefined;
+      const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, trackTimestamp: GPU_TIMESTAMPS, requiredLimits });
+
+  Caveat: the page's own `requestAdapter()` at line 1149 does **not** pass
+  `featureLevel: 'compatibility'`, so `gpuAdapterLimits` may not describe the adapter three ends up
+  with. Adding `{ featureLevel: 'compatibility' }` there would make the two agree.
+
+- In the capture context's `render` block (the object opening at line 6344), one more line so a
+  capture records what the device actually admitted:
+
+      deviceLimits: forestDeviceLimits(renderer),
+
+  with `import { deviceLimits as forestDeviceLimits } from './forest-gpu.js';` beside the other
+  forest imports.
+
+## Normals: option (a), and a defect in the shipped path
+
+The tree geometry has **no `tangent` attribute** — `grep tangent trees.js base-game-trees.js` is
+empty. Three r184 handles that by falling back from `tangentView` to `tangentViewFrame`
+(`three.webgpu.js:15935-16022`), the thetenthplanet derivative frame built from `positionView` and
+**the `uv` attribute**. So:
+
+- In `'variants'` mode with authored textures, the LOD2 bark normal map has been running on that
+  derivative frame all along. Not tangent-accurate, but a real frame over a real uv.
+- In `'pulled'` mode the `uv` attribute is the dummy geometry's zeros, so `dpdx(uv)` and `dpdy(uv)`
+  are zero and the frame is degenerate. Binding `material.normalMap` on the merged material would
+  not have been "the same normal map as variants"; it would have been a broken one. The original
+  prototype's `normalMap = null` avoided the breakage without naming it.
+
+Option (a) is implemented: `pulledInstanceNodes()` returns `normalFor(map, scale)`, which rebuilds
+that same derivative construction driven by the **arena** uv varying and the arena world-position
+varying, samples the map, and returns an **object-space** normal — which is what `normalNode` wants
+(`transformNormalToView`), and the merged mesh sits at the origin with a world-space `positionNode`,
+so object and world space coincide there. The material is `FrontSide`, so the missing automatic
+double-sided flip is not a gap. A zero determinant (degenerate triangle, flat uv patch) keeps the
+geometric normal. `bindTreeMaterials` routes `set.barkNormalMap` through it in the authored branch
+and passes `null` in the procedural branch. Compiled in the harness: the authored fragment samples
+both bark colour and bark normal, uses `dpdx`/`dpdy` of `v_pulledUv`, and still binds no storage
+buffer.
+
+Unverified: whether this looks like the `'variants'` rung. Both use the same construction over the
+same uv values, so I expect them close, but no one has seen either.
+
+## Mapping: slots kept, with the cost measured rather than estimated
+
+The compact live-count mapping is **not** implemented. The argument, with numbers.
+
+Real LOD2 index counts for the default palette (`scratchpads/fps-churn/pulled-slot-cost.mjs`, 3
+species x 2 variants): `1092 1092 1356 1356 6660 6660` — a 6.1x spread, mean 3036, max 6660.
+`pulledInvocationCost(indexCounts, live, indexStride)` in `forest-cull.js` does the accounting;
+`test-forest-pulled-arena.mjs` asserts these, against an even live mix across variants:
+
+| slot stride | invocations vs a compact mapping |
+|---|---|
+| 6660 (no slack) | **2.19x** |
+| 8325 (slack 1.25) | **2.74x** |
+| 13320 (slack 2, what shipped) | **4.39x** |
+
+So the commit's "~1.64x" understated it, and the 2x slack — which the review did not know about —
+roughly doubled it again. The slack default is now **1.25**, not 2: placeholders are variant 0 of
+the same species, so the sibling a wave installs differs by seed rather than by LOD scheme, and a
+variant that still overflows already falls back to its own mesh through `repackArenaVariant`. That
+is a measured reduction in dispatched invocations from 4.39x to 2.74x; it says nothing about frame
+time.
+
+**The cost of the compact alternative.** A live-count mapping needs, per vertex, a search for which
+variant's span `vertexIndex` falls in — a binary search over <= 16 spans, so <= 4 iterations of
+compare-and-branch plus one buffer read each, against the slot mapping's two multiplies and one add.
+It also needs the finalizer to build a prefix table over per-variant live counts each frame (a
+serial scan over <= 16 entries in one invocation, negligible), and it gives up the fixed `indexCount`
+in the indirect buffer — the merged draw's `indexCount` is one number for all instances, so a
+genuinely compact submission is either the non-indexed form section 4.3 proposed (with its 4-uint
+indirect unknown) or one draw per variant, which defeats the point.
+
+**Which is faster is not decidable from this.** Wasted invocations are only wasted if the vertex
+stage is the bottleneck; the padded triangles are degenerate and raster nothing, so they cost vertex
+work and primitive assembly and no fragments. A 2.74x invocation count on the LOD2 branch rung may
+be free on a fragment-bound frame and may dominate on a vertex-bound one.
+
+**The measurement that would settle it**: a GPU timestamp on the LOD2 branch rung alone
+(`trackTimestamp` is already wired through `base-game.html`'s `GPU_TIMESTAMPS`), captured three ways
+from the same standing spot and camera — `variants`, `pulled` at slack 1.25, `pulled` at slack 2
+(via `pulledSlack`). If pulled-at-2 and pulled-at-1.25 differ by roughly their invocation ratio, the
+rung is vertex-bound and the compact mapping is worth building; if they are within noise of each
+other, slots cost nothing here and the mapping is not worth its complexity. That is one capture run
+and it has not been done.
+
+## Status of this rung, stated plainly
+
+- **Implemented and Node-tested**: arena packing, the compaction, the merged draw's construction,
+  the limits gate and its fallback, the normal frame, the invocation accounting.
+- **Compiled headless to WGSL**: every vertex, fragment and compute program of both modes.
+- **Never validated as WGSL**: no compiler in `node_modules`; type and limit errors would not show.
+- **Never rendered**: nothing here has been on a screen.
+
+Nothing here is a reason to recommend `'pulled'`. The draw-count saving is real arithmetic and is
+not evidence about frame time; `'variants'` remains the default.
+
+## Browser checks still outstanding
+
+Everything the original prototype listed, plus the two the review added:
+
+1. Does the device admit 4 storage buffers in the vertex stage — read `summary.drawMode`; if it says
+   `variants-fallback`, the rest is moot and the page needs the `requiredLimits` line above.
+2. Does it render at all — does the merged draw produce pixels rather than a blank or a crash.
+3. Placement: trees in `pulled` stand where they stand in `variants`.
+4. Silhouettes: no stray geometry from a neighbouring variant's arena slot, and nothing visible from
+   the degenerate padded triangles.
+5. The LOD ring: the L2 handover in and out is unchanged.
+6. Depth and shadows: the merged mesh writes depth like the per-variant meshes, and the shadow list
+   (still per-variant meshes) still matches what the main pass draws.
+7. A dense stand, and an empty rung (no L2 instances live) — the second is where a stale indirect
+   `instanceCount` would show.
+8. Origin rebase while the merged draw is live.
+9. A pixel diff between the two modes at a fixed camera, including the authored-bark texture set so
+   the new normal frame is exercised.
+10. The GPU timestamp comparison described above.

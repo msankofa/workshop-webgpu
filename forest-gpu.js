@@ -33,9 +33,41 @@ import {
 import {
   Fn, If, instanceIndex, storage, uniform, int, uint, float,
   vec2, vec3, vec4, cos, sin, atan, acos, clamp, length, modInt, positionLocal, normalLocal,
-  atomicAdd, atomicStore, atomicLoad, min,
+  atomicAdd, atomicStore, atomicLoad, min, max, dot, dFdx, dFdy, inverseSqrt, varying,
   normalize, cross, cameraPosition, texture, time, userData, vertexIndex, select,
 } from 'three/tsl';
+
+// Storage buffers the pulled vertex stage binds: the merged live-instance list, the arena
+// vertices, the arena indices, the per-variant counts. test-forest-pulled-wgsl.mjs counts the
+// `var<storage>` declarations in the built vertex WGSL and asserts they equal this.
+export const PULLED_VERTEX_STORAGE_BINDINGS = 4;
+export const pulledStorageBindingsNeeded = () => PULLED_VERTEX_STORAGE_BINDINGS;
+
+// What the device will actually admit, when there is a device. Three r184 keeps the WebGPU device
+// at renderer.backend.device; adapter limits are the ceiling the page could have requested.
+// Returns null before the renderer has initialised, so a caller must treat null as "unknown".
+export function deviceLimits(renderer) {
+  const backend = renderer?.backend;
+  const lim = backend?.device?.limits;
+  if (!lim) return null;
+  const adapter = backend?.adapter?.limits ?? null;
+  return {
+    compatibilityMode: !!backend.compatibilityMode,
+    maxStorageBuffersInVertexStage: lim.maxStorageBuffersInVertexStage,
+    maxStorageBuffersPerShaderStage: lim.maxStorageBuffersPerShaderStage,
+    maxStorageBufferBindingSize: lim.maxStorageBufferBindingSize,
+    maxBufferSize: lim.maxBufferSize,
+    maxSampledTexturesPerShaderStage: lim.maxSampledTexturesPerShaderStage,
+    adapter: adapter ? {
+      maxStorageBuffersInVertexStage: adapter.maxStorageBuffersInVertexStage,
+      maxStorageBuffersPerShaderStage: adapter.maxStorageBuffersPerShaderStage,
+      maxStorageBufferBindingSize: adapter.maxStorageBufferBindingSize,
+    } : null,
+    pulledVertexBindingsNeeded: PULLED_VERTEX_STORAGE_BINDINGS,
+    pulledAdmitted: Number.isFinite(lim.maxStorageBuffersInVertexStage)
+      ? lim.maxStorageBuffersInVertexStage >= PULLED_VERTEX_STORAGE_BINDINGS : null,
+  };
+}
 
 export function createForestGPU(opts) {
   const { renderer, camera, palette } = opts;
@@ -116,18 +148,34 @@ export function createForestGPU(opts) {
   const MERGED_TOTAL = V * CAP;             // one flat live list for the merged role
   const l2GeometryFor = v => (v?.branchesLod2 ?? v?.branches ?? null);
   let arena = null, arenaSlots = null, arenaOk = false, arenaFailure = null;
+  // The vertex stage cannot run at all if the device will not bind its storage buffers, so the
+  // limit is checked before anything is packed and the mode falls back to 'variants'.
+  const vertexStorageLimit = Number.isFinite(opts.maxStorageBuffersInVertexStage)
+    ? opts.maxStorageBuffersInVertexStage
+    : deviceLimits(opts.renderer)?.maxStorageBuffersInVertexStage;
+  const vertexStorageAdmitted = !Number.isFinite(vertexStorageLimit)
+    || vertexStorageLimit >= PULLED_VERTEX_STORAGE_BINDINGS;
   let arenaVertAttr = null, arenaIdxAttr = null, arenaCountAttr = null;
   let arenaVerts = null, arenaIdx = null, arenaCounts = null;
   let mergedAttr = null, mergedDraw = null, mergedCountAttr = null, mergedAtomic = null;
   let mergedIndirect = null, mergedIndirectNode = null;
-  if (PULLED) {
+  if (PULLED && !vertexStorageAdmitted) {
+    arenaFailure = `the device admits ${vertexStorageLimit} storage buffers in the vertex stage; the pulled draw needs ${PULLED_VERTEX_STORAGE_BINDINGS}`;
+    console.warn(`[forest-gpu] ${arenaFailure}. Falling back to one draw per variant.`);
+  } else if (PULLED) {
     const geos = palette.variants.map(l2GeometryFor);
     // Slots are uniform and sized with headroom, because a progressive wave installs a REAL
-    // geometry over a placeholder and it may be larger than anything in the first wave.
+    // geometry over a placeholder and it may be larger than anything in the first wave. The
+    // headroom is paid for on EVERY instance of EVERY variant: the merged draw dispatches
+    // indexSlot vertex invocations per instance whatever the variant's real index count is, so
+    // slack 2 measured 4.39x the invocations of a compact mapping on the default palette against
+    // 2.19x at slack 1 (scratchpads/fps-churn/pulled-slot-cost.mjs). Placeholders are variant 0 of
+    // the same species, so 1.25 covers seed-to-seed variation; a variant that still overflows
+    // falls back to its own mesh through repackArenaVariant.
     const tight = pulledArenaSlots(geos);
     arenaSlots = {
-      vertexSlot: Math.max(1, Math.ceil(tight.vertexSlot * (opts.pulledSlack ?? 2))),
-      indexSlot: Math.max(3, Math.ceil(tight.indexSlot * (opts.pulledSlack ?? 2))),
+      vertexSlot: Math.max(1, Math.ceil(tight.vertexSlot * (opts.pulledSlack ?? 1.25))),
+      indexSlot: Math.max(3, Math.ceil(tight.indexSlot * (opts.pulledSlack ?? 1.25))),
     };
     arena = packPulledArena(geos, arenaSlots);
     if (!arena) {
@@ -457,7 +505,41 @@ export function createForestGPU(opts) {
     );
     const nx = a1.x, ny = a1.y, nz = a1.z;
     const nWorld = vec3(nx.mul(cy).add(nz.mul(sy)), ny, nz.mul(cy).sub(nx.mul(sy)));
-    return { world, nWorld, uv: vec2(a0.w, a1.w), color: a2.xyz };
+    // uv, colour and the shading normal cross into the fragment stage as varyings. Without this
+    // the arena reads are repeated per FRAGMENT, which binds all four storage buffers in the
+    // fragment stage too (measured in test-forest-pulled-wgsl.mjs before the varyings went in).
+    const uv = varying(vec2(a0.w, a1.w), 'v_pulledUv');
+    const color = varying(a2.xyz, 'v_pulledColor');
+    const nVary = varying(nWorld, 'v_pulledNormal');
+    const posVary = varying(world, 'v_pulledWorld');
+
+    // Bark normal mapping without a tangent attribute. The tree geometry has none, so three falls
+    // back to its derivative frame (three.webgpu.js `tangentViewFrame`, thetenthplanet) built from
+    // the `uv` ATTRIBUTE — which on the pulled mesh's dummy geometry is all zeros, giving a
+    // degenerate frame. This is that same construction driven by the arena uv instead. The result
+    // is an OBJECT-space normal, which is what normalNode wants (transformNormalToView); the mesh
+    // sits at the origin with a world-space positionNode, so object space and world space coincide.
+    // FrontSide only, so there is no double-sided flip to reinstate.
+    // Always the varying, never `nWorld` directly: normalNode is evaluated in the FRAGMENT stage,
+    // and the raw node re-ran the whole arena index chase per fragment (and bound all four storage
+    // buffers there) -- measured in test-forest-pulled-wgsl.mjs before this.
+    function normalFor(normalMap, scale = 1) {
+      if (!normalMap) return nVary;
+      const N = normalize(nVary);
+      const q0 = dFdx(posVary), q1 = dFdy(posVary);
+      const st0 = dFdx(uv), st1 = dFdy(uv);
+      const q1p = cross(q1, N), q0p = cross(N, q0);
+      const T = q1p.mul(st0.x).add(q0p.mul(st1.x));
+      const B = q1p.mul(st0.y).add(q0p.mul(st1.y));
+      const det = max(dot(T, T), dot(B, B));
+      // A zero determinant is a degenerate triangle or a flat uv patch: keep the geometric normal.
+      const inv = select(det.greaterThan(float(0)), inverseSqrt(det), float(0));
+      const m = texture(normalMap, uv).xyz.mul(2).sub(1);
+      const t = m.x.mul(scale), b = m.y.mul(scale);
+      const mapped = T.mul(inv).mul(t).add(B.mul(inv).mul(b)).add(N.mul(m.z));
+      return select(inv.greaterThan(float(0)), normalize(mapped), N);
+    }
+    return { world, nWorld, uv, color, normalFor };
   }
 
   function lodSlotOffset(g, l) {
@@ -634,10 +716,10 @@ export function createForestGPU(opts) {
     mergedMat.vertexColors = false;          // colour comes from the arena, not a vertex attribute
     const pn = pulledInstanceNodes();
     mergedMat.positionNode = pn.world;
-    mergedMat.normalNode = pn.nWorld;
+    mergedMat.normalNode = pn.normalFor(null);
     // The binder (base-game-forest.js's bindTreeMaterials) needs arena uv/colour to rebuild the
     // bark look, because neither attribute('uv') nor attribute('color') means anything here.
-    mergedMat.userData.pulledNodes = { uv: pn.uv, color: pn.color };
+    mergedMat.userData.pulledNodes = { uv: pn.uv, color: pn.color, normalFor: pn.normalFor };
     if (opts.addEmissive) mergedMat.emissiveNode = opts.addEmissive(mergedMat.positionNode, mergedMat.normalNode);
     sharedMats.push(mergedMat);
 

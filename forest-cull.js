@@ -255,3 +255,17 @@ export function pulledVertexOffset(k, variant, arena) {
   const local = indexData[variant * indexSlot + kk];
   return { live, offset: (variant * vertexSlot + local) * PULLED_VERTEX_STRIDE };
 }
+
+// What uniform slots cost, in vertex invocations, against a compact live-count mapping.
+// `indexCounts` is one real index count per variant, `live` the live instance count per variant
+// this frame, `indexStride` the padded slot the merged draw dispatches for every instance.
+// Pure accounting, no opinion about which is faster on a device.
+export function pulledInvocationCost(indexCounts, live, indexStride) {
+  let slots = 0, compact = 0;
+  for (let v = 0; v < indexCounts.length; v++) {
+    const n = live[v] ?? 0;
+    slots += n * indexStride;
+    compact += n * indexCounts[v];
+  }
+  return { slots, compact, ratio: compact > 0 ? slots / compact : 0 };
+}

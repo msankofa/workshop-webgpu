@@ -1,6 +1,6 @@
 // test-forest-pulled-arena.mjs — the pulled-draw arena packing and its vertexIndex mapping.
 // Pure JS; no THREE, no GPU. forest-gpu.js transcribes pulledVertexOffset into TSL.
-import { pulledArenaSlots, packPulledArena, pulledVertexOffset, PULLED_VERTEX_STRIDE } from './forest-cull.js';
+import { pulledArenaSlots, packPulledArena, pulledVertexOffset, pulledInvocationCost, PULLED_VERTEX_STRIDE } from './forest-cull.js';
 
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -202,6 +202,27 @@ console.log('pulled mode in forest-gpu');
   let threw = null;
   try { pulled.dispose(); plain.dispose(); } catch (err) { threw = err; }
   check('dispose is clean in both modes', threw === null, String(threw));
+}
+
+// What uniform slots cost against a compact live-count mapping. Accounting only: neither number
+// says which is faster on a device, and nothing here has been measured on one.
+{
+  console.log('\nuniform slots vs a compact live-count mapping');
+  const counts = [1092, 1092, 1356, 1356, 6660, 6660];   // the default palette's real L2 index counts
+  const even = counts.map(() => 100);
+  const stride1 = Math.max(...counts);
+  const c1 = pulledInvocationCost(counts, even, stride1);
+  check('an even live mix wastes 2.19x at zero slack', Math.abs(c1.ratio - 2.19) < 0.01, c1.ratio.toFixed(3));
+  const c125 = pulledInvocationCost(counts, even, Math.ceil(stride1 * 1.25));
+  check('and 2.74x at the 1.25 slack the module now defaults to', Math.abs(c125.ratio - 2.74) < 0.01, c125.ratio.toFixed(3));
+  const c2 = pulledInvocationCost(counts, even, Math.ceil(stride1 * 2));
+  check('the original 2x slack was 4.39x', Math.abs(c2.ratio - 4.39) < 0.01, c2.ratio.toFixed(3));
+  // The best case for slots: only the largest variant is on screen.
+  const biggestOnly = counts.map((_, i) => (i === counts.length - 1 ? 100 : 0));
+  check('a stand of only the largest variant wastes nothing at zero slack',
+    pulledInvocationCost(counts, biggestOnly, stride1).ratio === 1);
+  check('an empty frame reports no ratio rather than dividing by zero',
+    pulledInvocationCost(counts, counts.map(() => 0), stride1).ratio === 0);
 }
 
 console.log(failures === 0 ? '\nAll pulled-arena tests passed.' : `\n${failures} failure(s).`);

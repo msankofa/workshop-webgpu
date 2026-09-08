@@ -116,16 +116,19 @@ export function proceduralBarkColorNode(uvNode = null, colorNode = null) {
 export function bindTreeMaterials(branchMat, leafMat, set) {
   leafMat.transparent = false;
   // The pulled branch material has no vertex attributes to bind against: uv and vertex colour are
-  // arena reads. Bark grain and the bark photo both work from those nodes; the normal map does not
-  // (it needs tangents Three derives from real attributes), so this rung loses it -- LOD2 only.
+  // arena reads. `material.normalMap` cannot be used either -- three builds its tangent frame from
+  // the `uv` ATTRIBUTE, which on the pulled mesh's dummy geometry is zeros -- so the map goes in
+  // through normalFor(), the same derivative frame driven by the arena uv.
   const pulled = branchMat.userData?.pulledNodes;
   if (pulled) {
     branchMat.map = null;
     branchMat.normalMap = null;
     branchMat.vertexColors = false;
-    branchMat.colorNode = (!set || set.mode === 'procedural' || !set.barkMap)
-      ? proceduralBarkColorNode(pulled.uv, pulled.color)
-      : texture(set.barkMap, pulled.uv).rgb.mul(pulled.color);
+    const authored = set && set.mode !== 'procedural' && set.barkMap;
+    branchMat.colorNode = authored
+      ? texture(set.barkMap, pulled.uv).rgb.mul(pulled.color)
+      : proceduralBarkColorNode(pulled.uv, pulled.color);
+    branchMat.normalNode = pulled.normalFor(authored ? set.barkNormalMap : null);
     branchMat.needsUpdate = true;
     return;
   }
