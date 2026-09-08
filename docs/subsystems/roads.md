@@ -97,9 +97,9 @@ strip, and the ribbon would still drape on top of the carved result with no chan
 
 | File | Role | THREE? |
 |---|---|---|
-| `road-path.js` | Curve evaluation, ground-following sampling, point-to-polyline and segment-crossing queries | no |
+| `road-path.js` | Curve evaluation, ground-following sampling, point-to-polyline and segment-crossing queries; `distancePointToSegmentXZ(px, pz, a, b)` is the allocation-free scalar twin of `projectPointToSegmentXZ` and what `distancePointToPolylineXZ` now uses | no |
 | `road-network.js` | The graph: snapping, crossings, edge splitting, junction classification, snapshots | no |
-| `road-index.js` | Uniform 24 m grid index; every "is there a road here?" question | no |
+| `road-index.js` | Uniform 24 m grid index; every "is there a road here?" question. The bounded `nearestDistance` walks its buckets with two reused Sets and no result arrays (2026-09-08), because flora's field derivation asks it once per texel | no |
 | `road-mesh.js` | Centreline → geometry arrays (core ribbon, shoulder, junction patches) | no |
 | `roads.js` | Materials, meshes, the draw tool; the only file that touches THREE | yes |
 

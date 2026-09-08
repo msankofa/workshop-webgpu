@@ -27,6 +27,7 @@ export const FIELD_SCHEDULER_DEFAULTS = Object.freeze({
   workerCount: 1,        // one worker: field data is never what a frame is waiting on
   maxInFlight: 4,
   syncBudgetMs: 2,       // worker-less fallback: how long one pump may spend building tiles
+  deliverBudgetMs: 2,    // how long one pump may spend handing landed tiles to their windows
 });
 
 export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
@@ -36,8 +37,10 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
   const inFlight = new Map();       // key -> job
   const waiting = new Map();        // key -> [job, ...] merged onto one in-flight job
   const sources = new Map();        // descriptor JSON -> source, for the synchronous path
+  const landed = [];                // { job, tile } built results not yet handed to their window
   let seq = 0, disposed = false;
-  const stats = { queued: 0, inFlight: 0, completed: 0, failed: 0, deduped: 0, cancelled: 0, lastError: null, workerCount: 0 };
+  const stats = { queued: 0, inFlight: 0, completed: 0, failed: 0, deduped: 0, cancelled: 0, lastError: null, workerCount: 0,
+    landed: 0, delivered: 0, deliveriesPaused: 0, lastDeliverMs: 0 };
 
   let workers = [];
   let next = 0;
@@ -60,18 +63,40 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
     return s;
   }
 
-  function deliver(job, tile) {
-    try { job.onTile?.(tile); } catch (err) { stats.lastError = String(err?.message ?? err); }
+  // A window's onTile may return false to say its derive step paused at the deadline; the entry then
+  // stays at the head of the landed queue and is handed back next pump. Anything else consumes it.
+  function deliver(job, tile, deadline) {
+    try { return job.onTile?.(tile, deadline) !== false; } catch (err) { stats.lastError = String(err?.message ?? err); return true; }
   }
 
   // One tile, many askers: the first job gets the built arrays, the rest get a copy, because a
-  // window keeps what it is handed and a transferred buffer has exactly one owner.
-  function fanOut(key, tile) {
+  // window keeps what it is handed and a transferred buffer has exactly one owner. Nothing is
+  // delivered here: a worker reply used to run every asker's derivation inside the message handler,
+  // and one 80 ms handler was measured doing exactly that (2026-09-08). Results queue for pump().
+  function land(key, job, tile) {
     const also = waiting.get(key);
     waiting.delete(key);
-    if (!also) return tile;
-    for (const job of also) deliver(job, cloneTile(tile));
-    return tile;
+    if (also) for (const other of also) landed.push({ job: other, tile: cloneTile(tile) });
+    landed.push({ job, tile });
+    stats.landed = landed.length;
+  }
+
+  // Hands landed tiles to their windows until the deadline. The head entry always gets one call, so
+  // a resumable derive makes progress on every pump however late the frame already is.
+  function deliverLanded(deadline) {
+    const clock = (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now());
+    const t0 = clock();
+    let n = 0;
+    while (landed.length) {
+      const { job, tile } = landed[0];
+      if (!deliver(job, tile, deadline)) { stats.deliveriesPaused++; break; }
+      landed.shift();
+      stats.delivered++; n++;
+      if (clock() >= deadline) break;
+    }
+    stats.landed = landed.length;
+    stats.lastDeliverMs = clock() - t0;
+    return n;
   }
 
   function cloneTile(tile) {
@@ -95,10 +120,9 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
       try { job.onError?.(data.error); } catch { /* reporting must not break the pump */ }
     } else {
       stats.completed++;
-      fanOut(data.key, data);
-      deliver(job, data);
+      land(data.key, job, data);
     }
-    pump();
+    fill();
   }
 
   function dispatch(job) {
@@ -120,7 +144,7 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
 
   // Runs the queue up to the in-flight cap. Synchronous builds also respect a millisecond budget so
   // a worker-less page keeps its frame; the queue is drained over later pumps, never all at once.
-  function pump() {
+  function fill() {
     if (disposed) return 0;
     const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     let started = 0;
@@ -133,6 +157,18 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
       const wasSync = dispatch(job);
       started++;
       if (wasSync && (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0 >= cfg.syncBudgetMs) break;
+    }
+    return started;
+  }
+
+  // One frame's worth: dispatch what the cap allows, then hand landed tiles over under the delivery
+  // budget. The two budgets are separate so a synchronous build cannot starve delivery.
+  function pump() {
+    if (disposed) return 0;
+    const started = fill();
+    if (landed.length) {
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      deliverLanded(now + cfg.deliverBudgetMs);
     }
     return started;
   }
@@ -181,6 +217,9 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
       return n;
     },
     pump,
+    // Landed results waiting for a pump; a test or a paused rebuild can flush them without a budget.
+    get landedCount() { return landed.length; },
+    deliverLanded,
     dispose() {
       disposed = true;
       for (const w of workers) w.terminate();
@@ -189,6 +228,7 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
       queuedByKey.clear();
       inFlight.clear();
       waiting.clear();
+      landed.length = 0;
       sources.clear();
     },
   };

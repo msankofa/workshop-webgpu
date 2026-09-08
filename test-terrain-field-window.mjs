@@ -184,5 +184,27 @@ section('registry: one window, many holders');
   scheduler.dispose();
 }
 
+section('landed tiles are delivered under the pump budget');
+{
+  const scheduler = createFieldScheduler({ useWorker: false });
+  let derives = 0, paused = true;
+  const fw = createFieldWindow({
+    source, descriptor, scheduler, label: 'paused',
+    fields: ['surfaceHeights', 'biomeIds', 'moisture'],
+    post: 8, tileIntervals: 4, tilesPerSide: 4, maxRequestsPerUpdate: 64,
+    // Pauses once for the first tile, then completes everything.
+    derive: tile => { derives++; if (paused) { paused = false; return false; } return tile; },
+  });
+  fw.acquire();
+  fw.update(0, 0);
+  scheduler.pump();
+  check('a paused derive leaves its tile landed, not committed', scheduler.landedCount >= 1 && scheduler.stats.deliveriesPaused === 1);
+  const builtAfterFirst = fw.stats.tilesBuilt;
+  for (let i = 0; i < 8; i++) { fw.update(0, 0); scheduler.pump(); }
+  check('later pumps deliver it and the rest', fw.coverage === 1 && fw.stats.tilesBuilt > builtAfterFirst && scheduler.landedCount === 0, `coverage ${fw.coverage}`);
+  check('every delivered tile was derived', scheduler.stats.delivered > 0 && derives === scheduler.stats.delivered + 1);
+  scheduler.dispose();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

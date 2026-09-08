@@ -31,12 +31,23 @@ export function createFloraChunks(options = {}) {
   const clearQueue = [];
   let desired = new Set();
   let lastWindowKey = null;
-  let onBuild = null, onClear = null, isReady = null;
+  let onBuild = null, onClear = null, onAbandon = null, isReady = null;
+  // A build that returned false at its deadline: resumed at the head of the next drain, before any
+  // new chunk starts. Its key stays in queuedKeys so a window move cannot queue it twice.
+  let pending = null;
 
   const stats = {
     resident: 0, queued: 0, deferred: 0, cleared: 0, built: 0,
-    windowKey: '', lastBuildMs: 0, syncs: 0, deferrals: 0,
+    windowKey: '', lastBuildMs: 0, syncs: 0, deferrals: 0, pausedBuilds: 0, abandonedBuilds: 0,
   };
+
+  function abandonPending() {
+    if (!pending) return;
+    queuedKeys.delete(pending.key);
+    stats.abandonedBuilds++;
+    try { onAbandon?.(pending); } catch { /* the host's own state is already consistent */ }
+    pending = null;
+  }
 
   const keyFor = (cx, cz) => `${cx},${cz}`;
   const cellOf = v => Math.floor(v / cfg.chunkSize);
@@ -71,11 +82,13 @@ export function createFloraChunks(options = {}) {
     desired = new Set(active.map(c => c.key));
 
     if (rebuildExisting) {
+      abandonPending();
       for (const key of resident) clearQueue.push(key);
       resident.clear();
       buildQueue = [];
       queuedKeys.clear();
     } else {
+      if (pending && !desired.has(pending.key)) abandonPending();
       for (const key of [...resident]) {
         if (!desired.has(key)) { clearQueue.push(key); resident.delete(key); }
       }
@@ -100,18 +113,29 @@ export function createFloraChunks(options = {}) {
 
   // Runs the queues under the budget. `drain` ignores the budget: it is for a paused rebuild, not
   // for play. Returns how many chunks were built.
+  // onBuild(chunk, deadline) may return false to say it stopped at the deadline with the chunk
+  // unfinished; the chunk becomes resident only when a later call returns anything else. The deadline
+  // is in the clock's own timebase; a drain-all passes Infinity so every build runs to the end.
   function drain({ drain: drainAll = false, now = null } = {}) {
-    if (!clearQueue.length && !buildQueue.length) return 0;      // the other cheap path
+    if (!clearQueue.length && !buildQueue.length && !pending) return 0;      // the other cheap path
     const clock = now ?? (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now());
     const t0 = clock();
+    const deadline = drainAll ? Infinity : t0 + cfg.budgetMs;
     while (clearQueue.length) {
       const key = clearQueue.shift();
+      if (pending && pending.key === key) abandonPending();
       stats.cleared++;
       onClear?.(key);
     }
     let built = 0, deferred = 0;
+    const finish = chunk => { queuedKeys.delete(chunk.key); resident.add(chunk.key); built++; stats.built++; };
+    if (pending) {
+      const chunk = pending;
+      if (onBuild?.(chunk, deadline) === false) { stats.pausedBuilds++; }
+      else { pending = null; finish(chunk); }
+    }
     const requeue = [];
-    while (buildQueue.length) {
+    while (!pending && buildQueue.length) {
       if (!drainAll && built >= cfg.budgetChunks) break;
       if (!drainAll && built > 0 && clock() - t0 >= cfg.budgetMs) break;
       const chunk = buildQueue.shift();
@@ -125,11 +149,8 @@ export function createFloraChunks(options = {}) {
         if (deferred >= buildQueue.length + requeue.length) break;   // nothing is ready; stop spinning
         continue;
       }
-      queuedKeys.delete(chunk.key);
-      resident.add(chunk.key);
-      built++;
-      stats.built++;
-      onBuild?.(chunk);
+      if (onBuild?.(chunk, deadline) === false) { pending = chunk; stats.pausedBuilds++; break; }
+      finish(chunk);
     }
     for (const chunk of requeue) buildQueue.push(chunk);
     stats.lastBuildMs = clock() - t0;
@@ -153,6 +174,9 @@ export function createFloraChunks(options = {}) {
     setReadyTest(fn) { isReady = typeof fn === 'function' ? fn : null; },
     onBuild(fn) { onBuild = fn; },
     onClear(fn) { onClear = fn; },
+    // A paused build whose chunk left the window or was cleared: the builder drops its partial state.
+    onAbandon(fn) { onAbandon = fn; },
+    get pendingKey() { return pending ? pending.key : null; },
     // Placement-affecting settings changed: everything must be rebuilt, but not synchronously.
     rebuildAll(x, z) { syncToFocus(x, z, true); },
     setRadiusChunks(r) {
@@ -167,6 +191,7 @@ export function createFloraChunks(options = {}) {
       if (Number.isFinite(budgetMs)) cfg.budgetMs = Math.max(0, budgetMs);
     },
     clear() {
+      abandonPending();
       for (const key of resident) clearQueue.push(key);
       resident.clear();
       buildQueue = [];

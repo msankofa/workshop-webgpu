@@ -241,6 +241,29 @@ section('the NaN traps are closed');
   terrain.dispose();
 }
 
+section('a paused build lands on the same forest');
+{
+  const whole = rig({ treesEnabled: true });
+  const sliced = rig({ treesEnabled: true, treeBudgetMs: 0 });   // every build stops at its first slice
+  whole.trees.setEnabled(true); sliced.trees.setEnabled(true);
+  settle(whole.terrain, whole.trees);
+  // A zero budget does one slice per frame, so the same forest takes thousands of frames to land.
+  let frames = 0;
+  do { settle(sliced.terrain, sliced.trees, [0, 0, 0], 500); frames += 500; }
+  while ((sliced.trees.stats.queued || sliced.trees.stats.pendingChunk) && frames < 40000);
+  check('the sliced forest finishes', !sliced.trees.stats.queued && !sliced.trees.stats.pendingChunk, `${frames} frames, queued ${sliced.trees.stats.queued}`);
+  check('the sliced forest has trees', sliced.trees.allRecords().length > 20, `${sliced.trees.allRecords().length}`);
+  check('the sliced build paused at least once per chunk', sliced.trees.stats.lastChunkSteps > 1, `${sliced.trees.stats.lastChunkSteps} steps`);
+  check('and every record matches the unbudgeted build', sig(sliced.trees.allRecords()) === sig(whole.trees.allRecords()),
+    `${sliced.trees.allRecords().length} vs ${whole.trees.allRecords().length}`);
+  const groundMatch = (() => {
+    const a = new Map(whole.trees.allRecords().map(r => [keyOf(r), r]));
+    return sliced.trees.allRecords().every(r => a.get(keyOf(r)) && a.get(keyOf(r)).ground === r.ground && a.get(keyOf(r)).y === r.y);
+  })();
+  check('including every ground height', groundMatch);
+  whole.terrain.dispose(); sliced.terrain.dispose();
+}
+
 section('identity keys are the ones that change the forest');
 {
   const { terrain, trees } = rig({ treesEnabled: true });

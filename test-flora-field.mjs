@@ -125,5 +125,24 @@ section('defaults are sane');
     FLORA_COVER_DEFAULTS.grassGround.rock === 0 && FLORA_COVER_DEFAULTS.plantGround.rock === 0 && FLORA_COVER_DEFAULTS.treeGround.rock === 0);
 }
 
+section('derive pauses at a deadline');
+{
+  const texels = 9, step = 8;
+  const heights = new Float32Array(texels * texels);
+  const biomeIds = new Uint8Array(texels * texels).fill(BIOME_INDEX.forest);
+  const moisture = new Float32Array(texels * texels).fill(0.8);
+  for (let iz = 0; iz < texels; iz++) for (let ix = 0; ix < texels; ix++) heights[iz * texels + ix] = 30 + ix * 0.5;
+  let queries = 0;
+  const cover = createTileCover({ seaLevel: 0, biomeNames: BIOMES, clearance: (x, z) => { queries++; return x > 20 ? 1 : 0.5; } });
+  const whole = cover.derive({ heights, biomeIds, moisture, texels, step });
+  const paused = { heights, biomeIds, moisture, texels, step };
+  let pauses = 0;
+  while (cover.derive(paused, -Infinity) === false) { pauses++; check(`no channel is attached while paused (${pauses})`, paused.coverGrass === undefined); if (pauses > 20) break; }
+  check('a past deadline pauses once per row', pauses === texels - 1, `${pauses} pauses`);
+  check('the paused tile carries every channel at the end', COVER_CHANNELS.every(c => paused[c] instanceof Uint8Array));
+  check('and the same numbers as the one-shot derive', COVER_CHANNELS.every(c => paused[c].every((v, i) => v === whole[c][i])));
+  check('every texel asked for clearance exactly once per derive', queries === 2 * texels * texels, `${queries}`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

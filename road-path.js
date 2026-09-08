@@ -121,12 +121,20 @@ export function projectPointToSegmentXZ(point, a, b, out = { x: 0, y: 0, z: 0 })
   return { point: out, distance: Math.hypot(point.x - out.x, point.z - out.z), t };
 }
 
-const polylineScratch = { x: 0, y: 0, z: 0 };
+// Distance only, the same arithmetic as projectPointToSegmentXZ without its result record: the field
+// derivation asks this once per texel per nearby road.
+export function distancePointToSegmentXZ(px, pz, a, b) {
+  const abx = b.x - a.x, abz = b.z - a.z;
+  const lengthSq = abx * abx + abz * abz;
+  let t = lengthSq <= 1e-6 ? 0 : ((px - a.x) * abx + (pz - a.z) * abz) / lengthSq;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(px - (a.x + (b.x - a.x) * t), pz - (a.z + (b.z - a.z) * t));
+}
+
 export function distancePointToPolylineXZ(x, z, path) {
-  const probe = { x, y: 0, z };
   let best = Infinity;
   for (let i = 0; i < path.length - 1; i++) {
-    const d = projectPointToSegmentXZ(probe, path[i], path[i + 1], polylineScratch).distance;
+    const d = distancePointToSegmentXZ(x, z, path[i], path[i + 1]);
     if (d < best) best = d;
   }
   return best;

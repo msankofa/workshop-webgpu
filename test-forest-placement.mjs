@@ -47,5 +47,23 @@ const noBiomeRecs = placementRecords(denseChunks, denseParams, heightAt);
 const seenIdx = new Set(noBiomeRecs.map(r => r.speciesIdx));
 ok(seenIdx.has(0) || seenIdx.has(1), '2: without biomeAt, species table is still consulted');
 
+// ---- the resumable job: any number of pauses, the same records ----
+{
+  const { createPlacementJob } = await import('./forest-placement.js');
+  for (const placement of ['random', 'clustered', 'ring', 'scattered']) {
+    const p = { ...params, count: 40, placement, clusterSize: 5, clusterSpread: 0.14 };
+    const whole = placementRecords(chunks, p, heightAt);
+    const job = createPlacementJob(chunks, p, heightAt);
+    let steps = 0;
+    while (!job.step(-Infinity)) steps++;          // a deadline already past: one slice per step
+    ok(JSON.stringify(job.records) === JSON.stringify(whole), `3: ${placement} paused job equals the one-shot records`);
+    ok(steps >= 1, `3: ${placement} job actually paused (${steps} pauses)`);
+    ok(job.step(-Infinity) === true && job.done, `3: ${placement} a finished job stays finished`);
+  }
+  const biomeJob = createPlacementJob(denseChunks, denseParams, heightAt, alwaysForest);
+  while (!biomeJob.step(-Infinity));
+  ok(JSON.stringify(biomeJob.records) === JSON.stringify(biomeRecs), '3: species-table placement survives pausing');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

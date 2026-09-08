@@ -131,5 +131,57 @@ section('no work, no allocation path');
   check('a hundred idle frames change nothing', h.stats.built === before.built && h.stats.cleared === before.cleared && h.stats.syncs === before.syncs);
 }
 
+section('a build that pauses at its deadline');
+{
+  const h = createFloraChunks({ chunkSize: 32, radiusChunks: 1, budgetChunks: 100, budgetMs: 5 });
+  const calls = [], abandoned = [];
+  // Every chunk needs three calls: the first two report "not finished".
+  const progress = new Map();
+  h.onBuild((chunk, deadline) => {
+    calls.push(chunk.key);
+    const n = (progress.get(chunk.key) ?? 0) + 1;
+    progress.set(chunk.key, n);
+    if (!Number.isFinite(deadline)) return true;          // a drain-all finishes in one call
+    return n >= 3 ? true : false;
+  });
+  h.onAbandon(chunk => abandoned.push(chunk.key));
+  h.syncToFocus(0, 0);
+  check('the first drain builds nothing yet', h.drain({ now: fakeClock(0, 1) }) === 0 && h.stats.pausedBuilds === 1);
+  check('the paused chunk is not resident', h.stats.resident === 0 && h.pendingKey !== null);
+  const first = h.pendingKey;
+  h.drain({ now: fakeClock(0, 1) });
+  check('the second drain resumes the same chunk and starts no other', calls.length === 2 && calls[0] === calls[1] && h.pendingKey === first);
+  check('the third completes it and moves on within the budget', h.drain({ now: fakeClock(0, 1) }) >= 1 && h.has(first) && h.stats.pausedBuilds >= 2);
+  // A window move that drops the pending chunk abandons it once, and never queues it twice.
+  const pendingBefore = h.pendingKey;
+  h.syncToFocus(5000, 5000);
+  check('a move away abandons the paused build', pendingBefore === null || (abandoned.length === 1 && abandoned[0] === pendingBefore && h.pendingKey === null));
+  const queuedKeys = new Set();
+  let dup = false;
+  h.syncToFocus(0, 0);
+  for (let i = 0; i < 60 && (h.stats.queued || h.pendingKey); i++) h.drain({ now: fakeClock(0, 1) });
+  for (const k of h.residentKeys) { if (queuedKeys.has(k)) dup = true; queuedKeys.add(k); }
+  check('every chunk ends up resident exactly once', !dup && h.stats.resident === 9, `resident ${h.stats.resident}`);
+  check('a drain-all finishes a paused build synchronously', (() => {
+    const g = createFloraChunks({ chunkSize: 32, radiusChunks: 1, budgetChunks: 100, budgetMs: 5 });
+    let n = 0;
+    g.onBuild((chunk, deadline) => Number.isFinite(deadline) ? (++n % 2 === 0) : true);
+    g.syncToFocus(0, 0);
+    g.drain({ now: fakeClock(0, 1) });
+    const paused = g.pendingKey !== null;
+    g.drain({ drain: true, now: fakeClock(0, 1) });
+    return paused && g.pendingKey === null && g.stats.resident === 9;
+  })());
+  check('clear() abandons the paused build', (() => {
+    const g = createFloraChunks({ chunkSize: 32, radiusChunks: 1, budgetChunks: 100, budgetMs: 5 });
+    const dropped = [];
+    g.onBuild(() => false);
+    g.onAbandon(c => dropped.push(c.key));
+    g.syncToFocus(0, 0); g.drain({ now: fakeClock(0, 1) });
+    g.clear();
+    return dropped.length === 1 && g.pendingKey === null;
+  })());
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

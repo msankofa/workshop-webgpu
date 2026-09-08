@@ -8,7 +8,7 @@
 // where a tree draws but never which trees there are.
 
 import { createFloraChunks } from './flora-chunks.js';
-import { placementRecords } from './forest-placement.js';
+import { createPlacementJob } from './forest-placement.js';
 import { speciesTableForSelection } from './base-game-tree-species.js';
 
 export const BASE_GAME_TREE_DEFAULTS = Object.freeze({
@@ -85,7 +85,7 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
 
   const stats = {
     enabled: false, resident: 0, queued: 0, deferred: 0, trees: 0,
-    lastChunkTrees: 0, lastChunkMs: 0, placeMs: 0, shoreDropped: 0, chunkSize: cfg.treeChunkSize,
+    lastChunkTrees: 0, lastChunkMs: 0, lastChunkSteps: 0, placeMs: 0, shoreDropped: 0, chunkSize: cfg.treeChunkSize,
     radiusChunks: 0, expectedPerChunk: 0, seed: masterSeed,
     // What the density slider ASKED for across the resident window, against what the cover gate
     // actually let stand. On the analytic test terrain the gate thins by roughly 86%, so a slider
@@ -108,6 +108,7 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
     host.setReadyTest(isChunkReady);
     host.onBuild(buildChunk);
     host.onClear(clearChunk);
+    host.onAbandon(chunk => building.delete(chunk.key));
     return host;
   }
 
@@ -183,15 +184,36 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
     return true;
   }
 
-  function buildChunk(chunk) {
+  // Builds in progress, by chunk key: the placement job, then the ground-height cursor. One chunk
+  // used to place and measure all its trees inside one frame (20 to 22 ms in the 2026-09-07 trace);
+  // now each call does what fits before the deadline and returns false until the chunk is complete.
+  // The records are the same whichever frame finishes them: placement is seeded and the heights are
+  // pure functions of position.
+  const building = new Map();
+  function buildChunk(chunk, deadline = Infinity) {
     const t0 = now();
-    const params = placementParams();
-    assertPlacementParams(params);
-    const recs = placementRecords([chunk], params, placementHeightAt);
+    let st = building.get(chunk.key);
+    if (!st) {
+      const params = placementParams();
+      assertPlacementParams(params);
+      st = { job: createPlacementJob([chunk], params, placementHeightAt), recs: null, i: 0, ms: 0, steps: 0 };
+      building.set(chunk.key, st);
+    }
+    st.steps++;
+    if (!st.recs) {
+      if (!st.job.step(deadline)) { st.ms += now() - t0; return false; }
+      st.recs = st.job.records;
+    }
     // `ground` is the drawn surface (the source, not the 8 m placement posts, which sit up to 4 m
     // off it on a slope), asked once here so the renderer never asks per tree per rebuild.
     const groundAt = typeof terrain.groundHeight === 'function' ? terrain.groundHeight : placementHeightAt;
-    for (const r of recs) { r.ground = groundAt(r.x, r.z); r.y = r.ground + cfg.treeVerticalOffset; }
+    const recs = st.recs;
+    for (; st.i < recs.length; st.i++) {
+      const r = recs[st.i];
+      r.ground = groundAt(r.x, r.z); r.y = r.ground + cfg.treeVerticalOffset;
+      if (st.i + 1 < recs.length && now() >= deadline) { st.i++; st.ms += now() - t0; return false; }
+    }
+    building.delete(chunk.key);
     // The shore gate ran on the posts; run it again on the real surface, or a slope the posts read
     // as dry roots a trunk in the sea. Deterministic, so every peer drops the same trees.
     const shore = (terrain.seaLevel ?? -Infinity) + cfg.treeShoreMargin;
@@ -200,8 +222,10 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
     records.set(chunk.key, kept);
     onChunkCb?.(chunk.key, kept);
     stats.lastChunkTrees = kept.length;
-    stats.lastChunkMs = now() - t0;
+    stats.lastChunkMs = st.ms + (now() - t0);
+    stats.lastChunkSteps = st.steps;
     stats.trees += kept.length;
+    return true;
   }
 
   function clearChunk(key) {
@@ -214,6 +238,7 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
     stats.resident = chunks.stats.resident;
     stats.queued = chunks.stats.queued;
     stats.deferred = chunks.stats.deferred;
+    stats.pendingChunk = chunks.pendingKey;
     stats.chunkSize = chunks.chunkSize;
     stats.radiusChunks = chunks.radiusChunks;
     stats.expectedPerChunk = expectedTreesPerChunk(cfg.treesPerHectare, cfg.treeChunkSize);
@@ -293,6 +318,7 @@ export function createBaseGameTrees({ terrain, worldCoordinates = null, settings
       if (cfg.treeChunkSize !== chunks.chunkSize) {
         chunks.clear(); chunks.drain({ drain: true });
         forgetRecords();
+        building.clear();
         chunks = makeHost();
       }
       chunks.setRadiusChunks(radiusChunksFor(cfg.treeRadius, cfg.treeChunkSize));

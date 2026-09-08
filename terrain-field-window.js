@@ -106,10 +106,17 @@ export function createFieldWindow({ source, descriptor = null, scheduler, fields
       const jobEpoch = epoch;
       scheduler.request({
         key, priority: cfg.priority, descriptor: currentDescriptor, request: req, epoch: jobEpoch, owner,
-        onTile: tile => {
-          if (disposed || jobEpoch !== epoch) return;      // a source swap invalidates the answer
-          if (derive) { try { derive(tile); } catch (err) { stats.lastError = String(err?.message ?? err); return; } }
+        // Returns false only when the derive step paused at its deadline; the scheduler then hands
+        // the same tile back next pump. Anything else means the tile is consumed.
+        onTile: (tile, deadline) => {
+          if (disposed || jobEpoch !== epoch) return true;      // a source swap invalidates the answer
+          if (derive) {
+            let result;
+            try { result = derive(tile, deadline); } catch (err) { stats.lastError = String(err?.message ?? err); return true; }
+            if (result === false) return false;
+          }
           if (win.commitTile(tile)) stats.tilesBuilt++;
+          return true;
         },
         onError: err => { stats.lastError = err; },
       });

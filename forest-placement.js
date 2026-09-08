@@ -121,7 +121,10 @@ function treeCountForChunk(chunk, params, targetChunkCount) {
 }
 
 // ---- per-chunk placement points (verbatim from placementsForChunk :728) ----
-function placementsForChunk(chunk, count, params, heightAt) {
+// A generator so a build can pause between attempts: the RNG draws, the attempt order and the
+// slot numbers are untouched, so the points are the same however often it pauses.
+const ATTEMPTS_PER_YIELD = 16;
+function* placementsForChunkGen(chunk, count, params, heightAt) {
   const out = [];
   if (count <= 0) return out;
   const [ix, iz] = chunk.key.split(',').map(Number);
@@ -148,6 +151,7 @@ function placementsForChunk(chunk, count, params, heightAt) {
   if (params.placement === 'ring') {
     const rr = chunk.size * 0.32, jitter = chunk.size * 0.08;
     for (let attempt = 0, placed = 0; placed < count && attempt < maxAttempts; attempt++) {
+      if (attempt && attempt % ATTEMPTS_PER_YIELD === 0) yield;
       const i = attempt % Math.max(1, count);
       const a = (i / Math.max(1, count)) * Math.PI * 2 + crng.range(-0.18, 0.18);
       const r = rr + crng.range(-jitter, jitter);
@@ -164,6 +168,7 @@ function placementsForChunk(chunk, count, params, heightAt) {
       z: crng.range(chunk.zMin + margin, chunk.zMin + chunk.size - margin),
     });
     for (let attempt = 0, placed = 0; placed < count && attempt < maxAttempts; attempt++) {
+      if (attempt && attempt % ATTEMPTS_PER_YIELD === 0) yield;
       const c = centers[Math.floor(crng.next() * nc)];
       if (keepDry({ x: c.x + crng.range(-spread, spread) + crng.range(-spread, spread), z: c.z + crng.range(-spread, spread) + crng.range(-spread, spread) }, placed)) placed++;
     }
@@ -171,6 +176,7 @@ function placementsForChunk(chunk, count, params, heightAt) {
     const cell = Math.max(2, chunk.size / Math.ceil(Math.sqrt(Math.max(1, count) * 1.6))), pts = [];
     let slot = 0;
     for (let gx = chunk.xMin; gx < chunk.xMin + chunk.size; gx += cell) for (let gz = chunk.zMin; gz < chunk.zMin + chunk.size; gz += cell) {
+      if (slot && slot % ATTEMPTS_PER_YIELD === 0) yield;
       const x = gx + crng.range(0, cell), z = gz + crng.range(0, cell);
       if (x <= chunk.xMin + chunk.size && z <= chunk.zMin + chunk.size && isDry({ x, z })) pts.push({ x, z, id: `${chunk.key}:${slot}`, chunkKey: chunk.key, slot });
       slot++;
@@ -179,10 +185,18 @@ function placementsForChunk(chunk, count, params, heightAt) {
     out.push(...pts.slice(0, count));
   } else {
     for (let attempt = 0, placed = 0; placed < count && attempt < maxAttempts; attempt++) {
+      if (attempt && attempt % ATTEMPTS_PER_YIELD === 0) yield;
       if (keepDry({ x: crng.range(chunk.xMin, chunk.xMin + chunk.size), z: crng.range(chunk.zMin, chunk.zMin + chunk.size) }, placed)) placed++;
     }
   }
   return out;
+}
+
+function placementsForChunk(chunk, count, params, heightAt) {
+  const gen = placementsForChunkGen(chunk, count, params, heightAt);
+  let r;
+  do { r = gen.next(); } while (!r.done);
+  return r.value;
 }
 
 // ---- public: placement records across all active chunks ----
@@ -192,14 +206,44 @@ function placementsForChunk(chunk, count, params, heightAt) {
 // buildSpeciesFromFamilies) is set; without a species table, selection is the original
 // uniform-random draw over `params.species`, unaffected by biomeAt.
 export function placementRecords(chunks, params, heightAt, biomeAt) {
+  const job = createPlacementJob(chunks, params, heightAt, biomeAt);
+  job.step(Infinity);
+  return job.records;
+}
+
+// The same placement as a job that stops at a deadline (performance.now() timebase) and resumes on
+// the next step(); `records` is complete once step() has returned true. Nothing about the result
+// depends on where it paused.
+export function createPlacementJob(chunks, params, heightAt, biomeAt) {
   const out = [];
   const targetChunkCount = params.targetChunkCount || chunks.length;
   const speciesTable = params.speciesTable || null;
   const speciesCount = speciesTable ? speciesTable.length : Math.max(1, Math.floor(params.species));
-  for (const chunk of chunks) {
-    const count = treeCountForChunk(chunk, params, targetChunkCount);
-    const pts = placementsForChunk(chunk, count, params, heightAt);
-    for (const pt of pts) {
+  const gen = (function* () {
+    for (const chunk of chunks) {
+      const count = treeCountForChunk(chunk, params, targetChunkCount);
+      const pts = yield* placementsForChunkGen(chunk, count, params, heightAt);
+      for (const pt of pts) out.push(recordFor(pt, params, speciesTable, speciesCount, biomeAt));
+    }
+  })();
+  const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  let done = false;
+  return {
+    records: out,
+    get done() { return done; },
+    step(deadline = Infinity) {
+      if (done) return true;
+      do {
+        if (gen.next().done) { done = true; return true; }
+      } while (clock() < deadline);
+      return false;
+    },
+  };
+}
+
+function recordFor(pt, params, speciesTable, speciesCount, biomeAt) {
+  {
+    {
       const { x, z, chunkKey, slot } = pt;
       const [tx, tz] = chunkKey.split(',').map(Number);
       const treeRng = rngFrom((Math.floor(hash2(tx, tz, params.masterSeed + slot * 1013) * 0xffffffff) ^ Math.imul(slot + 1, 2654435761)) >>> 0);
@@ -230,8 +274,7 @@ export function placementRecords(chunks, params, heightAt, biomeAt) {
       treeRng.next();                                                 // 2nd draw: tree seed (kept to align the stream with the baker)
       const scale = sizeFor(params, x, z, treeRng, sizeRange);         // 3rd draw (random varPattern)
       const yaw = treeRng.next() * Math.PI * 2;                       // 4th draw
-      out.push({ x, z, scale, yaw, speciesIdx, chunkKey, slot });
+      return { x, z, scale, yaw, speciesIdx, chunkKey, slot };
     }
   }
-  return out;
 }

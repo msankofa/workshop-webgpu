@@ -38,6 +38,7 @@ export function createRoadIndex(nodes, edges) {
   const edgeHalfWidths = new Map();
   let maxSurfaceRadius = 0;
   const keyScratch = [];
+  const seenEdgeScratch = new Set(), seenNodeScratch = new Set();   // nearestDistanceWithin only
 
   for (const edge of edges) {
     const path = edge.sampledPath.length >= 2 ? edge.sampledPath : edge.controlPoints;
@@ -99,12 +100,28 @@ export function createRoadIndex(nodes, edges) {
     return results;
   }
 
+  // The same candidates queryNodes and queryEdges would return, folded straight into the minimum:
+  // no result arrays and no per-call Sets, because the field derivation asks this per texel.
   function nearestDistanceWithin(x, z, radius, best) {
-    for (const indexed of queryNodes(x, z, radius, new Set())) {
-      best = Math.min(best, Math.hypot(x - indexed.node.position.x, z - indexed.node.position.z));
-    }
-    for (const edge of queryEdges(x, z, radius, new Set())) {
-      best = Math.min(best, distancePointToPolylineXZ(x, z, edge.path));
+    seenNodeScratch.clear(); seenEdgeScratch.clear();
+    for (const key of cellKeysInRadius(x, z, radius, keyScratch)) {
+      const nodes = nodeCells.get(key);
+      if (nodes) for (const indexed of nodes) {
+        if (seenNodeScratch.has(indexed)) continue;
+        seenNodeScratch.add(indexed);
+        const d = Math.hypot(x - indexed.node.position.x, z - indexed.node.position.z);
+        if (d <= radius + 1e-6 && d < best) best = d;
+      }
+      const bucket = edgeCells.get(key);
+      if (bucket) for (const edge of bucket) {
+        if (seenEdgeScratch.has(edge)) continue;
+        seenEdgeScratch.add(edge);
+        const b = edge.bounds;
+        if (x >= b.minX - radius && x <= b.maxX + radius && z >= b.minZ - radius && z <= b.maxZ + radius) {
+          const d = distancePointToPolylineXZ(x, z, edge.path);
+          if (d < best) best = d;
+        }
+      }
     }
     return best;
   }

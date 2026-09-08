@@ -99,6 +99,9 @@ export function createTileCover({ seaLevel = 0, splatCfg = STREAMED_SPLAT_DEFAUL
   let cfg = splatCfg;
   let sea = seaLevel;
   let clearanceAt = typeof clearance === 'function' ? clearance : null;
+  // Rows finished so far for a tile whose derivation paused; the channels are attached only at the end.
+  const progress = new WeakMap();
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
   return {
     get splatCfg() { return cfg; },
     setSplatCfg(next) { cfg = next ?? STREAMED_SPLAT_DEFAULTS; },
@@ -106,13 +109,19 @@ export function createTileCover({ seaLevel = 0, splatCfg = STREAMED_SPLAT_DEFAUL
     setClearance(next) { clearanceAt = typeof next === 'function' ? next : null; },
     channels: COVER_CHANNELS,
     // Mutates the tile, attaching the three channels. Returns it so it can sit in a pipeline.
-    derive(tile) {
+    // With a deadline (performance.now() timebase) it stops between rows once the time is past and
+    // returns false; call it again with the same tile to continue. The tile carries no channel until
+    // every row is done, so a paused tile can never be committed half-derived.
+    derive(tile, deadline = Infinity) {
       const heights = tile.surfaceHeights ?? tile.heights;
       const { biomeIds, moisture, texels, step } = tile;
       if (!heights || !biomeIds) return tile;
       const n = texels * texels;
-      const grass = new Uint8Array(n), plant = new Uint8Array(n), tree = new Uint8Array(n);
-      for (let iz = 0; iz < texels; iz++) {
+      let state = progress.get(tile);
+      if (!state) { state = { grass: new Uint8Array(n), plant: new Uint8Array(n), tree: new Uint8Array(n), iz: 0 }; progress.set(tile, state); }
+      const { grass, plant, tree } = state;
+      for (let iz = state.iz; iz < texels; iz++) {
+        if (iz > state.iz && now() >= deadline) { state.iz = iz; return false; }
         for (let ix = 0; ix < texels; ix++) {
           const i = iz * texels + ix;
           const height = heights[i];
@@ -127,6 +136,7 @@ export function createTileCover({ seaLevel = 0, splatCfg = STREAMED_SPLAT_DEFAUL
           tree[i] = quantizeCover(cover.tree * clear);
         }
       }
+      progress.delete(tile);
       tile.coverGrass = grass;
       tile.coverPlant = plant;
       tile.coverTree = tree;

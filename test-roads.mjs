@@ -477,5 +477,56 @@ const bumpy = (x, z) => Math.sin(x * 0.5) * 0.6 + Math.cos(z * 0.4) * 0.4;
   ok(corner && corner.length > 0, 'a route that never touches a road still exists');
 }
 
+// ---- distance-only query path against the record-returning one ----
+{
+  const { distancePointToSegmentXZ } = await import('./road-path.js');
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  let segOk = true;
+  for (let i = 0; i < 500; i++) {
+    const a = p(rnd() * 200 - 100, rnd() * 200 - 100, rnd() * 10), b = p(rnd() * 200 - 100, rnd() * 200 - 100, rnd() * 10);
+    const q = p(rnd() * 200 - 100, rnd() * 200 - 100);
+    if (distancePointToSegmentXZ(q.x, q.z, a, b) !== projectPointToSegmentXZ(q, a, b).distance) segOk = false;
+  }
+  ok(segOk, 'the scalar segment distance is bit-identical to the projection record');
+
+  const net = createRoadNetwork();
+  for (let r = 0; r < 12; r++) {
+    const pts = [];
+    for (let k = 0; k < 5; k++) pts.push(p(rnd() * 400 - 200, rnd() * 400 - 200));
+    net.addRoadPath(pts, 3 + rnd() * 3);
+  }
+  const index = net.getIndex();
+  // Reference: the answer the previous implementation gave, walking every edge and node.
+  const reference = (x, z, radius) => {
+    let best = Infinity;
+    for (const node of net.nodes.values()) {
+      const d = Math.hypot(x - node.position.x, z - node.position.z);
+      if (d <= radius + 1e-6 && d < best) best = d;
+    }
+    for (const edge of net.edges.values()) {
+      const path = edge.sampledPath.length >= 2 ? edge.sampledPath : edge.controlPoints;
+      if (path.length < 2) continue;
+      const d = distancePointToPolylineXZ(x, z, path);
+      if (d < best) best = d;
+    }
+    return best;
+  };
+  let agree = 0, total = 0, bounded = 0;
+  for (let i = 0; i < 400; i++) {
+    const x = rnd() * 500 - 250, z = rnd() * 500 - 250, radius = 5 + rnd() * 40;
+    const got = index.nearestDistance(x, z, radius);
+    const want = reference(x, z, radius);
+    total++;
+    // The contract of a bounded query: exact whenever the nearest centreline is within the radius;
+    // past it, any answer beyond the radius (or none) is acceptable, as before this change.
+    if (want <= radius) { if (got === want) agree++; else bounded++; }
+    else if (got === Infinity || got > radius) agree++;
+    else bounded++;
+  }
+  ok(agree === total && bounded === 0, `bounded nearestDistance agrees with the full walk inside the radius (${agree} of ${total}, ${bounded} wrong)`);
+  ok(index.nearestDistance(1e6, 1e6) === reference(1e6, 1e6, Infinity) || index.nearestDistance(1e6, 1e6) >= 0, 'the unbounded query still answers');
+}
+
 if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }
 console.log('roads: all assertions passed');

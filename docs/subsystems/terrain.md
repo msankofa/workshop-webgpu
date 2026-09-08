@@ -130,6 +130,13 @@ one-worker-per-feature arrangement water and rain were heading toward.
   construction — `terrain-system.js` keeps its own pool of up to four workers, this pool is one, and
   `maxInFlight` caps what is outstanding. With no `Worker` (Node) it builds synchronously inside
   `pump()` under a millisecond budget, so a test drives the same scheduling path the page uses.
+  Results are not delivered from the worker message (2026-09-08): `onResult` lands them in a queue and
+  refills the pool; `pump()` then hands landed tiles to their windows under `deliverBudgetMs`
+  (default 2). A window's `onTile(tile, deadline)` may return `false` to say its derive step paused at
+  the deadline; the entry stays at the head and is handed back next pump, and the head entry always
+  gets one call so a late frame still makes progress. One 80 ms reply handler measured on 2026-09-08
+  was flora's per-texel derivation running inside `onmessage`. `stats.landed`, `delivered`,
+  `deliveriesPaused`, `lastDeliverMs`; `landedCount`, `deliverLanded(deadline)`.
 - `terrain-field-window.js` — `createFieldWindow({ source, scheduler, fields, post, lod, … })` wraps
   a payload window with one `THREE.DataTexture` per field and wrap-aware readers on both sides.
   `sampleAt(name, x, z)` and `ready(x, z)` on the CPU; `gpuSampler(name)` returns a TSL `Fn(xz,
