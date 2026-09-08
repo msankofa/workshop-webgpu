@@ -1045,7 +1045,10 @@ wrote them mid-refresh). Each declared object per pass gets one of three verdict
 
 - `snapshotChanged` — the check saw a change, so the candidate would have refreshed. First sight of a
   RenderObject is reported this way, with `firstSeen` among the changed fields.
-- `skipSafe` — the check saw nothing and the refresh did nothing observable.
+- `noObservedChange` — the candidate saw no observed change: neither the dependency check nor the
+  oracle saw anything move. It is a candidate for a future skip contract, **not permission to skip** —
+  `updateAfter` and every effect outside bindings, attributes and uniforms are outside the oracle, so
+  this verdict says only that nothing this audit can watch changed.
 - `skipWrongly` — the check saw nothing but the refresh did something. Each of these is a hole in the
   dependency contract, and `topDisagreements` names the object, the reasons (`bindingWrite`,
   `attributeWrite`, `uniformValue`, `materialValue`) and, for changed snapshots, which fields moved.
@@ -1061,13 +1064,42 @@ worth having and that has to be known first.
 value: a node callback that mutates renderer or scene state, a compute dispatch, a render-target
 write. `_nodes.updateAfter` runs after `backend.draw`, outside the window this audit closes at the end
 of `_bindings.updateForRender`, so an updateAfter side effect is not counted. A value rewritten with
-the same bytes reads as unchanged, and a hash collision reads as unchanged (the hash is FNV-style, not
-cryptographic). Visual equality is not provable here at all. So zero `skipWrongly` over a run is
+the same bytes reads as unchanged. Visual equality is not provable here at all. So zero `skipWrongly` over a run is
 evidence that the contract held for the objects and frames that ran — it is not a proof that skipping
 is safe.
 
-Test: `node test-render-refresh-audit.mjs` (13 checks, exit 0 clean / 1 on failure). It drives a fake
+**Aliasing, hashing and cost.** Every stored snapshot field is a small integer or a primitive id —
+never a live matrix, typed array, `Vector`/`Color`, uniform `.value` object, texture or `Set`. Live
+objects are read element by element into the hash and dropped, so a matrix, colour or texture Three
+mutates in place still reads as a change on the next frame rather than as a stale "unchanged". The
+hash is two independent FNV-1a lanes kept as signed 32-bit integers and **compared as a pair**, so
+the effective width is 64 bits. A collision reads as a false "unchanged" — a real dependency change
+the diff misses, which downgrades a `snapshotChanged` to a `noObservedChange` or hides a
+`skipWrongly`. At one 32-bit hash per field the odds are ~2.3e-10 per comparison, which over ~9
+fields x hundreds of objects x two passes at 60 Hz is a coin flip within a couple of hours of
+capture; at 64 bits it is ~5e-20 per comparison, which is not a realistic false negative for any
+capture we will run. The lanes are deliberately not folded into one 53-bit number: that value leaves
+V8's small-integer range and boxes a heap number on every hash. Floats are hashed by their exact
+64-bit representation (`-0` normalised to `0`), so a one-ULP difference in a matrix element is a
+change.
+
+In the steady state the audit allocates nothing per object per frame: the per-RenderObject snapshot
+record, the before/after scratch snapshots, the changed-field array, the active record, the reason
+list, the per-object verdict rows and the sorted attribute-name list are all created once and reused
+(`take()` still builds its own output object and its pass/disagreement rows). Measured on the fake
+renderer in `scratchpads/refresh-audit-d4/measure-alloc.mjs` — 200 objects x 500 frames = 100,000
+audits, `--max-semi-space-size=1`, approximate — young-generation collections fell from ~520 to 78
+against the first version of the module, with the same wall cost (~0.0039 ms per audited object,
+`auditMsPerObject` ~0.003-0.004 ms on that fake renderer; the real per-object cost is a browser
+measurement, not this one).
+
+Test: `node test-render-refresh-audit.mjs` (20 checks, exit 0 clean / 1 on failure). It drives a fake
 renderer with the call order of `_renderObjectDirect` and covers silent refresh, a binding write, a
 mid-refresh callback rewrite, a projection change on the same camera object, a between-frame uniform
 write, an origin rebase, a version-less material mutation, undeclared objects, the predicate form,
-two passes in one frame, the overhead counters, and that `detach` restores every method.
+two passes in one frame, the overhead counters, and that `detach` restores every method. The
+later checks cover the aliasing and hashing work: a `Vector3` a uniform holds mutated in place, a
+material colour mutated in place and a texture's version bumped in place, that no pass row carries a
+live object, that a one-ULP and a swapped-element matrix difference both hash apart, that `-0` is not
+a spurious change, that no `skipSafe` field survives anywhere in the record, and that 2,000 frames of
+the same objects retain nothing (the retention assertion runs only under `--expose-gc`).

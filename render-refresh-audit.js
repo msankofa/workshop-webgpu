@@ -13,9 +13,11 @@
 // lost?
 //
 // Three answers, per object per pass:
-//   snapshotChanged  — the dependency check saw a change, so the candidate would have refreshed.
-//   skipSafe         — the check saw nothing AND the refresh did nothing observable.
-//   skipWrongly      — the check saw nothing but the refresh DID something. A bug in the contract.
+//   snapshotChanged   — the dependency check saw a change, so the candidate would have refreshed.
+//   noObservedChange  — the check saw nothing AND the refresh did nothing this audit can observe.
+//                       It is a candidate, NOT permission to skip: `updateAfter` and any effect
+//                       outside bindings, attributes and uniforms are outside the oracle.
+//   skipWrongly       — the check saw nothing but the refresh DID something. A bug in the contract.
 //
 // A run with zero `skipWrongly` is evidence, not proof: the oracle sees writes and values, not
 // whether a value that was rewritten with the same bytes mattered, and not any effect that leaves
@@ -23,48 +25,94 @@
 //
 // The audit's own cost is reported as `auditMs` beside `audited`, because a dependency check that
 // costs more than the refresh it skips is not worth having, and that has to be known before any
-// skip mode exists.
+// skip mode exists. The audit also allocates nothing per object per frame in the steady state:
+// snapshot records, the diff array and the active record are reused (see `recordFor`).
 
 const round3 = v => Math.round((Number.isFinite(v) ? v : 0) * 1000) / 1000;
 
-// A cheap order-sensitive numeric hash. Not cryptographic: it only has to separate frames.
-function hashInit() { return 2166136261; }
-function hashNumber(h, v) {
-  const n = Number.isFinite(v) ? v : 0;
-  // Two words, so a float's mantissa is not thrown away by a bitwise cast.
-  h = Math.imul(h ^ (n | 0), 16777619);
-  h = Math.imul(h ^ ((n * 4194304) | 0), 16777619);
-  return h >>> 0;
+// ---- hashing -------------------------------------------------------------------------------
+//
+// Two independent FNV-1a lanes, kept as two signed 32-bit values and compared as a pair, so the
+// effective width is 64 bits. A collision reads as a false "unchanged": a real dependency change
+// the diff misses, which downgrades a snapshotChanged to a noObservedChange or hides a skipWrongly.
+// At 32 bits that is ~2.3e-10 per comparison — with ~9 fields x hundreds of objects x two passes
+// at 60 Hz that is a coin flip inside a couple of hours of capture. At 64 bits it is ~5e-20, which
+// is not a realistic false negative over any capture we will run. The pair is NOT folded into one
+// 53-bit number: that number leaves the Smi range and V8 boxes one on every hash.
+// Signed int32 lane state: `>>> 0` would push the value past 2^31, and a module-level binding
+// holding that is a boxed heap number allocated on every mix.
+const OFFSET_A = 2166136261 | 0;
+const OFFSET_B = (2166136261 ^ 0x9e3779b9) | 0;
+const PRIME_A = 16777619;
+const PRIME_B = 2654435761;
+
+let hA = 0;
+let hB = 0;
+
+// Exact float bits, so two nearly-equal numbers never collapse the way a mantissa cast would.
+const floatView = new Float64Array(1);
+const wordView = new Uint32Array(floatView.buffer);
+
+function hashBegin() { hA = OFFSET_A; hB = OFFSET_B; }
+// The two lanes, as small integers. `laneKey` folds them for a Map key only, where a collision
+// merges two pass rows rather than hiding a dependency change.
+function laneA() { return hA; }
+function laneB() { return hB; }
+function laneKey() { return (hA ^ hB) | 0; }
+
+function mixInt(n) {
+  hA = Math.imul(hA ^ n, PRIME_A) | 0;
+  hB = Math.imul(hB ^ n, PRIME_B) | 0;
+  hB = (hB ^ (hB >>> 13)) | 0;   // the lanes must not move in lockstep
 }
-function hashString(h, s) {
+
+function mixNumber(v) {
+  floatView[0] = Number.isFinite(v) ? (v === 0 ? 0 : v) : 0;   // -0 and 0 are the same dependency
+  mixInt(wordView[0]);
+  mixInt(wordView[1]);
+}
+
+function mixString(s) {
   const text = String(s);
-  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619) >>> 0;
-  return h >>> 0;
+  mixInt(text.length);
+  for (let i = 0; i < text.length; i++) mixInt(text.charCodeAt(i));
 }
+
+const VECTOR_KEYS = ['x', 'y', 'z', 'w', 'r', 'g', 'b', 'a'];
 
 // Whatever a uniform, a material property or a node handle holds: numbers, vectors, matrices,
 // colours, typed arrays, textures (identity + version), or a node with its own `.value`.
-function hashValue(h, value, depth = 0) {
-  if (value === null || value === undefined) return hashString(h, 'nil');
+// Everything here is READ into the hash — no live matrix, array, vector or texture is ever stored,
+// so an object Three mutates in place cannot make a stale snapshot look current.
+function mixValue(value, depth = 0) {
+  if (value === null || value === undefined) { mixString('nil'); return; }
   const type = typeof value;
-  if (type === 'number') return hashNumber(h, value);
-  if (type === 'boolean') return hashNumber(h, value ? 1 : 0);
-  if (type === 'string') return hashString(h, value);
-  if (type !== 'object' && type !== 'function') return hashString(h, type);
-  if (depth > 3) return hashString(h, 'deep');
+  if (type === 'number') { mixNumber(value); return; }
+  if (type === 'boolean') { mixNumber(value ? 1 : 0); return; }
+  if (type === 'string') { mixString(value); return; }
+  if (type !== 'object' && type !== 'function') { mixString(type); return; }
+  if (depth > 3) { mixString('deep'); return; }
   if (Array.isArray(value) || ArrayBuffer.isView(value)) {
-    h = hashNumber(h, value.length);
-    for (let i = 0; i < value.length; i++) h = hashValue(h, value[i], depth + 1);
-    return h;
+    mixNumber(value.length);
+    for (let i = 0; i < value.length; i++) mixValue(value[i], depth + 1);
+    return;
   }
   // A texture is identity plus version: a swapped or re-uploaded texture is a dependency change.
-  if (value.isTexture === true) return hashNumber(hashString(h, value.uuid ?? 'tex'), value.version ?? 0);
-  if (Array.isArray(value.elements)) return hashValue(h, value.elements, depth + 1);
-  if (value.value !== undefined && value.isNode === true) return hashValue(h, value.value, depth + 1);
-  for (const key of ['x', 'y', 'z', 'w', 'r', 'g', 'b', 'a']) {
-    if (typeof value[key] === 'number') h = hashNumber(hashString(h, key), value[key]);
+  if (value.isTexture === true) { mixString(value.uuid ?? 'tex'); mixNumber(value.version ?? 0); return; }
+  if (Array.isArray(value.elements)) { mixValue(value.elements, depth + 1); return; }
+  if (value.value !== undefined && value.isNode === true) { mixValue(value.value, depth + 1); return; }
+  let touched = false;
+  for (let i = 0; i < VECTOR_KEYS.length; i++) {
+    const key = VECTOR_KEYS[i];
+    if (typeof value[key] === 'number') { mixString(key); mixNumber(value[key]); touched = true; }
   }
-  return h;
+  if (touched) return;
+  // Anything else identity-bearing (render-target textures, buffers, samplers): uuid plus version,
+  // so a swap or a re-upload still reads as a change instead of hashing to nothing.
+  if (typeof value.uuid === 'string') { mixString(value.uuid); touched = true; }
+  if (typeof value.version === 'number') { mixNumber(value.version); touched = true; }
+  if (typeof value.id === 'number') { mixNumber(value.id); touched = true; }
+  if (!touched) mixString('opaque');   // an object with no readable identity: recorded as such
 }
 
 // Material fields that can change with no `material.version` bump — the observer's own blind spot.
@@ -73,127 +121,175 @@ const MATERIAL_SCALARS = ['opacity', 'transparent', 'alphaTest', 'side', 'blendi
   'emissiveIntensity', 'transmission', 'thickness', 'ior', 'clearcoat', 'iridescence'];
 const MATERIAL_COLOURS = ['color', 'emissive', 'specular', 'attenuationColor', 'sheenColor'];
 
-function hashMaterial(material) {
-  let h = hashInit();
-  if (!material) return hashString(h, 'nomaterial');
-  h = hashNumber(h, material.version ?? 0);
-  for (const key of MATERIAL_SCALARS) if (material[key] !== undefined) h = hashValue(hashString(h, key), material[key]);
-  for (const key of MATERIAL_COLOURS) if (material[key] !== undefined) h = hashValue(hashString(h, key), material[key]);
+function mixMaterial(material) {
+  hashBegin();
+  if (!material) { mixString('nomaterial'); return; }
+  mixNumber(material.version ?? 0);
+  for (const key of MATERIAL_SCALARS) if (material[key] !== undefined) { mixString(key); mixValue(material[key]); }
+  for (const key of MATERIAL_COLOURS) if (material[key] !== undefined) { mixString(key); mixValue(material[key]); }
   // Every node-valued property: a TSL graph's `uniform()` handles and texture nodes live here, and
   // none of them bump the material version when their `.value` is rewritten from JS.
   for (const key in material) {
     const prop = material[key];
     if (!prop || typeof prop !== 'object') continue;
-    if (prop.isTexture === true) { h = hashValue(hashString(h, key), prop); continue; }
-    if (prop.isNode === true && prop.value !== undefined) h = hashValue(hashString(h, key), prop.value);
+    if (prop.isTexture === true) { mixString(key); mixValue(prop); continue; }
+    if (prop.isNode === true && prop.value !== undefined) { mixString(key); mixValue(prop.value); }
   }
-  return h >>> 0;
 }
 
-function hashGeometry(geometry) {
-  let h = hashInit();
-  if (!geometry) return hashString(h, 'nogeometry');
-  h = hashNumber(h, geometry.id ?? 0);
-  const attributes = geometry.attributes ?? {};
-  for (const name of Object.keys(attributes).sort()) {
-    const attribute = attributes[name];
-    h = hashNumber(hashString(h, name), attribute?.version ?? 0);
-    h = hashNumber(h, attribute?.id ?? 0);
+// The attribute names, sorted once per geometry rather than per snapshot: `Object.keys().sort()`
+// allocates an array, and this runs twice per object per pass. Rebuilt when the count moves.
+const attributeNames = new WeakMap();
+function sortedAttributeNames(attributes) {
+  let names = attributeNames.get(attributes);
+  let count = 0;
+  for (const _ in attributes) count++;
+  if (names === undefined || names.length !== count) {
+    names = Object.keys(attributes).sort();
+    attributeNames.set(attributes, names);
   }
-  if (geometry.index) h = hashNumber(hashString(h, 'index'), geometry.index.version ?? 0);
-  return h >>> 0;
+  return names;
+}
+
+function mixGeometry(geometry) {
+  hashBegin();
+  if (!geometry) { mixString('nogeometry'); return; }
+  mixNumber(geometry.id ?? 0);
+  const attributes = geometry.attributes ?? {};
+  for (const name of sortedAttributeNames(attributes)) {
+    const attribute = attributes[name];
+    mixString(name);
+    mixNumber(attribute?.version ?? 0);
+    mixNumber(attribute?.id ?? 0);
+  }
+  if (geometry.index) { mixString('index'); mixNumber(geometry.index.version ?? 0); }
 }
 
 // The EFFECTIVE camera dependency, not the camera's identity: a pass can reuse the same camera
-// object with a moved view or a changed projection, and identity would call that unchanged.
-function hashCamera(camera) {
-  let h = hashInit();
-  if (!camera) return hashString(h, 'nocamera');
-  h = hashValue(hashString(h, 'view'), camera.matrixWorldInverse?.elements ?? null);
-  h = hashValue(hashString(h, 'proj'), camera.projectionMatrix?.elements ?? null);
-  return h >>> 0;
+// object with a moved view or a changed projection, and identity would call that unchanged. The
+// matrices are read element by element, never held.
+function mixCamera(camera) {
+  hashBegin();
+  if (!camera) { mixString('nocamera'); return; }
+  mixString('view');
+  mixValue(camera.matrixWorldInverse?.elements ?? null);
+  mixString('proj');
+  mixValue(camera.projectionMatrix?.elements ?? null);
 }
+
+// Set by `mixBindings` instead of returning a `{hash, uniforms}` literal every call.
+let lastUniformCount = 0;
 
 // Every uniform of every bind group, by value. This is both a dependency (a value written from JS
 // between frames) and half the oracle (a value rewritten by a node callback DURING the refresh).
-function hashBindings(renderObject) {
-  let h = hashInit();
-  let uniforms = 0;
+function mixBindings(renderObject) {
+  hashBegin();
+  lastUniformCount = 0;
   let groups;
-  try { groups = renderObject?.getBindings?.(); } catch { return { hash: hashString(h, 'nobindings'), uniforms: 0 }; }
-  if (!Array.isArray(groups)) return { hash: hashString(h, 'nobindings'), uniforms: 0 };
+  try { groups = renderObject?.getBindings?.(); } catch { mixString('nobindings'); return; }
+  if (!Array.isArray(groups)) { mixString('nobindings'); return; }
   for (const group of groups) {
-    h = hashString(h, group?.name ?? 'group');
+    mixString(group?.name ?? 'group');
     const bindings = group?.bindings ?? [];
     for (const binding of bindings) {
       if (Array.isArray(binding?.uniforms)) {
         for (const uniform of binding.uniforms) {
-          uniforms++;
+          lastUniformCount++;
           let value;
           try { value = uniform.getValue ? uniform.getValue() : uniform.value; } catch { value = null; }
-          h = hashValue(hashString(h, uniform?.name ?? 'u'), value);
+          mixString(uniform?.name ?? 'u');
+          mixValue(value);
         }
         continue;
       }
-      if (binding?.texture !== undefined) { h = hashValue(hashString(h, 'tex'), binding.texture); continue; }
-      if (binding?.version !== undefined) h = hashNumber(hashString(h, 'v'), binding.version);
+      if (binding?.texture !== undefined) { mixString('tex'); mixValue(binding.texture); continue; }
+      if (binding?.version !== undefined) { mixString('v'); mixNumber(binding.version); }
     }
   }
-  return { hash: h >>> 0, uniforms };
 }
 
-// The whole dependency contract of section 3 of the design, as one comparable record.
-function snapshot(renderObject, nodeFrame, originHash) {
+function newSnapshot() {
+  return { matrixA: 0, matrixB: 0, flagsA: 0, flagsB: 0, materialA: 0, materialB: 0,
+    geometryA: 0, geometryB: 0, cameraA: 0, cameraB: 0, lightsA: 0, lightsB: 0,
+    originA: 0, originB: 0, bindingsA: 0, bindingsB: 0,
+    context: -1, uniformCount: 0, frameId: -1, renderId: -1 };
+}
+
+// Fills `into` — every field a small integer or a primitive id, never a reference into a live
+// object, so a matrix, colour, vector or texture Three mutates in place cannot leave a stale
+// snapshot looking current.
+function snapshotInto(into, renderObject, nodeFrame, originA, originB) {
   const object = renderObject?.object ?? null;
-  const matrix = hashValue(hashInit(), object?.matrixWorld?.elements ?? null) >>> 0;
-  let flags = hashInit();
-  flags = hashNumber(flags, object?.visible ? 1 : 0);
-  flags = hashNumber(flags, object?.layers?.mask ?? 0);
-  flags = hashNumber(flags, object?.castShadow ? 1 : 0);
-  flags = hashNumber(flags, object?.receiveShadow ? 1 : 0);
-  const bindings = hashBindings(renderObject);
-  let lights = hashInit();
-  try { lights = hashString(lights, renderObject?.lightsNode?.getCacheKey?.() ?? 'nolights') >>> 0; }
-  catch { lights = hashString(lights, 'lightserror') >>> 0; }
-  return {
-    matrix,
-    flags: flags >>> 0,
-    material: hashMaterial(renderObject?.material),
-    geometry: hashGeometry(renderObject?.geometry ?? object?.geometry),
-    context: renderObject?.context?.id ?? -1,
-    camera: hashCamera(renderObject?.camera),
-    lights,
-    origin: originHash,
-    bindings: bindings.hash,
-    uniformCount: bindings.uniforms,
-    // Recorded, never compared: a frame counter always differs, so comparing it would make every
-    // object look changed. It is here so a verdict can be lined up against the frame it came from.
-    frameId: nodeFrame?.frameId ?? -1,
-    renderId: nodeFrame?.renderId ?? -1,
-  };
+  hashBegin();
+  mixValue(object?.matrixWorld?.elements ?? null);
+  into.matrixA = laneA(); into.matrixB = laneB();
+  hashBegin();
+  mixNumber(object?.visible ? 1 : 0);
+  mixNumber(object?.layers?.mask ?? 0);
+  mixNumber(object?.castShadow ? 1 : 0);
+  mixNumber(object?.receiveShadow ? 1 : 0);
+  into.flagsA = laneA(); into.flagsB = laneB();
+  mixMaterial(renderObject?.material);
+  into.materialA = laneA(); into.materialB = laneB();
+  mixGeometry(renderObject?.geometry ?? object?.geometry);
+  into.geometryA = laneA(); into.geometryB = laneB();
+  into.context = renderObject?.context?.id ?? -1;
+  mixCamera(renderObject?.camera);
+  into.cameraA = laneA(); into.cameraB = laneB();
+  hashBegin();
+  try { mixString(renderObject?.lightsNode?.getCacheKey?.() ?? 'nolights'); }
+  catch { mixString('lightserror'); }
+  into.lightsA = laneA(); into.lightsB = laneB();
+  into.originA = originA; into.originB = originB;
+  mixBindings(renderObject);
+  into.bindingsA = laneA(); into.bindingsB = laneB();
+  into.uniformCount = lastUniformCount;
+  // Recorded, never compared: a frame counter always differs, so comparing it would make every
+  // object look changed. It is here so a verdict can be lined up against the frame it came from.
+  into.frameId = nodeFrame?.frameId ?? -1;
+  into.renderId = nodeFrame?.renderId ?? -1;
+  return into;
 }
 
-// Which contract fields differ. `bindings` is listed last because it is the widest net.
-const SNAPSHOT_FIELDS = ['matrix', 'flags', 'material', 'geometry', 'context', 'camera', 'lights',
-  'origin', 'bindings'];
+// The contract fields, each stored as a two-lane pair. `bindings` is last because it is the widest
+// net. `context` is an id, not a hash, and is compared on its own.
+const HASH_FIELDS = ['matrix', 'flags', 'material', 'geometry', 'camera', 'lights', 'origin', 'bindings'];
+const FIELD_A = HASH_FIELDS.map(field => `${field}A`);
+const FIELD_B = HASH_FIELDS.map(field => `${field}B`);
 
-function snapshotDiff(previous, next) {
-  if (previous === undefined) return ['firstSeen'];
-  const changed = [];
-  for (const field of SNAPSHOT_FIELDS) if (previous[field] !== next[field]) changed.push(field);
+function copySnapshot(from, to) {
+  for (let i = 0; i < HASH_FIELDS.length; i++) { to[FIELD_A[i]] = from[FIELD_A[i]]; to[FIELD_B[i]] = from[FIELD_B[i]]; }
+  to.context = from.context;
+  to.uniformCount = from.uniformCount;
+  to.frameId = from.frameId;
+  to.renderId = from.renderId;
+  return to;
+}
+
+// Writes into `changed` (reused) instead of allocating an array per object per frame.
+function snapshotDiff(previous, next, changed) {
+  changed.length = 0;
+  if (previous === null) { changed.push('firstSeen'); return changed; }
+  if (previous.context !== next.context) changed.push('context');
+  for (let i = 0; i < HASH_FIELDS.length; i++) {
+    if (previous[FIELD_A[i]] !== next[FIELD_A[i]] || previous[FIELD_B[i]] !== next[FIELD_B[i]]) changed.push(HASH_FIELDS[i]);
+  }
   return changed;
 }
 
 const UNKNOWN = { name: 'unknown', material: 'none' };
+const NO_MATERIAL = { marker: 'no-material' };   // stands in for null, which cannot key a WeakMap
 const descriptorCache = new WeakMap();
 function describeObject(object, material) {
   if (!object) return UNKNOWN;
   let byMaterial = descriptorCache.get(object);
-  if (byMaterial === undefined) { byMaterial = new Map(); descriptorCache.set(object, byMaterial); }
-  let descriptor = byMaterial.get(material);
+  // A WeakMap, so a descriptor never keeps a dead material alive for the object's lifetime.
+  if (byMaterial === undefined) { byMaterial = new WeakMap(); descriptorCache.set(object, byMaterial); }
+  const key = material ?? NO_MATERIAL;
+  let descriptor = byMaterial.get(key);
   if (descriptor === undefined) {
     descriptor = { name: object.name || object.type || 'object', material: material?.type ?? 'none' };
-    byMaterial.set(material, descriptor);
+    byMaterial.set(key, descriptor);
   }
   return descriptor;
 }
@@ -203,7 +299,7 @@ function describeObject(object, material) {
 const TOP_OBJECTS = 12;
 
 function newPass(key, name, camera) {
-  return { key, name, camera, audited: 0, skipSafe: 0, skipWrongly: 0, snapshotChanged: 0,
+  return { key, name, camera, audited: 0, noObservedChange: 0, skipWrongly: 0, snapshotChanged: 0,
     bindingWrites: 0, attributeWrites: 0, auditMs: 0 };
 }
 
@@ -220,9 +316,11 @@ export function createRefreshAudit({ now = () => performance.now(), declare = nu
   let restore = [];
   const missing = [];
   const declared = new WeakSet();
-  const snapshots = new WeakMap();   // renderObject -> last snapshot
-  let passes = new Map();
-  let objectRows = new Map();        // descriptor -> aggregated verdict row
+  const records = new WeakMap();     // renderObject -> reused per-object audit record
+  let passes = new Map();            // contextId -> Map(cameraHash -> pass)
+  // Persistent across takes: the rows are zeroed rather than rebuilt, so a steady frame
+  // allocates no row and no Set.
+  const objectRows = new Map();      // descriptor -> aggregated verdict row
   let auditMs = 0;
   let audited = 0;
   let ignored = 0;
@@ -230,6 +328,10 @@ export function createRefreshAudit({ now = () => performance.now(), declare = nu
   // The object currently between `needsRefresh` and the end of its refresh: backend writes seen in
   // that window are this object's, and nothing else's.
   let active = null;
+  // Reused across every object: only one is ever active at a time.
+  const beforeScratch = newSnapshot();
+  const afterScratch = newSnapshot();
+  const reasons = [];
 
   const isDeclared = (object, material, renderObject) => {
     if (declared.has(object)) return true;
@@ -237,20 +339,45 @@ export function createRefreshAudit({ now = () => performance.now(), declare = nu
     return false;
   };
 
-  const originHash = () => {
-    if (typeof origin !== 'function') return 0;
-    try { return hashValue(hashInit(), origin()) >>> 0; } catch { return 0; }
+  // The render origin as a lane pair, read into module scratch before each snapshot.
+  let originA = 0;
+  let originB = 0;
+  const readOrigin = () => {
+    if (typeof origin !== 'function') { originA = 0; originB = 0; return; }
+    try { hashBegin(); mixValue(origin()); originA = laneA(); originB = laneB(); }
+    catch { originA = 0; originB = 0; }
   };
+
+  // One persistent record per renderObject: the last snapshot, its diff array, and the live state
+  // of the current refresh. Allocated on first sight, reused every frame after.
+  function recordFor(renderObject) {
+    let record = records.get(renderObject);
+    if (record === undefined) {
+      record = { renderObject, nodeFrame: null, previous: null, store: newSnapshot(),
+        changedFields: [], descriptor: UNKNOWN, pass: null,
+        beforeBindingsA: 0, beforeBindingsB: 0, beforeMaterialA: 0, beforeMaterialB: 0,
+        bindingWrites: 0, attributeWrites: 0, finished: false };
+      records.set(renderObject, record);
+    }
+    return record;
+  }
 
   function passFor(renderObject) {
     const camera = renderObject?.camera;
     const contextId = renderObject?.context?.id ?? 'none';
     const cameraLabel = camera ? (camera.name || camera.type || 'camera') : 'none';
     // Context AND effective camera: one context reused with a different camera is a different pass,
-    // and one camera used by two contexts is too.
-    const key = `${contextId}|${cameraLabel}|${hashCamera(camera)}`;
-    let pass = passes.get(key);
-    if (pass === undefined) { pass = newPass(key, String(contextId), cameraLabel); passes.set(key, pass); }
+    // and one camera used by two contexts is too. Two Map levels rather than a template-string key,
+    // so a pass lookup allocates nothing.
+    let byCamera = passes.get(contextId);
+    if (byCamera === undefined) { byCamera = new Map(); passes.set(contextId, byCamera); }
+    mixCamera(camera);
+    const cameraKey = laneKey();
+    let pass = byCamera.get(cameraKey);
+    if (pass === undefined) {
+      pass = newPass(cameraKey, String(contextId), cameraLabel);
+      byCamera.set(cameraKey, pass);
+    }
     return pass;
   }
 
@@ -258,7 +385,7 @@ export function createRefreshAudit({ now = () => performance.now(), declare = nu
     let row = objectRows.get(descriptor);
     if (row === undefined) {
       row = { name: descriptor.name, material: descriptor.material,
-        audited: 0, skipSafe: 0, skipWrongly: 0, snapshotChanged: 0, reasons: new Set(), fields: new Set() };
+        audited: 0, noObservedChange: 0, skipWrongly: 0, snapshotChanged: 0, reasons: new Set(), fields: new Set() };
       objectRows.set(descriptor, row);
     }
     return row;
@@ -270,16 +397,23 @@ export function createRefreshAudit({ now = () => performance.now(), declare = nu
     const material = renderObject?.material ?? null;
     if (!isDeclared(object, material, renderObject)) { ignored++; return; }
     const t0 = now();
-    const before = snapshot(renderObject, nodeFrame, originHash());
-    const previous = snapshots.get(renderObject);
-    const changedFields = snapshotDiff(previous, before);
-    active = {
-      renderObject, nodeFrame, before, changedFields,
-      descriptor: describeObject(object, material),
-      pass: passFor(renderObject),
-      bindingWrites: 0, attributeWrites: 0,
-      finished: false,
-    };
+    const record = recordFor(renderObject);
+    readOrigin();
+    snapshotInto(beforeScratch, renderObject, nodeFrame, originA, originB);
+    snapshotDiff(record.previous, beforeScratch, record.changedFields);
+    record.nodeFrame = nodeFrame;
+    record.descriptor = describeObject(object, material);
+    record.pass = passFor(renderObject);
+    record.bindingWrites = 0;
+    record.attributeWrites = 0;
+    record.finished = false;
+    // The oracle needs the pre-refresh binding and material hashes; they are numbers, so keeping
+    // them costs nothing and survives the scratch being reused by the after-snapshot.
+    record.beforeBindingsA = beforeScratch.bindingsA;
+    record.beforeBindingsB = beforeScratch.bindingsB;
+    record.beforeMaterialA = beforeScratch.materialA;
+    record.beforeMaterialB = beforeScratch.materialB;
+    active = record;
     auditMs += now() - t0;
   }
 
@@ -290,20 +424,24 @@ export function createRefreshAudit({ now = () => performance.now(), declare = nu
     if (record === null || record.finished) return;
     record.finished = true;
     const t0 = now();
-    const after = snapshot(record.renderObject, record.nodeFrame, originHash());
-    snapshots.set(record.renderObject, after);
+    readOrigin();
+    snapshotInto(afterScratch, record.renderObject, record.nodeFrame, originA, originB);
+    copySnapshot(afterScratch, record.store);
+    record.previous = record.store;
 
-    const reasons = [];
+    reasons.length = 0;
     if (record.bindingWrites > 0) reasons.push('bindingWrite');
     if (record.attributeWrites > 0) reasons.push('attributeWrite');
     // A uniform whose value differs across the refresh was written BY the refresh: a node callback
     // (onFrameUpdate / onRenderUpdate / onObjectUpdate) with a side effect the frame depends on.
-    if (record.before.bindings !== after.bindings) reasons.push('uniformValue');
-    if (record.before.material !== after.material) reasons.push('materialValue');
+    if (record.beforeBindingsA !== afterScratch.bindingsA || record.beforeBindingsB !== afterScratch.bindingsB) reasons.push('uniformValue');
+    if (record.beforeMaterialA !== afterScratch.materialA || record.beforeMaterialB !== afterScratch.materialB) reasons.push('materialValue');
 
     const snapshotUnchanged = record.changedFields.length === 0;
     const oracleChanged = reasons.length > 0;
-    const verdict = snapshotUnchanged ? (oracleChanged ? 'skipWrongly' : 'skipSafe') : 'snapshotChanged';
+    // noObservedChange is a candidate, not permission to skip: the oracle does not see updateAfter
+    // or any effect outside bindings, attributes and uniforms.
+    const verdict = snapshotUnchanged ? (oracleChanged ? 'skipWrongly' : 'noObservedChange') : 'snapshotChanged';
 
     const pass = record.pass;
     pass.audited++;
@@ -391,25 +529,29 @@ export function createRefreshAudit({ now = () => performance.now(), declare = nu
     take() {
       if (active !== null) finish();
       frameCount++;
-      const passRows = [...passes.values()].map(pass => ({
-        pass: pass.name, camera: pass.camera,
-        audited: pass.audited, skipSafe: pass.skipSafe, skipWrongly: pass.skipWrongly,
-        snapshotChanged: pass.snapshotChanged,
-        bindingWrites: pass.bindingWrites, attributeWrites: pass.attributeWrites,
-        auditMs: round3(pass.auditMs),
-      }));
+      const passRows = [];
+      for (const byCamera of passes.values()) {
+        for (const pass of byCamera.values()) {
+          passRows.push({ pass: pass.name, camera: pass.camera,
+            audited: pass.audited, noObservedChange: pass.noObservedChange, skipWrongly: pass.skipWrongly,
+            snapshotChanged: pass.snapshotChanged,
+            bindingWrites: pass.bindingWrites, attributeWrites: pass.attributeWrites,
+            auditMs: round3(pass.auditMs) });
+        }
+      }
       const rows = [...objectRows.values()]
         .filter(row => row.skipWrongly > 0 || row.snapshotChanged > 0)
         .sort((a, b) => (b.skipWrongly - a.skipWrongly) || (b.snapshotChanged - a.snapshotChanged))
         .slice(0, TOP_OBJECTS)
         .map(row => ({ name: row.name, material: row.material, audited: row.audited,
-          skipWrongly: row.skipWrongly, snapshotChanged: row.snapshotChanged, skipSafe: row.skipSafe,
+          skipWrongly: row.skipWrongly, snapshotChanged: row.snapshotChanged,
+          noObservedChange: row.noObservedChange,
           reasons: [...row.reasons], changed: [...row.fields] }));
       const out = {
         frame: frameCount,
         audited, ignored,
         passes: passRows.length,
-        skipSafe: passRows.reduce((sum, p) => sum + p.skipSafe, 0),
+        noObservedChange: passRows.reduce((sum, p) => sum + p.noObservedChange, 0),
         skipWrongly: passRows.reduce((sum, p) => sum + p.skipWrongly, 0),
         snapshotChanged: passRows.reduce((sum, p) => sum + p.snapshotChanged, 0),
         // The check's own cost, so it is known before any skip mode exists.
@@ -420,7 +562,10 @@ export function createRefreshAudit({ now = () => performance.now(), declare = nu
         skipped: 0,
       };
       passes = new Map();
-      objectRows = new Map();
+      for (const row of objectRows.values()) {
+        row.audited = 0; row.noObservedChange = 0; row.skipWrongly = 0; row.snapshotChanged = 0;
+        row.reasons.clear(); row.fields.clear();
+      }
       auditMs = 0;
       audited = 0;
       ignored = 0;

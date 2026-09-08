@@ -1231,12 +1231,12 @@ function refreshAuditDeclared(object) {
 }
 const refreshAudit = createRefreshAudit({ declare: refreshAuditDeclared, origin: () => worldCoordinates.getOrigin() });
 if (REFRESH_AUDIT && !refreshAudit.attach(renderer)) console.warn('[base-game] ?refreshaudit=1 found none of the renderer hooks:', refreshAudit.missingHooks);
-const refreshAuditSummary = { enabled: REFRESH_AUDIT, attached: refreshAudit.attached, missingHooks: refreshAudit.missingHooks, frames: 0, lastFrame: null, skipWrongly: 0, skipSafe: 0 };
+const refreshAuditSummary = { enabled: REFRESH_AUDIT, attached: refreshAudit.attached, missingHooks: refreshAudit.missingHooks, frames: 0, lastFrame: null, skipWrongly: 0, noObservedChange: 0 };
 function recordRefreshAudit() {
   const a = refreshAudit.take();
   frameProfiler.mark('refreshAudit', a.auditMs);
   refreshAuditSummary.frames++;
-  refreshAuditSummary.skipSafe += a.skipSafe;
+  refreshAuditSummary.noObservedChange += a.noObservedChange;
   refreshAuditSummary.skipWrongly += a.skipWrongly;
   refreshAuditSummary.lastFrame = a;
 }

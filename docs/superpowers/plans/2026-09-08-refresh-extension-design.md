@@ -239,3 +239,27 @@ Not done, deliberately: the runtime skip, the `?staticrefresh=1` flag, and any c
 `base-game.html` (the page lines the audit needs are reported, not applied). Coverage limits are in
 `docs/subsystems/infra.md` § "Refresh audit"; the short version is that the oracle sees writes and
 values, not `updateAfter` side effects, non-binding state mutation, or pixels.
+
+### Amendment (2026-09-08, D4) — after Astra's review
+
+- **`skipSafe` is renamed `noObservedChange`**, in the module, its test, the infra doc and the page's
+  summary counters. The verdict means the candidate saw no observed change; it is not permission to
+  skip. Nothing downstream should read it as one.
+- **Unknown callbacks are excluded from any future opt-in skip contract.** A declared object whose
+  material graph contains a node with an update callback (`onFrameUpdate`, `onRenderUpdate`,
+  `onObjectUpdate`, `updateBefore`, `updateAfter`) whose semantics are not enumerated in this document
+  is not eligible for skipping, whatever the audit reports about it. The enumeration comes first; the
+  eligibility follows from it.
+- **Zero disagreements cannot close the missing dependencies.** Three of them stay open no matter how
+  clean a capture is: `updateAfter` runs after `backend.draw`, outside the audit's window; any effect
+  outside bindings, attributes and uniforms (renderer or scene state, a compute dispatch, a
+  render-target write) leaves no trace the oracle reads; and a value rewritten with the same bytes is
+  indistinguishable from one that was never written. A clean run narrows where the holes can be, and
+  does not remove them.
+- **No skip path exists or is planned yet.** The next step is a browser capture of `?refreshaudit=1`
+  on Base Game. Only what that capture shows can justify the design's next stage, and a skip mode is
+  not written before then — not behind a flag, not off by default.
+- The snapshot's hashing was widened to a pair of 32-bit lanes compared as 64 bits, because a single
+  32-bit hash makes a false "unchanged" a realistic event over a long capture; and the audit's
+  per-frame allocation was reduced to nothing per object per frame, so its own cost measurement is
+  not dominated by the garbage it creates. Both are recorded in `docs/subsystems/infra.md`.
