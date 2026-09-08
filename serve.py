@@ -1375,8 +1375,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
 
-http.server.test(
-    HandlerClass=Handler,
-    port=port,
-    bind="127.0.0.1",
-)
+# Only a direct run serves. Importing this module for a unit check must not leave a server bound to
+# the port: on Windows the reuse-address flag lets a second serve.py bind beside it, and the browser
+# then keeps reaching the stale process (found 2026-09-08).
+if __name__ == '__main__':
+    http.server.test(
+        HandlerClass=Handler,
+        port=port,
+        bind="127.0.0.1",
+    )
