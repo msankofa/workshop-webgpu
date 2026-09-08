@@ -142,6 +142,17 @@
       "title": "Tasks 11 and 12 shipped: resumable tree build, budgeted field delivery, allocation-free road distance",
       "body": "User: yes to both. Task 11: forest-placement gains createPlacementJob (the placement generator pauses every 16 attempts; placementRecords is the job run to the end), flora-chunks lets onBuild return false and resumes the pending chunk first next drain (abandoned on a window move, clear or rebuild; key kept in queuedKeys so it never queues twice; resident only on completion), base-game-trees builds a chunk as placement then one ground height per step against the drain’s deadline. Task 12: terrain-field-scheduler lands worker results in a queue and pump() delivers them under deliverBudgetMs (2 ms), a window’s onTile may return false to be handed the same tile next pump, flora-field derive pauses between rows with the channels attached only at the end, road-index nearestDistance walks buckets with two reused Sets, road-path gains distancePointToSegmentXZ. Parity: zero-budget forest byte-identical to the unbudgeted one (records and ground heights); derive paused per row equals one-shot; scalar segment distance bit-identical to the record; nearestDistance agrees with a full walk inside its radius. Eleven test files green. Unseen in a browser; task 13 asks for the walk.",
       "commits": []
+    },
+    {
+      "at": "2026-09-08T23:40Z",
+      "title": "Heap profiles read; the first task-12 build starved the field windows; three fixes",
+      "body": "Nine allocation-sampling profiles from the user. Before 11 and 12, standing still (1.0 GB sampled): Three uniform update ranges 15 to 17%, terrain batch-visibility walk 8%, kill-plane density scan 7%, ground probes and capsule collision 14%, field-derivation road queries 10%, boxed doubles from hash and matrix math throughout. On the first 11+12 build the user saw grass on stale heights, then grey grass and no trees; its profiles put road queries at 32 and 45% of 2.9 and 4.5 GB. Cause: a landed-but-undelivered tile was neither queued nor in flight, so the window re-requested it every frame and duplicate builds and derivations fed the backlog. Fixes: e052abd indexes segment runs (bounded query 1.9 to 0.4 us on a synthetic network, exact within the radius); 5803a70 grows the delivery budget with the backlog; 48e46c2 keeps landed tiles in the dedupe and serves re-requests a copy. Tests green including a regression test for the re-request. The user reports the hard stutter gone on the 11+12 build. Tasks: 13 (walk both routes on the fixed build, a recording, a profile), 14 (structures on/off A/B; one structure tile builds per frame as one unit, code-supported candidate). Stats tab gains the heap-profile table.",
+      "commits": [
+        "d7a4d98",
+        "e052abd",
+        "5803a70",
+        "48e46c2"
+      ]
     }
   ]
 }
