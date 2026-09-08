@@ -37,6 +37,16 @@ function rig(opts = {}) {
   return { grass, camera, recull };
 }
 
+section('the per-pass uniform scope is selectable');
+{
+  // uTime and uWorldOrigin sit in renderGroup by default: one diff per render pass for the
+  // whole material rather than one per tier mesh. 'object' restores the old per-mesh group so
+  // a page can compare the two without a rebuild. See test-grass-uniform-groups.mjs.
+  check('the default is the render group', rig().grass.uniformScope === 'render');
+  check("uniformScope 'object' opts out", rig({ uniformScope: 'object' }).grass.uniformScope === 'object');
+  check('an unknown value falls back to render', rig({ uniformScope: 'frame' }).grass.uniformScope === 'render');
+}
+
 section('the density ceiling comes from Kmax');
 {
   const { grass } = rig({ Kmax: 256 });

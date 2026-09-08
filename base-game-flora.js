@@ -48,6 +48,10 @@ export const BASE_GAME_FLORA_DEFAULTS = Object.freeze({
   grassRecullMoveMid: 0.5, grassRecullTurnMid: 3, grassRecullFramesMid: 4,
   grassRecullMoveFar: 2, grassRecullTurnFar: 8, grassRecullFramesFar: 16,
   grassShading: 'standard',    // 'standard' (PBR) or 'lambert' (diffuse only, cheaper per fragment)
+  // Group for grass-compute's per-pass uniforms (wind clock, render origin). 'render' diffs them
+  // once per pass for the whole material; 'object' is the pre-2026-09 per-mesh behaviour, kept as
+  // the comparison to flip to if the wind freezes or blades shift after a floating-origin rebase.
+  grassUniformScope: 'render',
   grassReceiveShadow: true,
   grassKmax: 512,              // blades per 2 m cell; the density ceiling is this / cellSize^2
   // The ceiling the radius slider can reach. Height comes from the contact window close in and the
@@ -405,6 +409,7 @@ export function createBaseGameFlora({ THREE: injectedTHREE = THREE, renderer, sc
       hiz: occlusion ? null : hiz,
       nearKeep: cfg.grassNearKeep,
       shading: cfg.grassShading,
+      uniformScope: cfg.grassUniformScope,
     });
     builtWith = { bufferMB: cfg.grassBufferMB, kmax: cfg.grassKmax, fields: terrain.fields, contact: terrain.contactField };
     grass.setLook?.({ faceNormalMix: cfg.grassFaceNormalMix });

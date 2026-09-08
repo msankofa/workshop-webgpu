@@ -1962,10 +1962,59 @@ Mirrors the rocks wiring in `docs/subsystems/rocks.md`, on the SAME `createDress
 
 TSL `uniform()` defaults to Three's per-object group, so a value written once per frame from JS is
 diffed and uploaded once per RenderObject that shares the material. The grass material is drawn by
-the tier-0 mesh and two child tier meshes, so its per-frame uniforms were uploaded three times with
+the tier-0 mesh and two child tier meshes, so its per-frame uniforms were diffed three times with
 identical bytes. `uTime` and `uWorldOrigin` in `grass-compute.js` now sit in `renderGroup` (once per
-render pass per material). `uCam` stays per object on purpose: it also feeds the compute kernels,
-whose builder state gates a shared group on the version the render pass bumps, and that ordering
-was not verified in a browser. The same holds for `uRenderOrigin`/`uCamXZ` in `base-game-flora.js`,
-which the terrain sampler wrap feeds into placement compute. Size of the saving is unmeasured; the
-inventory behind it is `scratchpads/fps-churn/arch-review/09-binding-ownership-inventory.md`.
+render pass per material). The inventory behind the change is
+`scratchpads/fps-churn/arch-review/09-binding-ownership-inventory.md`.
+
+### What the mechanics actually are
+
+`test-grass-uniform-groups.mjs` establishes this against the real r184 build. Real: `NodeFrame`,
+the `renderGroup`/`objectGroup` singletons, `NodeUpdateType`, `uniform()`/`setGroup()` and Node's
+version counter. Transcribed from the shipped source because the classes are not exported:
+`Nodes.updateGroup`, the renderer's renderId bookkeeping, `NodeBuilderState.createBindings`' shared
+vs cloned rule, and the `UniformsGroup` value diff. The shipped `UniformsGroup.update()` itself was
+read, not executed — the exported `UniformsGroup` is the core class and has no `update()`.
+
+- `renderGroup` is `shared`, `objectGroup` is not. A shared group is one uniform buffer per builder
+  state; a non-shared one is cloned per render object.
+- Within one render pass (one `renderId`), `NodeFrame.updateNode` runs the render group's `update()`
+  once no matter how many objects ask; the object group's runs for every object.
+- Every `_renderScene` and every `renderer.compute()` does `info.calls++` then
+  `nodeFrame.renderId = info.calls`, and `info.calls` is never reset (only `Info.dispose()` clears
+  it). So renderIds are unique for the life of the renderer and cannot alias — the case that would
+  freeze a uniform forever does not arise.
+- A compute dispatch therefore gets a fresh renderId too, and the compute kernel's own copy of the
+  shared group re-diffs on every frame. That is why a render-group uniform read by a compute kernel
+  is not stale in principle.
+- `updateGroup` returning true only marks the group for a diff; `UniformsGroup.update()` compares
+  each value against a JS shadow and `Bindings._update` uploads only on a real change. So a rebase
+  between passes is picked up by the next diff, and a stable value writes nothing.
+- The saving is real only if the three tier meshes share one builder state. If they compiled
+  separate states, each gets its own copy of the shared group and the diff count matches
+  `objectGroup`. Whether they share is not proven here.
+
+### The comparison flag
+
+`createComputeGrass({ uniformScope })` picks the group at material build time: `'render'` (default)
+or `'object'` (the pre-change per-mesh behaviour). Both graphs are otherwise identical. The built
+value is readable as `grass.uniformScope`. `base-game-flora.js` passes it through as the
+`grassUniformScope` setting (default `'render'`); it is a build-time option, so `apply()` does not
+change it — set it when the flora is created.
+
+### What stays browser-only
+
+Node cannot see any of these. Flip `grassUniformScope` to `'object'` and compare:
+
+- **Wind frozen** — a stale `uTime`: blades stop swaying, or sway at the wrong rate, while the rest
+  of the scene animates. If `'object'` sways and `'render'` does not, the render group is the cause.
+- **Grass offset after a floating-origin rebase** — a stale `uWorldOrigin`: wind phase, cloud shadow
+  and coverage jump or shear the moment the origin moves, then settle. Walk far enough to trigger a
+  rebase under each setting; a one-frame shift under `'render'` only is the render group.
+- Shadow, reflection and main passes are separate `_renderScene` calls, so each refreshes the group;
+  a discrepancy between what the shadow map and the main pass see would also be browser-only.
+
+`uCam` stays in the object group, as do `uRenderOrigin`/`uCamXZ` in `base-game-flora.js`. The
+mechanics above say moving them would be safe, but the compute renderId bookkeeping was read rather
+than executed, and the saving is two diffs per pass against uniforms where a stale value misplaces
+every blade rather than just stopping the wind. Revisit with a browser measurement, not from Node.

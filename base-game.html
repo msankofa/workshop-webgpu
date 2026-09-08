@@ -3561,7 +3561,9 @@ terrain.setSplatWater(water.groundShade);
 // Grass over the streamed terrain (base-game-flora.js). It reads the terrain's own field windows:
 // the lod-0 contact window for the height a blade sits at, and the 8 m placement field's scalar
 // grass cover for where blades belong at all. grass-compute.js is imported only if it is enabled.
-const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, hiz: hiz.state, settings });
+// ?grassScope=object puts the grass clock/origin uniforms back in the per-object group, the A/B for the renderGroup change.
+const GRASS_UNIFORM_SCOPE = readFlagValue('grassScope') === 'object' ? 'object' : 'render';
+const flora = createBaseGameFlora({ scene, renderer, camera, terrain, worldCoordinates, hiz: hiz.state, settings: { ...settings, grassUniformScope: GRASS_UNIFORM_SCOPE } });
 floraForBuilding = flora;
 syncSpawnBuildingFlora();
 flora.onMesh((mesh, previousMesh) => {

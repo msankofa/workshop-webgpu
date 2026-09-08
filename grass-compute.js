@@ -21,7 +21,7 @@ import {
   IndirectStorageBufferAttribute,
 } from 'three/webgpu';
 import {
-  Fn, If, instanceIndex, storage, uniform, attribute, float, bool, int, uint, bitcast, modInt,
+  Fn, If, instanceIndex, storage, uniform, attribute, float, bool, int, uint, bitcast, modInt, objectGroup,
   vec2, vec3, vec4, sin, cos, floor, mix, clamp, length, smoothstep, positionLocal, positionWorld, max, min,
   atomicAdd, atomicStore, atomicLoad, texture, dot, normalize, cameraViewMatrix, pow, select, sqrt, ceil, userData,
   renderGroup,
@@ -220,6 +220,10 @@ export function createComputeGrass(opts) {
   const slotCounts = anchorMode ? storage(slotCountAttr, 'uint', numSlots) : null;
 
   // ---- uniforms (live) ----
+  // Which group the per-pass uniforms (uTime, uWorldOrigin) sit in. 'render' is one diff per
+  // render pass for the whole material; 'object' is the old per-mesh behaviour, kept so a page
+  // can A/B a frozen-wind or offset-after-rebase suspicion without a code change.
+  const scopeGroup = opts.uniformScope === 'object' ? objectGroup : renderGroup;
   const uCam      = uniform(new THREE.Vector2());
   const uDiagnostics = uniform(0);
   // View cone in XZ, same law as plants-gpu.js: a blade survives inside the camera's horizontal
@@ -385,8 +389,8 @@ export function createComputeGrass(opts) {
   const uCellOriginZ = uniform(0, 'int');
   // Same problem for anything sampled at a world position in the material: wind phase, cloud
   // shadow, coverage. This is the render origin in metres.
-  // Render-only, camera/clock-derived, shared by the tier meshes: one upload per pass, not one per mesh.
-  const uWorldOrigin = uniform(new THREE.Vector2()).setGroup(renderGroup);
+  // Render-only, camera/clock-derived, shared by the tier meshes: one diff per pass, not one per mesh.
+  const uWorldOrigin = uniform(new THREE.Vector2()).setGroup(scopeGroup);
   const uWaterMin = uniform(o.waterLevel + o.shoreMargin);
   const uDensityScale = uniform(1);            // anchor mode: live density / sampled base
   const uHardCap = uniform(CAP, 'uint');       // instance-buffer capacity (write + draw clamp)
@@ -404,7 +408,7 @@ export function createComputeGrass(opts) {
   const uBaseAmp  = uniform(o.baseAmp);
   const uLake     = uniform(o.lake);
   const uLakeDepth= uniform(o.lakeDepth);
-  const uTime     = uniform(0).setGroup(renderGroup);
+  const uTime     = uniform(0).setGroup(scopeGroup);
   const uWindSpeed= uniform(2.0);
   const uWindFreq = uniform(0.3);    // wind wave spatial freq per world unit (seam-free)
   const uTipDist  = uniform(0.3);
@@ -920,6 +924,8 @@ export function createComputeGrass(opts) {
 
   return {
     mesh,
+    // Which group uTime/uWorldOrigin were built into; readable so a panel can show the A/B state.
+    uniformScope: scopeGroup === renderGroup ? 'render' : 'object',
     // Awaited so the reset→cull→finalize chain is submitted before the frame's draw
     // reads the indirect instanceCount (unawaited fire-and-forget races the draw and
     // makes the grass blink). Mirrors the validated spike's computeAsync ordering.
