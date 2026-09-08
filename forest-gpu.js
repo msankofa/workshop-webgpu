@@ -24,7 +24,9 @@ import * as THREE from 'three';
 import { createSharedDrawGeometryPool } from './shared-draw-geometry.js';
 // Camera math and the pulled-draw arena packing: both are plain data work with no kernel twin, so
 // they are imported. The cull kernel itself stays the hand-synced, not-imported twin.
-import { frustumConeCos, packPulledArena, pulledArenaSlots, PULLED_VERTEX_STRIDE } from './forest-cull.js';
+import {
+  frustumConeCos, packPulledArena, pulledArenaSlots, PULLED_VERTEX_STRIDE, PULLED_COMPACT_CHUNK,
+} from './forest-cull.js';
 import { createHizSampler } from './hiz-test.js';
 import {
   MeshBasicNodeMaterial, MeshStandardNodeMaterial, StorageInstancedBufferAttribute, StorageBufferAttribute,
@@ -43,6 +45,43 @@ import {
 export const PULLED_VERTEX_STORAGE_BINDINGS = 4;
 export const pulledStorageBindingsNeeded = () => PULLED_VERTEX_STORAGE_BINDINGS;
 
+// The admission rule for a pulled mode, decided from the DEVICE THREE ACTUALLY CREATED and nothing
+// else. A caller-supplied number or a separately requested adapter is diagnostic context, never
+// authorization: an adapter can report a limit the device was never granted. Returns
+// { admitted, limit, source, reason }.
+//
+//   device present  -> admitted iff limits.maxStorageBuffersInVertexStage >= 4.
+//   no device (Node tests, a renderer built before init) -> UNKNOWN, refused, unless the test
+//     option assumeLimits says otherwise: `true` proceeds on the unknown, or an object with a
+//     maxStorageBuffersInVertexStage number stands in for a device's limits.
+export function pulledAdmission(renderer, assumeLimits) {
+  const lim = renderer?.backend?.device?.limits;
+  if (lim) {
+    const limit = lim.maxStorageBuffersInVertexStage;
+    if (!Number.isFinite(limit)) {
+      return { admitted: false, limit: null, source: 'device', reason: 'the device does not report maxStorageBuffersInVertexStage' };
+    }
+    return {
+      admitted: limit >= PULLED_VERTEX_STORAGE_BINDINGS, limit, source: 'device',
+      reason: limit >= PULLED_VERTEX_STORAGE_BINDINGS ? null
+        : `the device admits ${limit} storage buffers in the vertex stage; the pulled draw needs ${PULLED_VERTEX_STORAGE_BINDINGS}`,
+    };
+  }
+  if (assumeLimits && Number.isFinite(assumeLimits.maxStorageBuffersInVertexStage)) {
+    const limit = assumeLimits.maxStorageBuffersInVertexStage;
+    return {
+      admitted: limit >= PULLED_VERTEX_STORAGE_BINDINGS, limit, source: 'assumed',
+      reason: limit >= PULLED_VERTEX_STORAGE_BINDINGS ? null
+        : `the assumed limit is ${limit} storage buffers in the vertex stage; the pulled draw needs ${PULLED_VERTEX_STORAGE_BINDINGS}`,
+    };
+  }
+  if (assumeLimits === true) return { admitted: true, limit: null, source: 'assumed-unknown', reason: null };
+  return {
+    admitted: false, limit: null, source: 'unknown',
+    reason: 'there is no device to read maxStorageBuffersInVertexStage from; pass assumeLimits to build the pulled path anyway',
+  };
+}
+
 // What the device will actually admit, when there is a device. Three r184 keeps the WebGPU device
 // at renderer.backend.device; adapter limits are the ceiling the page could have requested.
 // Returns null before the renderer has initialised, so a caller must treat null as "unknown".
@@ -58,6 +97,7 @@ export function deviceLimits(renderer) {
     maxStorageBufferBindingSize: lim.maxStorageBufferBindingSize,
     maxBufferSize: lim.maxBufferSize,
     maxSampledTexturesPerShaderStage: lim.maxSampledTexturesPerShaderStage,
+    // Context only. The adapter says what COULD have been requested; nothing is admitted on it.
     adapter: adapter ? {
       maxStorageBuffersInVertexStage: adapter.maxStorageBuffersInVertexStage,
       maxStorageBuffersPerShaderStage: adapter.maxStorageBuffersPerShaderStage,
@@ -144,23 +184,37 @@ export function createForestGPU(opts) {
   // a storage arena, so every variant fits in a single draw. Everything else — the cull, the other
   // roles, the shadow list, the rung gate — is untouched, and the per-variant L2 meshes are still
   // built so a failed arena can fall back to them without a rebuild.
-  const PULLED = opts.drawMode === 'pulled';
+  // Two pulled mappings share the arena and differ only in how a vertex invocation finds its
+  // (variant, instance, k):
+  //   'pulled'         SLOTS   — uniform per-variant slots. instanceCount = live instances,
+  //                              indexCount = the padded slot, so a small variant pays the biggest
+  //                              variant's index count on every instance.
+  //   'pulled-compact' COMPACT — a per-variant live-count prefix table written by the finalizer on
+  //                              the GPU, and one flat vertex stream cut into fixed chunks, so the
+  //                              draw dispatches sum(live[v]*indexCount[v]) plus a chunk tail.
+  // One enum rather than a second orthogonal `pulledMapping` option: a mapping only means anything
+  // when a pulled mode is on, and the page already has one select for this rung.
+  const PULLED_SLOTS = opts.drawMode === 'pulled';
+  const PULLED_COMPACT = opts.drawMode === 'pulled-compact';
+  const PULLED = PULLED_SLOTS || PULLED_COMPACT;
   const MERGED_TOTAL = V * CAP;             // one flat live list for the merged role
+  const COMPACT_CHUNK = Math.max(3, Math.round((opts.pulledChunk ?? PULLED_COMPACT_CHUNK) / 3) * 3);
   const l2GeometryFor = v => (v?.branchesLod2 ?? v?.branches ?? null);
   let arena = null, arenaSlots = null, arenaOk = false, arenaFailure = null;
   // The vertex stage cannot run at all if the device will not bind its storage buffers, so the
-  // limit is checked before anything is packed and the mode falls back to 'variants'.
-  const vertexStorageLimit = Number.isFinite(opts.maxStorageBuffersInVertexStage)
-    ? opts.maxStorageBuffersInVertexStage
-    : deviceLimits(opts.renderer)?.maxStorageBuffersInVertexStage;
-  const vertexStorageAdmitted = !Number.isFinite(vertexStorageLimit)
-    || vertexStorageLimit >= PULLED_VERTEX_STORAGE_BINDINGS;
+  // limit is read from the device Three created, before anything is packed. Anything short of it
+  // (including "there is no device to ask") falls the mode back to 'variants'.
+  const admission = PULLED ? pulledAdmission(opts.renderer, opts.assumeLimits) : null;
   let arenaVertAttr = null, arenaIdxAttr = null, arenaCountAttr = null;
-  let arenaVerts = null, arenaIdx = null, arenaCounts = null;
+  let arenaVerts = null, arenaIdx = null, arenaCounts = null, arenaCountsRW = null;
   let mergedAttr = null, mergedDraw = null, mergedCountAttr = null, mergedAtomic = null;
   let mergedIndirect = null, mergedIndirectNode = null;
-  if (PULLED && !vertexStorageAdmitted) {
-    arenaFailure = `the device admits ${vertexStorageLimit} storage buffers in the vertex stage; the pulled draw needs ${PULLED_VERTEX_STORAGE_BINDINGS}`;
+  // Where the GPU-written prefix table lives inside the counts buffer. Keeping it in the SAME
+  // buffer as the per-variant counts is what holds the compact vertex stage at four storage
+  // bindings — a fifth buffer would need a limit the slot path does not.
+  const PREFIX_BASE = V * 2;
+  if (PULLED && !admission.admitted) {
+    arenaFailure = admission.reason;
     console.warn(`[forest-gpu] ${arenaFailure}. Falling back to one draw per variant.`);
   } else if (PULLED) {
     const geos = palette.variants.map(l2GeometryFor);
@@ -185,20 +239,33 @@ export function createForestGPU(opts) {
       // vec4 triples: (px,py,pz,u) (nx,ny,nz,v) (r,g,b,_). One indexed read per triple.
       arenaVertAttr = new StorageBufferAttribute(arena.vertexData, 4);
       arenaIdxAttr = new StorageBufferAttribute(arena.indexData, 1);
-      arenaCountAttr = new StorageBufferAttribute(arena.counts, 1);
+      // Counts, then (compact only) V+1 exclusive prefix boundaries the finalizer writes each frame.
+      const countsLen = arena.counts.length + (PULLED_COMPACT ? V + 1 : 0);
+      const countsData = new Uint32Array(countsLen);
+      countsData.set(arena.counts);
+      arena.counts = countsData;           // repackArenaVariant keeps writing [g*2], [g*2+1]
+      arenaCountAttr = new StorageBufferAttribute(countsData, 1);
       arenaVerts = storage(arenaVertAttr, 'vec4', arena.vertexData.length / 4).toReadOnly();
       arenaIdx = storage(arenaIdxAttr, 'uint', arena.indexData.length).toReadOnly();
-      arenaCounts = storage(arenaCountAttr, 'uint', arena.counts.length).toReadOnly();
-      // The merged live list: the same 2 x vec4 record the per-variant lists hold, with the
-      // variant id parked in rec1.y (a spare field, already zero) so the vertex stage can find
-      // its arena slot without a second buffer read.
-      mergedAttr = new StorageInstancedBufferAttribute(new Float32Array(MERGED_TOTAL * 8), 8);
-      mergedDraw = storage(mergedAttr, 'vec4', MERGED_TOTAL * 2);
-      mergedCountAttr = new StorageBufferAttribute(new Uint32Array(1), 1);
-      mergedAtomic = storage(mergedCountAttr, 'uint', 1).toAtomic();
-      // A normal 5-uint indexed-indirect buffer, exactly as every other role uses: indexCount is
-      // the padded stride, instanceCount is written by the merged finalizer.
-      mergedIndirect = new IndirectStorageBufferAttribute(new Uint32Array([arenaSlots.indexSlot, 0, 0, 0, 0]), 5);
+      arenaCounts = storage(arenaCountAttr, 'uint', countsLen).toReadOnly();
+      // The same buffer, writable, for the compact finalizer's prefix pass. Read-only in the vertex
+      // stage and read_write in a compute pass is one buffer with one STORAGE usage either way.
+      if (PULLED_COMPACT) arenaCountsRW = storage(arenaCountAttr, 'uint', countsLen);
+      if (PULLED_SLOTS) {
+        // The merged live list: the same 2 x vec4 record the per-variant lists hold, with the
+        // variant id parked in rec1.y (a spare field, already zero) so the vertex stage can find
+        // its arena slot without a second buffer read. The compact mapping needs none of this: it
+        // reads the per-variant L2 region of the existing draw buffer and the counters already there.
+        mergedAttr = new StorageInstancedBufferAttribute(new Float32Array(MERGED_TOTAL * 8), 8);
+        mergedDraw = storage(mergedAttr, 'vec4', MERGED_TOTAL * 2);
+        mergedCountAttr = new StorageBufferAttribute(new Uint32Array(1), 1);
+        mergedAtomic = storage(mergedCountAttr, 'uint', 1).toAtomic();
+      }
+      // A normal 5-uint indexed-indirect buffer, exactly as every other role uses. indexCount is
+      // the padded stride (slots) or the fixed chunk (compact); instanceCount is written by the
+      // merged finalizer.
+      mergedIndirect = new IndirectStorageBufferAttribute(
+        new Uint32Array([PULLED_COMPACT ? COMPACT_CHUNK : arenaSlots.indexSlot, 0, 0, 0, 0]), 5);
       mergedIndirectNode = storage(mergedIndirect, 'uint', 5);
     }
   }
@@ -265,15 +332,32 @@ export function createForestGPU(opts) {
   const reset = Fn(() => { atomicStore(survAtomics.element(instanceIndex), uint(0)); })().compute(V * SLOTS);
   // The merged counter is its own one-invocation reset rather than a branch inside the one above:
   // a kernel the shipped path never dispatches is easier to reason about than a widened dispatch.
-  const resetMerged = arenaOk
+  const resetMerged = arenaOk && PULLED_SLOTS
     ? Fn(() => { atomicStore(mergedAtomic.element(0), uint(0)); })().compute(1)
     : null;
-  const finalizeMerged = arenaOk
+  // Slots: the merged compaction counter becomes instanceCount directly.
+  // Compact: one invocation walks the V variants in order, writing the exclusive prefix of
+  // live[v]*indexCount[v] into the counts buffer and the chunk count into the indirect buffer. V is
+  // known at build time, so the walk is unrolled here rather than looped in WGSL. live is clamped to
+  // CAP, the same clamp the per-variant indirect draws carry, so a variant whose cull overflowed its
+  // slot cannot claim vertices the draw buffer does not hold. A variant that fell back to its own
+  // mesh has indexCount 0 here, which makes its span empty.
+  const finalizeMerged = !arenaOk ? null : PULLED_SLOTS
     ? Fn(() => {
       const live = atomicLoad(mergedAtomic.element(0));
       mergedIndirectNode.element(1).assign(min(live, uint(MERGED_TOTAL)));
     })().compute(1)
-    : null;
+    : Fn(() => {
+      const total = uint(0).toVar();
+      for (let g = 0; g < V; g++) {
+        arenaCountsRW.element(uint(PREFIX_BASE + g)).assign(total);
+        const c = min(atomicLoad(survAtomics.element(g * SLOTS + 2)), uint(CAP));
+        const ic = arenaCountsRW.element(uint(g * 2 + 1));
+        total.addAssign(c.mul(ic));
+      }
+      arenaCountsRW.element(uint(PREFIX_BASE + V)).assign(total);
+      mergedIndirectNode.element(1).assign(total.add(uint(COMPACT_CHUNK - 1)).div(uint(COMPACT_CHUNK)));
+    })().compute(1);
 
   const cull = Fn(() => {
     const idx = int(instanceIndex);                 // 0 .. V*CAP-1
@@ -354,7 +438,7 @@ export function createForestGPU(opts) {
           const outBase = uint(varBase.add(int(2 * CAP))).add(s).mul(uint(2));
           draw.element(outBase).assign(rec0);
           draw.element(outBase.add(uint(1))).assign(rec1);
-          if (arenaOk) {
+          if (arenaOk && PULLED_SLOTS) {
             // The merged list for the pulled draw: one flat, cross-variant compaction of the same
             // survivors, with the variant id carried in rec1.y. The per-variant write above is
             // deliberately kept so 'variants' mode is bit-identical and a fallback needs no rebuild.
@@ -480,13 +564,43 @@ export function createForestGPU(opts) {
   // with the vertex that variant's own index buffer points at. k past the variant's index count
   // collapses onto its k=0 vertex, so the padded triangles are zero-area and raster nothing.
   function pulledInstanceNodes() {
-    const recBase = uint(instanceIndex).mul(uint(2));
-    const rec0 = mergedDraw.element(recBase);                 // (x,y,z,scale)
-    const rec1 = mergedDraw.element(recBase.add(uint(1)));    // (yaw, variantId, _, _)
-    const v = uint(rec1.y);
-    const k = uint(vertexIndex);
-    const idxCount = arenaCounts.element(v.mul(uint(2)).add(uint(1)));
-    const kk = select(k.lessThan(idxCount), k, uint(0));
+    let v, kk, rec0, rec1;
+    if (PULLED_COMPACT) {
+      // Transcribes forest-cull.js's pulledCompactLookup. The draw is a flat vertex stream cut into
+      // COMPACT_CHUNK-sized instances, so the global vertex index is instance*chunk + vertexIndex.
+      const gi = uint(instanceIndex).mul(uint(COMPACT_CHUNK)).add(uint(vertexIndex));
+      const total = arenaCounts.element(uint(PREFIX_BASE + V));
+      const inRange = gi.lessThan(total);
+      // Branchless variant search: how many prefix boundaries gi is at or past. V <= 16, so this is
+      // 15 comparisons of uniform cost with no divergence, against four dependent branchy steps for
+      // a binary search. Equal boundaries (a variant with no live instances) are both counted, so
+      // an empty span is stepped straight over.
+      // A pure expression tree, not a .toVar() accumulator: these nodes are built outside any Fn().
+      let vAcc = uint(0);
+      for (let u = 1; u < V; u++) {
+        vAcc = vAcc.add(select(gi.greaterThanEqual(arenaCounts.element(uint(PREFIX_BASE + u))), uint(1), uint(0)));
+      }
+      // Past the total (the tail of the last chunk) every vertex collapses onto variant 0's k=0, so
+      // its triangle has no area. The compact mapping cannot address past a variant's own index
+      // count, so unlike slots it has no arena overflow to guard.
+      v = select(inRange, vAcc, uint(0));
+      const r = select(inRange, gi.sub(arenaCounts.element(uint(PREFIX_BASE).add(v))), uint(0));
+      const ic = max(arenaCounts.element(v.mul(uint(2)).add(uint(1))), uint(1));
+      const inst = r.div(ic);
+      kk = r.sub(inst.mul(ic));
+      // The compact mapping reads the per-variant L2 region of the shipped draw buffer directly.
+      const recBase = uint(v.mul(uint(SLOTS * CAP)).add(uint(2 * CAP)).add(inst)).mul(uint(2));
+      rec0 = draw.element(recBase);
+      rec1 = draw.element(recBase.add(uint(1)));
+    } else {
+      const recBase = uint(instanceIndex).mul(uint(2));
+      rec0 = mergedDraw.element(recBase);                 // (x,y,z,scale)
+      rec1 = mergedDraw.element(recBase.add(uint(1)));    // (yaw, variantId, _, _)
+      v = uint(rec1.y);
+      const k = uint(vertexIndex);
+      const idxCount = arenaCounts.element(v.mul(uint(2)).add(uint(1)));
+      kk = select(k.lessThan(idxCount), k, uint(0));
+    }
     const local = arenaIdx.element(v.mul(uint(arenaSlots.indexSlot)).add(kk));
     const vBase = v.mul(uint(arenaSlots.vertexSlot)).add(local).mul(uint(3));
     const a0 = arenaVerts.element(vBase);                     // (px,py,pz,u)
@@ -723,7 +837,9 @@ export function createForestGPU(opts) {
     if (opts.addEmissive) mergedMat.emissiveNode = opts.addEmissive(mergedMat.positionNode, mergedMat.normalNode);
     sharedMats.push(mergedMat);
 
-    const stride = arenaSlots.indexSlot;
+    // Slots dispatch one instance per live tree, each indexSlot vertices wide. Compact dispatches
+    // ceil(total/chunk) instances of a fixed chunk over one flat vertex stream.
+    const stride = PULLED_COMPACT ? COMPACT_CHUNK : arenaSlots.indexSlot;
     const geo = new THREE.InstancedBufferGeometry();
     // Identity indices: @builtin(vertex_index) under an indexed draw is the index VALUE, so this
     // hands the shader k directly. It also keeps every hardware vertex fetch inside the dummy
@@ -734,7 +850,11 @@ export function createForestGPU(opts) {
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(stride * 3), 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(stride * 3), 3));
     geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(stride * 2), 2));
-    geo.instanceCount = MERGED_TOTAL;
+    // The ceiling the indirect instanceCount can reach: every variant full at CAP in compact mode,
+    // one instance per live tree in slots mode.
+    geo.instanceCount = PULLED_COMPACT
+      ? Math.ceil(arenaSlots.indexSlot * V * CAP / COMPACT_CHUNK)
+      : MERGED_TOTAL;
     geo.indirect = mergedIndirect;
     mergedMesh = new THREE.Mesh(geo, mergedMat);
     mergedMesh.name = 'forest:pulled:branchesL2';
@@ -743,6 +863,43 @@ export function createForestGPU(opts) {
     mergedMesh.receiveShadow = true;
     mergedMesh.visible = false;              // syncRenderParts decides
     meshes.push(mergedMesh);
+  }
+
+  // ---- shader/pipeline validation failure ----
+  // Nothing in this module can compile the merged program: r184's backend builds the render
+  // pipeline lazily on the first draw, and a WGSL or binding error surfaces there, not here. The
+  // sync path (WebGPUBackend.createRenderPipeline -> device.createRenderPipeline) does not throw
+  // for a validation error at all — WebGPU reports it asynchronously, as an 'uncapturederror' event
+  // on the device, and the pipeline is left invalid so the draw is dropped. So while a pulled mode
+  // is active the device is listened to, and the FIRST uncaptured error switches the rung back to
+  // the per-variant meshes, which are still built and only hidden. Deliberately unfiltered by
+  // message: an error raised by some other subsystem would also disable the prototype, and falling
+  // back to the shipped path is the safe direction to be wrong in.
+  let pulledActive = arenaOk;
+  let pulledDeviceListener = null;
+  const pulledDevice = arenaOk ? (opts.renderer?.backend?.device ?? null) : null;
+  function disablePulled(reason) {
+    if (!pulledActive) return false;
+    pulledActive = false;
+    arenaFailure = reason;
+    console.warn(`[forest-gpu] ${reason}. The LOD2 branch rung falls back to one draw per variant.`);
+    if (mergedMesh) mergedMesh.visible = false;
+    removePulledListener();
+    syncRenderParts();
+    return true;
+  }
+  function removePulledListener() {
+    if (pulledDeviceListener && pulledDevice?.removeEventListener) {
+      pulledDevice.removeEventListener('uncapturederror', pulledDeviceListener);
+    }
+    pulledDeviceListener = null;
+  }
+  if (pulledDevice?.addEventListener) {
+    pulledDeviceListener = ev => {
+      const msg = ev?.error?.message ?? String(ev?.error ?? 'an unnamed device error');
+      disablePulled(`the device reported a validation error while the pulled draw was active: ${msg}`);
+    };
+    pulledDevice.addEventListener('uncapturederror', pulledDeviceListener);
   }
 
   // ---- CPU side: per-chunk records -> global source buffer ----
@@ -843,7 +1000,7 @@ export function createForestGPU(opts) {
       arenaFallback[g] = 1;
       arena.counts[g * 2] = 0;
       arena.counts[g * 2 + 1] = 0;
-      arenaCountAttr.needsUpdate = true;
+      uploadCounts(g);
       console.warn(`[forest-gpu] variant ${g}'s branchesL2 does not fit the pulled arena slot; it falls back to its own mesh.`);
       syncRenderParts();
       return false;
@@ -860,8 +1017,15 @@ export function createForestGPU(opts) {
     arenaIdxAttr.clearUpdateRanges();
     arenaIdxAttr.addUpdateRange(g * arenaSlots.indexSlot, arenaSlots.indexSlot);
     arenaIdxAttr.needsUpdate = true;
-    arenaCountAttr.needsUpdate = true;
+    uploadCounts(g);
     return true;
+  }
+  // Only this variant's two counts. A full upload would push the CPU array's stale prefix region
+  // over the one the finalizer wrote, and a frame whose recull was gated would then draw nothing.
+  function uploadCounts(g) {
+    arenaCountAttr.clearUpdateRanges();
+    arenaCountAttr.addUpdateRange(g * 2, 2);
+    arenaCountAttr.needsUpdate = true;
   }
   function syncRenderParts() {
     if (rungGateDirty) refreshRungCandidates();
@@ -886,7 +1050,7 @@ export function createForestGPU(opts) {
         const has = rungHas(g, MAIN_RUNG[m]);
         // In pulled mode the merged mesh draws this variant's L2 branches instead; the per-variant
         // mesh stays built but hidden, and its "would have drawn" answer feeds the merged gate.
-        if (arenaOk && m === L2_BRANCH_MESH && !arenaFallback[g]) {
+        if (pulledActive && m === L2_BRANCH_MESH && !arenaFallback[g]) {
           if (wanted && has) mergedWanted = true;
           meshes[b + m].visible = false;
           continue;
@@ -918,8 +1082,8 @@ export function createForestGPU(opts) {
       // One draw for every variant's L2 branches, so the merged mesh is on whenever ANY variant
       // would have been. The cull writes zero instances when none survive, and the CPU gate below
       // saves the renderer the object entirely when the whole rung is empty.
-      mergedMesh.visible = mergedWanted;
-      if (mergedWanted) draws++;
+      mergedMesh.visible = pulledActive && mergedWanted;
+      if (mergedMesh.visible) draws++;
     }
     submittedDraws = draws;
     submittedShadowDraws = shadowDraws;
@@ -1423,11 +1587,15 @@ export function createForestGPU(opts) {
         shadowList: SHADOW_LIST,
         shadowReach: uShadowReach.value,
         computePipelines: computeNodes.length,
-        drawMode: PULLED ? (arenaOk ? 'pulled' : 'variants-fallback') : 'variants',
+        drawMode: PULLED ? (pulledActive ? opts.drawMode : 'variants-fallback') : 'variants',
+        pulledMapping: arenaOk ? (PULLED_COMPACT ? 'compact' : 'slots') : null,
+        pulledActive,
+        pulledAdmission: admission,
         pulledArena: arenaOk ? {
           vertexSlot: arenaSlots.vertexSlot, indexSlot: arenaSlots.indexSlot,
           vertexBytes: arena.vertexData.byteLength, indexBytes: arena.indexData.byteLength,
-          instanceBytes: mergedAttr.array.byteLength, overflows: arenaOverflows,
+          instanceBytes: mergedAttr ? mergedAttr.array.byteLength : 0, overflows: arenaOverflows,
+          chunk: PULLED_COMPACT ? COMPACT_CHUNK : null,
         } : null,
         pulledError: arenaFailure,
       };
@@ -1461,6 +1629,7 @@ export function createForestGPU(opts) {
     // groups but not the buffers, so a host that rebuilds the forest leaks them without this. Same
     // guarded renderer._attributes path grass-compute.js uses.
     dispose() {
+      removePulledListener();
       const mats = new Set();
       meshes.forEach(m => {
         geometryPool.release(m.geometry);
@@ -1474,7 +1643,10 @@ export function createForestGPU(opts) {
       const attrs = renderer?._attributes;
       if (attrs?.delete) {
         const owned = [srcAttr, drawAttr, countsAttr, survAttr];
-        if (arenaOk) owned.push(arenaVertAttr, arenaIdxAttr, arenaCountAttr, mergedAttr, mergedCountAttr, mergedIndirect);
+        if (arenaOk) {
+          owned.push(arenaVertAttr, arenaIdxAttr, arenaCountAttr, mergedIndirect);
+          if (mergedAttr) owned.push(mergedAttr, mergedCountAttr);
+        }
         for (const a of indirectAttrs) owned.push(...Object.values(a));
         for (const a of owned) { try { attrs.delete(a); } catch { /* never uploaded */ } }
       }

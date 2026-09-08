@@ -1566,8 +1566,8 @@ placement.
 | `test-bot-trees.mjs` | `bot-trees-place.js`, `bot-trees.js`, and their integration with `forest-placement.js` / `bot-flora-place.js` | 92 assertions. Trunk-proxy budgeting including the counterfactual that rendered geometry would cap under 30 trees. Trunk dimensions track `radius[0]`/`length[0]` and the record scale. `stampCluster`: exact count, all points inside the radius, seed determinism, uniform-**by-area** distribution at falloff 0 versus visible centre-bunching at 1, every surviving pair honouring `minSeparation`, an over-tight ask thinning instead of spinning, and the accept gate. Auto placement on one arena chunk respects wall rects and is seed-reproducible; the family filter really does place only that family. Records carry no baked `y` — the same trees re-drape on different terrain. Placed records resolve by id across a changed family set and are dropped rather than remapped when their species is gone. Only `origin === 'placed'` serializes, and save→load→save is stable. Section 10 drives the **real** `bot-trees.js` with real THREE (three/tsl resolves in Node; TSL only builds a node graph, no GPU): builds, counts draws, cross-checks the reported collider triangle total against an independent traverse, plants a clump, erases, clears, disables and disposes. Mutation-checked: six edits (dropping the species guard, persisting auto trees, baking `y` flat, un-sqrt-ing the disc sampling, ignoring `minSeparation`, budgeting with render triangles) each make it fail. |
 | `test-forest-cull.mjs` | `forest-cull.js` (`cullInstance`, `classifyInstance`, `shouldRecull`) | `cullInstance`: 4 cases, in-range kept / beyond-maxDist culled / diagonal-beyond-radius culled / diagonal-within-radius kept (squared-distance circular cull). `classifyInstance` (Milestones 2-3): behind-camera instance rejected past the rear margin (both far-behind and near-but-behind); straight-ahead in-cone instance kept; an edge instance just outside the raw FOV but inside the padded cone (cone margin + per-instance angular canopy radius) kept, proving anti-pop padding; beyond-`maxDrawRadius` instance rejected via `farLive` even when dead-ahead, within-radius passes; `coneEnabled: false` keeps a behind-camera instance (backward compat). `shouldRecull` (Milestone 4): 0.01-unit drift does not recull, 2-unit move does, 3-degree turn does, NaN prev state (first/forced recull) always does, custom tighter thresholds honored — 23 assertions total. |
 | `test-forest-gpu-programs.mjs` | `forest-gpu.js` material graphs | Builds every variant mesh's WGSL with a stub renderer and asserts one distinct program per mesh role across variants (9 roles, 9 programs for 4 variants), 8 distinct material objects for the whole forest, and a numeric `userData.slotOffset` on every mesh; a per-variant constant or a per-variant material fails it. |
-| `test-forest-pulled-arena.mjs` | `forest-cull.js` (`pulledArenaSlots`, `packPulledArena`, `pulledVertexOffset`) and the `drawMode: 'pulled'` path in `forest-gpu.js` | Slots take the widest variant and ignore a null one; the packed arena is the uniform-slot size, every source position/normal/uv/colour round-trips out of it field by field, padding indices repeat the variant's first index so a padded triangle is degenerate, and a geometry too big for its slot returns `null` rather than truncating. The mapping: a live `k` resolves to the vertex that variant's OWN index buffer points at (offset checked arithmetically as well as by value), `k` past the count is not live and collapses onto `k = 0`, the widest variant stays live to the end of the slot, and a variant with no geometry is never live. Then the real module, headless against a stub renderer: `variants` builds no merged mesh and `pulled` builds exactly one extra object; the identity index buffer is the padded stride and really is the identity; the dummy attributes cover every index value (so no hardware fetch can go out of bounds); the merged geometry is indirect, instanced to the whole live list, and starts at zero instances; the merged mesh replaces every per-variant L2 branch mesh one for one and takes one draw off the main pass; an empty rung and a disabled rung both hide it and re-enabling brings it back; `installVariant` repacks without changing the stride and records no overflow; the merged mesh rides out with `variantMeshes(0)` and no other wave; pulled mode adds exactly two compute pipelines; dispose is clean in both modes. A final section does the slot-vs-compact invocation accounting (`pulledInvocationCost`): an even live mix over the default palette's real L2 index counts costs 2.19x at no slack, 2.74x at the 1.25 default and 4.39x at the original 2, a stand of only the widest variant wastes nothing, and an empty frame reports no ratio rather than dividing by zero. |
-| `test-forest-pulled-wgsl.mjs` | the WGSL both draw modes actually build, through the shipped `WGSLNodeBuilder` against a stub renderer (the `test-grass-wgsl-build.mjs` harness) | Every render mesh's vertex and fragment shader and every compute node builds, in BOTH modes, and the mode's reported `computePipelines` matches what it dispatched. For the merged material: it builds; the vertex stage binds exactly four storage buffers and the module's own `pulledStorageBindingsNeeded()` agrees; it reads `vertex_index` and `instance_index`; the padded index collapses onto k=0; uv, colour and the shading normal cross as varyings so the FRAGMENT stage binds zero storage buffers. With an authored bark set: bark colour and bark normal are both sampled, the tangent frame is built from screen derivatives of `v_pulledUv`, and the fragment stage still binds no storage buffer. A device with `maxStorageBuffersInVertexStage: 0` falls back to `variants-fallback`, says why, and builds no merged mesh. `--dump` writes the WGSL to `scratchpads/fps-churn/forest-pulled-wgsl/`. What it CANNOT do: validate the WGSL — no naga/tint in `node_modules`, so WGSL type errors and all device limits are invisible. |
+| `test-forest-pulled-arena.mjs` | `forest-cull.js` (`pulledArenaSlots`, `packPulledArena`, `pulledVertexOffset`) and the `drawMode: 'pulled'` path in `forest-gpu.js` | Slots take the widest variant and ignore a null one; the packed arena is the uniform-slot size, every source position/normal/uv/colour round-trips out of it field by field, padding indices repeat the variant's first index so a padded triangle is degenerate, and a geometry too big for its slot returns `null` rather than truncating. The mapping: a live `k` resolves to the vertex that variant's OWN index buffer points at (offset checked arithmetically as well as by value), `k` past the count is not live and collapses onto `k = 0`, the widest variant stays live to the end of the slot, and a variant with no geometry is never live. Then the real module, headless against a stub renderer: `variants` builds no merged mesh and `pulled` builds exactly one extra object; the identity index buffer is the padded stride and really is the identity; the dummy attributes cover every index value (so no hardware fetch can go out of bounds); the merged geometry is indirect, instanced to the whole live list, and starts at zero instances; the merged mesh replaces every per-variant L2 branch mesh one for one and takes one draw off the main pass; an empty rung and a disabled rung both hide it and re-enabling brings it back; `installVariant` repacks without changing the stride and records no overflow; the merged mesh rides out with `variantMeshes(0)` and no other wave; pulled mode adds exactly two compute pipelines; dispose is clean in both modes. A final section does the slot-vs-compact invocation accounting (`pulledInvocationCost`): an even live mix over the default palette's real L2 index counts costs 2.19x at no slack, 2.74x at the 1.25 default and 4.39x at the original 2, a stand of only the widest variant wastes nothing, and an empty frame reports no ratio rather than dividing by zero. **2026-09-08** adds the compact mapping (`pulledCompactPrefix`/`Lookup`/`Vertex`/`Instances`): a full round trip over every vertex of a small case with a zero-live variant in the middle, every span's first and last vertex over 200 random live mixes, the per-variant cap clamp, the chunk arithmetic (a multiple of three, less than one chunk wasted, nothing dispatched for an empty rung), the prefix total equalling `pulledInvocationCost`'s compact figure, and the arena offset resolving the same vertex the slot mapping would. Then the compact mode and the failure path in the real module: `pulledAdmission` admits from the device and not the adapter and refuses an unknown one without `assumeLimits`; compact builds a chunk-sized identity index buffer, no merged instance buffer and one compute pipeline fewer than slots; and a fake device emitting `uncapturederror` switches the rung back to the per-variant meshes with the message recorded and the listener removed. |
+| `test-forest-pulled-wgsl.mjs` | the WGSL both draw modes actually build, through the shipped `WGSLNodeBuilder` against a stub renderer (the `test-grass-wgsl-build.mjs` harness) | Every render mesh's vertex and fragment shader and every compute node builds, in BOTH modes, and the mode's reported `computePipelines` matches what it dispatched. For the merged material: it builds; the vertex stage binds exactly four storage buffers and the module's own `pulledStorageBindingsNeeded()` agrees; it reads `vertex_index` and `instance_index`; the padded index collapses onto k=0; uv, colour and the shading normal cross as varyings so the FRAGMENT stage binds zero storage buffers. With an authored bark set: bark colour and bark normal are both sampled, the tangent frame is built from screen derivatives of `v_pulledUv`, and the fragment stage still binds no storage buffer. A device with `maxStorageBuffersInVertexStage: 0` falls back to `variants-fallback`, says why, and builds no merged mesh. **2026-09-08**: the loop runs all three modes, and `pulled-compact` is asserted to walk `instanceIndex * chunk + vertexIndex` and divide by an index count. `--dump` writes the WGSL to `scratchpads/fps-churn/forest-pulled-wgsl/`. What it CANNOT do: validate the WGSL — no naga/tint in `node_modules`, so WGSL type errors and all device limits are invisible. |
 | `test-forest-gpu-rung-gate.mjs` | `forest-gpu.js` rung gate | Trees at known ranges draw only the rungs that can hold them; behind-camera trees keep their rung; a ring-boundary tree keeps both neighbours; shadow pair follows reach; `rungGate: false` restores 7 + 2 per variant. |
 | `test-forest-gpu-rebuild.mjs` | The `rebuild()` logic pattern in `forest-gpu.js` (reimplemented as a standalone harness, not imported from the real file) | `setChunks(map)` produces the same source/counts buffers as N sequential `setChunk()` calls but triggers exactly one rebuild instead of N; insertion order into the chunk map doesn't change final per-variant counts; an empty `setChunks(new Map())` is a no-op rebuild that leaves buffers zeroed. |
 | `test-forest-placement.mjs` | `forest-placement.js` (`placementRecords`, `buildSpeciesFromFamilies`) | Places between 1 and `count` trees on flat dry ground; identical output for two calls with the same seed/params (determinism); all placements within chunk bounds; positive `scale`; valid `speciesIdx` range; `yaw` present; submerged ground (`heightAt` returns -5) yields zero placements (water rejection); `buildSpeciesFromFamilies` flattens a family into a species table carrying `_tag`; with a `speciesTable` + an all-`'forest'` `biomeAt`, only the forest-tagged species is ever picked and `scale` stays within its `sizeRange`; without a `biomeAt`, every tagged species stays a density-weighted candidate everywhere. |
@@ -2024,7 +2024,23 @@ every blade rather than just stopping the wind. Revisit with a browser measureme
 ## Forest draw consolidation — the pulled LOD2 branch draw (2026-09-07, prototype)
 
 Design: `docs/superpowers/plans/2026-09-07-forest-consolidation-design.md`. **Default off.** Nothing
-below runs unless `forestDrawMode: 'pulled'` is set; `'variants'` is byte-identical to what shipped.
+below runs unless `forestDrawMode` is `'pulled'` or `'pulled-compact'`; `'variants'` is byte-identical
+to what shipped. Neither pulled mode has been rendered by any browser.
+
+### The three modes
+
+| `forestDrawMode` | LOD2 branch submission | Vertex invocations per frame |
+|---|---|---|
+| `'variants'` (default) | one mesh per variant, V draws | `sum(live[v] x indexCount[v])` — the hardware fetches only what each variant indexes |
+| `'pulled'` | one merged draw, **uniform slots** | `sum(live[v]) x indexSlot` — every instance pays the widest variant's padded index count |
+| `'pulled-compact'` | one merged draw, **live-count prefix mapping** | `sum(live[v] x indexCount[v])` plus at most `chunk-1` per frame |
+
+`pulledInvocationCost(indexCounts, live, indexStride)` in `forest-cull.js` is the accounting, and
+`test-forest-pulled-arena.mjs` pins it against the default palette's real L2 index counts
+(1092 1092 1356 1356 6660 6660) with an even live mix: slots cost **2.19x** the compact mapping at no
+slack, **2.74x** at the shipped 1.25 slack and **4.39x** at the original 2. That is invocation
+arithmetic, not GPU time: whether those invocations cost frame time is a timestamp question no test
+here can answer.
 
 ### Why, and the census it rests on
 
@@ -2072,6 +2088,55 @@ draw**:
 - **Rung gate.** The per-variant L2 meshes are still built and still gated; in pulled mode they are
   forced hidden and their "would have drawn" answer becomes the merged mesh's on/off.
 
+### What 'pulled-compact' does (2026-09-08)
+
+Same arena, same merged mesh, same four vertex-stage storage buffers, same bark binding. Only the
+mapping from a vertex invocation to `(variant, instance, k)` changes, and with it what the draw
+dispatches.
+
+- **No merged instance list, no extra atomic.** The compact vertex stage reads the **existing**
+  per-variant LOD2 region of the draw buffer (`v*SLOTS*CAP + 2*CAP + instance`) and the survivor
+  counters already in `survAtomics`. So the cull kernel is untouched, and compact mode adds **one**
+  compute pipeline where slots add two.
+- **Prefix table, written on the GPU, no CPU readback.** The merged finalizer is one invocation that
+  walks the V variants in order (unrolled in JS, V is known at build time) writing the exclusive
+  prefix of `min(live[v], CAP) * indexCount[v]` — the spans in vertex-index space — and then the
+  total. It lives in the **same** counts buffer as the per-variant counts, at `PREFIX_BASE = V*2`,
+  which is what holds the compact vertex stage at four storage bindings; a fifth buffer would need a
+  limit the slot path does not. The buffer is read-only in the vertex stage and read_write in the
+  compute pass — one buffer, one STORAGE usage either way. `repackArenaVariant` therefore uploads
+  only that variant's two counts (`addUpdateRange`), never the whole array, or a stale CPU prefix
+  would land over the GPU's on a frame whose recull was gated.
+- **Chunked draw.** `sum(live x indexCount)` is not expressible as one `instanceCount x indexCount`
+  product, so the merged draw becomes a flat vertex stream cut into fixed chunks: `indexCount` is a
+  constant `PULLED_COMPACT_CHUNK` (3072, `opts.pulledChunk` overrides, rounded to a multiple of 3),
+  `instanceCount = ceil(total / chunk)` written by the finalizer, and the shader's global vertex
+  index is `instanceIndex * chunk + vertexIndex`. Every variant's index count is a multiple of 3, so
+  every prefix boundary is, so no triangle straddles a chunk edge or a variant edge. The only waste
+  is the tail of the last chunk: at most `chunk-1` invocations **per frame**, not per instance.
+- **The lookup.** The variant is found by a **branchless count of how many prefix boundaries `gi` is
+  at or past** — with V ≤ 16 that is 15 comparisons of uniform cost and no divergence, against four
+  dependent branchy steps for a binary search, and it steps straight over a variant with no live
+  instances because an empty span's two boundaries are equal and both are counted. Then
+  `r = gi - prefix[v]`, `instance = r / indexCount[v]`, `k = r - instance*indexCount[v]`, and the
+  arena index buffer resolves `k` to a vertex exactly as the slot path does — indexed semantics are
+  preserved, the identity index buffer just spans a chunk instead of a slot.
+- **Degenerates.** `gi >= total` (the chunk tail) collapses to variant 0, instance 0, `k = 0`, so
+  every such vertex is the same point and its triangle has no area. An empty rung gives
+  `total = 0` and `instanceCount = 0`: the draw dispatches nothing at all. A variant that overflowed
+  its arena slot has `indexCount = 0` here, so its span is empty and it is skipped entirely — which
+  is also how a reloaded variant that no longer fits drops out.
+- **Overflow.** Unlike slots, the compact mapping cannot address past a variant's own index count, so
+  it has no arena overflow to guard. What it can hit is the live list's cap, handled by the finalizer
+  clamp above.
+
+`pulledCompactPrefix` / `pulledCompactInstances` / `pulledCompactLookup` / `pulledCompactVertex` in
+`forest-cull.js` are the hand-synced CPU twin of exactly this, and `test-forest-pulled-arena.mjs`
+pins them: a full round trip over every vertex of a small case (each `gi` lands on a live
+`(variant, instance, k)` and every one is hit exactly once, a zero-live variant is never reached),
+the first and last vertex of every span over 200 random live mixes including empty variants, the cap
+clamp, the chunk arithmetic, and the end-to-end arena offset matching what the slot mapping resolves.
+
 ### The costs this trades
 
 Uniform slots mean a small variant draws `indexSlot - indexCount[v]` degenerate indices per instance.
@@ -2109,13 +2174,27 @@ four storage buffers there; the built WGSL now shows **zero** storage bindings i
   it entirely) and un-hides that variant's own L2 mesh. `summary.pulledArena.overflows` counts it and
   it warns once per occurrence.
 - The merged `atomicAdd` is clamped to the list length, so an over-full window drops instances rather
-  than writing out of bounds.
+  than writing out of bounds. The compact mapping has no merged list to overflow; what it clamps
+  instead is each variant's live count to `capPerVariant`, in the finalizer, so a variant whose cull
+  overran its region cannot claim vertices the draw buffer does not hold.
+- **Shader/pipeline validation failure** (2026-09-08). Nothing in the module can compile the merged
+  program: r184 builds the render pipeline lazily on the first draw, and WebGPU reports a validation
+  error there asynchronously, as an `uncapturederror` event on the device — `createRenderPipeline`
+  does not throw for it. So while a pulled mode is active the device is listened to, and the FIRST
+  uncaptured error calls `disablePulled(reason)`: it re-shows the per-variant L2 meshes (still built,
+  only hidden, so no rebuild), hides the merged mesh, sets `summary.pulledError`, moves
+  `summary.drawMode` to `'variants-fallback'` and removes the listener. Deliberately **unfiltered by
+  message** — an error raised by another subsystem also disables the prototype, and falling back to
+  the shipped path is the safe direction to be wrong in. `test-forest-pulled-arena.mjs` drives the
+  whole switch with a fake device that emits the event.
 
 ### The flag
 
-`BASE_GAME_FOREST_DEFAULTS.forestDrawMode` (`'variants' | 'pulled'`), a `PALETTE_KEYS` member so
-changing it tears down and rebuilds. `base-game-forest.js` passes it to `createForestGPU` as
-`drawMode`. It is **local quality** and must never join `BASE_GAME_SHARED_KEYS`.
+`BASE_GAME_FOREST_DEFAULTS.forestDrawMode` (`'variants' | 'pulled' | 'pulled-compact'`, validated
+against the exported `FOREST_DRAW_MODES`), a `PALETTE_KEYS` member so changing it tears down and
+rebuilds. `base-game-forest.js` passes it to `createForestGPU` as `drawMode`. It is **local quality**
+and must never join `BASE_GAME_SHARED_KEYS`. One enum rather than a separate `pulledMapping` option:
+a mapping only means anything when a pulled mode is on, and the page has one select for this rung.
 
 ### Device limits and the build-time gate
 
@@ -2124,11 +2203,25 @@ arena indices, the per-variant counts. That count is exported as `PULLED_VERTEX_
 `pulledStorageBindingsNeeded()` from `forest-gpu.js` and asserted against the built WGSL in
 `test-forest-pulled-wgsl.mjs`. The fragment stage binds none.
 
-`deviceLimits(renderer)` (also `forest-gpu.js`) reads `renderer.backend.device.limits` and
-`backend.adapter.limits` and returns the relevant ones plus `pulledAdmitted`; it returns `null`
-before the renderer has a device, so `null` means unknown, not zero. `createForestGPU` checks the
-vertex-stage limit **before packing anything** and falls back to `'variants'` with a `console.warn`
-when the device will not admit four; `summary.drawMode` then reads `'variants-fallback'`.
+**The admission rule as coded** (`pulledAdmission(renderer, assumeLimits)` in `forest-gpu.js`,
+called by `createForestGPU` before anything is packed; `summary.pulledAdmission` reports what it
+decided and from where):
+
+- A device present at `renderer.backend.device.limits` — the device **Three actually created** —
+  is admitted iff `maxStorageBuffersInVertexStage >= 4`. Nothing else can authorize the mode: a
+  caller-supplied number is gone (the old `opts.maxStorageBuffersInVertexStage` option no longer
+  exists), and an adapter that reports plenty cannot rescue a short device. An adapter can report a
+  limit the device was never granted.
+- No device (a Node test, a renderer built before `init()`) is **unknown and refused**, unless the
+  test option `assumeLimits` says otherwise: `true` proceeds on the unknown, or an object with a
+  `maxStorageBuffersInVertexStage` number stands in for a device's limits.
+- Refused either way means `console.warn` and `summary.drawMode === 'variants-fallback'`.
+
+`deviceLimits(renderer)` (also `forest-gpu.js`) is the **diagnostic** read a capture uses: device
+limits, adapter limits labelled as context only, and `pulledAdmitted`. It returns `null` before the
+renderer has a device, so `null` means unknown, not zero. It does not decide anything.
+
+Both pulled modes need the same four bindings, so one admission covers both.
 
 Three r184 requests its adapter with `featureLevel: 'compatibility'` and passes no `requiredLimits`
 unless the page supplies them (`three.webgpu.js:80040-80080`), so the device gets **default** limits.
@@ -2160,9 +2253,16 @@ needing a device:
 5. **Shadows** — this rung still does not cast, and the shadow-only pair is unchanged.
 6. **Extremes** — the rung empty (walk out, or disable LOD2) and a dense stand near `capPerVariant`.
 7. **Rebase** — cross an origin-rebase boundary; the trees must not shift.
-8. **Pixel diff** — same seeded window and standing spot, `pulled` vs `variants`.
+8. **Pixel diff** — same seeded window and standing spot, each pulled mode against `variants`. The
+   two pulled modes must also be pixel-identical to each other: they resolve the same arena vertices
+   by two different routes, so any difference is a mapping bug.
 9. **Cost** — whether the extra vertex invocations cost more than the fewer draws save. A GPU
-   timestamp on this rung, same spot and camera, three ways: `variants`, `pulled` at slack 1.25,
-   `pulled` at slack 2. If the two pulled runs differ by roughly their invocation ratio the rung is
-   vertex-bound and the compact live-count mapping is worth building; if they are within noise,
-   slots cost nothing here. The fewer draws are **not** on their own a reason to use this mode.
+   timestamp on this rung, same spot and camera, four ways: `variants`, `pulled` at slack 1.25,
+   `pulled` at slack 2, and `pulled-compact`. `pulled` vs `pulled-compact` isolates the slot
+   padding (predicted 2.74x the invocations at the shipped slack), `pulled` at two slacks confirms
+   the rung is vertex-bound at all, and `pulled-compact` vs `variants` is the only comparison that
+   answers the actual question — fewer draws against a prefix search and a divide per vertex. The
+   fewer draws are **not** on their own a reason to use any of these modes, and none of them is
+   recommended until a device has been timed.
+10. **The failure path** — force a validation error (or run a device short of the bindings) and check
+   the rung comes back as per-variant meshes with `summary.pulledError` set, without a rebuild.

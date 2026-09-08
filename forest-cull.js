@@ -256,6 +256,73 @@ export function pulledVertexOffset(k, variant, arena) {
   return { live, offset: (variant * vertexSlot + local) * PULLED_VERTEX_STRIDE };
 }
 
+// ---------------------------------------------------------------------------
+// Compact live-count mapping (2026-09-08)
+//
+// The slot mapping above dispatches indexSlot vertex invocations for EVERY live instance, whatever
+// that variant's real index count is. The compact mapping dispatches only sum(live[v]*indexCount[v]).
+// It cannot be expressed as one instanceCount x indexCount product, so the merged draw becomes a
+// flat vertex stream cut into fixed chunks: gi = instanceIndex*chunk + vertexIndex, and the shader
+// finds (variant, instance, k) from a prefix table over the per-variant spans.
+//
+// chunk is a multiple of 3 and every variant's index count is a multiple of 3, so every prefix
+// boundary is a multiple of 3 and no triangle straddles either a chunk edge or a variant edge.
+// The only waste is the tail of the last chunk: at most chunk-1 invocations PER FRAME, not per
+// instance. Unlike slots, the compact mapping cannot overflow the arena (it never addresses past a
+// variant's own index count); what it can hit is the live list's own cap, which is why liveClamp
+// below clamps each variant's live count to CAP exactly as the per-variant indirect draws do.
+export const PULLED_COMPACT_CHUNK = 3072;
+
+// Exclusive prefix sums of live[v]*indexCount[v], in vertex-index space. Returns V+1 entries;
+// the last is the total. `cap` clamps each variant's live count (the draw buffer's per-variant cap).
+export function pulledCompactPrefix(indexCounts, live, cap = Infinity) {
+  const V = indexCounts.length;
+  const prefix = new Uint32Array(V + 1);
+  let total = 0;
+  for (let v = 0; v < V; v++) {
+    prefix[v] = total;
+    total += Math.min(live[v] ?? 0, cap) * (indexCounts[v] ?? 0);
+  }
+  prefix[V] = total;
+  return prefix;
+}
+
+// How many chunk-sized instances the merged draw dispatches for that total.
+export function pulledCompactInstances(total, chunk = PULLED_COMPACT_CHUNK) {
+  return Math.ceil(total / chunk);
+}
+
+// gi -> (variant, instance, k). The variant is found by a BRANCHLESS count of how many prefix
+// boundaries gi is at or past: with at most 16 variants that is 15 comparisons of uniform cost and
+// no divergence, where a binary search would be four dependent steps with branches. It also lands
+// correctly on a variant with zero live instances on either side, because an empty span's two
+// boundaries are equal and both are counted, stepping straight over it.
+//
+// gi past the total (the tail of the last chunk) reports live:false and collapses to variant 0's
+// k=0, so every such vertex is the same point and its triangle has no area.
+export function pulledCompactLookup(gi, prefix, indexCounts) {
+  const V = indexCounts.length;
+  const total = prefix[V];
+  const inRange = gi < total;
+  let v = 0;
+  for (let u = 1; u < V; u++) if (gi >= prefix[u]) v++;
+  if (!inRange) v = 0;
+  const r = inRange ? gi - prefix[v] : 0;
+  const ic = Math.max(indexCounts[v] ?? 0, 1);
+  const instance = Math.floor(r / ic);
+  return { live: inRange, variant: v, instance, k: r % ic };
+}
+
+// The compact twin of pulledVertexOffset: gi straight to an arena float offset.
+export function pulledCompactVertex(gi, prefix, arena) {
+  const V = arena.counts.length / 2;
+  const indexCounts = [];
+  for (let v = 0; v < V; v++) indexCounts.push(arena.counts[v * 2 + 1]);
+  const hit = pulledCompactLookup(gi, prefix, indexCounts);
+  const local = arena.indexData[hit.variant * arena.indexSlot + hit.k];
+  return { ...hit, offset: (hit.variant * arena.vertexSlot + local) * PULLED_VERTEX_STRIDE };
+}
+
 // What uniform slots cost, in vertex invocations, against a compact live-count mapping.
 // `indexCounts` is one real index count per variant, `live` the live instance count per variant
 // this frame, `indexStride` the padded slot the merged draw dispatches for every instance.

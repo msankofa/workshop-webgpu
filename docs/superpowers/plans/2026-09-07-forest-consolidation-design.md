@@ -4,7 +4,8 @@ Date 2026-09-07. **Status: the branchesL2 prototype is implemented behind `fores
 default `'variants'`. Every program of both modes now builds to WGSL headless; nothing has been
 validated as WGSL and nothing has been rendered.** See STATUS ADDENDUM (what was built instead of
 section 4.3, and why) and STATUS ADDENDUM 2 (the headless compile, device limits, normals, and the
-measured slot cost) at the end of this file. The original design text below is unedited.
+measured slot cost) and STATUS ADDENDUM 3 (the compact live-count mapping, admission from the
+device, and the validation-failure fallback) at the end of this file. The original design text below is unedited.
 
 Original status: design only, nothing implemented. Read-only pass over `forest-gpu.js`,
 `forest-cull.js`, `base-game-forest.js`, `base-game.html`, `hiz-test.js`, `shared-draw-geometry.js`
@@ -672,3 +673,116 @@ Everything the original prototype listed, plus the two the review added:
 9. A pixel diff between the two modes at a fixed camera, including the authored-bark texture set so
    the new normal frame is exercised.
 10. The GPU timestamp comparison described above.
+
+---
+
+# STATUS ADDENDUM 3 (agent F3, 2026-09-08) — the compact mapping, admission from the device, validation failure
+
+**State: implemented, compiled headless, unverified in a browser.** No pulled mode is recommended;
+`'variants'` stays the default and is unchanged.
+
+## What is implemented
+
+`forestDrawMode: 'variants' | 'pulled' | 'pulled-compact'`. One enum rather than a separate
+`pulledMapping: 'slots' | 'compact'` option, because a mapping only means anything when a pulled mode
+is on — a second orthogonal option would allow the meaningless `variants` + `compact` — and the page
+already has one select for this rung. `base-game-forest.js` exports `FOREST_DRAW_MODES` and validates
+against it.
+
+The compact mapping, in `forest-gpu.js` with its hand-synced CPU twin in `forest-cull.js`:
+
+- **No merged instance list and no extra atomic.** The compact vertex stage reads the existing
+  per-variant LOD2 region of the draw buffer and the survivor counters already in `survAtomics`. The
+  cull kernel is untouched; compact adds **one** compute pipeline where slots add two.
+- **Prefix table on the GPU, no readback.** One finalizer invocation walks the V variants (unrolled
+  in JS, V is a build-time constant) writing the exclusive prefix of `min(live[v], CAP)*indexCount[v]`
+  and the total, into the **same** counts buffer at `PREFIX_BASE = V*2`. Same buffer is the point:
+  it holds the compact vertex stage at the same four storage bindings the slot path needs, so the
+  admission rule does not change. Read-only in the vertex stage, read_write in the compute pass.
+- **Chunked draw.** `sum(live x indexCount)` is not one `instanceCount x indexCount` product, so the
+  merged draw is a flat vertex stream in fixed chunks: `indexCount = PULLED_COMPACT_CHUNK` (3072,
+  `opts.pulledChunk` overrides, rounded to a multiple of 3), `instanceCount = ceil(total/chunk)` from
+  the finalizer, `gi = instanceIndex*chunk + vertexIndex`. Every index count is a multiple of 3, so
+  every prefix boundary is, so no triangle straddles a chunk or a variant edge. Waste is the last
+  chunk's tail: under `chunk-1` invocations **per frame**, not per instance.
+- **Span search: branchless linear, not binary.** The variant is a count of how many prefix
+  boundaries `gi` is at or past. V <= 16, so that is 15 comparisons of uniform cost with no
+  divergence, against four dependent branchy steps for a binary search; and it steps over a zero-live
+  variant for free, because an empty span's two boundaries are equal and both are counted. Then
+  `r = gi - prefix[v]`, `instance = r/indexCount[v]`, `k = r - instance*indexCount[v]`, and the arena
+  index buffer resolves `k` exactly as slots do — indexed semantics preserved, the identity index
+  buffer just spans a chunk instead of a slot.
+- **Edges.** Empty rung: `total = 0`, `instanceCount = 0`, nothing dispatched. Chunk tail: collapses
+  to variant 0 / instance 0 / `k = 0`, one point, no area. A variant that overflowed its arena slot
+  or was reloaded too big has `indexCount = 0`, so its span is empty and it is skipped, its own mesh
+  taking over. Compact cannot overflow the arena (it never addresses past a variant's own index
+  count); the live list's cap is clamped in the finalizer. `repackArenaVariant` now uploads only the
+  variant's two counts, so a stale CPU prefix cannot land over the GPU's on a gated frame.
+
+## The admission rule as coded
+
+`pulledAdmission(renderer, assumeLimits)`, called before anything is packed;
+`summary.pulledAdmission` reports the decision and its source.
+
+1. Device present at `renderer.backend.device.limits` — the device Three actually created — admitted
+   iff `maxStorageBuffersInVertexStage >= 4`.
+2. Nothing else authorizes it. The old `opts.maxStorageBuffersInVertexStage` caller override is
+   **removed**. An adapter reporting plenty cannot rescue a short device; `deviceLimits()` still
+   reports adapter limits, labelled in the code as context only.
+3. No device (Node, pre-`init()`) is **unknown and refused**, unless the test option `assumeLimits`
+   says otherwise: `true` proceeds on the unknown, an object with `maxStorageBuffersInVertexStage`
+   stands in for a device.
+4. Refused means `console.warn` plus `summary.drawMode === 'variants-fallback'`.
+
+## Validation failure as coded
+
+Nothing in the module can compile the merged program: r184 builds the render pipeline lazily on the
+first draw, and WebGPU reports a validation error there **asynchronously**, as an `uncapturederror`
+event on the device — the sync `device.createRenderPipeline` does not throw for it and leaves an
+invalid pipeline whose draws are dropped. So while a pulled mode is active the device is listened to
+and the first uncaptured error runs `disablePulled(reason)`: re-show the per-variant L2 meshes (still
+built, only hidden, so no rebuild), hide the merged mesh, set `summary.pulledError`, move
+`summary.drawMode` to `'variants-fallback'`, remove the listener. Deliberately unfiltered by message
+— an unrelated subsystem's error also disables the prototype, and falling back to the shipped path is
+the safe direction to be wrong in. A fake device driving the whole switch is in
+`test-forest-pulled-arena.mjs`.
+
+## What compiled, and what that is worth
+
+`test-forest-pulled-wgsl.mjs` now builds all three modes' render and compute programs through the
+shipped `WGSLNodeBuilder`; `--dump` writes them to `scratchpads/fps-churn/forest-pulled-wgsl/`
+(`pulled-compact-merged-vertex.wgsl` and `-fragment.wgsl` are new). **WGSL generation is not device
+compilation.** There is no naga or tint in `node_modules`, so WGSL type errors and every device limit
+stay invisible until a browser runs it. Likewise the 2.74x figure is **invocation arithmetic, not GPU
+timing**.
+
+## The browser checks this addendum adds
+
+The section-9 acceptance list in `docs/subsystems/vegetation.md` now runs four ways rather than
+three, and gains a failure-path check:
+
+- **GPU timestamp on the LOD2 branch rung, same seeded window, same standing spot, four runs:**
+  `variants`, `pulled` at `pulledSlack` 1.25, `pulled` at 2, `pulled-compact`.
+  - `pulled` at 1.25 vs at 2 says whether the rung is vertex-bound at all. Within noise, and slot
+    padding costs nothing here.
+  - `pulled` at 1.25 vs `pulled-compact` isolates the padding: predicted 2.74x fewer invocations for
+    compact on the default palette. If the times track that ratio, the rung is vertex-bound and the
+    compact mapping is what a pulled mode should use; if they do not, the prefix search and the
+    divide per vertex are eating the saving.
+  - **`pulled-compact` vs `variants` is the only comparison that answers the question** — one draw
+    with a per-vertex search against 16 draws with hardware attribute fetch.
+- **Pixel diff:** each pulled mode against `variants`, and the two pulled modes against each other.
+  They resolve the same arena vertices by two routes, so any difference between them is a mapping bug.
+- **The failure path:** force a validation error (or run a device short of the four bindings) and
+  check the rung comes back as per-variant meshes with `summary.pulledError` set and no rebuild.
+
+## The page line still needed
+
+`base-game.html:5195` currently offers two values. The third:
+
+    addSelect(treeLookSec, 'forestDrawMode', 'LOD2 branch submission',
+      ['variants', 'pulled', 'pulled-compact'],
+      ['One draw per variant', 'One merged draw', 'One merged draw, compact']);
+
+Nothing else in the page changes: `forestDrawMode` is already a `PALETTE_KEYS` member, already a
+local-quality key, and `base-game-forest.js` validates the value against `FOREST_DRAW_MODES`.

@@ -80,16 +80,18 @@ function makeForest(drawMode) {
     renderer, camera, palette, heightAt: () => 0,
     lodR0: 60, lodR1: 140, lodR2: 260, maxDrawRadius: 260, capPerVariant: 16,
     billboards: false, progressive: true, shadowLayer: 5, drawMode,
+    // The stub renderer has no device, so the admission check reports unknown. Tests say so out loud.
+    assumeLimits: true,
   });
 }
 
-for (const mode of ['variants', 'pulled']) {
+for (const mode of ['variants', 'pulled', 'pulled-compact']) {
   section(`draw mode '${mode}'`);
   const forest = makeForest(mode);
   const stats = () => forest.summary;
   check('the mode is what was asked for', stats().drawMode === mode, stats().drawMode);
   const merged = forest.variantMeshes(0).find(m => m.name === 'forest:pulled:branchesL2') ?? null;
-  check(`the merged mesh ${mode === 'pulled' ? 'exists' : 'does not exist'}`, !!merged === (mode === 'pulled'));
+  check(`the merged mesh ${mode === 'variants' ? 'does not exist' : 'exists'}`, !!merged === (mode !== 'variants'));
 
   // Every material of this mode's forest builds, with the bark binding the page applies.
   forest.applyTextureSet((b, l) => bindTreeMaterials(b, l, null));
@@ -106,8 +108,8 @@ for (const mode of ['variants', 'pulled']) {
     try { src = buildMaterial(merged); } catch (e) { err = e; }
     check('the merged material builds', !!src, String(err?.message ?? ''));
     if (src) {
-      write('pulled-merged-vertex.wgsl', src.vertex);
-      write('pulled-merged-fragment.wgsl', src.fragment);
+      write(`${mode}-merged-vertex.wgsl`, src.vertex);
+      write(`${mode}-merged-fragment.wgsl`, src.fragment);
       const vs = src.vertex;
       // The four storage reads the vertex stage makes: merged instance list, arena vertices,
       // arena indices, arena counts. This is the number the device must admit in the VERTEX stage.
@@ -117,7 +119,11 @@ for (const mode of ['variants', 'pulled']) {
         pulledStorageBindingsNeeded() === vsStorage, `${pulledStorageBindingsNeeded()} reported`);
       check('the vertex stage reads @builtin(vertex_index)', /vertex_index/.test(vs));
       check('the merged draw is instanced', /instance_index/.test(vs));
-      check('the padded index collapses onto k=0', /if \( \( vertexIndex </.test(vs));
+      if (mode === 'pulled') check('the padded index collapses onto k=0', /if \( \( vertexIndex </.test(vs));
+      // gi = instance*chunk + vertexIndex, then a divide by the variant's index count and a
+      // multiply-subtract for the remainder (TSL has no u32 % here).
+      else check('the compact mapping walks instance*chunk + vertexIndex and divides by an index count',
+        new RegExp(`instanceIndex \\* ${forest.summary.pulledArena.chunk}u`).test(vs) && / \/ /.test(vs));
       check('the fragment stage needs no storage buffer', count(src.fragment, /var<storage/g) === 0);
       check('uv, colour and the shading normal cross as varyings, not per-fragment arena reads',
         /v_pulledUv/.test(vs) && /v_pulledColor/.test(vs) && /v_pulledNormal/.test(vs));
@@ -136,9 +142,9 @@ for (const mode of ['variants', 'pulled']) {
   check('every compute node builds WGSL', ok === captured.length, cErr ?? `${ok}/${captured.length}`);
   check('the mode reports the pipeline count it built', stats().computePipelines === captured.length,
     `${stats().computePipelines} vs ${captured.length}`);
-  if (mode === 'pulled') {
+  if (mode.startsWith('pulled')) {
     const cull = kernels.find(k => /atomicAdd/.test(k) && /textureLoad|uCam/.test(k)) ?? kernels.join('\n');
-    write('pulled-compute-all.wgsl', kernels.join('\n// ---- next kernel ----\n'));
+    write(`${mode}-compute-all.wgsl`, kernels.join('\n// ---- next kernel ----\n'));
     check('the merged compaction atomic is in the cull', /atomicAdd/.test(cull));
     const finalizer = kernels[kernels.length - 1];
     check('a one-invocation merged finalizer ends the chain', /atomicLoad/.test(finalizer));
@@ -188,7 +194,7 @@ section('a device that cannot bind the vertex stage falls back');
   const forest = createForestGPU({
     renderer, camera, palette, heightAt: () => 0, lodR0: 60, lodR1: 140, lodR2: 260,
     maxDrawRadius: 260, capPerVariant: 16, billboards: false, progressive: true, shadowLayer: 5,
-    drawMode: 'pulled', maxStorageBuffersInVertexStage: 0,
+    drawMode: 'pulled', assumeLimits: { maxStorageBuffersInVertexStage: 0 },
   });
   check('the mode fell back to variants', forest.summary.drawMode === 'variants-fallback', forest.summary.drawMode);
   check('and said why', /storage/i.test(forest.summary.pulledError ?? ''), forest.summary.pulledError ?? '');

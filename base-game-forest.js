@@ -30,9 +30,10 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
   // Provisional performance default. Four remains available as the high-variety setting, but the
   // default should not double render objects/material graphs before GPU captures justify it.
   treeVariantsPerSpecies: 2,
-  // Draw submission for the branch LOD2 rung: 'variants' is one mesh per variant (the shipped
-  // path); 'pulled' is one merged mesh whose vertex stage reads an arena, so the whole rung is a
-  // single draw. A prototype -- see docs/superpowers/plans/2026-09-07-forest-consolidation-design.md.
+  // Draw submission for the branch LOD2 rung. 'variants' is one mesh per variant (the shipped
+  // path); 'pulled' and 'pulled-compact' are one merged mesh whose vertex stage reads an arena, so
+  // the whole rung is a single draw -- slots vs a live-count prefix mapping. Both are prototypes,
+  // unseen in a browser: docs/superpowers/plans/2026-09-07-forest-consolidation-design.md.
   forestDrawMode: 'variants',
   treeLeafSway: 1,
   treeHizRecullFrames: 4,      // frames between Hi-Z re-tests while the camera is under the forest's move/turn gate
@@ -50,6 +51,9 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
   // the overall-size slider and already scales everything together.
   treeTrunkHeight: 1, treeTrunkWidth: 1,
 });
+
+// The draw modes createForestGPU accepts for the LOD2 branch rung, in panel order.
+export const FOREST_DRAW_MODES = Object.freeze(['variants', 'pulled', 'pulled-compact']);
 
 // Palette-shaping settings: changing one rebakes the geometry and rebuilds the instance buffers,
 // so they are commit-on-release in the panel and deferred to the next update() here.
@@ -418,7 +422,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
           hizRecullFrames: cfg.treeHizRecullFrames,
           billboards: false,
           progressive: true,
-          drawMode: cfg.forestDrawMode === 'pulled' ? 'pulled' : 'variants',
+          drawMode: FOREST_DRAW_MODES.includes(cfg.forestDrawMode) ? cfg.forestDrawMode : 'variants',
           shadowLayer,
           hiz,
         });
