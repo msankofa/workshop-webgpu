@@ -31,7 +31,13 @@
   #tabs { max-width: 1410px; margin: 0 0 14px; display: flex; gap: 6px; }
   #tabs button { font: inherit; font-size: 12.5px; padding: 6px 14px; border: 1.6px solid #1f2937; border-radius: 6px; background: #ffffff; color: #1f2937; cursor: pointer; }
   #tabs button[aria-selected="true"] { background: #111827; color: #ffffff; }
-  #stats { max-width: 1410px; color: #1f2937; }
+  #stats, #problem { max-width: 1410px; color: #1f2937; }
+  #problem h2 { margin: 0 0 12px; color: #6b7280; font-size: 13px; font-weight: 600; letter-spacing: 0.8px; }
+  #problem h3 { margin: 26px 0 6px; font-size: 15px; color: #111827; }
+  #problem p, #problem li { font-size: 13px; line-height: 1.55; color: #374151; max-width: 900px; }
+  #problem ul { margin: 4px 0 10px; padding-left: 20px; }
+  #problem .callout { border-left: 3px solid #4338ca; background: #eef2ff; padding: 10px 14px; margin: 12px 0; max-width: 900px; }
+  #problem .callout p { margin: 0; }
   #stats h2 { margin: 0 0 12px; color: #6b7280; font-size: 13px; font-weight: 600; letter-spacing: 0.8px; }
   #stats h3 { margin: 28px 0 6px; font-size: 14px; color: #111827; }
   #stats p { font-size: 12px; line-height: 1.5; color: #374151; margin: 0 0 10px; max-width: 1100px; }
@@ -54,10 +60,38 @@
 </head>
 <body>
 <div id="tabs" role="tablist">
-  <button role="tab" aria-selected="true" data-tab="wrap">Map</button>
+  <button role="tab" aria-selected="true" data-tab="problem">Problem</button>
+  <button role="tab" aria-selected="false" data-tab="wrap">Map</button>
   <button role="tab" aria-selected="false" data-tab="stats">Stats</button>
 </div>
-<div id="wrap">
+<section id="problem">
+<h2>THE PROBLEM, IN PLAIN TERMS</h2>
+
+<h3>What the player sees</h3>
+<p>Base Game runs at roughly 45 frames a second when standing still and dips below 20 while walking. The dips are the complaint. The standing rate matters too, because it leaves little headroom: a frame budget of 22 ms at 45 fps means anything extra pushes a frame over 33 ms, which is a visible stutter.</p>
+
+<h3>Where the time goes</h3>
+<p>Almost none of it is the GPU. The graphics card finishes its work in about 1 ms. The frame is spent on the CPU, inside Three's render call, turning about 200 scene objects into GPU commands. In the captures that step alone takes 12 to 42 ms.</p>
+<p>The reason is structural rather than a bug. Before drawing each object, Three asks whether the object needs its shader inputs refreshed. Its answer is yes for any material built from a node graph, because it cannot see inside the graph to know what might have changed. Every material in this game is that kind. So every frame, every object gets its uniforms re-checked, its bindings re-walked and its pipeline re-verified, whether or not anything about it moved. About 45% of the render step is that binding walk and about 17% the node updates, for objects that are mostly static terrain, buildings and trees.</p>
+<div class="callout"><p>The steady cost is a per-object tax the engine charges because it cannot tell static from dynamic. It scales with how many objects we draw, not with how much changes.</p></div>
+
+<h3>Why it dips while walking</h3>
+<p>Walking streams terrain. Terrain tiles are built on worker threads, and the page used to start sixteen of them at once when a chunk boundary was crossed. On a machine with ten-plus cores that still slowed the main thread roughly in half for the duration, and a DevTools trace showed nearly every long frame overlapping such a burst. Capping the shared pool at two threads removed that penalty within a capture. Spikes remain at two threads and still line up with terrain work and long tasks, so worker activity is not fully explained, and one session's spikes were gaps where the browser simply did not schedule the next frame. A separate, rarer hitch is a shader compiling the first time a material is drawn: one frame took 1.5 s that way.</p>
+
+<h3>What the proposed changes should do</h3>
+<ul>
+<li><b>Draw fewer objects.</b> Every object pays the tax, so merging the forest's far-branch meshes into one draw per role cuts the largest group from 144 meshes toward a handful. The prototype exists behind a default-off option; it must first be shown to render identically and to cost less on the GPU than the draws it saves.</li>
+<li><b>Answer the refresh question ourselves for objects we can prove static.</b> For buildings, structures and roads, snapshot every input that could change their shader data and skip the refresh when none did. Getting this wrong shows stale geometry, so the first step is an audit that never skips and only reports where a skip would have been wrong.</li>
+<li><b>Stop paying twice for identical state.</b> Share materials that are the same, and upload per-frame uniforms once per pass instead of once per mesh. Small, correctness-neutral, already in.</li>
+<li><b>Keep the workers from starving the main thread</b>, and count what terrain uploads and keeps resident, so the next decisions there rest on numbers rather than comments.</li>
+<li><b>Measure first.</b> The trace now splits the render step into its six stages, counts refreshes and writes, names any shader compile, and records what the device granted. Nothing above is accepted until a browser capture agrees with the Node results.</li>
+</ul>
+
+<h3>What would count as success</h3>
+<p>Not a higher frame rate on its own. A change is accepted when it is visually identical, its correctness is established for the inputs it touches, and its cost and benefit are both measured. A change that lowers memory or removes a wrong cost model without moving the frame rate still counts. The current 45 fps is the working baseline, not the acceptance bar.</p>
+</section>
+
+<div id="wrap" hidden>
 <div id="tip"></div>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1410 1330">
   <defs>
@@ -403,7 +437,7 @@
 </section>
 <!-- STATS:END -->
 
-<section id="glossary">
+<section id="glossary" hidden>
   <h2>DEFINITIONS</h2>
   <p class="lead"><b>Two words this map turns on.</b> The <b>encode</b> is the CPU time Three spends turning the scene into GPU commands each frame; it is most of the frame here. A <b>RenderObject</b> is Three's record for one (object, material, pass) combination, and every one of them pays the per-object stages in Part 2.</p>
   <dl id="glossary-list"></dl>
@@ -469,6 +503,7 @@
   const list = document.getElementById("glossary-list");
   document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => {
     document.querySelectorAll('#tabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+    document.getElementById('problem').hidden = b.dataset.tab !== 'problem';
     document.getElementById('wrap').hidden = b.dataset.tab !== 'wrap';
     document.getElementById('glossary').hidden = b.dataset.tab !== 'wrap';
     document.getElementById('stats').hidden = b.dataset.tab !== 'stats';
