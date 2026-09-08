@@ -1,7 +1,7 @@
 {
   "format": "pcw-render-tasks",
   "version": 1,
-  "updatedAt": "2026-09-08T21:40:00Z",
+  "updatedAt": "2026-09-08T15:44:39.980Z",
   "tasks": [
     {
       "id": "t1-trace-pair",
@@ -49,7 +49,7 @@
       "doneAt": "2026-09-08T14:56:30.965Z",
       "notes": "the 2 logs before the lod2 and 1 off are just lod2 off. the stationary lod2 and 1 off is actually lod 012 off. then i kept those off and turned off terrain. then i turned off grass too. i was able to get 65-75 fps, but movement still dips. therse were on base-game.html?refreshaudit=1",
       "files": [],
-      "outcome": "Your note describes the LOD rung toggles, which were valuable: all rungs off took the standing frame from about 24 to 16 ms, about 80 us per forest mesh. But every capture has the submission select at variants, so the compact mode itself has not been rendered yet. Reassigned as task 6."
+      "outcome": "Your note describes the LOD rung toggles: all rungs off took the standing frame from about 24 to 16 ms. That is what removing the vegetation saves (geometry, shading, shadows and culling as well as the objects), an upper bound on any forest change, not a per-object figure. Every capture has the submission select at variants, so the compact mode itself has not been rendered yet. Reassigned as task 6."
     },
     {
       "id": "t5-push",
@@ -67,7 +67,7 @@
       "createdAt": "2026-09-08T21:40:00Z",
       "title": "Render the compact forest mode and compare it to the default",
       "criteria": "Tree look panel, 'LOD2 branch submission', with all three LOD rungs ON and trees on. Stand in one spot facing a tree line. Capture once at 'One draw per variant', then switch to 'One merged draw, compact' (the forest rebuilds), same spot, capture again. Note whether the far branches look identical, and whether anything vanished or went black. If the console shows a forest fallback warning, note its message.",
-      "why": "The device admits the mode, but it has only ever compiled headless. This is its first render. The two captures give the frame-time difference for one merged role; from your LOD toggles the expected saving is on the order of 1.3 ms.",
+      "why": "The device admits the mode, but it has only ever compiled headless. This is its first render. Same spot, same content, the two captures are the only fair test of what merging one role saves or costs; do not have ?trace=1 or ?refreshaudit=1 on for these.",
       "status": "open",
       "doneAt": null,
       "notes": "",
@@ -78,7 +78,7 @@
       "createdAt": "2026-09-08T21:40:00Z",
       "title": "Walking A/B: one terrain worker against two, on the minimal scene",
       "criteria": "Trees off (all LOD rungs off) and grass off, as in your 14:50 runs. Walk the same route twice, about 30 s each: base-game.html?terrainworkers=1, then base-game.html (default, 2 workers). One capture each.",
-      "why": "With trees and grass off the frame sits at 15 to 17 ms standing but still dips walking, and the dip frames carry busy terrain workers and gaps between frames. One worker against two on the same route says whether the second thread is what costs the main thread.",
+      "why": "With trees and grass off the frame sits at 15 to 17 ms standing but still dips walking, and the dip frames carry busy terrain workers and gaps between frames. One worker against two on the same route tests what the setting does to those dips. It does not say why a frame was late; that needs a DevTools trace.",
       "status": "open",
       "doneAt": null,
       "notes": "",
@@ -89,7 +89,7 @@
       "createdAt": "2026-09-08T21:40:00Z",
       "title": "GPU timestamps on while walking",
       "criteria": "Same minimal scene and route as task 7, default workers: base-game.html?gputime=1, walk about 30 s, one capture. Note if the page says the device does not support timestamps.",
-      "why": "The dip frames show 20 to 30 ms of gap between frames with no long task on the main thread. If the GPU time rises in those frames, the gap is the GPU (terrain uploads); if not, it is scheduling. Timestamp frames are not comparable with untimed ones, so this is its own capture.",
+      "why": "The dip frames show 20 to 30 ms of gap between frames with no long task on the main thread. If GPU time rises in those frames the GPU is involved; if not, it is not. Either way this does not by itself attribute the gap. Timestamp frames are not comparable with untimed ones, so this is its own capture, with no trace or audit flag.",
       "status": "open",
       "doneAt": null,
       "notes": "",

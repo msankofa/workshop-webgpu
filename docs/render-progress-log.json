@@ -106,6 +106,12 @@
       "title": "First results from the Tasks tab",
       "body": "21 captures. Device grants 8 vertex-stage storage buffers, so the pulled forest is admitted. The refresh audit ran ~33,000 frames with zero skipWrongly, but nearly every declared object changed every frame because its modelViewMatrix depends on the camera, and the audit itself cost 0.4-0.6 ms per object: the refresh-skip extension is marked not worth building in this form. Turning tree LOD rungs off dropped standing frame time from ~24 to ~16 ms: about 80 us per forest mesh, the per-object tax measured end to end. Walking dips persist with trees and grass off; spike frames show between-frame gaps and busy terrain workers. pulled-compact was not run; reassigned with a worker A/B and GPU timestamps.",
       "commits": []
+    },
+    {
+      "at": "2026-09-08T22:10Z",
+      "title": "Two readings corrected after review",
+      "body": "Astra: the 8 ms from turning the tree LOD rungs off is a vegetation-removal result (geometry, shading, shadows and culling went with the objects), not an 80 us per-object tax, and it does not predict what merging one role saves; the 1.3 and 7 ms projections are withdrawn. And the walking dips at the minimal scene are associated with terrain worker activity and between-frame gaps; that excludes plants as necessary but does not say why a frame was late. Both corrections applied to the map, the Problem tab and the tasks. The refresh-skip stop is agreed; a separate bounded idea stays open: keep camera and pass data apart from object transforms and combine them in the shader.",
+      "commits": []
     }
   ]
 }
