@@ -206,5 +206,23 @@ section('landed tiles are delivered under the pump budget');
   scheduler.dispose();
 }
 
+section('a landed tile is not rebuilt when asked for again');
+{
+  // The first task-12 build in the browser re-requested every landed-but-undelivered tile each frame:
+  // duplicate builds and derivations fed the backlog until trees and grass starved.
+  const scheduler = createFieldScheduler({ useWorker: false });
+  const got = [];
+  const req = (tag) => scheduler.request({ key: 'k1', descriptor, request: { ix: 0, iz: 0, xMin: 0, zMin: 0, size: 32, intervals: 4, apron: 1, lod: 1, fields: ['heights'] }, onTile: (tile, deadline) => { if (tag === 'slow' && !got.includes('slow-paused')) { got.push('slow-paused'); return false; } got.push(tag); return true; } });
+  req('slow');
+  scheduler.pump();                       // builds, lands, first delivery pauses
+  check('the tile is landed and paused', scheduler.landedCount === 1 && got.join() === 'slow-paused');
+  const completedBefore = scheduler.stats.completed;
+  req('again'); req('third');
+  check('re-requests of a landed tile do not queue or build', scheduler.stats.queued === 0 && scheduler.stats.completed === completedBefore && scheduler.stats.deduped >= 2);
+  for (let i = 0; i < 4; i++) scheduler.pump();
+  check('every asker is delivered once, from one build', got.join() === 'slow-paused,slow,again,third' && scheduler.stats.completed === completedBefore && scheduler.landedCount === 0, got.join());
+  scheduler.dispose();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

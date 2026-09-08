@@ -38,7 +38,8 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
   const inFlight = new Map();       // key -> job
   const waiting = new Map();        // key -> [job, ...] merged onto one in-flight job
   const sources = new Map();        // descriptor JSON -> source, for the synchronous path
-  const landed = [];                // { job, tile } built results not yet handed to their window
+  const landed = [];                // { job, tile, also } built results not yet handed to their window
+  const landedByKey = new Map();    // key -> that entry: a re-request of a landed tile joins it instead of rebuilding
   let seq = 0, disposed = false;
   const stats = { queued: 0, inFlight: 0, completed: 0, failed: 0, deduped: 0, cancelled: 0, lastError: null, workerCount: 0,
     landed: 0, delivered: 0, deliveriesPaused: 0, lastDeliverMs: 0 };
@@ -77,8 +78,10 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
   function land(key, job, tile) {
     const also = waiting.get(key);
     waiting.delete(key);
-    if (also) for (const other of also) landed.push({ job: other, tile: cloneTile(tile) });
-    landed.push({ job, tile });
+    if (also) for (const other of also) landed.push({ job: other, tile: cloneTile(tile), key: null, also: null });
+    const entry = { job, tile, key, also: null };
+    landed.push(entry);
+    landedByKey.set(key, entry);
     stats.landed = landed.length;
   }
 
@@ -89,9 +92,12 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
     const t0 = clock();
     let n = 0;
     while (landed.length) {
-      const { job, tile } = landed[0];
-      if (!deliver(job, tile, deadline)) { stats.deliveriesPaused++; break; }
+      const entry = landed[0];
+      if (!deliver(entry.job, entry.tile, deadline)) { stats.deliveriesPaused++; break; }
       landed.shift();
+      if (entry.key !== null) landedByKey.delete(entry.key);
+      // Askers that arrived while this tile waited: each gets its own copy, delivered next.
+      if (entry.also) for (let i = entry.also.length - 1; i >= 0; i--) landed.unshift({ job: entry.also[i], tile: cloneTile(entry.tile), key: null, also: null });
       stats.delivered++; n++;
       if (clock() >= deadline) break;
     }
@@ -186,6 +192,12 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
       if (disposed) return false;
       const req = normalizeTileRequest(request);
       const jobKey = key ?? `${tileKey(normalizeDescriptor(descriptor), epoch, req.lod, req.ix, req.iz)}|${req.fields.join(',')}`;
+      const already = landedByKey.get(jobKey);
+      if (already) {
+        stats.deduped++;
+        (already.also ??= []).push({ key: jobKey, onTile, onError, owner });
+        return true;
+      }
       const pending = inFlight.get(jobKey);
       if (pending) {
         stats.deduped++;
@@ -233,6 +245,7 @@ export function createFieldScheduler({ useWorker = true, ...opts } = {}) {
       inFlight.clear();
       waiting.clear();
       landed.length = 0;
+      landedByKey.clear();
       sources.clear();
     },
   };
