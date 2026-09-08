@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Base Game render pipeline — what runs, and what is being changed</title>
+<style>
+  body { margin: 0; padding: 24px; background: #ffffff; font-family: "Segoe UI", Helvetica, Arial, sans-serif; }
+  #wrap { position: relative; max-width: 1410px; }
+  svg { display: block; width: 100%; height: auto; }
+  g[data-tip] { cursor: help; }
+  g[data-tip]:hover rect.node { stroke-width: 2.6; }
+  #tip { position: absolute; display: none; width: max-content; max-width: 460px; z-index: 10;
+         background: #111827; color: #f9fafb; font-size: 12.5px; line-height: 1.45;
+         padding: 10px 13px; border-radius: 7px; pointer-events: auto; box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+         max-height: 74vh; overflow-y: auto; }
+  #tip ul { margin: 0; padding-left: 16px; }
+  #tip li { margin: 3px 0; }
+  #tip p.lead { margin: 0 0 8px; color: #ffffff; }
+  #tip .dev { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid #2b3a4a; }
+  #tip .dev-label { margin: 0 0 5px; color: #6b7a88; font-size: 10px; letter-spacing: 0.7px; text-transform: uppercase; }
+  #tip .dev li { color: #97a5b3; }
+  #glossary { max-width: 1410px; margin: 34px 0 0; }
+  #glossary h2 { margin: 0 0 12px; color: #6b7280; font-size: 13px; font-weight: 600; letter-spacing: 0.8px; }
+  #glossary p.lead { margin: 0 0 16px; color: #4b5563; font-size: 11.5px; }
+  #glossary dl { margin: 0; columns: 3; column-gap: 30px; }
+  #glossary div { break-inside: avoid; margin: 0 0 11px; }
+  #glossary dt { color: #3b6fd6; font-size: 11.5px; font-weight: 600; }
+  #glossary dd { margin: 1px 0 0; color: #374151; font-size: 11.5px; line-height: 1.45; }
+  @media (max-width: 1100px) { #glossary dl { columns: 2; } }
+  @media (max-width: 700px)  { #glossary dl { columns: 1; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+<div id="tip"></div>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1410 1330">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+  <rect width="1410" height="1330" fill="#ffffff"/>
+
+  <text x="40" y="44" font-size="23" font-weight="600" fill="#111827">Base Game render pipeline — what runs each frame, and what is being changed</text>
+  <text x="40" y="68" font-size="13" fill="#4b5563">One frame of base-game.html on Three r184 WebGPU. Hover a box. State as of 2026-09-08; nothing below the first row has been seen in a browser since 492de74.</text>
+
+  <!-- legend -->
+  <rect x="40" y="86" width="15" height="15" rx="2" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+  <text x="64" y="98" font-size="11.5" fill="#374151">shipped, unchanged by this work</text>
+  <rect x="270" y="86" width="15" height="15" rx="2" fill="#dcfce7" stroke="#15803d" stroke-width="1.6"/>
+  <text x="294" y="98" font-size="11.5" fill="#374151">changed, Node-tested, browser-unseen</text>
+  <rect x="540" y="86" width="15" height="15" rx="2" fill="#fef3c7" stroke="#b45309" stroke-width="1.6"/>
+  <text x="564" y="98" font-size="11.5" fill="#374151">prototype behind a default-off option</text>
+  <rect x="810" y="86" width="15" height="15" rx="2" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.6" stroke-dasharray="5 3"/>
+  <text x="834" y="98" font-size="11.5" fill="#374151">design only, no code</text>
+  <rect x="990" y="86" width="15" height="15" rx="2" fill="#eef2ff" stroke="#4338ca" stroke-width="1.6"/>
+  <text x="1014" y="98" font-size="11.5" fill="#374151">instrumentation (?trace=1 and friends)</text>
+
+  <!-- ══ PART 1: the frame ══ -->
+  <text x="40" y="140" font-size="13" font-weight="600" fill="#6b7280" letter-spacing="0.8">PART 1 — ONE FRAME, LEFT TO RIGHT</text>
+  <text x="300" y="140" font-size="11.5" fill="#9ca3af">— animate() runs the simulation, integrates streamed terrain, then hands the scene to Three</text>
+
+  <g data-tip="Fixed-step player and world simulation.|Prediction, weapons, drones, vehicles, bots; about 1 to 4 ms per frame in captures.||playerSim and bodies slots in the capture. Untouched by this work except the drone-view material change.">
+    <rect class="node" x="40" y="150" width="170" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="125" y="178" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">simulation</text>
+    <text x="125" y="196" font-size="11" text-anchor="middle" fill="#4b5563">player, bots, vehicles</text>
+  </g>
+  <g data-tip="Marching-cubes terrain tiles built off the main thread, folded into batch buffers on it.|The walking dips tracked terrain worker activity: with 4 threads a frame ran about 61 ms against 28 idle; with 2, no penalty within a capture.|Default pool cap is now 2 threads (d3a01af). Worker activity still correlates with spikes at 2 in the 2026-09-08 sessions; unacknowledged-work counts are a proxy, not proof of contention.||terrain-worker-pool.js shared by all four streamers; terrain-chunk-batches.js now counts first uploads, visibility flips, fallbacks and compactions as logical bytes; residency reports both/extra/missing key sets.">
+    <rect class="node" x="240" y="150" width="190" height="70" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.6"/>
+    <text x="335" y="178" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">terrain integrate</text>
+    <text x="335" y="196" font-size="11" text-anchor="middle" fill="#4b5563">2 workers, batch fold, stats</text>
+  </g>
+  <g data-tip="Compute passes that decide what the GPU draws.|Forest cull writes per-variant live counts into indirect draw buffers; grass cull does the same for blades; Hi-Z feeds both.|The forest census: 8 shipped species x 2 variants x 9 meshes = 144 forest meshes, the largest object group.||forest-gpu.js, grass-compute.js, flora-occlusion.js. The grass material's per-frame uTime and uWorldOrigin moved to renderGroup (ff87a77), one upload per pass instead of per tier mesh; ?grassScope=object flips it back for comparison.">
+    <rect class="node" x="460" y="150" width="190" height="70" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.6"/>
+    <text x="555" y="178" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">GPU culls</text>
+    <text x="555" y="196" font-size="11" text-anchor="middle" fill="#4b5563">forest, grass, Hi-Z</text>
+  </g>
+  <g data-tip="Three's renderer.render(scene, camera): the CPU cost that dominates the frame.|Standing: 12 to 42 ms of encode for about 200 objects in the 2026-09-08 captures; GPU time is about 1 ms.|The shadow pass lists about 207 objects and draws 0 to 34. The planar mirror is off by default (reflection mode ssr in the newest captures).||Each pass: project the scene graph, sort, then per object the stages in Part 2. Everything in Part 2 is a breakdown of this box.">
+    <rect class="node" x="680" y="150" width="190" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="775" y="178" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">renderer.render</text>
+    <text x="775" y="196" font-size="11" text-anchor="middle" fill="#4b5563">main + shadow passes</text>
+  </g>
+  <g data-tip="The command buffer reaches the GPU.|About 1 ms of GPU work per frame; the frame is CPU-bound.||GPU timestamps via ?timestamps; not the bottleneck in any capture so far.">
+    <rect class="node" x="900" y="150" width="170" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="985" y="178" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">GPU</text>
+    <text x="985" y="196" font-size="11" text-anchor="middle" fill="#4b5563">~1 ms</text>
+  </g>
+  <g data-tip="What a capture records about the frame.|Per-frame series (frame time, time between frames, long tasks, terrain jobs in flight, busy workers, pass slots), spikes vs others, the last traced frame and the worst frames with their stages, device limits.|Rows describe the interval BEFORE their stamp; render work belongs to the following interval.||performance-capture.mjs, render-trace.js, frame-profiler.js. New this week: six encode stages as capture-wide percentiles, refresh/material/write counters, pipeline cache-miss rows, deviceLimits, ?tracephases=0 overhead mode.">
+    <rect class="node" x="1100" y="150" width="270" height="70" rx="6" fill="#eef2ff" stroke="#4338ca" stroke-width="1.6"/>
+    <text x="1235" y="178" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">capture</text>
+    <text x="1235" y="196" font-size="11" text-anchor="middle" fill="#4b5563">series, spikes, trace, worst frames</text>
+  </g>
+  <line x1="210" y1="185" x2="238" y2="185" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="430" y1="185" x2="458" y2="185" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="650" y1="185" x2="678" y2="185" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="870" y1="185" x2="898" y2="185" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="1070" y1="185" x2="1098" y2="185" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- ══ PART 2: inside renderer.render, per object ══ -->
+  <text x="40" y="272" font-size="13" font-weight="600" fill="#6b7280" letter-spacing="0.8">PART 2 — INSIDE RENDERER.RENDER, PER DRAWN OBJECT</text>
+  <text x="450" y="272" font-size="11.5" fill="#9ca3af">— the six stages the trace now times; shares are of the encode in the 2026-09-08 captures</text>
+  <path d="M775,220 L775,282" fill="none" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <g data-tip="Three asks its material observer whether this object needs a refresh.|In this build the answer is true for ANY material with a node property, before the static or comparison paths are reached. Every Base Game material has one, so every object refreshes every frame: refreshes equal refreshChecks in every capture.|This is the structural fact behind the per-object cost. The observer's own comparison path is dead for node materials.||NodeMaterialObserver.needsRefresh, three.webgpu.js:696-716; containsNode ~119. object.static is unreachable here.">
+    <rect class="node" x="40" y="284" width="200" height="78" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="140" y="310" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">needsRefresh?</text>
+    <text x="140" y="328" font-size="11" text-anchor="middle" fill="#4b5563">always true for node materials</text>
+    <text x="140" y="346" font-size="11" text-anchor="middle" fill="#4b5563">100% of objects, every frame</text>
+  </g>
+  <g data-tip="Node update callbacks run: frame- and pass-scoped ones once, object-scoped ones per object.|About 17% of the encode (2 to 10 ms).|Our TSL declares no object-scoped nodes; the cost is Three's built-in per-object uniforms.||nodesBeforeMs + nodesRenderMs in the trace. topNodes rows name the objects.">
+    <rect class="node" x="270" y="284" width="200" height="78" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="370" y="310" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">nodes update</text>
+    <text x="370" y="328" font-size="11" text-anchor="middle" fill="#4b5563">~17% of encode</text>
+  </g>
+  <g data-tip="Attribute versions are checked and dirty attributes uploaded.|Small share of the encode (0.4 to 3 ms). About 98 attribute writes per frame: the body and weapon instance batches mark only their live range, so the bytes are count x 64 B, not the buffer capacity.||geometriesMs. The trace counts bytes by the backend's own rule: one writeBuffer per update range, whole array when there are none (c16551c).">
+    <rect class="node" x="500" y="284" width="200" height="78" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="600" y="310" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">geometries</text>
+    <text x="600" y="328" font-size="11" text-anchor="middle" fill="#4b5563">attribute uploads, ~5%</text>
+  </g>
+  <g data-tip="Uniform groups are diffed against a JS shadow and only changes are written; bind groups are looked up.|The largest named slice: about 45% of the encode (5 to 19 ms). The diff walk runs for every object because the object group's version bumps per object; unchanged objects write nothing, but the walk itself is the cost.|Identical-but-distinct materials share the compiled pipeline but each own a bind group and uniform buffer.||bindingsMs; topBindings rows. UniformsGroup.update ~61973; Bindings._update ~32554.">
+    <rect class="node" x="730" y="284" width="200" height="78" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="830" y="310" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">bindings update</text>
+    <text x="830" y="328" font-size="11" text-anchor="middle" fill="#4b5563">uniform diff + write, ~45%</text>
+  </g>
+  <g data-tip="The render pipeline is fetched from a cache; a miss compiles a shader.|Runs for every object even outside the refresh gate: about 30 field compares per object per frame. Small (~2%) unless a cache miss compiles: one capture had a 1,482 ms encode with a pipeline built in it.||pipelinesMs. The trace now records each cache miss with the material and whether the async path ran (9f1a1bb), so that hitch can be attributed next time.">
+    <rect class="node" x="960" y="284" width="200" height="78" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="1060" y="310" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">pipeline lookup</text>
+    <text x="1060" y="328" font-size="11" text-anchor="middle" fill="#4b5563">~2%; a miss compiles</text>
+  </g>
+  <g data-tip="The draw call is encoded.|About 8% of the encode (1 to 2.5 ms). One drawIndexed per BatchedMesh chunk on WebGPU (no multi-draw here); forest and grass use real indirect draws.||drawMs; WebGPUBackend.draw ~81451-81521.">
+    <rect class="node" x="1190" y="284" width="180" height="78" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="1280" y="310" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">draw</text>
+    <text x="1280" y="328" font-size="11" text-anchor="middle" fill="#4b5563">~8%</text>
+  </g>
+  <line x1="240" y1="323" x2="268" y2="323" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="470" y1="323" x2="498" y2="323" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="700" y1="323" x2="728" y2="323" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="930" y1="323" x2="958" y2="323" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="1160" y1="323" x2="1188" y2="323" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="40" y="392" font-size="11.5" fill="#6b7280">Slow frames have the same shape as ordinary ones, every stage slower with the same object count. That fits a CPU that is slower for that frame; it does not by itself say why.</text>
+
+  <!-- ══ PART 3: the four processes being changed ══ -->
+  <text x="40" y="450" font-size="13" font-weight="600" fill="#6b7280" letter-spacing="0.8">PART 3 — THE FOUR PROCESSES BEING CHANGED, AND WHERE EACH STANDS</text>
+
+  <!-- column headers -->
+  <text x="40" y="482" font-size="11.5" font-weight="600" fill="#374151">Process</text>
+  <text x="320" y="482" font-size="11.5" font-weight="600" fill="#374151">Weakness</text>
+  <text x="690" y="482" font-size="11.5" font-weight="600" fill="#374151">Edit</text>
+  <text x="1060" y="482" font-size="11.5" font-weight="600" fill="#374151">Status</text>
+
+  <!-- row 1: per-object refresh -->
+  <g data-tip="Every object runs nodes and bindings updates every frame.|About 62% of the encode is those two stages; the diff already suppresses GPU writes, so the saving on offer is the walk and the callbacks, not the uploads.||Part 2, needsRefresh and the two stages after it.">
+    <rect class="node" x="40" y="496" width="260" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="170" y="522" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">1. per-object refresh</text>
+    <text x="170" y="540" font-size="11" text-anchor="middle" fill="#4b5563">nodes + bindings, ~62% of encode</text>
+  </g>
+  <g data-tip="Three cannot tell that a static object's inputs did not change, because a node material could hide anything.|So it refreshes everything. The only userland levers are fewer objects or answering the question ourselves for objects whose dependencies we can enumerate completely.">
+    <rect class="node" x="320" y="496" width="340" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="490" y="522" font-size="12.5" text-anchor="middle" fill="#111827">observer answers true for any node material</text>
+    <text x="490" y="540" font-size="11" text-anchor="middle" fill="#4b5563">static fast path unreachable in this build</text>
+  </g>
+  <g data-tip="An opt-in class of declared-static objects (spawn building, structures, roads) whose full dependency contract is snapshotted; a skip would answer needsRefresh false when the snapshot matches.|Before any skip: a NON-skipping audit scores the snapshot against what the refresh actually changed (binding writes, attribute uploads, uniform values moved by callbacks) and logs every case where a skip would have been wrong.|noObservedChange means the candidate saw no change, never permission to skip.||render-refresh-audit.js, ?refreshaudit=1 (2098779); design docs/superpowers/plans/2026-09-08-refresh-extension-design.md. No skip path exists.">
+    <rect class="node" x="680" y="496" width="360" height="70" rx="6" fill="#eef2ff" stroke="#4338ca" stroke-width="1.6"/>
+    <text x="860" y="522" font-size="12.5" text-anchor="middle" fill="#111827">non-skipping audit of a dependency contract</text>
+    <text x="860" y="540" font-size="11" text-anchor="middle" fill="#4b5563">?refreshaudit=1; skip = design only</text>
+  </g>
+  <g data-tip="Audit built and Node-tested; the skip itself is a design.|Next: a browser run with the audit on the moving route. Zero disagreements is evidence for those objects and frames, not proof, because updateAfter and side effects outside bindings, attributes and uniforms are not in the oracle.">
+    <rect class="node" x="1060" y="496" width="310" height="70" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.6" stroke-dasharray="5 3"/>
+    <text x="1215" y="522" font-size="12.5" text-anchor="middle" fill="#111827">audit shipped; skip not built</text>
+    <text x="1215" y="540" font-size="11" text-anchor="middle" fill="#4b5563">needs a browser capture first</text>
+  </g>
+
+  <!-- row 2: object count / forest -->
+  <g data-tip="Every RenderObject pays the fixed work in Part 2, and the forest is the largest group.|144 forest meshes in a shipped session: 16 variants x (7 main + 2 shadow-only). About 106 visible after the LOD rung gate.||Census settled from base-game-default-state.json (8 species, 2 variants each) and capture rows forest:v0..v15.">
+    <rect class="node" x="40" y="586" width="260" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="170" y="612" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">2. object count</text>
+    <text x="170" y="630" font-size="11" text-anchor="middle" fill="#4b5563">forest = 144 of ~200 meshes</text>
+  </g>
+  <g data-tip="One mesh per variant per LOD role, each an indirect draw, because the WebGPU backend has no multi-draw and one draw is one contiguous index range.|Materials are already shared per role; the win on offer is mesh count, not material count.">
+    <rect class="node" x="320" y="586" width="340" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="490" y="612" font-size="12.5" text-anchor="middle" fill="#111827">one draw per variant per role</text>
+    <text x="490" y="630" font-size="11" text-anchor="middle" fill="#4b5563">no multi-draw on WebGPU</text>
+  </g>
+  <g data-tip="Merge every variant's far-branch rung (LOD2) into one arena and one indirect draw, with the live instances compacted on the GPU and the vertex shader pulling its vertex from storage.|Two mappings exist: uniform per-variant slots (about 2.7x the compact mapping's vertex invocations) and compact (a GPU prefix table, chunked flat vertex stream, branchless span lookup). Fragment stage binds no storage buffer; bark normal frame rebuilt from arena uv; admission read from the renderer's own device (4 vertex-stage storage buffers); a device validation error flips back to the shipped path.||forestDrawMode variants | pulled | pulled-compact in the tree look panel; forest-gpu.js, forest-cull.js twin; all programs build headless through WGSLNodeBuilder, which is graph generation, not device compilation (1648f13, 89fecfd, 6670357).">
+    <rect class="node" x="680" y="586" width="360" height="70" rx="6" fill="#fef3c7" stroke="#b45309" stroke-width="1.6"/>
+    <text x="860" y="612" font-size="12.5" text-anchor="middle" fill="#111827">merged pulled draw for the LOD2 branch rung</text>
+    <text x="860" y="630" font-size="11" text-anchor="middle" fill="#4b5563">slots and compact mappings, default off</text>
+  </g>
+  <g data-tip="Coded and compiled headless; never rendered.|Not recommended from draw counts: the invocation ratio is arithmetic, not GPU timing, and parity is unseen.|Browser order: variants vs pulled-compact first (pixel diff, forced-failure check of the fallback), then a GPU timestamp comparison. The padded slot mode is a diagnostic control.">
+    <rect class="node" x="1060" y="586" width="310" height="70" rx="6" fill="#fef3c7" stroke="#b45309" stroke-width="1.6"/>
+    <text x="1215" y="612" font-size="12.5" text-anchor="middle" fill="#111827">prototype; nothing rendered</text>
+    <text x="1215" y="630" font-size="11" text-anchor="middle" fill="#4b5563">tail guard + fallback lifecycle in review</text>
+  </g>
+
+  <!-- row 3: duplicate state -->
+  <g data-tip="Identical materials each owned a bind group and uniform buffer, and per-frame values on a shared material were diffed and uploaded once per mesh.|The compiled pipeline is shared (keyed on shader source); the bindings are not.">
+    <rect class="node" x="40" y="676" width="260" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="170" y="702" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">3. duplicate state</text>
+    <text x="170" y="720" font-size="11" text-anchor="middle" fill="#4b5563">materials and per-frame uniforms</text>
+  </g>
+  <g data-tip="Craft builders made 3 to 6 materials per spawned drone or vehicle with identical literal colours; TSL uniform() defaults to the per-object group, so the grass material's clock and origin were written once for each of its three tier meshes.||Audit: 183 live modules, 39 material construction sites, zero material clones; one real duplication (flight-meshes.js).">
+    <rect class="node" x="320" y="676" width="340" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="490" y="702" font-size="12.5" text-anchor="middle" fill="#111827">per-craft materials; per-object uniform group</text>
+    <text x="490" y="720" font-size="11" text-anchor="middle" fill="#4b5563">the one duplication the audit found</text>
+  </g>
+  <g data-tip="Craft materials are cached per factory table and reference counted: a craft's teardown releases one reference, the last one frees for real; cap of 64 in-use materials per factory.|Grass uTime and uWorldOrigin moved to the render group: one diff and upload per pass per material instead of per mesh; uCam and the flora origin uniforms stayed per object because they also feed compute kernels.||flight-meshes.js, base-game-drone-view.js (f4d986f, 80edaa0); grass-compute.js, ?grassScope=object (32901c2, ff87a77). Three drones: 21 material builds became 4.">
+    <rect class="node" x="680" y="676" width="360" height="70" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.6"/>
+    <text x="860" y="702" font-size="12.5" text-anchor="middle" fill="#111827">shared, refcounted materials; render-group uniforms</text>
+    <text x="860" y="720" font-size="11" text-anchor="middle" fill="#4b5563">craft cache; grass clock and origin</text>
+  </g>
+  <g data-tip="Node-tested lifecycle and update mechanics; visual parity unseen.|What to look for: a drone or vehicle with a wrong hull side or missing part colour; grass with frozen wind or a one-frame shear after an origin rebase (compare with ?grassScope=object).">
+    <rect class="node" x="1060" y="676" width="310" height="70" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.6"/>
+    <text x="1215" y="702" font-size="12.5" text-anchor="middle" fill="#111827">shipped on the branch, unpushed</text>
+    <text x="1215" y="720" font-size="11" text-anchor="middle" fill="#4b5563">browser parity pending</text>
+  </g>
+
+  <!-- row 4: terrain upload -->
+  <g data-tip="Terrain chunks stream in from workers and are folded into BatchedMesh buffers; deletions fragment them and compaction shifts the tail.|The uploads themselves are small (about 150 KB per chunk); the questions were what the cost model claimed and what nobody counted.">
+    <rect class="node" x="40" y="766" width="260" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="170" y="792" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">4. terrain upload</text>
+    <text x="170" y="810" font-size="11" text-anchor="middle" fill="#4b5563">chunk fold, compaction, residency</text>
+  </g>
+  <g data-tip="The comments said compaction rewrites the whole buffer; measured in Node, optimize() writes one range per shifted geometry and nothing when only the tail was deleted.|Nothing counted uploads by kind, and the margin of chunks kept past the target radius was a count difference, not a set.">
+    <rect class="node" x="320" y="766" width="340" height="70" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="490" y="792" font-size="12.5" text-anchor="middle" fill="#111827">wrong cost model; no accounting</text>
+    <text x="490" y="810" font-size="11" text-anchor="middle" fill="#4b5563">margin was resident minus target</text>
+  </g>
+  <g data-tip="Comments corrected; the batcher counts first uploads, visibility flips, fallbacks and compactions with logical bytes per frame and cumulative; residency reports both, extra and missing key sets per streamer.|No throttle, cull or hide-rule change: those decisions wait on the counts.||terrain-chunk-batches.js, base-game-terrain.js (c567874, 4be2dae). Logical bytes are what our code marked dirty, not queue traffic.">
+    <rect class="node" x="680" y="766" width="360" height="70" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.6"/>
+    <text x="860" y="792" font-size="12.5" text-anchor="middle" fill="#111827">upload accounting + residency sets</text>
+    <text x="860" y="810" font-size="11" text-anchor="middle" fill="#4b5563">no behaviour change yet</text>
+  </g>
+  <g data-tip="Lifecycle tests: 150 evict/refill cycles reuse slots; a 900 m walk and a source swap end with batched == resident and no orphan visible instance.|Next decision (hide margin chunks or not) waits on the extra-key count from a capture; hiding them pops the LOD when the player turns.">
+    <rect class="node" x="1060" y="766" width="310" height="70" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.6"/>
+    <text x="1215" y="792" font-size="12.5" text-anchor="middle" fill="#111827">stats shipped; decisions pending</text>
+    <text x="1215" y="810" font-size="11" text-anchor="middle" fill="#4b5563">needs the counts from a capture</text>
+  </g>
+
+  <line x1="300" y1="531" x2="318" y2="531" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="660" y1="531" x2="678" y2="531" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="1040" y1="531" x2="1058" y2="531" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="300" y1="621" x2="318" y2="621" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="660" y1="621" x2="678" y2="621" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="1040" y1="621" x2="1058" y2="621" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="300" y1="711" x2="318" y2="711" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="660" y1="711" x2="678" y2="711" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="1040" y1="711" x2="1058" y2="711" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="300" y1="801" x2="318" y2="801" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="660" y1="801" x2="678" y2="801" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="1040" y1="801" x2="1058" y2="801" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- ══ PART 4: the dips ══ -->
+  <text x="40" y="896" font-size="13" font-weight="600" fill="#6b7280" letter-spacing="0.8">PART 4 — THE FRAME DIPS, SEPARATELY FROM THE STEADY COST</text>
+  <text x="520" y="896" font-size="11.5" fill="#9ca3af">— what the captures tie them to, and what they do not</text>
+
+  <g data-tip="Sixteen terrain worker threads (four streamers x four) lit up together at boundary crossings and starved the main thread.|DevTools trace: 104 of 106 long frames overlapped a worker burst. One shared pool replaced them; within a capture, frames with 4 workers busy ran about 61 ms against 28 idle, with 2 busy 17.6 against 17.7.|Default cap 2 committed (d3a01af). A measured benefit on the sampled routes, not a proven mechanism: worker activity remains a proxy.||terrain-worker-pool.js; ?terrainworkers=N overrides.">
+    <rect class="node" x="40" y="910" width="300" height="86" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.6"/>
+    <text x="190" y="938" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">worker contention</text>
+    <text x="190" y="956" font-size="11" text-anchor="middle" fill="#4b5563">16 threads → shared pool, cap 2</text>
+    <text x="190" y="974" font-size="11" text-anchor="middle" fill="#4b5563">the one dip cause fixed outright</text>
+  </g>
+  <g data-tip="In the 2026-09-08 sessions, spike frames still carried long tasks and more terrain jobs in flight and busy workers than ordinary frames, at 2 threads.|One session's spikes were pure gaps between frames with nothing in our slots and no long task recorded.|The whole session also ran slower than the day before at the same settings: real, unexplained, and not a progressive drift mechanism.||Series columns terrainInFlight, terrainBusyWorkers, betweenMs, longTaskMs; spikes.slots meanInSpikes vs meanInOthers.">
+    <rect class="node" x="370" y="910" width="300" height="86" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="520" y="938" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">residual spikes at 2 workers</text>
+    <text x="520" y="956" font-size="11" text-anchor="middle" fill="#4b5563">long tasks + worker activity; some pure gaps</text>
+    <text x="520" y="974" font-size="11" text-anchor="middle" fill="#4b5563">session-to-session drift unexplained</text>
+  </g>
+  <g data-tip="One 1,482 ms frame had a pipeline built inside its encode.|Co-occurrence, not attribution: the trace now records which material compiled and on which path, so the next such frame is named.||pipelineCreateRows in lastFrame and the worst-frame records (9f1a1bb).">
+    <rect class="node" x="700" y="910" width="300" height="86" rx="6" fill="#eef2ff" stroke="#4338ca" stroke-width="1.6"/>
+    <text x="850" y="938" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">shader compile hitch</text>
+    <text x="850" y="956" font-size="11" text-anchor="middle" fill="#4b5563">1.5 s frame with a pipeline built</text>
+    <text x="850" y="974" font-size="11" text-anchor="middle" fill="#4b5563">now named per material</text>
+  </g>
+  <g data-tip="Two experiments closed negative and are not reopened under new names.|Matrix walk (?matrixauto=0): 0.1 to 0.4 ms cost, no gain. Render bundles (?bundles=1): draws 290 to 160 but trees froze as an afterimage, because replay refreshes only the first object per render in this build.">
+    <rect class="node" x="1030" y="910" width="340" height="86" rx="6" fill="#ffffff" stroke="#1f2937" stroke-width="1.6"/>
+    <text x="1200" y="938" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">closed experiments</text>
+    <text x="1200" y="956" font-size="11" text-anchor="middle" fill="#4b5563">matrix walk: no gain</text>
+    <text x="1200" y="974" font-size="11" text-anchor="middle" fill="#4b5563">bundles: visually broken</text>
+  </g>
+
+  <!-- ══ PART 5: what the next browser session should do ══ -->
+  <text x="40" y="1056" font-size="13" font-weight="600" fill="#6b7280" letter-spacing="0.8">PART 5 — THE NEXT BROWSER SESSION, IN ORDER</text>
+  <g data-tip="Same route twice: ?trace=1, then ?trace=1&amp;tracephases=0.|The pair gives the six stages as capture-wide percentiles, the instrumentation's own cost, device limits, and any pipeline compile by name.">
+    <rect class="node" x="40" y="1070" width="300" height="70" rx="6" fill="#eef2ff" stroke="#4338ca" stroke-width="1.6"/>
+    <text x="190" y="1098" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">1. trace pair</text>
+    <text x="190" y="1116" font-size="11" text-anchor="middle" fill="#4b5563">?trace=1, then &amp;tracephases=0</text>
+  </g>
+  <g data-tip="Spawn a drone and a vehicle, fire an AGM; watch the grass wind, cross a rebase, then repeat with ?grassScope=object.|These are the two changes whose failure would be visible.">
+    <rect class="node" x="370" y="1070" width="300" height="70" rx="6" fill="#dcfce7" stroke="#15803d" stroke-width="1.6"/>
+    <text x="520" y="1098" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">2. drones, vehicles, grass</text>
+    <text x="520" y="1116" font-size="11" text-anchor="middle" fill="#4b5563">parity of the shipped changes</text>
+  </g>
+  <g data-tip="Same route with ?refreshaudit=1 and a capture.|It never skips; it reports where a skip would have been wrong on the spawn building, structures and roads, and what its own check costs.">
+    <rect class="node" x="700" y="1070" width="300" height="70" rx="6" fill="#eef2ff" stroke="#4338ca" stroke-width="1.6"/>
+    <text x="850" y="1098" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">3. refresh audit</text>
+    <text x="850" y="1116" font-size="11" text-anchor="middle" fill="#4b5563">?refreshaudit=1, then capture</text>
+  </g>
+  <g data-tip="Tree look panel, LOD2 branch submission: default vs One merged draw, compact.|The far trees should look identical. If they vanish, the fallback should already have switched back and the capture says why. Only after that: GPU timestamps.">
+    <rect class="node" x="1030" y="1070" width="340" height="70" rx="6" fill="#fef3c7" stroke="#b45309" stroke-width="1.6"/>
+    <text x="1200" y="1098" font-size="13" font-weight="600" text-anchor="middle" fill="#111827">4. forest: variants vs compact</text>
+    <text x="1200" y="1116" font-size="11" text-anchor="middle" fill="#4b5563">last, and only after 1 to 3</text>
+  </g>
+  <line x1="340" y1="1105" x2="368" y2="1105" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="670" y1="1105" x2="698" y2="1105" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="1000" y1="1105" x2="1028" y2="1105" stroke="#4b5563" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <text x="40" y="1190" font-size="11.5" fill="#6b7280">Sources: research/stats/base-game-performance-log.json (captures), research/stats/trace-review-20260907.md (DevTools sampling), scratchpads/fps-churn/arch-review/00-verdict.md and reports 01-09,</text>
+  <text x="40" y="1208" font-size="11.5" fill="#6b7280">docs/render-data-submission-improvement-plan.md, docs/superpowers/plans/2026-09-07-forest-consolidation-design.md and 2026-09-08-refresh-extension-design.md, comms.txt.</text>
+  <text x="40" y="1240" font-size="11.5" fill="#6b7280">Labels kept on purpose: WGSL generation is not device compilation; invocation arithmetic is not GPU timing; dirty-range arithmetic is not queue traffic; worker unacknowledged counts are an activity proxy.</text>
+</svg>
+</div>
+
+<section id="glossary">
+  <h2>DEFINITIONS</h2>
+  <p class="lead"><b>Two words this map turns on.</b> The <b>encode</b> is the CPU time Three spends turning the scene into GPU commands each frame; it is most of the frame here. A <b>RenderObject</b> is Three's record for one (object, material, pass) combination, and every one of them pays the per-object stages in Part 2.</p>
+  <dl id="glossary-list"></dl>
+</section>
+
+<script>
+(function () {
+  const GLOSSARY = {
+    "encode": "The CPU work of walking the scene and emitting GPU commands for every drawn object. In Base Game it is 12 to 42 ms of a frame; the GPU itself takes about 1 ms.",
+    "RenderObject": "Three's per-(object, material, pass) record. Sharing a material never reduces their count; only fewer meshes does.",
+    "needsRefresh": "The question Three asks per object before re-running node and binding updates. In this build any material with a node property answers yes, always.",
+    "node material": "A Three material whose inputs are a TSL node graph. Every Base Game material is one.",
+    "bind group": "The GPU-side set of buffers and textures a draw reads. Identical materials that are distinct objects each own one.",
+    "uniform group": "A buffer of shader constants. Three diffs it against a CPU shadow and writes only what changed; the diff itself is the cost when nothing changed.",
+    "render group": "Three's shared uniform scope updated once per render pass, as opposed to the default per-object scope.",
+    "indirect draw": "A draw whose vertex and instance counts are read from a GPU buffer, so a compute pass can decide how much to draw without the CPU knowing.",
+    "arena": "One large vertex or index buffer holding many variants at known offsets, so one draw can cover all of them.",
+    "vertex pulling": "The vertex shader fetching its own vertex data from storage buffers by index, instead of the hardware feeding it attributes.",
+    "prefix table": "Running sums of per-variant live counts, so a flat vertex index can be turned into (variant, instance, local vertex).",
+    "compaction": "Shifting the live entries of a fragmented buffer together. For BatchedMesh, one ranged write per shifted geometry; nothing when only the tail was deleted.",
+    "logical bytes": "The size of the update ranges our code marked dirty. The renderer writes them; the count is not a measurement of GPU queue traffic.",
+    "residency": "Which terrain chunks are held. Target is what the streamer wants drawn; extra is what it keeps past that for hysteresis; missing is target not yet built.",
+    "worker pool": "The shared set of terrain worker threads, one for all four streamers; capped at 2 by default.",
+    "long task": "A main-thread task over 50 ms, as the browser reports it. Recorded per frame in captures.",
+    "between frames": "Time from one animate() end to the next start. When it is large with no long task, the browser did not schedule the next frame.",
+    "capture": "A saved performance record from the page: per-frame series, spike analysis, the last traced frame, the worst frames, settings and device limits.",
+    "trace": "?trace=1: wraps Three's render internals to time each pass and each per-object stage, and to count refreshes, materials, writes and pipeline compiles.",
+    "refresh audit": "?refreshaudit=1: for declared static objects, snapshots the dependency contract before a refresh and scores it against what the refresh actually changed. It never skips.",
+    "no observed change": "The audit saw nothing the refresh changed for an object whose snapshot also did not change. Evidence, never permission to skip.",
+    "pipeline cache miss": "The first time a (shader, state) combination is drawn, the GPU pipeline is compiled. Synchronous compiles show up as one long frame.",
+    "WGSL": "The WebGPU shading language. Three generates it from TSL; generating it headless proves the graph builds, not that a device accepts it.",
+    "device limits": "What the GPU device granted, such as storage buffers per vertex stage. The pulled forest needs 4 and falls back when fewer are granted.",
+  };
+  const TERMS = Object.keys(GLOSSARY).sort((a, b) => b.length - a.length);
+  const TERM_RE = new RegExp("\\b(" + TERMS.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")\\b", "gi");
+  const LOOKUP = {}; TERMS.forEach(t => { LOOKUP[t.toLowerCase()] = t; });
+  const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  function mark(text, seen) {
+    return esc(text).replace(TERM_RE, m => { const k = LOOKUP[m.toLowerCase()]; if (!k || seen.has(k)) return m; seen.add(k); return '<span style="color:#9ec5fe">' + m + '</span>'; });
+  }
+  const tip = document.getElementById("tip"), wrap = document.getElementById("wrap");
+  let hideTimer = null;
+  const hide = ms => { clearTimeout(hideTimer); hideTimer = setTimeout(() => { tip.style.display = "none"; }, ms); };
+  document.querySelectorAll("g[data-tip]").forEach(g => {
+    g.addEventListener("mousemove", e => {
+      clearTimeout(hideTimer);
+      const [main, dev] = g.getAttribute("data-tip").split("||");
+      const parts = main.split("|"); const seen = new Set();
+      let html = '<p class="lead">' + mark(parts[0].trim(), seen) + "</p>";
+      const why = parts.slice(1).map(s => s.trim()).filter(Boolean);
+      if (why.length) html += "<ul>" + why.map(s => "<li>" + mark(s, seen) + "</li>").join("") + "</ul>";
+      if (dev) html += '<div class="dev"><p class="dev-label">Implementation</p><ul>' + dev.split("|").map(s => s.trim()).filter(Boolean).map(s => "<li>" + mark(s, seen) + "</li>").join("") + "</ul></div>";
+      tip.innerHTML = html; tip.style.display = "block";
+      const r = wrap.getBoundingClientRect();
+      let x = e.clientX - r.left + 14, y = e.clientY - r.top + 14;
+      if (x + tip.offsetWidth > r.width) x = Math.max(0, e.clientX - r.left - tip.offsetWidth - 14);
+      tip.style.left = x + "px"; tip.style.top = y + "px";
+    });
+    g.addEventListener("mouseleave", () => hide(350));
+  });
+  tip.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+  tip.addEventListener("mouseleave", () => hide(200));
+  const list = document.getElementById("glossary-list");
+  Object.keys(GLOSSARY).sort((a, b) => a.localeCompare(b)).forEach(t => {
+    const d = document.createElement("div"); d.innerHTML = "<dt>" + esc(t) + "</dt><dd>" + esc(GLOSSARY[t]) + "</dd>"; list.appendChild(d);
+  });
+})();
+</script>
+</body>
+</html>
