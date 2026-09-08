@@ -22,7 +22,9 @@
 // manually when this kernel changes.
 import * as THREE from 'three';
 import { createSharedDrawGeometryPool } from './shared-draw-geometry.js';
-import { frustumConeCos } from './forest-cull.js';   // camera math only; the cull kernel stays a hand-synced twin
+// Camera math and the pulled-draw arena packing: both are plain data work with no kernel twin, so
+// they are imported. The cull kernel itself stays the hand-synced, not-imported twin.
+import { frustumConeCos, packPulledArena, pulledArenaSlots, PULLED_VERTEX_STRIDE } from './forest-cull.js';
 import { createHizSampler } from './hiz-test.js';
 import {
   MeshBasicNodeMaterial, MeshStandardNodeMaterial, StorageInstancedBufferAttribute, StorageBufferAttribute,
@@ -31,8 +33,8 @@ import {
 import {
   Fn, If, instanceIndex, storage, uniform, int, uint, float,
   vec2, vec3, vec4, cos, sin, atan, acos, clamp, length, modInt, positionLocal, normalLocal,
-  atomicAdd, atomicStore, atomicLoad,
-  normalize, cross, cameraPosition, texture, time, userData,
+  atomicAdd, atomicStore, atomicLoad, min,
+  normalize, cross, cameraPosition, texture, time, userData, vertexIndex, select,
 } from 'three/tsl';
 
 export function createForestGPU(opts) {
@@ -104,6 +106,55 @@ export function createForestGPU(opts) {
     indirectNodes.push(nodes);
   }
 
+  // ---- pulled draw mode (prototype, one role: branchesL2) ----
+  // 'variants' (default) is the shipped path: one mesh per (variant, role). 'pulled' replaces the
+  // V branchesL2 meshes with ONE instanced indexed draw whose vertex stage reads its geometry from
+  // a storage arena, so every variant fits in a single draw. Everything else — the cull, the other
+  // roles, the shadow list, the rung gate — is untouched, and the per-variant L2 meshes are still
+  // built so a failed arena can fall back to them without a rebuild.
+  const PULLED = opts.drawMode === 'pulled';
+  const MERGED_TOTAL = V * CAP;             // one flat live list for the merged role
+  const l2GeometryFor = v => (v?.branchesLod2 ?? v?.branches ?? null);
+  let arena = null, arenaSlots = null, arenaOk = false, arenaFailure = null;
+  let arenaVertAttr = null, arenaIdxAttr = null, arenaCountAttr = null;
+  let arenaVerts = null, arenaIdx = null, arenaCounts = null;
+  let mergedAttr = null, mergedDraw = null, mergedCountAttr = null, mergedAtomic = null;
+  let mergedIndirect = null, mergedIndirectNode = null;
+  if (PULLED) {
+    const geos = palette.variants.map(l2GeometryFor);
+    // Slots are uniform and sized with headroom, because a progressive wave installs a REAL
+    // geometry over a placeholder and it may be larger than anything in the first wave.
+    const tight = pulledArenaSlots(geos);
+    arenaSlots = {
+      vertexSlot: Math.max(1, Math.ceil(tight.vertexSlot * (opts.pulledSlack ?? 2))),
+      indexSlot: Math.max(3, Math.ceil(tight.indexSlot * (opts.pulledSlack ?? 2))),
+    };
+    arena = packPulledArena(geos, arenaSlots);
+    if (!arena) {
+      arenaFailure = 'the branchesL2 palette does not fit its arena slots';
+    } else {
+      arenaOk = true;
+      // vec4 triples: (px,py,pz,u) (nx,ny,nz,v) (r,g,b,_). One indexed read per triple.
+      arenaVertAttr = new StorageBufferAttribute(arena.vertexData, 4);
+      arenaIdxAttr = new StorageBufferAttribute(arena.indexData, 1);
+      arenaCountAttr = new StorageBufferAttribute(arena.counts, 1);
+      arenaVerts = storage(arenaVertAttr, 'vec4', arena.vertexData.length / 4).toReadOnly();
+      arenaIdx = storage(arenaIdxAttr, 'uint', arena.indexData.length).toReadOnly();
+      arenaCounts = storage(arenaCountAttr, 'uint', arena.counts.length).toReadOnly();
+      // The merged live list: the same 2 x vec4 record the per-variant lists hold, with the
+      // variant id parked in rec1.y (a spare field, already zero) so the vertex stage can find
+      // its arena slot without a second buffer read.
+      mergedAttr = new StorageInstancedBufferAttribute(new Float32Array(MERGED_TOTAL * 8), 8);
+      mergedDraw = storage(mergedAttr, 'vec4', MERGED_TOTAL * 2);
+      mergedCountAttr = new StorageBufferAttribute(new Uint32Array(1), 1);
+      mergedAtomic = storage(mergedCountAttr, 'uint', 1).toAtomic();
+      // A normal 5-uint indexed-indirect buffer, exactly as every other role uses: indexCount is
+      // the padded stride, instanceCount is written by the merged finalizer.
+      mergedIndirect = new IndirectStorageBufferAttribute(new Uint32Array([arenaSlots.indexSlot, 0, 0, 0, 0]), 5);
+      mergedIndirectNode = storage(mergedIndirect, 'uint', 5);
+    }
+  }
+
   // ---- uniforms ----
   const uCam = uniform(new THREE.Vector2());
   const uLodR0 = uniform(opts.lodR0 ?? 60);
@@ -164,6 +215,17 @@ export function createForestGPU(opts) {
 
   // ---- compute kernels: reset (clear V counters) -> cull+compact -> finalize ----
   const reset = Fn(() => { atomicStore(survAtomics.element(instanceIndex), uint(0)); })().compute(V * SLOTS);
+  // The merged counter is its own one-invocation reset rather than a branch inside the one above:
+  // a kernel the shipped path never dispatches is easier to reason about than a widened dispatch.
+  const resetMerged = arenaOk
+    ? Fn(() => { atomicStore(mergedAtomic.element(0), uint(0)); })().compute(1)
+    : null;
+  const finalizeMerged = arenaOk
+    ? Fn(() => {
+      const live = atomicLoad(mergedAtomic.element(0));
+      mergedIndirectNode.element(1).assign(min(live, uint(MERGED_TOTAL)));
+    })().compute(1)
+    : null;
 
   const cull = Fn(() => {
     const idx = int(instanceIndex);                 // 0 .. V*CAP-1
@@ -244,6 +306,17 @@ export function createForestGPU(opts) {
           const outBase = uint(varBase.add(int(2 * CAP))).add(s).mul(uint(2));
           draw.element(outBase).assign(rec0);
           draw.element(outBase.add(uint(1))).assign(rec1);
+          if (arenaOk) {
+            // The merged list for the pulled draw: one flat, cross-variant compaction of the same
+            // survivors, with the variant id carried in rec1.y. The per-variant write above is
+            // deliberately kept so 'variants' mode is bit-identical and a fallback needs no rebuild.
+            const ms = atomicAdd(mergedAtomic.element(0), uint(1));
+            If(ms.lessThan(uint(MERGED_TOTAL)), () => {
+              const mBase = ms.mul(uint(2));
+              mergedDraw.element(mBase).assign(rec0);
+              mergedDraw.element(mBase.add(uint(1))).assign(vec4(rec1.x, float(g), rec1.z, rec1.w));
+            });
+          }
         });
         if (HAS_BILLBOARDS) lodChain.Else(() => {
           const ci = uint(g.mul(int(SLOTS)).add(int(3)));
@@ -352,6 +425,39 @@ export function createForestGPU(opts) {
       .add(right.mul(positionLocal.x.mul(scale)))
       .add(worldUp.mul(positionLocal.y.mul(scale)));
     return { world };
+  }
+
+  // The pulled vertex stage. Transcribes forest-cull.js's pulledVertexOffset: the identity index
+  // buffer makes vertexIndex the local index k, rec1.y names the variant, and the arena answers
+  // with the vertex that variant's own index buffer points at. k past the variant's index count
+  // collapses onto its k=0 vertex, so the padded triangles are zero-area and raster nothing.
+  function pulledInstanceNodes() {
+    const recBase = uint(instanceIndex).mul(uint(2));
+    const rec0 = mergedDraw.element(recBase);                 // (x,y,z,scale)
+    const rec1 = mergedDraw.element(recBase.add(uint(1)));    // (yaw, variantId, _, _)
+    const v = uint(rec1.y);
+    const k = uint(vertexIndex);
+    const idxCount = arenaCounts.element(v.mul(uint(2)).add(uint(1)));
+    const kk = select(k.lessThan(idxCount), k, uint(0));
+    const local = arenaIdx.element(v.mul(uint(arenaSlots.indexSlot)).add(kk));
+    const vBase = v.mul(uint(arenaSlots.vertexSlot)).add(local).mul(uint(3));
+    const a0 = arenaVerts.element(vBase);                     // (px,py,pz,u)
+    const a1 = arenaVerts.element(vBase.add(uint(1)));        // (nx,ny,nz,v)
+    const a2 = arenaVerts.element(vBase.add(uint(2)));        // (r,g,b,_)
+
+    const scale = rec0.w.mul(uTreeScale), yaw = rec1.x;
+    const cy = cos(yaw), sy = sin(yaw);
+    const px = a0.x, py = a0.y, pz = a0.z;
+    const rx = px.mul(cy).add(pz.mul(sy));
+    const rz = pz.mul(cy).sub(px.mul(sy));
+    const world = vec3(
+      rec0.x.add(rx.mul(scale)),
+      rec0.y.add(py.mul(scale)),
+      rec0.z.add(rz.mul(scale)),
+    );
+    const nx = a1.x, ny = a1.y, nz = a1.z;
+    const nWorld = vec3(nx.mul(cy).add(nz.mul(sy)), ny, nz.mul(cy).sub(nx.mul(sy)));
+    return { world, nWorld, uv: vec2(a0.w, a1.w), color: a2.xyz };
   }
 
   function lodSlotOffset(g, l) {
@@ -520,6 +626,43 @@ export function createForestGPU(opts) {
     }
   }
 
+  // The merged branchesL2 draw. Built alongside the per-variant meshes (never instead of them) so
+  // switching arms is a visibility flip, and a broken arena falls back without a rebuild.
+  let mergedMesh = null, mergedMat = null;
+  if (arenaOk) {
+    mergedMat = makeMat(0.9, false);
+    mergedMat.vertexColors = false;          // colour comes from the arena, not a vertex attribute
+    const pn = pulledInstanceNodes();
+    mergedMat.positionNode = pn.world;
+    mergedMat.normalNode = pn.nWorld;
+    // The binder (base-game-forest.js's bindTreeMaterials) needs arena uv/colour to rebuild the
+    // bark look, because neither attribute('uv') nor attribute('color') means anything here.
+    mergedMat.userData.pulledNodes = { uv: pn.uv, color: pn.color };
+    if (opts.addEmissive) mergedMat.emissiveNode = opts.addEmissive(mergedMat.positionNode, mergedMat.normalNode);
+    sharedMats.push(mergedMat);
+
+    const stride = arenaSlots.indexSlot;
+    const geo = new THREE.InstancedBufferGeometry();
+    // Identity indices: @builtin(vertex_index) under an indexed draw is the index VALUE, so this
+    // hands the shader k directly. It also keeps every hardware vertex fetch inside the dummy
+    // attributes below, whatever attribute nodes Three's material graph still emits.
+    const identity = new Uint32Array(stride);
+    for (let i = 0; i < stride; i++) identity[i] = i;
+    geo.setIndex(new THREE.BufferAttribute(identity, 1));
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(stride * 3), 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(stride * 3), 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(stride * 2), 2));
+    geo.instanceCount = MERGED_TOTAL;
+    geo.indirect = mergedIndirect;
+    mergedMesh = new THREE.Mesh(geo, mergedMat);
+    mergedMesh.name = 'forest:pulled:branchesL2';
+    mergedMesh.frustumCulled = false;
+    mergedMesh.castShadow = false;           // as the per-variant L2 meshes are, under SHADOW_LIST
+    mergedMesh.receiveShadow = true;
+    mergedMesh.visible = false;              // syncRenderParts decides
+    meshes.push(mergedMesh);
+  }
+
   // ---- CPU side: per-chunk records -> global source buffer ----
   const chunkRecords = new Map();   // chunkKey -> records[]
   const srcArray = srcAttr.array;
@@ -602,9 +745,46 @@ export function createForestGPU(opts) {
   }
   const rungHas = (g, rung) => rungCandidates[g * (LODS + 1) + rung] === 1;
 
+  // Which per-variant mesh index holds the L2 branch role (the pulled prototype's one role).
+  const L2_BRANCH_MESH = 5;
+
+  // A progressive wave replaces one variant's placeholder geometry with its real one. Repack that
+  // variant's arena slot in place and upload only its range. A geometry too big for the slot is
+  // NOT packed: its count stays 0, the merged draw skips it, and its per-variant mesh takes over.
+  let arenaOverflows = 0;
+  const arenaFallback = new Uint8Array(V);
+  function repackArenaVariant(g, variant) {
+    const geo = l2GeometryFor(variant);
+    const one = packPulledArena([geo], arenaSlots);
+    if (!one) {
+      arenaOverflows++;
+      arenaFallback[g] = 1;
+      arena.counts[g * 2] = 0;
+      arena.counts[g * 2 + 1] = 0;
+      arenaCountAttr.needsUpdate = true;
+      console.warn(`[forest-gpu] variant ${g}'s branchesL2 does not fit the pulled arena slot; it falls back to its own mesh.`);
+      syncRenderParts();
+      return false;
+    }
+    arenaFallback[g] = 0;
+    const vSpan = arenaSlots.vertexSlot * PULLED_VERTEX_STRIDE;
+    arena.vertexData.set(one.vertexData, g * vSpan);
+    arena.indexData.set(one.indexData, g * arenaSlots.indexSlot);
+    arena.counts[g * 2] = one.counts[0];
+    arena.counts[g * 2 + 1] = one.counts[1];
+    arenaVertAttr.clearUpdateRanges();
+    arenaVertAttr.addUpdateRange(g * vSpan, vSpan);
+    arenaVertAttr.needsUpdate = true;
+    arenaIdxAttr.clearUpdateRanges();
+    arenaIdxAttr.addUpdateRange(g * arenaSlots.indexSlot, arenaSlots.indexSlot);
+    arenaIdxAttr.needsUpdate = true;
+    arenaCountAttr.needsUpdate = true;
+    return true;
+  }
   function syncRenderParts() {
     if (rungGateDirty) refreshRungCandidates();
     let draws = 0, shadowDraws = 0, gated = 0;
+    let mergedWanted = false;
     const shadowsOn = SHADOW_LIST && uShadowReach.value > 0;
     for (let g = 0; g < V; g++) {
       const active = variantReady[g] === 1 && variantPopulated[g] === 1;
@@ -622,6 +802,13 @@ export function createForestGPU(opts) {
       for (let m = 0; m < MAIN_MESHES; m++) {
         const wanted = active && mask[m] && lodEnabled[MAIN_RUNG[m]];
         const has = rungHas(g, MAIN_RUNG[m]);
+        // In pulled mode the merged mesh draws this variant's L2 branches instead; the per-variant
+        // mesh stays built but hidden, and its "would have drawn" answer feeds the merged gate.
+        if (arenaOk && m === L2_BRANCH_MESH && !arenaFallback[g]) {
+          if (wanted && has) mergedWanted = true;
+          meshes[b + m].visible = false;
+          continue;
+        }
         meshes[b + m].visible = wanted && has;
         if (meshes[b + m].visible) draws++;
         else if (wanted) gated++;
@@ -644,6 +831,13 @@ export function createForestGPU(opts) {
           if (meshes[b + m].visible && meshes[b + m].castShadow) shadowDraws++;
         }
       }
+    }
+    if (mergedMesh) {
+      // One draw for every variant's L2 branches, so the merged mesh is on whenever ANY variant
+      // would have been. The cull writes zero instances when none survive, and the CPU gate below
+      // saves the renderer the object entirely when the whole rung is empty.
+      mergedMesh.visible = mergedWanted;
+      if (mergedWanted) draws++;
     }
     submittedDraws = draws;
     submittedShadowDraws = shadowDraws;
@@ -816,7 +1010,11 @@ export function createForestGPU(opts) {
     }
   });
 
-  const computeNodes = [reset, cull, ...finalizersA, ...finalizersB];
+  // The merged reset runs with the per-variant one, the merged finalizer after the rest, so the
+  // indirect instanceCount is written in the same submit the draw reads it from.
+  const mergedResets = resetMerged ? [resetMerged] : [];
+  const mergedFinalizers = finalizeMerged ? [finalizeMerged] : [];
+  const computeNodes = [reset, ...mergedResets, cull, ...finalizersA, ...finalizersB, ...mergedFinalizers];
   const activeFinalizersA = [], activeFinalizersB = [];
   function syncActiveFinalizers() {
     activeFinalizersA.length = 0;
@@ -843,7 +1041,10 @@ export function createForestGPU(opts) {
     variantMeshes(g) {
       if (!Number.isInteger(g) || g < 0 || g >= V) return [];
       const start = g * MESHES_PER_VARIANT;
-      return meshes.slice(start, start + MESHES_PER_VARIANT);
+      const own = meshes.slice(start, start + MESHES_PER_VARIANT);
+      // The merged mesh belongs to no variant. It rides out with wave 0 so it is compiled and
+      // added to the scene by the host's existing per-wave publication, not by a second path.
+      return (g === 0 && mergedMesh) ? [...own, mergedMesh] : own;
     },
     installVariant(g, variant) {
       if (!Number.isInteger(g) || g < 0 || g >= V || !variant) return false;
@@ -884,6 +1085,7 @@ export function createForestGPU(opts) {
           attr.needsUpdate = true;
         }
       }
+      if (arenaOk) repackArenaVariant(g, variant);
       palette.variants[g] = variant;
       uTreeRadius.value = Math.max(uTreeRadius.value, variantCanopyRadius(variant));
       uTreeHeight.value = Math.max(uTreeHeight.value, variantHeight(variant));
@@ -910,6 +1112,9 @@ export function createForestGPU(opts) {
       fn(branchMats.L0, leafMats.L0);
       fn(branchMats.L1, leafMats.L1);
       fn(branchMats.L2, coarseMat);
+      // The merged L2 material takes the same bark binding; its userData.pulledNodes tells a
+      // binder that uv and vertex colour come from the arena, not from vertex attributes.
+      if (mergedMat) fn(mergedMat, coarseMat);
       if (SHADOW_LIST) fn(shadowMats.bark, shadowMats.leaf);   // the leaf cutout needs its map
     },
     get materials() { return sharedMats.slice(); },
@@ -1075,7 +1280,7 @@ export function createForestGPU(opts) {
       uCam.value.set(camX, camZ);
       uCamFwd.value.set(camFx, camFz);
       uFovCos.value = camFovCos;
-      await renderer.computeAsync([reset, cull, ...activeFinalizersA, ...activeFinalizersB]);
+      await renderer.computeAsync([reset, ...mergedResets, cull, ...activeFinalizersA, ...activeFinalizersB, ...mergedFinalizers]);
       lastCamX = camX;
       lastCamZ = camZ;
       lastCamFx = camFx;
@@ -1105,7 +1310,7 @@ export function createForestGPU(opts) {
     // pipeline synchronously after that. Warm one node per yielded task while the host still shows
     // its loading state, so the first visible recull does not discover the entire chain at once.
     warmupComputeShared(yieldFn = async () => {}, shouldContinue = () => true) {
-      return warmNodes([reset, cull], yieldFn, shouldContinue);
+      return warmNodes([reset, ...mergedResets, cull, ...mergedFinalizers], yieldFn, shouldContinue);
     },
     warmupVariant(g, yieldFn = async () => {}, shouldContinue = () => true) {
       if (!Number.isInteger(g) || g < 0 || g >= V) return false;
@@ -1136,6 +1341,13 @@ export function createForestGPU(opts) {
         shadowList: SHADOW_LIST,
         shadowReach: uShadowReach.value,
         computePipelines: computeNodes.length,
+        drawMode: PULLED ? (arenaOk ? 'pulled' : 'variants-fallback') : 'variants',
+        pulledArena: arenaOk ? {
+          vertexSlot: arenaSlots.vertexSlot, indexSlot: arenaSlots.indexSlot,
+          vertexBytes: arena.vertexData.byteLength, indexBytes: arena.indexData.byteLength,
+          instanceBytes: mergedAttr.array.byteLength, overflows: arenaOverflows,
+        } : null,
+        pulledError: arenaFailure,
       };
     },
     // `summary` above is the allocation-free, scan-free read for a per-frame caller. This one
@@ -1180,6 +1392,7 @@ export function createForestGPU(opts) {
       const attrs = renderer?._attributes;
       if (attrs?.delete) {
         const owned = [srcAttr, drawAttr, countsAttr, survAttr];
+        if (arenaOk) owned.push(arenaVertAttr, arenaIdxAttr, arenaCountAttr, mergedAttr, mergedCountAttr, mergedIndirect);
         for (const a of indirectAttrs) owned.push(...Object.values(a));
         for (const a of owned) { try { attrs.delete(a); } catch { /* never uploaded */ } }
       }

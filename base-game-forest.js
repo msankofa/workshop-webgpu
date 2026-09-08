@@ -16,7 +16,7 @@
 // way a near/far window blend would (which would pop trunks as the camera walked past the handover).
 
 import * as THREE from 'three';
-import { Fn, attribute, float, vec2, fract, floor, dot, mix, sin } from 'three/tsl';
+import { Fn, attribute, float, vec2, fract, floor, dot, mix, sin, texture } from 'three/tsl';
 import { createBaseGameTrees, BASE_GAME_TREE_DEFAULTS, TREE_IDENTITY_KEYS } from './base-game-trees.js';
 import { buildSpecies, rngFrom } from './forest-placement.js';
 
@@ -30,6 +30,10 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
   // Provisional performance default. Four remains available as the high-variety setting, but the
   // default should not double render objects/material graphs before GPU captures justify it.
   treeVariantsPerSpecies: 2,
+  // Draw submission for the branch LOD2 rung: 'variants' is one mesh per variant (the shipped
+  // path); 'pulled' is one merged mesh whose vertex stage reads an arena, so the whole rung is a
+  // single draw. A prototype -- see docs/superpowers/plans/2026-09-07-forest-consolidation-design.md.
+  forestDrawMode: 'variants',
   treeLeafSway: 1,
   treeHizRecullFrames: 4,      // frames between Hi-Z re-tests while the camera is under the forest's move/turn gate
   treeBark: true, treeLeaves: true, treeBarkShadows: true, treeLeafShadows: true,
@@ -50,6 +54,7 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
 // Palette-shaping settings: changing one rebakes the geometry and rebuilds the instance buffers,
 // so they are commit-on-release in the panel and deferred to the next update() here.
 const PALETTE_KEYS = Object.freeze([
+  'forestDrawMode',
   'treeTexMode', 'treeSpecies', 'treeSpeciesSelection', 'treeDiversity', 'treeGeneralization', 'treeVariantsPerSpecies', 'treeCapPerVariant',
   'treeLeafCount', 'treeLeafSize', 'treeLeafStart', 'treeLeafSpread', 'treeLeafShadowPct',
   'treeCoarseLeafRatio', 'treeCoarseLeafSizeMult', 'treeSeedOffset',
@@ -81,9 +86,9 @@ export function rungTriangles(palette) {
 // Bark grain, ported from environment-viewer.html's proceduralBarkColorNode. The baked flat
 // species colour is the vertex colour it multiplies, so a trunk reads as bark rather than as a
 // coloured cylinder.
-export function proceduralBarkColorNode() {
-  const uv = attribute('uv', 'vec2');
-  const vertexColor = attribute('color', 'vec3');
+export function proceduralBarkColorNode(uvNode = null, colorNode = null) {
+  const uv = uvNode ?? attribute('uv', 'vec2');
+  const vertexColor = colorNode ?? attribute('color', 'vec3');
   const hash2D = Fn(([p]) => {
     const q = fract(p.mul(vec2(123.34, 456.21)));
     const r = q.add(dot(q, q.add(float(45.32))));
@@ -110,6 +115,20 @@ export function proceduralBarkColorNode() {
 // half-covered edge texels blend against the sky as a pale rim around every leaf.
 export function bindTreeMaterials(branchMat, leafMat, set) {
   leafMat.transparent = false;
+  // The pulled branch material has no vertex attributes to bind against: uv and vertex colour are
+  // arena reads. Bark grain and the bark photo both work from those nodes; the normal map does not
+  // (it needs tangents Three derives from real attributes), so this rung loses it -- LOD2 only.
+  const pulled = branchMat.userData?.pulledNodes;
+  if (pulled) {
+    branchMat.map = null;
+    branchMat.normalMap = null;
+    branchMat.vertexColors = false;
+    branchMat.colorNode = (!set || set.mode === 'procedural' || !set.barkMap)
+      ? proceduralBarkColorNode(pulled.uv, pulled.color)
+      : texture(set.barkMap, pulled.uv).rgb.mul(pulled.color);
+    branchMat.needsUpdate = true;
+    return;
+  }
   if (!set || set.mode === 'procedural') {
     branchMat.map = null;
     branchMat.normalMap = null;
@@ -396,6 +415,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
           hizRecullFrames: cfg.treeHizRecullFrames,
           billboards: false,
           progressive: true,
+          drawMode: cfg.forestDrawMode === 'pulled' ? 'pulled' : 'variants',
           shadowLayer,
           hiz,
         });

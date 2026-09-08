@@ -170,3 +170,88 @@ export function occludedByHiZ(bounds, pyramid) {
   const bias = nearest * texelWorld * (1 << level) + HIZ_BIAS_FLOOR;
   return nearest > farthest + bias;
 }
+
+// ---------------------------------------------------------------------------
+// Pulled-draw arena (2026-09-07, forest consolidation prototype)
+//
+// One merged mesh per role instead of one per variant. The vertex stage reads its geometry from
+// a storage arena instead of vertex attributes, so a single instanced indexed draw can cover
+// every variant: the index buffer is the identity 0..stride-1, and the shader turns
+// (instance -> variant, vertexIndex -> k) into an arena vertex itself.
+//
+// These helpers are the CPU twin of that mapping. forest-gpu.js transcribes them into TSL and
+// does NOT import this file (same not-imported convention as classifyInstance above).
+//
+// Slots are UNIFORM: every variant gets the largest variant's vertex and index budget. That
+// makes the mapping two multiplies instead of a prefix scan, at the cost of drawing
+// (indexStride - indexCount[v]) degenerate indices per instance of a small variant.
+
+export const PULLED_VERTEX_STRIDE = 12;   // floats per arena vertex: pos3+u, nrm3+v, col3+pad
+
+// The uniform slot sizes a set of role geometries needs. `geometries` is one entry per variant,
+// each { positionCount, indexCount } (or a BufferGeometry-shaped object).
+export function pulledArenaSlots(geometries) {
+  let vertexSlot = 0, indexSlot = 0;
+  for (const g of geometries) {
+    const { vertexCount, indexCount } = roleCounts(g);
+    if (vertexCount > vertexSlot) vertexSlot = vertexCount;
+    if (indexCount > indexSlot) indexSlot = indexCount;
+  }
+  return { vertexSlot, indexSlot };
+}
+
+function roleCounts(g) {
+  if (!g) return { vertexCount: 0, indexCount: 0 };
+  if (Number.isFinite(g.vertexCount) || Number.isFinite(g.indexCount)) {
+    return { vertexCount: g.vertexCount ?? 0, indexCount: g.indexCount ?? 0 };
+  }
+  const pos = g.attributes?.position;
+  return { vertexCount: pos ? pos.count : 0, indexCount: g.index ? g.index.count : 0 };
+}
+
+// Pack every variant's geometry into one interleaved float arena plus one u32 index arena.
+// Indices stay LOCAL to the variant's vertex slot; the shader adds v*vertexSlot. Returns null
+// when a geometry does not fit the slots it was given (the caller falls back to per-variant meshes).
+export function packPulledArena(geometries, slots) {
+  const { vertexSlot, indexSlot } = slots;
+  const V = geometries.length;
+  const vertexData = new Float32Array(V * vertexSlot * PULLED_VERTEX_STRIDE);
+  const indexData = new Uint32Array(V * indexSlot);
+  const counts = new Uint32Array(V * 2);      // [v*2] = vertexCount, [v*2+1] = indexCount
+  for (let v = 0; v < V; v++) {
+    const geo = geometries[v];
+    const { vertexCount, indexCount } = roleCounts(geo);
+    if (vertexCount > vertexSlot || indexCount > indexSlot) return null;
+    counts[v * 2] = vertexCount;
+    counts[v * 2 + 1] = indexCount;
+    if (!geo) continue;
+    const pos = geo.attributes?.position?.array, nrm = geo.attributes?.normal?.array;
+    const uv = geo.attributes?.uv?.array, col = geo.attributes?.color?.array;
+    const vBase = v * vertexSlot * PULLED_VERTEX_STRIDE;
+    for (let i = 0; i < vertexCount; i++) {
+      const o = vBase + i * PULLED_VERTEX_STRIDE;
+      if (pos) { vertexData[o] = pos[i * 3]; vertexData[o + 1] = pos[i * 3 + 1]; vertexData[o + 2] = pos[i * 3 + 2]; }
+      if (uv) vertexData[o + 3] = uv[i * 2];
+      if (nrm) { vertexData[o + 4] = nrm[i * 3]; vertexData[o + 5] = nrm[i * 3 + 1]; vertexData[o + 6] = nrm[i * 3 + 2]; }
+      if (uv) vertexData[o + 7] = uv[i * 2 + 1];
+      if (col) { vertexData[o + 8] = col[i * 3]; vertexData[o + 9] = col[i * 3 + 1]; vertexData[o + 10] = col[i * 3 + 2]; }
+    }
+    const idx = geo.index?.array;
+    const iBase = v * indexSlot;
+    for (let k = 0; k < indexCount; k++) indexData[iBase + k] = idx ? idx[k] : 0;
+    // Padding indices repeat the variant's first index, so a padded triangle is degenerate.
+    const pad = idx && indexCount ? idx[0] : 0;
+    for (let k = indexCount; k < indexSlot; k++) indexData[iBase + k] = pad;
+  }
+  return { vertexData, indexData, counts, vertexSlot, indexSlot, stride: PULLED_VERTEX_STRIDE };
+}
+
+// vertexIndex k (0..indexSlot-1) and a variant id -> the arena float offset of that vertex.
+// k past the variant's own index count reads its first index, which collapses the triangle.
+export function pulledVertexOffset(k, variant, arena) {
+  const { counts, vertexSlot, indexSlot, indexData } = arena;
+  const live = k < counts[variant * 2 + 1];
+  const kk = live ? k : 0;
+  const local = indexData[variant * indexSlot + kk];
+  return { live, offset: (variant * vertexSlot + local) * PULLED_VERTEX_STRIDE };
+}

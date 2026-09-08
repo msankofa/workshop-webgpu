@@ -318,6 +318,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   treeSpeciesSelection: DEFAULT_BASE_GAME_TREE_SPECIES,
   treeTexMode: BASE_GAME_FOREST_DEFAULTS.treeTexMode,
   treeVariantsPerSpecies: BASE_GAME_FOREST_DEFAULTS.treeVariantsPerSpecies,
+  forestDrawMode: BASE_GAME_FOREST_DEFAULTS.forestDrawMode,
   treeVerticalOffset: BASE_GAME_TREE_DEFAULTS.treeVerticalOffset,
   treeLeafSize: BASE_GAME_FOREST_DEFAULTS.treeLeafSize,
   treeTrunkHeight: BASE_GAME_FOREST_DEFAULTS.treeTrunkHeight,
@@ -3684,7 +3685,7 @@ const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'tree
   'treeTexMode', 'treeVariantsPerSpecies', 'treeLeafSize', 'treeTrunkHeight', 'treeTrunkWidth',
   'treeVerticalOffset', 'treeDrawRadius', 'drawDistance', 'treeLodR0', 'treeLodR1', 'treeLodR2',
   'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway', 'treeHizRecullFrames',
-  'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows'];
+  'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows', 'forestDrawMode'];
 const appliedForest = {};
 let forestLoading = false;
 function applyForestSettings() {
@@ -5181,6 +5182,8 @@ addSelect(treeLookSec, 'treeTexMode', 'Tree textures', ['authored', 'procedural'
   ['Bark photos and leaf atlas', 'Procedural bark grain, flat leaves']);
 // Species x variants is the variant count, and the variant count is the draw count and the
 // material count both. Rebuild-class: it rebakes the palette.
+// Local quality, rebuilds the forest: the LOD2 branch rung as one merged pulled draw (prototype, unseen in a browser) or one draw per variant.
+addSelect(treeLookSec, 'forestDrawMode', 'LOD2 branch submission', ['variants', 'pulled'], ['One draw per variant', 'One merged draw']);
 addCommitRange(treeLookSec, 'treeVariantsPerSpecies', 'Variants per species', 1, 8, 1,
   value => {
     const species = selectedTreeSpeciesIds(settings.treeSpeciesSelection).length;

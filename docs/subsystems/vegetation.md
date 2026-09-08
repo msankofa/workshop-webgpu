@@ -1566,6 +1566,7 @@ placement.
 | `test-bot-trees.mjs` | `bot-trees-place.js`, `bot-trees.js`, and their integration with `forest-placement.js` / `bot-flora-place.js` | 92 assertions. Trunk-proxy budgeting including the counterfactual that rendered geometry would cap under 30 trees. Trunk dimensions track `radius[0]`/`length[0]` and the record scale. `stampCluster`: exact count, all points inside the radius, seed determinism, uniform-**by-area** distribution at falloff 0 versus visible centre-bunching at 1, every surviving pair honouring `minSeparation`, an over-tight ask thinning instead of spinning, and the accept gate. Auto placement on one arena chunk respects wall rects and is seed-reproducible; the family filter really does place only that family. Records carry no baked `y` — the same trees re-drape on different terrain. Placed records resolve by id across a changed family set and are dropped rather than remapped when their species is gone. Only `origin === 'placed'` serializes, and save→load→save is stable. Section 10 drives the **real** `bot-trees.js` with real THREE (three/tsl resolves in Node; TSL only builds a node graph, no GPU): builds, counts draws, cross-checks the reported collider triangle total against an independent traverse, plants a clump, erases, clears, disables and disposes. Mutation-checked: six edits (dropping the species guard, persisting auto trees, baking `y` flat, un-sqrt-ing the disc sampling, ignoring `minSeparation`, budgeting with render triangles) each make it fail. |
 | `test-forest-cull.mjs` | `forest-cull.js` (`cullInstance`, `classifyInstance`, `shouldRecull`) | `cullInstance`: 4 cases, in-range kept / beyond-maxDist culled / diagonal-beyond-radius culled / diagonal-within-radius kept (squared-distance circular cull). `classifyInstance` (Milestones 2-3): behind-camera instance rejected past the rear margin (both far-behind and near-but-behind); straight-ahead in-cone instance kept; an edge instance just outside the raw FOV but inside the padded cone (cone margin + per-instance angular canopy radius) kept, proving anti-pop padding; beyond-`maxDrawRadius` instance rejected via `farLive` even when dead-ahead, within-radius passes; `coneEnabled: false` keeps a behind-camera instance (backward compat). `shouldRecull` (Milestone 4): 0.01-unit drift does not recull, 2-unit move does, 3-degree turn does, NaN prev state (first/forced recull) always does, custom tighter thresholds honored — 23 assertions total. |
 | `test-forest-gpu-programs.mjs` | `forest-gpu.js` material graphs | Builds every variant mesh's WGSL with a stub renderer and asserts one distinct program per mesh role across variants (9 roles, 9 programs for 4 variants), 8 distinct material objects for the whole forest, and a numeric `userData.slotOffset` on every mesh; a per-variant constant or a per-variant material fails it. |
+| `test-forest-pulled-arena.mjs` | `forest-cull.js` (`pulledArenaSlots`, `packPulledArena`, `pulledVertexOffset`) and the `drawMode: 'pulled'` path in `forest-gpu.js` | Slots take the widest variant and ignore a null one; the packed arena is the uniform-slot size, every source position/normal/uv/colour round-trips out of it field by field, padding indices repeat the variant's first index so a padded triangle is degenerate, and a geometry too big for its slot returns `null` rather than truncating. The mapping: a live `k` resolves to the vertex that variant's OWN index buffer points at (offset checked arithmetically as well as by value), `k` past the count is not live and collapses onto `k = 0`, the widest variant stays live to the end of the slot, and a variant with no geometry is never live. Then the real module, headless against a stub renderer: `variants` builds no merged mesh and `pulled` builds exactly one extra object; the identity index buffer is the padded stride and really is the identity; the dummy attributes cover every index value (so no hardware fetch can go out of bounds); the merged geometry is indirect, instanced to the whole live list, and starts at zero instances; the merged mesh replaces every per-variant L2 branch mesh one for one and takes one draw off the main pass; an empty rung and a disabled rung both hide it and re-enabling brings it back; `installVariant` repacks without changing the stride and records no overflow; the merged mesh rides out with `variantMeshes(0)` and no other wave; pulled mode adds exactly two compute pipelines; dispose is clean in both modes. |
 | `test-forest-gpu-rung-gate.mjs` | `forest-gpu.js` rung gate | Trees at known ranges draw only the rungs that can hold them; behind-camera trees keep their rung; a ring-boundary tree keeps both neighbours; shadow pair follows reach; `rungGate: false` restores 7 + 2 per variant. |
 | `test-forest-gpu-rebuild.mjs` | The `rebuild()` logic pattern in `forest-gpu.js` (reimplemented as a standalone harness, not imported from the real file) | `setChunks(map)` produces the same source/counts buffers as N sequential `setChunk()` calls but triggers exactly one rebuild instead of N; insertion order into the chunk map doesn't change final per-variant counts; an empty `setChunks(new Map())` is a no-op rebuild that leaves buffers zeroed. |
 | `test-forest-placement.mjs` | `forest-placement.js` (`placementRecords`, `buildSpeciesFromFamilies`) | Places between 1 and `count` trees on flat dry ground; identical output for two calls with the same seed/params (determinism); all placements within chunk bounds; positive `scale`; valid `speciesIdx` range; `yaw` present; submerged ground (`heightAt` returns -5) yields zero placements (water rejection); `buildSpeciesFromFamilies` flattens a family into a species table carrying `_tag`; with a `speciesTable` + an all-`'forest'` `biomeAt`, only the forest-tagged species is ever picked and `scale` stays within its `sizeRange`; without a `biomeAt`, every tagged species stays a density-weighted candidate everywhere. |
@@ -2018,3 +2019,110 @@ Node cannot see any of these. Flip `grassUniformScope` to `'object'` and compare
 mechanics above say moving them would be safe, but the compute renderId bookkeeping was read rather
 than executed, and the saving is two diffs per pass against uniforms where a stale value misplaces
 every blade rather than just stopping the wind. Revisit with a browser measurement, not from Node.
+
+## Forest draw consolidation — the pulled LOD2 branch draw (2026-09-07, prototype)
+
+Design: `docs/superpowers/plans/2026-09-07-forest-consolidation-design.md`. **Default off.** Nothing
+below runs unless `forestDrawMode: 'pulled'` is set; `'variants'` is byte-identical to what shipped.
+
+### Why, and the census it rests on
+
+Base Game builds **one `THREE.Mesh` per (variant × role)**: 7 main roles + 2 shadow-only = 9 meshes
+per variant (code-read, `forest-gpu.js`). The shipped default state selects **8 species** at
+`treeVariantsPerSpecies: 2` (`base-game-default-state.json`), so **V = 16** and the forest allocates
+**144 meshes**. The module default in `base-game-tree-species.js` is only 3 species (6 variants,
+54 meshes) — that is the number a page opened without the saved state gets, and it is why two earlier
+censuses disagreed. A 2026-09-07 capture (`research/stats/base-game-performance-log.json`, entries
+34-55) names `forest:v15:…` rows and shows the shadow pass at **32 draws** = 16 × 2, which is every
+shadow mesh; the main scene reports **202 objects / 214 draws**.
+
+### What 'pulled' does
+
+For **one role only, `branchesL2`**, the V per-variant meshes are replaced by **one instanced indexed
+draw**:
+
+- **Arena.** Every variant's L2 branch geometry is packed into two storage buffers by
+  `packPulledArena` in `forest-cull.js`: an interleaved float arena
+  (`(px,py,pz,u) (nx,ny,nz,v) (r,g,b,_)`, 12 floats per vertex) and a u32 index arena. Slots are
+  **uniform** — every variant gets the widest variant's budget, times `opts.pulledSlack` (default 2)
+  so a progressive wave installing a bigger real geometry over its placeholder still fits.
+- **Identity index buffer.** The merged mesh's own index buffer is `0 … indexSlot-1`, so
+  `@builtin(vertex_index)` hands the shader the local index `k` directly, and every hardware vertex
+  fetch stays inside the mesh's small dummy attributes whatever attribute nodes Three still emits.
+- **Mapping.** `rec1.y` of each live instance record carries the variant id. The vertex stage reads
+  the variant's index count, clamps `k` past it to `k = 0` (so a padded triangle is zero-area and
+  rasters nothing), reads `indexArena[v * indexSlot + k]`, and fetches the arena vertex at
+  `(v * vertexSlot + local) * 12`. `pulledVertexOffset` in `forest-cull.js` is the CPU twin of
+  exactly that, and `test-forest-pulled-arena.mjs` pins it.
+- **Compaction, no readback.** The cull kernel's existing LOD2 branch gains a second `atomicAdd`
+  into one flat cross-variant list; a one-invocation `finalizeMerged` copies that count into a normal
+  5-uint `IndirectStorageBufferAttribute` — the same indexed-indirect layout every other role uses,
+  so no new indirect argument shape was needed. The per-variant LOD2 list is still written, which is
+  why `'variants'` is unchanged and a fallback needs no rebuild.
+- **Per-pass visibility.** Untouched. `branchesL2` does not cast in Base Game (`SHADOW_LIST` forces
+  `castShadow = false` on every main mesh), the shadow-only pair keeps its own cone-free radial list,
+  and the merged mesh is excluded from the water mirror by the same `onMeshes` list as before.
+- **Rung gate.** The per-variant L2 meshes are still built and still gated; in pulled mode they are
+  forced hidden and their "would have drawn" answer becomes the merged mesh's on/off.
+
+### The costs this trades
+
+Uniform slots mean a small variant draws `indexSlot - indexCount[v]` degenerate indices per instance.
+From the baked palette on disk (`families/palettes/…`, 8 species × 2, treesVersion 2), branchesL2
+index counts per variant run **1,092 to 7,308** (mean 4,449 over 16 variants). At `indexSlot = 7,308`
+the merged draw runs about **1.64× the vertex invocations** of the per-variant draws — before the
+slack multiplier, which raises it further. That is the prototype's main risk and the reason it is a
+measurement, not a default.
+
+Memory (arithmetic from those counts): the tight arena is 21,798 vertices × 48 B = **1.05 MB** plus
+71,178 indices × 4 B = **285 KB**; at `pulledSlack: 2` the slots double both. The merged instance
+list is another `V*CAP × 32 B` (16 × 1024 → **512 KB**).
+
+**Known visual delta:** the merged material has no vertex attributes, so `normalMap` cannot be bound
+(Three derives its tangents from real attributes). `bindTreeMaterials` detects
+`material.userData.pulledNodes` and binds bark colour from the arena's uv/colour instead — procedural
+grain, or the bark photo sampled at the arena uv — with `normalMap = null`. This affects the LOD2
+rung only.
+
+### Failure handling
+
+- An arena that cannot be built at construction sets `summary.drawMode = 'variants-fallback'` and
+  `summary.pulledError`; the per-variant meshes carry on.
+- A wave whose real geometry overruns its slot sets that variant's counts to 0 (the merged draw skips
+  it entirely) and un-hides that variant's own L2 mesh. `summary.pulledArena.overflows` counts it and
+  it warns once per occurrence.
+- The merged `atomicAdd` is clamped to the list length, so an over-full window drops instances rather
+  than writing out of bounds.
+
+### The flag
+
+`BASE_GAME_FOREST_DEFAULTS.forestDrawMode` (`'variants' | 'pulled'`), a `PALETTE_KEYS` member so
+changing it tears down and rebuilds. `base-game-forest.js` passes it to `createForestGPU` as
+`drawMode`. It is **local quality** and must never join `BASE_GAME_SHARED_KEYS`.
+
+### What is still browser-only
+
+Nothing here has been rendered. `tsl-build-check.mjs` cannot reach this material — it is a GLSL
+builder and storage-buffer materials need a real backend (its own header says so). Outstanding
+acceptance checks, all needing a device:
+
+1. **Placement** — LOD2 trees stand in the same places, yaw and scale, as `variants`.
+2. **Silhouettes** — per-variant shapes stay distinguishable. A wrong variant id or slot shows as one
+   trunk shape appearing everywhere.
+3. **LOD** — walk the r1/r2 rings; no popping or gaps beyond today's.
+4. **Depth / sides** — no z-fighting, FrontSide preserved, no inside-out trunks.
+5. **Shadows** — this rung still does not cast, and the shadow-only pair is unchanged.
+6. **Extremes** — the rung empty (walk out, or disable LOD2) and a dense stand near `capPerVariant`.
+7. **Rebase** — cross an origin-rebase boundary; the trees must not shift.
+8. **Pixel diff** — same seeded window and standing spot, `pulled` vs `variants`.
+9. **Cost** — whether the extra vertex invocations cost more than 16 fewer draws save. If they do,
+   the fallbacks in the design doc are an equal-stride bucketed arena, or merging only the two
+   shadow-only roles.
+
+Also unverified without a device: that the vertex stage's storage-buffer budget admits four storage
+bindings (merged list, vertex arena, index arena, count table) on top of what Three binds. r184
+requests the adapter with `featureLevel: 'compatibility'` and `requiredLimits: {}`
+(`three.webgpu.js:80040-80074`), so the device gets **default** limits, and the only limits the build
+reads at all are `maxUniformBufferBindingSize` and `maxComputeWorkgroupsPerDimension`. The existing
+forest material already binds one storage buffer in the vertex stage and works, so the capability is
+there; the headroom is inferred, not measured.
