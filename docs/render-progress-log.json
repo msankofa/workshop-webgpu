@@ -118,6 +118,12 @@
       "title": "Tasks 6 to 8 read: forest merge closed, GPU ruled out, heap growth found",
       "body": "Eighteen captures 19:42 to 20:08Z. Forest pair at one spot: both merged modes rendered with no fallback and no visible difference; 15 fewer draws and no gain (p50 18.1 ms at variants against 19.4 and 20.3 merged, within noise). The 50M reported triangles is the declared index count times the declared instance ceiling, not GPU work. Verdict: consolidating one role does not pay; default-off, closed. Worker cap one against two on the minimal scene: no effect distinguishable from run variation, spikes 5% of frames either way. GPU timestamps: render passes p50 0.3 to 0.5 ms, worst 1.9 ms; the frame is main-thread time (11 to 16 ms in the render call at 180 to 260 draws with plants off), so the 40 to 130 ms frames are not GPU pass time. New: the JS heap grows 22 to 46 MB/s in every capture including standing still, with 24 MB collections every second or so landing in some spike frames; and spike frames carry 45 to 100 ms long tasks none of our slots hold. Tasks 9 (allocation sampling) and 10 (DevTools recording) assigned; they name code, which the capture cannot. Stats tab gained the four evening tables.",
       "commits": []
+    },
+    {
+      "at": "2026-09-08T20:55Z",
+      "title": "Astra’s points on tasks 6 to 8 applied",
+      "body": "Fixed-threshold dip rates (frames over 33 and over 50 ms per 1000) added beside the per-run p99 spikes; on them the one-worker runs sit at the low end of a two-worker spread wider than the difference, so the worker A/B establishes nothing either way. The long tasks were aligned by raw start and end: every one is the page’s own frame callback past 50 ms, so \"long tasks none of our slots hold\" is withdrawn. A spike frame decomposes as the render call roughly doubling, the timed slots doubling with it, a 4 to 22 ms gap before the frame, and 4 to 14 ms unaccounted; everything slows together. Forest conclusion scoped to this role, layout and runs, GPU cost unmeasured. Heap slope and drop frequency noted as not giving allocation volume or an allocator; profiler overhead noted on task 9. Remaining supported sharing and lifecycle items listed separately in comms.",
+      "commits": []
     }
   ]
 }

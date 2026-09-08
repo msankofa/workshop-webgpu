@@ -7,6 +7,9 @@ const r0 = v => v == null || !Number.isFinite(+v) ? '–' : String(Math.round(+v
 const hhmm = at => at.slice(11, 19);
 const rowsOf = p => p.series.map(r => Object.fromEntries(p.seriesKeys.map((k, i) => [k, r[i]])));
 const mean = (a, k) => a.length ? a.reduce((s, r) => s + (+r[k] || 0), 0) / a.length : NaN;
+const per1000 = (rows, ms) => Math.round(1000 * rows.filter(r => r.frameMs > ms).length / rows.length);
+const SLOTS = ['simMs', 'bodiesMs', 'skyMs', 'terrainMs', 'terrainIntegrateMs', 'forestMs', 'grassMs'];
+const slotSum = a => SLOTS.reduce((s, k) => s + (mean(a, k) || 0), 0);
 
 export function eveningSection(entries) {
   const ev = entries.filter(e => e.capturedAt >= '2026-09-08T19:40' && e.capturedAt < '2026-09-08T20:10');
@@ -16,18 +19,26 @@ export function eveningSection(entries) {
 
   // forest pair: standing, trees on, no flags
   const pair = ev.filter(e => url(e) === '(none)' && e.settingsAtStart?.treesEnabled && !rowsOf(e.performance).some(r => r.speed > 0.5));
-  const pairTable = `<table class="narrow"><thead><tr><th>time</th><th>mode</th><th>frame p50</th><th>p95</th><th>max</th><th>std dev</th><th>forest draws</th><th>all draws p50</th><th>reported triangles p50</th><th>fallback</th></tr></thead><tbody>${pair.map(e => {
-    const p = e.performance, f = e.context?.flora?.trees || {};
-    return `<tr><td>${hhmm(e.capturedAt)}</td><td>${esc(e.settingsAtStart.forestDrawMode)}</td><td>${r1(p.frameMs.p50)}</td><td>${r1(p.frameMs.p95)}</td><td>${r1(p.frameMs.max)}</td><td>${r1(p.frameMs.stdDev)}</td><td>${r0(f.draws)}</td><td>${r0(p.drawCalls?.p50)}</td><td>${(p.triangles?.p50 / 1e6).toFixed(2)} M</td><td>${f.lastError ? esc(f.lastError) : 'none'}</td></tr>`;
+  const pairTable = `<table class="narrow"><thead><tr><th>time</th><th>mode</th><th>frame p50</th><th>p95</th><th>max</th><th>std dev</th><th>forest draws</th><th>all draws p50</th><th>reported triangles p50</th><th>frames &gt; 33 ms per 1000</th><th>&gt; 50 ms</th><th>fallback</th></tr></thead><tbody>${pair.map(e => {
+    const p = e.performance, f = e.context?.flora?.trees || {}, rows = rowsOf(p);
+    return `<tr><td>${hhmm(e.capturedAt)}</td><td>${esc(e.settingsAtStart.forestDrawMode)}</td><td>${r1(p.frameMs.p50)}</td><td>${r1(p.frameMs.p95)}</td><td>${r1(p.frameMs.max)}</td><td>${r1(p.frameMs.stdDev)}</td><td>${r0(f.draws)}</td><td>${r0(p.drawCalls?.p50)}</td><td>${(p.triangles?.p50 / 1e6).toFixed(2)} M</td><td>${per1000(rows, 33.3)}</td><td>${per1000(rows, 50)}</td><td>${f.lastError ? esc(f.lastError) : 'none'}</td></tr>`;
   }).join('')}</tbody></table>`;
 
   // walking runs, trees and grass off: worker A/B and gputime
   const walking = ev.filter(e => rowsOf(e.performance).some(r => r.speed > 0.5));
-  const abTable = `<table><thead><tr><th>time</th><th>URL</th><th>trees</th><th>frames</th><th>frame p50</th><th>p95</th><th>max</th><th>spikes</th><th>spike between-frame ms</th><th>other</th><th>spike long task ms</th><th>other</th><th>spike in-flight</th><th>other</th><th>spike busy workers</th><th>other</th></tr></thead><tbody>${walking.map(e => {
+  const abTable = `<table><thead><tr><th>time</th><th>URL</th><th>trees</th><th>frames</th><th>frame p50</th><th>p95</th><th>max</th><th>frames &gt; 33 ms per 1000</th><th>&gt; 50 ms</th><th>spikes (own p99)</th><th>spike between-frame ms</th><th>other</th><th>spike long task ms</th><th>other</th><th>spike in-flight</th><th>other</th><th>spike busy workers</th><th>other</th></tr></thead><tbody>${walking.map(e => {
     const p = e.performance, rows = rowsOf(p), thr = p.spikes.thresholdMs;
     const sp = rows.filter(r => r.frameMs >= thr && r.frameMs < 1000), ot = rows.filter(r => r.frameMs < thr);
     const c = (a, b) => `<td${a > 1.5 * b ? ' class="hot"' : ''}>${r1(a)}</td><td>${r1(b)}</td>`;
-    return `<tr><td>${hhmm(e.capturedAt)}</td><td>${esc(url(e))}</td><td>${trees(e)}</td><td>${rows.length}</td><td>${r1(p.frameMs.p50)}</td><td>${r1(p.frameMs.p95)}</td><td>${r1(p.frameMs.max)}</td><td>${sp.length} (${(100 * sp.length / rows.length).toFixed(0)}%)</td>${c(mean(sp, 'betweenMs'), mean(ot, 'betweenMs'))}${c(mean(sp, 'longTaskMs'), mean(ot, 'longTaskMs'))}${c(mean(sp, 'terrainInFlight'), mean(ot, 'terrainInFlight'))}${c(mean(sp, 'terrainBusyWorkers'), mean(ot, 'terrainBusyWorkers'))}</tr>`;
+    return `<tr><td>${hhmm(e.capturedAt)}</td><td>${esc(url(e))}</td><td>${trees(e)}</td><td>${rows.length}</td><td>${r1(p.frameMs.p50)}</td><td>${r1(p.frameMs.p95)}</td><td>${r1(p.frameMs.max)}</td><td>${per1000(rows, 33.3)}</td><td>${per1000(rows, 50)}</td><td>${sp.length} (${(100 * sp.length / rows.length).toFixed(0)}%)</td>${c(mean(sp, 'betweenMs'), mean(ot, 'betweenMs'))}${c(mean(sp, 'longTaskMs'), mean(ot, 'longTaskMs'))}${c(mean(sp, 'terrainInFlight'), mean(ot, 'terrainInFlight'))}${c(mean(sp, 'terrainBusyWorkers'), mean(ot, 'terrainBusyWorkers'))}</tr>`;
+  }).join('')}</tbody></table>`;
+
+  // spike decomposition: where a spike frame's time is, against the ordinary frames of the same run
+  const decompTable = `<table><thead><tr><th>time</th><th>trees</th><th colspan="5">spike frames (above the run's p99)</th><th colspan="5">other frames</th></tr><tr><th></th><th></th><th>frame</th><th>render call</th><th>timed slots</th><th>gap before</th><th>rest</th><th>frame</th><th>render call</th><th>timed slots</th><th>gap before</th><th>rest</th></tr></thead><tbody>${ev.map(e => {
+    const p = e.performance, rows = rowsOf(p), thr = p.spikes.thresholdMs;
+    const sp = rows.filter(r => r.frameMs >= thr && r.frameMs < 1000), ot = rows.filter(r => r.frameMs < thr);
+    const cells = a => { const f = mean(a, 'frameMs'), rc = mean(a, 'postRenderMs'), sl = slotSum(a), b = mean(a, 'betweenMs'); return `<td>${r1(f)}</td><td>${r1(rc)}</td><td>${r1(sl)}</td><td>${r1(b)}</td><td>${r1(f - rc - sl - b)}</td>`; };
+    return `<tr><td>${hhmm(e.capturedAt)}</td><td>${trees(e)}</td>${cells(sp)}${cells(ot)}</tr>`;
   }).join('')}</tbody></table>`;
 
   // gpu
@@ -58,7 +69,12 @@ ${pairTable}
 <h3>Walking on the minimal scene: worker cap, GPU timestamps, and what spike frames carry</h3>
 <p>Trees and grass off unless the trees column says on. Spike threshold is each capture's p99. Between-frame time is the gap before the frame that none of our code accounts for; long tasks are the browser's own report; in-flight and busy-worker counts are unacknowledged terrain work, an activity proxy.</p>
 ${abTable}
-<p class="fnote">One worker (19:55 rows) against two (19:48 to 19:49 rows) shows no effect distinguishable from run-to-run variation: spikes are about 5% of frames in every run and carry the same signature. The 20:06 row includes a 4 s hitch (one frame of 3998 ms) that the means exclude.</p>
+<p class="fnote">Fixed thresholds are the comparable columns; the p99 spike columns describe each run's own tail. One worker (19:55 rows: 53 and 74 frames over 33 ms per 1000, 15 and 2 over 50) against two (19:48 to 19:49 rows: 426, 182 and 114 over 33; 77, 7 and 10 over 50). The one-worker runs sit at the low end of the two-worker spread, and that spread (7 to 77 over 50 ms) is wider than the difference, so with two runs against three no effect is established either way. The 20:06 row includes a 4 s hitch (one frame of 3998 ms) that the means exclude.</p>
+
+<h3>What a spike frame is made of</h3>
+<p>Each spike frame's time split into the render call (main-thread time inside <code>renderer.render</code>), the page's own timed slots (sim, bodies, sky, terrain, forest, grass), the gap between the previous frame's end and this frame's start, and the rest, against the same split for the run's ordinary frames. Long tasks the browser reported were aligned to frames by their raw start and end (<code>attachLongTasks</code>); every one of them was the page's own frame callback running past 50 ms, attribution "self / unknown".</p>
+${decompTable}
+<p class="fnote">The earlier wording "long tasks that none of our slots hold" was wrong and is withdrawn: the long task is the frame itself. In a spike the render call roughly doubles (13 to 26-33 ms in the minimal-scene runs), the timed slots double with it, the gap before the frame is 4 to 22 ms against 1 to 3, and 4 to 14 ms is unaccounted against about 0.5 in ordinary frames. Everything the main thread does slows together; that is consistent with a paused or slowed thread (collection, contention, descheduling) rather than one subsystem doing more work, but the capture cannot say which. The DevTools recording (task 10) can.</p>
 
 <h3>GPU time against main-thread time (?gputime=1, 20:03 to 20:08Z)</h3>
 <p>GPU columns are Three's timestamp queries resolved a frame or two late (the resolve is not awaited, which would cost a display interval) and summed over the render passes of the last resolved frame; the device reports in steps of about 65 µs. "render call CPU" is the main-thread time inside <code>renderer.render</code>. Neither column includes presentation or queue wait.</p>
@@ -68,5 +84,5 @@ ${gpuTable}
 <h3>JS heap growth and collections in spike frames</h3>
 <p>Heap is <code>performance.memory.usedJSHeapSize</code> sampled once per frame, which Chrome quantizes; a drop of more than 1 MB between consecutive frames is read as a collection. Growth is summed over the frames without a drop.</p>
 ${heapTable}
-<p class="fnote">The heap grows 22 to 46 MB per second in every capture, including the three standing still with nothing moving, and a collection-sized drop of about 24 MB lands every second or so. Spike frames carry a drop 3 to 10 times more often than ordinary frames, but most spikes have none and most drops do not spike. Association, not cause; the allocating code is unnamed, which is what the allocation-sampling task asks for. The capture's own per-frame snapshot allocates a few kilobytes, not hundreds.</p>`;
+<p class="fnote">The heap grows 22 to 46 MB per second in every capture, including the three standing still with nothing moving, and a collection-sized drop of about 24 MB lands every second or so. Spike frames carry a drop 3 to 10 times more often than ordinary frames, but most spikes have none and most drops do not spike. Association, not cause. Growth slope and drop frequency do not give allocation volume or name an allocator; the allocation-sampling profile (task 9) does, at a sampling overhead that is itself unmeasured on this page. The capture's own per-frame snapshot allocates a few kilobytes, not hundreds.</p>`;
 }
