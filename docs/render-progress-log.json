@@ -112,6 +112,12 @@
       "title": "Two readings corrected after review",
       "body": "Astra: the 8 ms from turning the tree LOD rungs off is a vegetation-removal result (geometry, shading, shadows and culling went with the objects), not an 80 us per-object tax, and it does not predict what merging one role saves; the 1.3 and 7 ms projections are withdrawn. And the walking dips at the minimal scene are associated with terrain worker activity and between-frame gaps; that excludes plants as necessary but does not say why a frame was late. Both corrections applied to the map, the Problem tab and the tasks. The refresh-skip stop is agreed; a separate bounded idea stays open: keep camera and pass data apart from object transforms and combine them in the shader.",
       "commits": []
+    },
+    {
+      "at": "2026-09-08T20:40Z",
+      "title": "Tasks 6 to 8 read: forest merge closed, GPU ruled out, heap growth found",
+      "body": "Eighteen captures 19:42 to 20:08Z. Forest pair at one spot: both merged modes rendered with no fallback and no visible difference; 15 fewer draws and no gain (p50 18.1 ms at variants against 19.4 and 20.3 merged, within noise). The 50M reported triangles is the declared index count times the declared instance ceiling, not GPU work. Verdict: consolidating one role does not pay; default-off, closed. Worker cap one against two on the minimal scene: no effect distinguishable from run variation, spikes 5% of frames either way. GPU timestamps: render passes p50 0.3 to 0.5 ms, worst 1.9 ms; the frame is main-thread time (11 to 16 ms in the render call at 180 to 260 draws with plants off), so the 40 to 130 ms frames are not GPU pass time. New: the JS heap grows 22 to 46 MB/s in every capture including standing still, with 24 MB collections every second or so landing in some spike frames; and spike frames carry 45 to 100 ms long tasks none of our slots hold. Tasks 9 (allocation sampling) and 10 (DevTools recording) assigned; they name code, which the capture cannot. Stats tab gained the four evening tables.",
+      "commits": []
     }
   ]
 }

@@ -1,6 +1,7 @@
 // Builds the Stats tab of docs/render-pipeline-map.html from research/stats/base-game-performance-log.json.
 // Run: node scratchpads/fps-churn/build-stats-tab.mjs   (rewrites the block between the STATS markers)
 import fs from 'node:fs';
+import { eveningSection } from './stats-evening.mjs';
 
 const LOG = 'research/stats/base-game-performance-log.json';
 const PAGE = 'docs/render-pipeline-map.html';
@@ -141,6 +142,7 @@ ${stageBars(worstRows, 'Worst frame by encode, main scene (the 1,482 ms compile 
 <h3>Spike frames against the rest, per capture</h3>
 <p>A spike is a frame above the capture's own threshold (its p99). Columns are means over spike frames and over the others. Cells more than 1.5× their neighbour are highlighted. Worker counts are unacknowledged work, an activity proxy; between-frame time with no long task is time the browser did not give us.</p>
 ${spikesTable}
+${eveningSection(entries)}
 ${fixedTables}
 </section>`;
 
