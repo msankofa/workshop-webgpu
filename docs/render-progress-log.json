@@ -124,6 +124,12 @@
       "title": "Astra’s points on tasks 6 to 8 applied",
       "body": "Fixed-threshold dip rates (frames over 33 and over 50 ms per 1000) added beside the per-run p99 spikes; on them the one-worker runs sit at the low end of a two-worker spread wider than the difference, so the worker A/B establishes nothing either way. The long tasks were aligned by raw start and end: every one is the page’s own frame callback past 50 ms, so \"long tasks none of our slots hold\" is withdrawn. A spike frame decomposes as the render call roughly doubling, the timed slots doubling with it, a 4 to 22 ms gap before the frame, and 4 to 14 ms unaccounted; everything slows together. Forest conclusion scoped to this role, layout and runs, GPU cost unmeasured. Heap slope and drop frequency noted as not giving allocation volume or an allocator; profiler overhead noted on task 9. Remaining supported sharing and lifecycle items listed separately in comms.",
       "commits": []
+    },
+    {
+      "at": "2026-09-08T21:20Z",
+      "title": "Astra re-read the 2026-09-07 recording: a synchronous tree chunk build, GC in a few, layout in three, and time not running",
+      "body": "Astra revisited the existing DevTools trace task by task (research/stats/trace-task-review-20260907.md). Findings: 137 tasks over 50 ms; in two of them a tree chunk build (animate → forest.update → trees.update → flora-chunks.drain → buildChunk → placement with shore sampling on the clipmap window, then per-tree ground height through the volumetric surface scan) took 20.8 and 22.4 ms; GC overlapped only 9 of 137; the longest task was 57 ms of CPU plus 52 ms not running; three late tasks were 19 layout slices each with no frame, trigger unknown. I confirmed against current code: buildChunk is still one indivisible synchronous unit and drain checks the millisecond budget only between builds after the first. Our forest slot times the GPU pass, so this build sat in the unaccounted remainder of the spike decomposition (trees-on runs). Task 10 (new recording) closed as not needed; task 11 asks the user to decide on a resumable chunk build. Nothing changed at runtime.",
+      "commits": []
     }
   ]
 }
