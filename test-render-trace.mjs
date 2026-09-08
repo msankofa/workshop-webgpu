@@ -35,8 +35,8 @@ function fakeRenderer({ onEncode = null, beforeObjects = null, onBundle = null }
     _nodes: { updateBefore() {}, updateForRender() {}, needsRefresh() { return true; } },
     _geometries: { updateForRender() {} },
     _bindings: { updateForRender() {} },
-    _pipelines: { updateForRender() {} },
-    backend: { draw() {}, createBindings() {}, updateBinding() {}, updateAttribute() {} },
+    _pipelines: { updateForRender() {}, _getRenderPipeline() { return {}; } },
+    backend: { draw() {}, createBindings() {}, updateBinding() {}, updateAttribute() {}, createProgram() {} },
   };
   return { renderer, list };
 }
@@ -70,9 +70,13 @@ function subPhaseRenderer({ cost = {}, refresh = () => true, onBindings = null }
     },
     _geometries: { updateForRender() { spend('geometries', 1); } },
     _bindings: { updateForRender(renderObject) { spend('bindings', 5); onBindings?.(renderer, renderObject); } },
-    _pipelines: { updateForRender() { spend('pipelines', 1); } },
+    _pipelines: {
+      updateForRender(renderObject) { spend('pipelines', 1); if (renderObject?.material?.compile) this._getRenderPipeline(renderObject, {}, {}, 'key', renderObject.material.async ? [] : null); },
+      _getRenderPipeline(renderObject) { spend('pipelineCreate', renderObject?.material?.compileMs ?? 40); renderer.backend.createProgram({}); return {}; },
+    },
     backend: {
       draw() { spend('draw', 3); },
+      createProgram() { spend('programCreate', 10); },
       createBindings() {},
       updateBinding() {},
       updateAttribute() {},
@@ -671,6 +675,31 @@ function once(fn) {
   assert.equal(entry.topBindings.length, 2, 'the rows are still named, at zero milliseconds');
   assert.equal(entry.topBindings[0].ms, 0);
   console.log('pass: overhead mode counts everything and times nothing');
+
+{
+  // A pipeline cache miss names the material that compiled, with its time and path, and nothing
+  // else in the frame is charged for it twice: the create sits inside pipelinesMs.
+  const renderer = subPhaseRenderer();
+  const trace = createRenderTrace({ now });
+  trace.attach(renderer);
+  clock = 0;
+  renderer._renderScene({ name: 'base-game' }, { type: 'PerspectiveCamera' }, [
+    { object: { name: 'tree' }, material: { type: 'MeshStandardNodeMaterial', name: 'bark', compile: true, compileMs: 700 } },
+    { object: { name: 'rock' }, material: { type: 'MeshStandardNodeMaterial' } },
+    { object: { name: 'flare' }, material: { type: 'SpriteNodeMaterial', name: 'glow', compile: true, compileMs: 30, async: true } },
+  ]);
+  const t = trace.take();
+  const entry = t.scenes[0];
+  assert.equal(entry.pipelineCreates, 2, 'two cache misses');
+  assert.equal(entry.pipelineCreateMs, 700 + 10 + 30 + 10, 'the create time includes the program creation it triggered');
+  assert.equal(entry.programCreates, 2);
+  assert.equal(entry.programCreateMs, 20);
+  assert.deepEqual(entry.pipelineCreateRows.map(r => [r.name, r.materialName, r.ms, r.async]), [['tree', 'bark', 710, false], ['flare', 'glow', 40, true]], 'rows name the object and material, time and path');
+  assert.ok(entry.pipelinesMs >= entry.pipelineCreateMs, 'the create is part of the pipelines stage, not added to it');
+  assert.equal(t.pipelineCreates, 2, 'and the frame totals carry them');
+  assert.equal(t.pipelineCreateRows[0].scene, 'base-game');
+  console.log('pass: a pipeline cache miss is named, timed and attributed to its path');
+}
 }
 
 console.log('render-trace: all tests passed');

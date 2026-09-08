@@ -57,6 +57,10 @@ function newEntry(name, camera, cameraType) {
     refreshes: 0, refreshChecks: 0,
     bindingCreates: 0, bindingWrites: 0, bindingWriteBytes: 0,
     attributeWrites: 0, attributeWriteBytes: 0,
+    // Pipeline cache misses this pass: how many, how long, and which (object, material) asked, so a
+    // frame that compiled a shader names the material. Programs are the shader modules behind them.
+    pipelineCreates: 0, pipelineCreateMs: 0, pipelineCreateRows: [],
+    programCreates: 0, programCreateMs: 0,
     materials: new Set(),
     // Re-entry counters, per scene: projection recurses, and a phase must not be timed twice.
     depth: newPhaseCounters(),
@@ -258,6 +262,28 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
     restore.push(() => { target[name] = original; });
   }
 
+  const PIPELINE_ROWS = 8;
+  function wrapPipelineCreate(pipelines) {
+    const original = pipelines?._getRenderPipeline;
+    if (typeof original !== 'function') { missing.push('_pipelines._getRenderPipeline'); return; }
+    pipelines._getRenderPipeline = function (renderObject, stageVertex, stageFragment, cacheKey, promises) {
+      const entry = current();
+      const t0 = tick();
+      try {
+        return original.call(this, renderObject, stageVertex, stageFragment, cacheKey, promises);
+      } finally {
+        const ms = tick() - t0;
+        entry.pipelineCreates++;
+        entry.pipelineCreateMs += ms;
+        if (entry.pipelineCreateRows.length < PIPELINE_ROWS) {
+          const d = describeObject(renderObject?.object, renderObject?.material);
+          entry.pipelineCreateRows.push({ name: d.name, material: d.material, materialName: String(renderObject?.material?.name ?? '').slice(0, 48), ms: round3(ms), async: promises != null });
+        }
+      }
+    };
+    restore.push(() => { pipelines._getRenderPipeline = original; });
+  }
+
   // Counters, not timers: the wrapped call is not timed, only counted, so these cost one call.
   // `measure` reads the arguments BEFORE the call: the backend clears an attribute's update ranges as it uploads them.
   function wrapCounter(target, name, label, count, measure = null) {
@@ -378,6 +404,7 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
       // The six encode stages, and the counters that go with them.
       nodesBeforeMs: 0, geometriesMs: 0, nodesRenderMs: 0, bindingsMs: 0, pipelinesMs: 0, drawMs: 0,
       refreshes: 0, refreshChecks: 0, uniqueMaterials: 0,
+      pipelineCreates: 0, pipelineCreateMs: 0, pipelineCreateRows: [], programCreates: 0, programCreateMs: 0,
       bindingCreates: 0, bindingWrites: 0, bindingWriteBytes: 0,
       attributeWrites: 0, attributeWriteBytes: 0,
       // Which mode this frame ran in: false means the wrappers were installed and every timer read
@@ -401,13 +428,16 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
       out.bindingCreates += entry.bindingCreates;
       out.bindingWrites += entry.bindingWrites; out.bindingWriteBytes += entry.bindingWriteBytes;
       out.attributeWrites += entry.attributeWrites; out.attributeWriteBytes += entry.attributeWriteBytes;
+      out.pipelineCreates += entry.pipelineCreates; out.pipelineCreateMs += entry.pipelineCreateMs;
+      out.programCreates += entry.programCreates; out.programCreateMs += entry.programCreateMs;
+      for (const row of entry.pipelineCreateRows) if (out.pipelineCreateRows.length < PIPELINE_ROWS) out.pipelineCreateRows.push({ scene: entry.name, ...row });
       for (const material of entry.materials) allMaterials.add(material);
     }
     // Frame-wide, not the sum of the per-scene counts: the same material drawn in the shadow pass
     // and the main pass is one material.
     out.uniqueMaterials = allMaterials.size;
     for (const key of ['sceneMs', 'projectMs', 'sortMs', 'objectsMs', 'encodeMs', 'bundleMs',
-      'nodesBeforeMs', 'geometriesMs', 'nodesRenderMs', 'bindingsMs', 'pipelinesMs', 'drawMs']) out[key] = round3(out[key]);
+      'nodesBeforeMs', 'geometriesMs', 'nodesRenderMs', 'bindingsMs', 'pipelinesMs', 'drawMs', 'pipelineCreateMs', 'programCreateMs']) out[key] = round3(out[key]);
     // One row per scene render, in the order they ran: the post chain's quad, then the shadow map,
     // the mirror and the main pass nested inside it.
     out.scenes = scenes.map(entry => ({
@@ -426,6 +456,8 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
       bindingCreates: entry.bindingCreates,
       bindingWrites: entry.bindingWrites, bindingWriteBytes: entry.bindingWriteBytes,
       attributeWrites: entry.attributeWrites, attributeWriteBytes: entry.attributeWriteBytes,
+      pipelineCreates: entry.pipelineCreates, pipelineCreateMs: round3(entry.pipelineCreateMs), pipelineCreateRows: entry.pipelineCreateRows,
+      programCreates: entry.programCreates, programCreateMs: round3(entry.programCreateMs),
       // The heaviest objects this pass encoded, and how much of its encode they were, plus the
       // same for the two heaviest new phases.
       ...topObjects(entry),
@@ -477,6 +509,14 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
         entry.attributeWrites++;
         entry.attributeWriteBytes += bytes;
       }, args => attributeBytesOf(args[0]));
+      // A pipeline cache miss: the one place a shader is compiled for a render object. Timed with the
+      // stage clock, exclusive of nothing (nothing nests inside it), and named so the frame that
+      // spent a second here says on which material. `promises` non-null is the async path.
+      wrapPipelineCreate(renderer._pipelines);
+      wrapCounter(renderer.backend, 'createProgram', 'backend.createProgram', (entry, result, args, t0) => {
+        entry.programCreates++;
+        entry.programCreateMs += tick() - t0;
+      }, () => tick());
       attachedTo = restore.length ? renderer : null;
       return this.attached;
     },
@@ -517,6 +557,8 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
           bindingCreates: out.bindingCreates, bindingWrites: out.bindingWrites,
           bindingWriteBytes: out.bindingWriteBytes,
           attributeWrites: out.attributeWrites, attributeWriteBytes: out.attributeWriteBytes,
+          pipelineCreates: out.pipelineCreates, pipelineCreateMs: out.pipelineCreateMs, pipelineCreateRows: out.pipelineCreateRows,
+          programCreates: out.programCreates, programCreateMs: out.programCreateMs,
         };
         if (worstEncode === null || record.metricMs > worstEncode.metricMs) worstEncode = record;
         if (worst === null || out.sceneMs > worst.sceneMs) worst = record;
