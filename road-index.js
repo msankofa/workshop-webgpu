@@ -3,9 +3,12 @@
 // here?" goes through this: vegetation clearance, nav travel-cost bias, and the editor's snapping.
 // Ported from the TypeScript original (MIT). See docs/subsystems/roads.md.
 
-import { distancePointToPolylineXZ } from './road-path.js';
+import { distancePointToPolylineXZ, distancePointToSegmentXZ } from './road-path.js';
 
 const CELL_SIZE = 24;   // m per bucket; roads are long and thin, so buckets stay cheap to fill
+// The distance query indexes runs of this many segments with their own bounds: a placed trail has
+// hundreds of 1.15 m samples, and a whole-edge bounding box made every texel near it scan them all.
+const RUN_SEGMENTS = 8;
 
 function packCell(cellX, cellZ) {
   return ((cellX + 32768) & 0xffff) | (((cellZ + 32768) & 0xffff) << 16);
@@ -36,9 +39,10 @@ export function createRoadIndex(nodes, edges) {
   const edgeCells = new Map();
   const nodeCells = new Map();
   const edgeHalfWidths = new Map();
+  const runCells = new Map();      // cell -> [{ path, from, to, bounds }], for the distance query only
   let maxSurfaceRadius = 0;
   const keyScratch = [];
-  const seenEdgeScratch = new Set(), seenNodeScratch = new Set();   // nearestDistanceWithin only
+  const seenRunScratch = new Set(), seenNodeScratch = new Set();   // nearestDistanceWithin only
 
   for (const edge of edges) {
     const path = edge.sampledPath.length >= 2 ? edge.sampledPath : edge.controlPoints;
@@ -52,6 +56,18 @@ export function createRoadIndex(nodes, edges) {
         const k = packCell(c, r);
         const bucket = edgeCells.get(k);
         if (bucket) bucket.push(indexed); else edgeCells.set(k, [indexed]);
+      }
+    }
+    for (let from = 0; from < path.length - 1; from += RUN_SEGMENTS) {
+      const to = Math.min(path.length - 1, from + RUN_SEGMENTS);
+      const run = { path, from, to, bounds: pathBounds(path.slice(from, to + 1)) };
+      const rb = run.bounds;
+      for (let c = Math.floor(rb.minX / CELL_SIZE); c <= Math.floor(rb.maxX / CELL_SIZE); c++) {
+        for (let r = Math.floor(rb.minZ / CELL_SIZE); r <= Math.floor(rb.maxZ / CELL_SIZE); r++) {
+          const k = packCell(c, r);
+          const bucket = runCells.get(k);
+          if (bucket) bucket.push(run); else runCells.set(k, [run]);
+        }
       }
     }
   }
@@ -100,10 +116,12 @@ export function createRoadIndex(nodes, edges) {
     return results;
   }
 
-  // The same candidates queryNodes and queryEdges would return, folded straight into the minimum:
-  // no result arrays and no per-call Sets, because the field derivation asks this per texel.
+  // Nodes, then segment runs whose bounds come within the radius, folded straight into the minimum:
+  // no result arrays and no per-call Sets, because the field derivation asks this per texel. Exact
+  // for any centreline within the radius (every segment that close lies in a run whose bounds
+  // overlap); past the radius the answer is a bound, as it always was for this bounded query.
   function nearestDistanceWithin(x, z, radius, best) {
-    seenNodeScratch.clear(); seenEdgeScratch.clear();
+    seenNodeScratch.clear(); seenRunScratch.clear();
     for (const key of cellKeysInRadius(x, z, radius, keyScratch)) {
       const nodes = nodeCells.get(key);
       if (nodes) for (const indexed of nodes) {
@@ -112,13 +130,15 @@ export function createRoadIndex(nodes, edges) {
         const d = Math.hypot(x - indexed.node.position.x, z - indexed.node.position.z);
         if (d <= radius + 1e-6 && d < best) best = d;
       }
-      const bucket = edgeCells.get(key);
-      if (bucket) for (const edge of bucket) {
-        if (seenEdgeScratch.has(edge)) continue;
-        seenEdgeScratch.add(edge);
-        const b = edge.bounds;
-        if (x >= b.minX - radius && x <= b.maxX + radius && z >= b.minZ - radius && z <= b.maxZ + radius) {
-          const d = distancePointToPolylineXZ(x, z, edge.path);
+      const runs = runCells.get(key);
+      if (runs) for (const run of runs) {
+        if (seenRunScratch.has(run)) continue;
+        seenRunScratch.add(run);
+        const b = run.bounds;
+        if (x < b.minX - radius || x > b.maxX + radius || z < b.minZ - radius || z > b.maxZ + radius) continue;
+        const path = run.path;
+        for (let i = run.from; i < run.to; i++) {
+          const d = distancePointToSegmentXZ(x, z, path[i], path[i + 1]);
           if (d < best) best = d;
         }
       }
