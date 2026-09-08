@@ -292,8 +292,8 @@ console.log('\n[batch lifecycle] a long session, a source swap and the upload co
     ok(r.both + r.extra === r.resident && r.both + r.missing === r.target && r.extra === extra,
       `residency is a set relation: both ${r.both} + extra ${r.extra} = resident, both + missing ${r.missing} = target, extra counted from the keys ${extra}`);
   }
-  ok(settled.residency.near.margin === settled.residency.near.resident - settled.residency.near.target,
-    `margin (${settled.residency.near.margin}) is what residency keeps past the target set`);
+  ok(settled.residency.near.extra === settled.residency.near.resident - settled.residency.near.both,
+    `extra (${settled.residency.near.extra}) is what residency keeps past the target set`);
   ok(settled.residency.near.batched === t.batcher.residentCount && settled.upload.total.firstUploads >= t.system.chunks.size,
     `every resident chunk was uploaded once: ${settled.upload.total.firstUploads} first uploads for ${t.system.chunks.size} chunks`);
   ok(settled.upload.total.firstUploadBytes > 0 && settled.upload.colorizeBytesTotal > 0,
