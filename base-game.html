@@ -3816,6 +3816,9 @@ const BASE_GAME_PASS_PREFIXES = Object.freeze({
   // phases. traceScene is every whole scene render; it contains the other four.
   traceScene: 'passTraceSceneMs', traceProject: 'passTraceProjectMs', traceSort: 'passTraceSortMs',
   traceObjects: 'passTraceObjectsMs', traceEncode: 'passTraceEncodeMs', traceBundle: 'passTraceBundleMs',
+  // The six stages inside traceEncode, so the capture carries their percentiles, not one frame of them.
+  traceNodes: 'passTraceNodesMs', traceGeometries: 'passTraceGeometriesMs', traceBindings: 'passTraceBindingsMs',
+  tracePipelines: 'passTracePipelinesMs', traceDraw: 'passTraceDrawMs',
   // ?matrixauto=0 only: the explicit world-matrix walk that replaces three's. It is outside the
   // render call, so unlike the trace slots it is a real frame cost and joins the residual's peers.
   matrixWalk: 'passMatrixWalkMs',

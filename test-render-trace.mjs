@@ -611,7 +611,13 @@ function once(fn) {
     renderer.backend.createBindings({});
     renderer.backend.updateBinding({ byteLength: 256 });
     renderer.backend.updateBinding({});                          // a binding with no size to report
+    renderer.backend.updateBinding(rangedBinding);               // a uniforms group with two changed uniforms
   };
+  // A binding with update ranges (a UniformsGroup after two changed uniforms) counts the ranges,
+  // read before the call because Bindings._update clears them after the upload.
+  const rangedBinding = { byteLength: 4096, buffer: { byteLength: 4096, BYTES_PER_ELEMENT: 4 }, updateRanges: [{ start: 0, count: 16 }, { start: 64, count: 4 }] };
+  const realUpdateBinding = renderer.backend.updateBinding;
+  renderer.backend.updateBinding = function (b) { if (b.updateRanges) b.updateRanges.length = 0; return realUpdateBinding?.call(this, b); };
   // A ranged attribute counts what the backend will write; the fake backend clears the ranges as the
   // real one does, so the count has to be read before the call.
   const ranged = { array: { byteLength: 65536, BYTES_PER_ELEMENT: 4 }, updateRanges: [{ start: 0, count: 96 }, { start: 400, count: 4 }] };
@@ -629,12 +635,13 @@ function once(fn) {
   const t = trace.take();
   const entry = t.scenes[0];
   assert.equal(entry.bindingCreates, 1);
-  assert.equal(entry.bindingWrites, 2);
-  assert.equal(entry.bindingWriteBytes, 256, 'bytes only where the argument reported some');
+  assert.equal(entry.bindingWrites, 3);
+  assert.equal(entry.bindingWriteBytes, 256 + 80, 'whole buffers report byteLength, ranged groups their ranges times element size, sizeless ones zero');
+  assert.equal(rangedBinding.updateRanges.length, 0, 'read before the call cleared the ranges');
   assert.equal(entry.attributeWrites, 2);
   assert.equal(entry.attributeWriteBytes, 1024 + 400, 'a whole array reports its byteLength; ranges report count times element size, not the array');
   assert.equal(ranged.updateRanges.length, 0, 'the fake backend cleared the ranges, so the count was read before the call');
-  assert.equal(t.bindingWrites, 2, 'and the totals carry them too');
+  assert.equal(t.bindingWrites, 3, 'and the totals carry them too');
   assert.equal(t.attributeWriteBytes, 1424);
   console.log('pass: binding creations and buffer writes are counted, with bytes where they are known');
 }

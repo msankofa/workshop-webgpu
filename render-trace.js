@@ -172,16 +172,19 @@ function byteLengthOf(value) {
 
 // What WebGPUAttributeUtils.updateAttribute will write: one writeBuffer per update range, or the
 // whole array when there are none. Ranges count elements, so bytes follow the array's element size.
-function attributeBytesOf(attribute) {
-  const ranges = attribute?.updateRanges;
+function rangedBytesOf(target, array) {
+  const ranges = target?.updateRanges;
   if (Array.isArray(ranges) && ranges.length > 0) {
-    const bpe = attribute.array?.BYTES_PER_ELEMENT ?? attribute.data?.array?.BYTES_PER_ELEMENT ?? 4;
+    const bpe = array?.BYTES_PER_ELEMENT ?? 4;
     let total = 0;
     for (const r of ranges) total += (r.count | 0) * bpe;
     return total;
   }
-  return byteLengthOf(attribute);
+  return byteLengthOf(target);
 }
+const attributeBytesOf = attribute => rangedBytesOf(attribute, attribute?.array ?? attribute?.data?.array);
+// WebGPUBindingUtils.updateBinding follows the same rule over binding.buffer and binding.updateRanges.
+const bindingBytesOf = binding => rangedBytesOf(binding, binding?.buffer);
 
 export function createRenderTrace({ now = () => performance.now(), timePhases = true } = {}) {
   // Overhead mode: every wrapper and every counter is installed, but the clock is a constant, so a
@@ -466,10 +469,10 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
       // dirty ranges -- but one `updateAttribute` can become several `writeBuffer` calls inside the
       // backend when the attribute carries update ranges, so the call count is a lower bound.
       wrapCounter(renderer.backend, 'createBindings', 'backend.createBindings', entry => { entry.bindingCreates++; });
-      wrapCounter(renderer.backend, 'updateBinding', 'backend.updateBinding', (entry, result, args) => {
+      wrapCounter(renderer.backend, 'updateBinding', 'backend.updateBinding', (entry, result, args, bytes) => {
         entry.bindingWrites++;
-        entry.bindingWriteBytes += byteLengthOf(args[0]);
-      });
+        entry.bindingWriteBytes += bytes;
+      }, args => bindingBytesOf(args[0]));
       wrapCounter(renderer.backend, 'updateAttribute', 'backend.updateAttribute', (entry, result, args, bytes) => {
         entry.attributeWrites++;
         entry.attributeWriteBytes += bytes;
