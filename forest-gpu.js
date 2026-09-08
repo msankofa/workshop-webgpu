@@ -565,6 +565,7 @@ export function createForestGPU(opts) {
   // collapses onto its k=0 vertex, so the padded triangles are zero-area and raster nothing.
   function pulledInstanceNodes() {
     let v, kk, rec0, rec1;
+    let compactInRange = null;   // compact only: false on the padded tail of the last chunk
     if (PULLED_COMPACT) {
       // Transcribes forest-cull.js's pulledCompactLookup. The draw is a flat vertex stream cut into
       // COMPACT_CHUNK-sized instances, so the global vertex index is instance*chunk + vertexIndex.
@@ -580,14 +581,18 @@ export function createForestGPU(opts) {
       for (let u = 1; u < V; u++) {
         vAcc = vAcc.add(select(gi.greaterThanEqual(arenaCounts.element(uint(PREFIX_BASE + u))), uint(1), uint(0)));
       }
-      // Past the total (the tail of the last chunk) every vertex collapses onto variant 0's k=0, so
-      // its triangle has no area. The compact mapping cannot address past a variant's own index
-      // count, so unlike slots it has no arena overflow to guard.
-      v = select(inRange, vAcc, uint(0));
+      // The tail guard. Everything below this line is a DYNAMIC storage index, and every one of
+      // them is forced in range here, before the load: the variant to 0..V-1, the instance to
+      // 0..CAP-1, the local index to 0..indexSlot-1. Past the total (the tail of the last chunk)
+      // the variant, instance and index are all 0 and the world position is replaced below, so no
+      // tail vertex depends on what the arena holds. The three reads above are the prefix table at
+      // FIXED indices inside the counts buffer, which is always in bounds.
+      compactInRange = inRange;
+      v = select(inRange, min(vAcc, uint(V - 1)), uint(0));
       const r = select(inRange, gi.sub(arenaCounts.element(uint(PREFIX_BASE).add(v))), uint(0));
       const ic = max(arenaCounts.element(v.mul(uint(2)).add(uint(1))), uint(1));
-      const inst = r.div(ic);
-      kk = r.sub(inst.mul(ic));
+      const inst = min(r.div(ic), uint(CAP - 1));
+      kk = min(r.sub(inst.mul(ic)), uint(arenaSlots.indexSlot - 1));
       // The compact mapping reads the per-variant L2 region of the shipped draw buffer directly.
       const recBase = uint(v.mul(uint(SLOTS * CAP)).add(uint(2 * CAP)).add(inst)).mul(uint(2));
       rec0 = draw.element(recBase);
@@ -596,10 +601,11 @@ export function createForestGPU(opts) {
       const recBase = uint(instanceIndex).mul(uint(2));
       rec0 = mergedDraw.element(recBase);                 // (x,y,z,scale)
       rec1 = mergedDraw.element(recBase.add(uint(1)));    // (yaw, variantId, _, _)
-      v = uint(rec1.y);
+      // rec1.y is a float written by the cull; clamp it before it indexes the arena.
+      v = min(uint(rec1.y), uint(V - 1));
       const k = uint(vertexIndex);
       const idxCount = arenaCounts.element(v.mul(uint(2)).add(uint(1)));
-      kk = select(k.lessThan(idxCount), k, uint(0));
+      kk = min(select(k.lessThan(idxCount), k, uint(0)), uint(arenaSlots.indexSlot - 1));
     }
     const local = arenaIdx.element(v.mul(uint(arenaSlots.indexSlot)).add(kk));
     const vBase = v.mul(uint(arenaSlots.vertexSlot)).add(local).mul(uint(3));
@@ -612,11 +618,18 @@ export function createForestGPU(opts) {
     const px = a0.x, py = a0.y, pz = a0.z;
     const rx = px.mul(cy).add(pz.mul(sy));
     const rz = pz.mul(cy).sub(px.mul(sy));
-    const world = vec3(
+    const worldRaw = vec3(
       rec0.x.add(rx.mul(scale)),
       rec0.y.add(py.mul(scale)),
       rec0.z.add(rz.mul(scale)),
     );
+    // Compact tail: every vertex past the total gets the SAME finite constant, so every tail
+    // triangle has three identical corners and no area. total and the chunk are both multiples of
+    // 3, so no triangle is half tail and half real. The builder emits this select as a real branch,
+    // so the whole arena chase lands inside it and the tail touches no storage at all; the price is
+    // that the chase is re-emitted per consumer (position, uv, colour, normal), as the arena vertex
+    // read already was, and identical read-only loads are what a driver CSEs.
+    const world = compactInRange ? select(compactInRange, worldRaw, vec3(0, 0, 0)) : worldRaw;
     const nx = a1.x, ny = a1.y, nz = a1.z;
     const nWorld = vec3(nx.mul(cy).add(nz.mul(sy)), ny, nz.mul(cy).sub(nx.mul(sy)));
     // uv, colour and the shading normal cross into the fragment stage as varyings. Without this
@@ -896,10 +909,28 @@ export function createForestGPU(opts) {
   }
   if (pulledDevice?.addEventListener) {
     pulledDeviceListener = ev => {
+      // The device's own words, unedited: hiding the prototype does not repair whatever failed,
+      // and an error from another subsystem must still be readable in summary.pulledError.
       const msg = ev?.error?.message ?? String(ev?.error ?? 'an unnamed device error');
-      disablePulled(`the device reported a validation error while the pulled draw was active: ${msg}`);
+      disablePulled(`the device reported an error while the pulled draw was active: ${msg}`);
     };
     pulledDevice.addEventListener('uncapturederror', pulledDeviceListener);
+  }
+
+  // A narrower seam than the unfiltered listener, for local attribution: run one frame inside a
+  // validation error scope, so an error the merged draw raises is reported with its own message
+  // instead of whatever the listener happens to catch first. r184's backend offers no per-draw
+  // hook inside this module, so the caller passes the render call in; without a device this is a
+  // plain await and nothing is captured.
+  async function capturePulledValidationScope(renderFn) {
+    if (!pulledDevice?.pushErrorScope) return { scoped: false, error: null, result: await renderFn() };
+    pulledDevice.pushErrorScope('validation');
+    let result = null, thrown = null;
+    try { result = await renderFn(); } catch (e) { thrown = e; }
+    const err = await pulledDevice.popErrorScope();
+    if (err) disablePulled(`the merged draw raised a validation error: ${err.message}`);
+    if (thrown) throw thrown;
+    return { scoped: true, error: err ? err.message : null, result };
   }
 
   // ---- CPU side: per-chunk records -> global source buffer ----
@@ -1526,7 +1557,10 @@ export function createForestGPU(opts) {
       uCam.value.set(camX, camZ);
       uCamFwd.value.set(camFx, camFz);
       uFovCos.value = camFovCos;
-      await renderer.computeAsync([reset, ...mergedResets, cull, ...activeFinalizersA, ...activeFinalizersB, ...mergedFinalizers]);
+      // After a fallback the merged reset/finalizer stop being dispatched: the merged mesh is
+      // hidden, so their output is unread, and a device that has already failed is not poked again.
+      const mr = pulledActive ? mergedResets : [], mf = pulledActive ? mergedFinalizers : [];
+      await renderer.computeAsync([reset, ...mr, cull, ...activeFinalizersA, ...activeFinalizersB, ...mf]);
       lastCamX = camX;
       lastCamZ = camZ;
       lastCamFx = camFx;
@@ -1565,6 +1599,13 @@ export function createForestGPU(opts) {
     warmupCompute(yieldFn = async () => {}, shouldContinue = () => true) {
       return warmNodes(computeNodes, yieldFn, shouldContinue);
     },
+    capturePulledValidationScope,
+    // The fallback, without waiting for a device to fail. Used by tests and by a page that wants
+    // the shipped path back at once; it hides the prototype, it does not repair anything.
+    forcePulledFallback(reason = 'the pulled draw was disabled by the host') {
+      return disablePulled(reason);
+    },
+    pulledMergedMesh: () => mergedMesh,
     get summary() {
       return {
         draws: submittedDraws,
@@ -1596,6 +1637,10 @@ export function createForestGPU(opts) {
           vertexBytes: arena.vertexData.byteLength, indexBytes: arena.indexData.byteLength,
           instanceBytes: mergedAttr ? mergedAttr.array.byteLength : 0, overflows: arenaOverflows,
           chunk: PULLED_COMPACT ? COMPACT_CHUNK : null,
+          cap: CAP, prefixBase: PREFIX_BASE,
+          // The fixed vertex stride of the merged draw: the identity index buffer and every dummy
+          // attribute must be at least this long, and it is what the indirect indexCount holds.
+          drawStride: PULLED_COMPACT ? COMPACT_CHUNK : arenaSlots.indexSlot,
         } : null,
         pulledError: arenaFailure,
       };

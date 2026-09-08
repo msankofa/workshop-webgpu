@@ -14,11 +14,11 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
 struct objectStruct {
 	nodeUniform1 : u32
@@ -51,7 +51,7 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform1 ) { return; }
 
-	atomicStore( &NodeBuffer_45828.value[ instanceIndex ], 0u );
+	atomicStore( &NodeBuffer_92939.value[ instanceIndex ], 0u );
 
 	
 
@@ -74,101 +74,29 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45887Struct {
-	value : array< atomic<u32> >
-};
-@binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45887 : NodeBuffer_45887Struct;
-
-struct objectStruct {
-	nodeUniform1 : u32
-};
-@binding( 1 ) @group( 0 )
-var<uniform> object : objectStruct;
-
-// vars
-
-
-// codes
-
-
-@compute @workgroup_size( 64, 1, 1 )
-fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
-	@builtin( workgroup_id ) workgroupId : vec3<u32>,
-	@builtin( local_invocation_id ) localId : vec3<u32>,
-	@builtin( num_workgroups ) numWorkgroups : vec3<u32> ) {
-
-	// local vars
-	
-
-	// system
-	instanceIndex = globalId.x
-		+ globalId.y * ( 64 * numWorkgroups.x )
-		+ globalId.z * ( 64 * numWorkgroups.x ) * ( 1 * numWorkgroups.y );
-
-	// flow
-	// code
-
-	if ( instanceIndex >= object.nodeUniform1 ) { return; }
-
-	atomicStore( &NodeBuffer_45887.value[ 0u ], 0u );
-
-	
-
-}
-
-// ---- next kernel ----
-// Three.js r184 - Node System
-
-// directives
-
-
-// system
-var<private> instanceIndex : u32;
-
-// locals
-
-
-// structs
-
-
-// uniforms
-
-struct NodeBuffer_45827Struct {
+struct NodeBuffer_92938Struct {
 	value : array< u32 >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45827 : NodeBuffer_45827Struct;
+var<storage, read_write> NodeBuffer_92938 : NodeBuffer_92938Struct;
 
-struct NodeBuffer_45825Struct {
+struct NodeBuffer_92936Struct {
 	value : array< vec4<f32> >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45825 : NodeBuffer_45825Struct;
+var<storage, read_write> NodeBuffer_92936 : NodeBuffer_92936Struct;
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45826Struct {
+struct NodeBuffer_92937Struct {
 	value : array< vec4<f32> >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45826 : NodeBuffer_45826Struct;
-
-struct NodeBuffer_45887Struct {
-	value : array< atomic<u32> >
-};
-@binding( 5 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45887 : NodeBuffer_45887Struct;
-
-struct NodeBuffer_45886Struct {
-	value : array< vec4<f32> >
-};
-@binding( 6 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45886 : NodeBuffer_45886Struct;
+var<storage, read_write> NodeBuffer_92937 : NodeBuffer_92937Struct;
 
 struct objectStruct {
 	nodeUniform2 : vec2<f32>,
@@ -184,7 +112,7 @@ struct objectStruct {
 	nodeUniform14 : f32,
 	nodeUniform15 : f32,
 	nodeUniform16 : f32,
-	nodeUniform19 : u32
+	nodeUniform17 : u32
 };
 @binding( 2 ) @group( 0 )
 var<uniform> object : objectStruct;
@@ -201,7 +129,6 @@ var<private> nodeVar7 : f32;
 var<private> nodeVar8 : u32;
 var<private> nodeVar9 : u32;
 var<private> nodeVar10 : u32;
-var<private> nodeVar11 : u32;
 
 // codes
 
@@ -223,23 +150,23 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 	// flow
 	// code
 
-	if ( instanceIndex >= object.nodeUniform19 ) { return; }
+	if ( instanceIndex >= object.nodeUniform17 ) { return; }
 
 	nodeVar0 = ( i32( instanceIndex ) % 16 );
 	nodeVar1 = ( ( i32( instanceIndex ) - nodeVar0 ) / 16 );
 
-	if ( ( nodeVar0 < i32( NodeBuffer_45827.value[ nodeVar1 ] ) ) ) {
+	if ( ( nodeVar0 < i32( NodeBuffer_92938.value[ nodeVar1 ] ) ) ) {
 
-		nodeVar2 = ( NodeBuffer_45825.value[ ( i32( instanceIndex ) * 2 ) ].x - object.nodeUniform2.x );
-		nodeVar3 = ( NodeBuffer_45825.value[ ( i32( instanceIndex ) * 2 ) ].z - object.nodeUniform2.y );
+		nodeVar2 = ( NodeBuffer_92936.value[ ( i32( instanceIndex ) * 2 ) ].x - object.nodeUniform2.x );
+		nodeVar3 = ( NodeBuffer_92936.value[ ( i32( instanceIndex ) * 2 ) ].z - object.nodeUniform2.y );
 		nodeVar4 = ( ( nodeVar2 * nodeVar2 ) + ( nodeVar3 * nodeVar3 ) );
 
 		if ( ( ( nodeVar4 <= ( object.nodeUniform3 * object.nodeUniform3 ) ) && ( object.nodeUniform3 > 0.0 ) ) ) {
 
-			let nodeConst0 = atomicAdd( &NodeBuffer_45828.value[ u32( ( ( nodeVar1 * 4 ) + 3 ) ) ], 1u );
+			let nodeConst0 = atomicAdd( &NodeBuffer_92939.value[ u32( ( ( nodeVar1 * 4 ) + 3 ) ) ], 1u );
 			nodeVar5 = ( ( u32( ( ( nodeVar1 * 64 ) + 48 ) ) + nodeConst0 ) * 2u );
-			NodeBuffer_45826.value[ nodeVar5 ] = NodeBuffer_45825.value[ ( i32( instanceIndex ) * 2 ) ];
-			NodeBuffer_45826.value[ ( nodeVar5 + 1u ) ] = NodeBuffer_45825.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ];
+			NodeBuffer_92937.value[ nodeVar5 ] = NodeBuffer_92936.value[ ( i32( instanceIndex ) * 2 ) ];
+			NodeBuffer_92937.value[ ( nodeVar5 + 1u ) ] = NodeBuffer_92936.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ];
 			
 
 		}
@@ -247,15 +174,15 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 		nodeVar6 = length( vec2<f32>( nodeVar2, nodeVar3 ) );
 		nodeVar7 = ( 1.0 / max( nodeVar6, 0.000001 ) );
 
-		if ( ( ( nodeVar6 <= object.nodeUniform6 ) && ( ( ( ( ( ( nodeVar2 * nodeVar7 ) * object.nodeUniform7.x ) + ( ( nodeVar3 * nodeVar7 ) * object.nodeUniform7.y ) ) >= ( cos( ( acos( clamp( ( object.nodeUniform8 - object.nodeUniform9 ), -1.0, 1.0 ) ) + atan2( ( ( object.nodeUniform10 * NodeBuffer_45825.value[ ( i32( instanceIndex ) * 2 ) ].w ) * object.nodeUniform11 ), max( nodeVar6, 0.000001 ) ) ) ) - object.nodeUniform12 ) ) || ( nodeVar6 < 0.000001 ) ) || ( object.nodeUniform13 < 0.5 ) ) ) ) {
+		if ( ( ( nodeVar6 <= object.nodeUniform6 ) && ( ( ( ( ( ( nodeVar2 * nodeVar7 ) * object.nodeUniform7.x ) + ( ( nodeVar3 * nodeVar7 ) * object.nodeUniform7.y ) ) >= ( cos( ( acos( clamp( ( object.nodeUniform8 - object.nodeUniform9 ), -1.0, 1.0 ) ) + atan2( ( ( object.nodeUniform10 * NodeBuffer_92936.value[ ( i32( instanceIndex ) * 2 ) ].w ) * object.nodeUniform11 ), max( nodeVar6, 0.000001 ) ) ) ) - object.nodeUniform12 ) ) || ( nodeVar6 < 0.000001 ) ) || ( object.nodeUniform13 < 0.5 ) ) ) ) {
 
 
 			if ( ( nodeVar4 <= ( object.nodeUniform14 * object.nodeUniform14 ) ) ) {
 
-				let nodeConst1 = atomicAdd( &NodeBuffer_45828.value[ u32( ( nodeVar1 * 4 ) ) ], 1u );
+				let nodeConst1 = atomicAdd( &NodeBuffer_92939.value[ u32( ( nodeVar1 * 4 ) ) ], 1u );
 				nodeVar8 = ( ( u32( ( nodeVar1 * 64 ) ) + nodeConst1 ) * 2u );
-				NodeBuffer_45826.value[ nodeVar8 ] = NodeBuffer_45825.value[ ( i32( instanceIndex ) * 2 ) ];
-				NodeBuffer_45826.value[ ( nodeVar8 + 1u ) ] = NodeBuffer_45825.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ];
+				NodeBuffer_92937.value[ nodeVar8 ] = NodeBuffer_92936.value[ ( i32( instanceIndex ) * 2 ) ];
+				NodeBuffer_92937.value[ ( nodeVar8 + 1u ) ] = NodeBuffer_92936.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ];
 				
 
 			} else {
@@ -263,10 +190,10 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 				if ( ( nodeVar4 <= ( object.nodeUniform15 * object.nodeUniform15 ) ) ) {
 
-					let nodeConst2 = atomicAdd( &NodeBuffer_45828.value[ u32( ( ( nodeVar1 * 4 ) + 1 ) ) ], 1u );
+					let nodeConst2 = atomicAdd( &NodeBuffer_92939.value[ u32( ( ( nodeVar1 * 4 ) + 1 ) ) ], 1u );
 					nodeVar9 = ( ( u32( ( ( nodeVar1 * 64 ) + 16 ) ) + nodeConst2 ) * 2u );
-					NodeBuffer_45826.value[ nodeVar9 ] = NodeBuffer_45825.value[ ( i32( instanceIndex ) * 2 ) ];
-					NodeBuffer_45826.value[ ( nodeVar9 + 1u ) ] = NodeBuffer_45825.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ];
+					NodeBuffer_92937.value[ nodeVar9 ] = NodeBuffer_92936.value[ ( i32( instanceIndex ) * 2 ) ];
+					NodeBuffer_92937.value[ ( nodeVar9 + 1u ) ] = NodeBuffer_92936.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ];
 					
 
 				} else {
@@ -274,21 +201,10 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 					if ( ( nodeVar4 <= ( object.nodeUniform16 * object.nodeUniform16 ) ) ) {
 
-						let nodeConst3 = atomicAdd( &NodeBuffer_45828.value[ u32( ( ( nodeVar1 * 4 ) + 2 ) ) ], 1u );
+						let nodeConst3 = atomicAdd( &NodeBuffer_92939.value[ u32( ( ( nodeVar1 * 4 ) + 2 ) ) ], 1u );
 						nodeVar10 = ( ( u32( ( ( nodeVar1 * 64 ) + 32 ) ) + nodeConst3 ) * 2u );
-						NodeBuffer_45826.value[ nodeVar10 ] = NodeBuffer_45825.value[ ( i32( instanceIndex ) * 2 ) ];
-						NodeBuffer_45826.value[ ( nodeVar10 + 1u ) ] = NodeBuffer_45825.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ];
-						let nodeConst4 = atomicAdd( &NodeBuffer_45887.value[ 0u ], 1u );
-
-						if ( ( nodeConst4 < 96u ) ) {
-
-							nodeVar11 = ( nodeConst4 * 2u );
-							NodeBuffer_45886.value[ nodeVar11 ] = NodeBuffer_45825.value[ ( i32( instanceIndex ) * 2 ) ];
-							NodeBuffer_45886.value[ ( nodeVar11 + 1u ) ] = vec4<f32>( NodeBuffer_45825.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ].x, f32( nodeVar1 ), NodeBuffer_45825.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ].z, NodeBuffer_45825.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ].w );
-							
-
-						}
-
+						NodeBuffer_92937.value[ nodeVar10 ] = NodeBuffer_92936.value[ ( i32( instanceIndex ) * 2 ) ];
+						NodeBuffer_92937.value[ ( nodeVar10 + 1u ) ] = NodeBuffer_92936.value[ ( ( i32( instanceIndex ) * 2 ) + 1 ) ];
 						
 
 					}
@@ -331,41 +247,41 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45829Struct {
+struct NodeBuffer_92940Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45829 : NodeBuffer_45829Struct;
+var<storage, read_write> NodeBuffer_92940 : NodeBuffer_92940Struct;
 
-struct NodeBuffer_45830Struct {
+struct NodeBuffer_92941Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45830 : NodeBuffer_45830Struct;
+var<storage, read_write> NodeBuffer_92941 : NodeBuffer_92941Struct;
 
-struct NodeBuffer_45831Struct {
+struct NodeBuffer_92942Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45831 : NodeBuffer_45831Struct;
+var<storage, read_write> NodeBuffer_92942 : NodeBuffer_92942Struct;
 
-struct NodeBuffer_45832Struct {
+struct NodeBuffer_92943Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45832 : NodeBuffer_45832Struct;
+var<storage, read_write> NodeBuffer_92943 : NodeBuffer_92943Struct;
 
-struct NodeBuffer_45833Struct {
+struct NodeBuffer_92944Struct {
 	value : array< u32 >
 };
 @binding( 5 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45833 : NodeBuffer_45833Struct;
+var<storage, read_write> NodeBuffer_92944 : NodeBuffer_92944Struct;
 
 struct objectStruct {
 	nodeUniform6 : u32
@@ -398,13 +314,13 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform6 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 0u ] );
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 1u ] );
-	NodeBuffer_45829.value[ 1u ] = nodeConst0;
-	NodeBuffer_45830.value[ 1u ] = nodeConst0;
-	NodeBuffer_45831.value[ 1u ] = nodeConst0;
-	NodeBuffer_45832.value[ 1u ] = nodeConst1;
-	NodeBuffer_45833.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 0u ] );
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 1u ] );
+	NodeBuffer_92940.value[ 1u ] = nodeConst0;
+	NodeBuffer_92941.value[ 1u ] = nodeConst0;
+	NodeBuffer_92942.value[ 1u ] = nodeConst0;
+	NodeBuffer_92943.value[ 1u ] = nodeConst1;
+	NodeBuffer_92944.value[ 1u ] = nodeConst1;
 
 	
 
@@ -427,41 +343,41 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45838Struct {
+struct NodeBuffer_92949Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45838 : NodeBuffer_45838Struct;
+var<storage, read_write> NodeBuffer_92949 : NodeBuffer_92949Struct;
 
-struct NodeBuffer_45839Struct {
+struct NodeBuffer_92950Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45839 : NodeBuffer_45839Struct;
+var<storage, read_write> NodeBuffer_92950 : NodeBuffer_92950Struct;
 
-struct NodeBuffer_45840Struct {
+struct NodeBuffer_92951Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45840 : NodeBuffer_45840Struct;
+var<storage, read_write> NodeBuffer_92951 : NodeBuffer_92951Struct;
 
-struct NodeBuffer_45841Struct {
+struct NodeBuffer_92952Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45841 : NodeBuffer_45841Struct;
+var<storage, read_write> NodeBuffer_92952 : NodeBuffer_92952Struct;
 
-struct NodeBuffer_45842Struct {
+struct NodeBuffer_92953Struct {
 	value : array< u32 >
 };
 @binding( 5 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45842 : NodeBuffer_45842Struct;
+var<storage, read_write> NodeBuffer_92953 : NodeBuffer_92953Struct;
 
 struct objectStruct {
 	nodeUniform6 : u32
@@ -494,13 +410,13 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform6 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 4u ] );
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 5u ] );
-	NodeBuffer_45838.value[ 1u ] = nodeConst0;
-	NodeBuffer_45839.value[ 1u ] = nodeConst0;
-	NodeBuffer_45840.value[ 1u ] = nodeConst0;
-	NodeBuffer_45841.value[ 1u ] = nodeConst1;
-	NodeBuffer_45842.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 4u ] );
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 5u ] );
+	NodeBuffer_92949.value[ 1u ] = nodeConst0;
+	NodeBuffer_92950.value[ 1u ] = nodeConst0;
+	NodeBuffer_92951.value[ 1u ] = nodeConst0;
+	NodeBuffer_92952.value[ 1u ] = nodeConst1;
+	NodeBuffer_92953.value[ 1u ] = nodeConst1;
 
 	
 
@@ -523,41 +439,41 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45847Struct {
+struct NodeBuffer_92958Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45847 : NodeBuffer_45847Struct;
+var<storage, read_write> NodeBuffer_92958 : NodeBuffer_92958Struct;
 
-struct NodeBuffer_45848Struct {
+struct NodeBuffer_92959Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45848 : NodeBuffer_45848Struct;
+var<storage, read_write> NodeBuffer_92959 : NodeBuffer_92959Struct;
 
-struct NodeBuffer_45849Struct {
+struct NodeBuffer_92960Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45849 : NodeBuffer_45849Struct;
+var<storage, read_write> NodeBuffer_92960 : NodeBuffer_92960Struct;
 
-struct NodeBuffer_45850Struct {
+struct NodeBuffer_92961Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45850 : NodeBuffer_45850Struct;
+var<storage, read_write> NodeBuffer_92961 : NodeBuffer_92961Struct;
 
-struct NodeBuffer_45851Struct {
+struct NodeBuffer_92962Struct {
 	value : array< u32 >
 };
 @binding( 5 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45851 : NodeBuffer_45851Struct;
+var<storage, read_write> NodeBuffer_92962 : NodeBuffer_92962Struct;
 
 struct objectStruct {
 	nodeUniform6 : u32
@@ -590,13 +506,13 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform6 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 8u ] );
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 9u ] );
-	NodeBuffer_45847.value[ 1u ] = nodeConst0;
-	NodeBuffer_45848.value[ 1u ] = nodeConst0;
-	NodeBuffer_45849.value[ 1u ] = nodeConst0;
-	NodeBuffer_45850.value[ 1u ] = nodeConst1;
-	NodeBuffer_45851.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 8u ] );
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 9u ] );
+	NodeBuffer_92958.value[ 1u ] = nodeConst0;
+	NodeBuffer_92959.value[ 1u ] = nodeConst0;
+	NodeBuffer_92960.value[ 1u ] = nodeConst0;
+	NodeBuffer_92961.value[ 1u ] = nodeConst1;
+	NodeBuffer_92962.value[ 1u ] = nodeConst1;
 
 	
 
@@ -619,41 +535,41 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45856Struct {
+struct NodeBuffer_92967Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45856 : NodeBuffer_45856Struct;
+var<storage, read_write> NodeBuffer_92967 : NodeBuffer_92967Struct;
 
-struct NodeBuffer_45857Struct {
+struct NodeBuffer_92968Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45857 : NodeBuffer_45857Struct;
+var<storage, read_write> NodeBuffer_92968 : NodeBuffer_92968Struct;
 
-struct NodeBuffer_45858Struct {
+struct NodeBuffer_92969Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45858 : NodeBuffer_45858Struct;
+var<storage, read_write> NodeBuffer_92969 : NodeBuffer_92969Struct;
 
-struct NodeBuffer_45859Struct {
+struct NodeBuffer_92970Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45859 : NodeBuffer_45859Struct;
+var<storage, read_write> NodeBuffer_92970 : NodeBuffer_92970Struct;
 
-struct NodeBuffer_45860Struct {
+struct NodeBuffer_92971Struct {
 	value : array< u32 >
 };
 @binding( 5 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45860 : NodeBuffer_45860Struct;
+var<storage, read_write> NodeBuffer_92971 : NodeBuffer_92971Struct;
 
 struct objectStruct {
 	nodeUniform6 : u32
@@ -686,13 +602,13 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform6 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 12u ] );
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 13u ] );
-	NodeBuffer_45856.value[ 1u ] = nodeConst0;
-	NodeBuffer_45857.value[ 1u ] = nodeConst0;
-	NodeBuffer_45858.value[ 1u ] = nodeConst0;
-	NodeBuffer_45859.value[ 1u ] = nodeConst1;
-	NodeBuffer_45860.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 12u ] );
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 13u ] );
+	NodeBuffer_92967.value[ 1u ] = nodeConst0;
+	NodeBuffer_92968.value[ 1u ] = nodeConst0;
+	NodeBuffer_92969.value[ 1u ] = nodeConst0;
+	NodeBuffer_92970.value[ 1u ] = nodeConst1;
+	NodeBuffer_92971.value[ 1u ] = nodeConst1;
 
 	
 
@@ -715,41 +631,41 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45865Struct {
+struct NodeBuffer_92976Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45865 : NodeBuffer_45865Struct;
+var<storage, read_write> NodeBuffer_92976 : NodeBuffer_92976Struct;
 
-struct NodeBuffer_45866Struct {
+struct NodeBuffer_92977Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45866 : NodeBuffer_45866Struct;
+var<storage, read_write> NodeBuffer_92977 : NodeBuffer_92977Struct;
 
-struct NodeBuffer_45867Struct {
+struct NodeBuffer_92978Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45867 : NodeBuffer_45867Struct;
+var<storage, read_write> NodeBuffer_92978 : NodeBuffer_92978Struct;
 
-struct NodeBuffer_45868Struct {
+struct NodeBuffer_92979Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45868 : NodeBuffer_45868Struct;
+var<storage, read_write> NodeBuffer_92979 : NodeBuffer_92979Struct;
 
-struct NodeBuffer_45869Struct {
+struct NodeBuffer_92980Struct {
 	value : array< u32 >
 };
 @binding( 5 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45869 : NodeBuffer_45869Struct;
+var<storage, read_write> NodeBuffer_92980 : NodeBuffer_92980Struct;
 
 struct objectStruct {
 	nodeUniform6 : u32
@@ -782,13 +698,13 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform6 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 16u ] );
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 17u ] );
-	NodeBuffer_45865.value[ 1u ] = nodeConst0;
-	NodeBuffer_45866.value[ 1u ] = nodeConst0;
-	NodeBuffer_45867.value[ 1u ] = nodeConst0;
-	NodeBuffer_45868.value[ 1u ] = nodeConst1;
-	NodeBuffer_45869.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 16u ] );
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 17u ] );
+	NodeBuffer_92976.value[ 1u ] = nodeConst0;
+	NodeBuffer_92977.value[ 1u ] = nodeConst0;
+	NodeBuffer_92978.value[ 1u ] = nodeConst0;
+	NodeBuffer_92979.value[ 1u ] = nodeConst1;
+	NodeBuffer_92980.value[ 1u ] = nodeConst1;
 
 	
 
@@ -811,41 +727,41 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45874Struct {
+struct NodeBuffer_92985Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45874 : NodeBuffer_45874Struct;
+var<storage, read_write> NodeBuffer_92985 : NodeBuffer_92985Struct;
 
-struct NodeBuffer_45875Struct {
+struct NodeBuffer_92986Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45875 : NodeBuffer_45875Struct;
+var<storage, read_write> NodeBuffer_92986 : NodeBuffer_92986Struct;
 
-struct NodeBuffer_45876Struct {
+struct NodeBuffer_92987Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45876 : NodeBuffer_45876Struct;
+var<storage, read_write> NodeBuffer_92987 : NodeBuffer_92987Struct;
 
-struct NodeBuffer_45877Struct {
+struct NodeBuffer_92988Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45877 : NodeBuffer_45877Struct;
+var<storage, read_write> NodeBuffer_92988 : NodeBuffer_92988Struct;
 
-struct NodeBuffer_45878Struct {
+struct NodeBuffer_92989Struct {
 	value : array< u32 >
 };
 @binding( 5 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45878 : NodeBuffer_45878Struct;
+var<storage, read_write> NodeBuffer_92989 : NodeBuffer_92989Struct;
 
 struct objectStruct {
 	nodeUniform6 : u32
@@ -878,13 +794,13 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform6 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 20u ] );
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 21u ] );
-	NodeBuffer_45874.value[ 1u ] = nodeConst0;
-	NodeBuffer_45875.value[ 1u ] = nodeConst0;
-	NodeBuffer_45876.value[ 1u ] = nodeConst0;
-	NodeBuffer_45877.value[ 1u ] = nodeConst1;
-	NodeBuffer_45878.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 20u ] );
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 21u ] );
+	NodeBuffer_92985.value[ 1u ] = nodeConst0;
+	NodeBuffer_92986.value[ 1u ] = nodeConst0;
+	NodeBuffer_92987.value[ 1u ] = nodeConst0;
+	NodeBuffer_92988.value[ 1u ] = nodeConst1;
+	NodeBuffer_92989.value[ 1u ] = nodeConst1;
 
 	
 
@@ -907,35 +823,35 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45834Struct {
+struct NodeBuffer_92945Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45834 : NodeBuffer_45834Struct;
+var<storage, read_write> NodeBuffer_92945 : NodeBuffer_92945Struct;
 
-struct NodeBuffer_45835Struct {
+struct NodeBuffer_92946Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45835 : NodeBuffer_45835Struct;
+var<storage, read_write> NodeBuffer_92946 : NodeBuffer_92946Struct;
 
-struct NodeBuffer_45836Struct {
+struct NodeBuffer_92947Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45836 : NodeBuffer_45836Struct;
+var<storage, read_write> NodeBuffer_92947 : NodeBuffer_92947Struct;
 
-struct NodeBuffer_45837Struct {
+struct NodeBuffer_92948Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45837 : NodeBuffer_45837Struct;
+var<storage, read_write> NodeBuffer_92948 : NodeBuffer_92948Struct;
 
 struct objectStruct {
 	nodeUniform5 : u32
@@ -968,12 +884,12 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform5 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 2u ] );
-	NodeBuffer_45834.value[ 1u ] = nodeConst0;
-	NodeBuffer_45835.value[ 1u ] = nodeConst0;
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 3u ] );
-	NodeBuffer_45836.value[ 1u ] = nodeConst1;
-	NodeBuffer_45837.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 2u ] );
+	NodeBuffer_92945.value[ 1u ] = nodeConst0;
+	NodeBuffer_92946.value[ 1u ] = nodeConst0;
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 3u ] );
+	NodeBuffer_92947.value[ 1u ] = nodeConst1;
+	NodeBuffer_92948.value[ 1u ] = nodeConst1;
 
 	
 
@@ -996,35 +912,35 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45843Struct {
+struct NodeBuffer_92954Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45843 : NodeBuffer_45843Struct;
+var<storage, read_write> NodeBuffer_92954 : NodeBuffer_92954Struct;
 
-struct NodeBuffer_45844Struct {
+struct NodeBuffer_92955Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45844 : NodeBuffer_45844Struct;
+var<storage, read_write> NodeBuffer_92955 : NodeBuffer_92955Struct;
 
-struct NodeBuffer_45845Struct {
+struct NodeBuffer_92956Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45845 : NodeBuffer_45845Struct;
+var<storage, read_write> NodeBuffer_92956 : NodeBuffer_92956Struct;
 
-struct NodeBuffer_45846Struct {
+struct NodeBuffer_92957Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45846 : NodeBuffer_45846Struct;
+var<storage, read_write> NodeBuffer_92957 : NodeBuffer_92957Struct;
 
 struct objectStruct {
 	nodeUniform5 : u32
@@ -1057,12 +973,12 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform5 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 6u ] );
-	NodeBuffer_45843.value[ 1u ] = nodeConst0;
-	NodeBuffer_45844.value[ 1u ] = nodeConst0;
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 7u ] );
-	NodeBuffer_45845.value[ 1u ] = nodeConst1;
-	NodeBuffer_45846.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 6u ] );
+	NodeBuffer_92954.value[ 1u ] = nodeConst0;
+	NodeBuffer_92955.value[ 1u ] = nodeConst0;
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 7u ] );
+	NodeBuffer_92956.value[ 1u ] = nodeConst1;
+	NodeBuffer_92957.value[ 1u ] = nodeConst1;
 
 	
 
@@ -1085,35 +1001,35 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45852Struct {
+struct NodeBuffer_92963Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45852 : NodeBuffer_45852Struct;
+var<storage, read_write> NodeBuffer_92963 : NodeBuffer_92963Struct;
 
-struct NodeBuffer_45853Struct {
+struct NodeBuffer_92964Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45853 : NodeBuffer_45853Struct;
+var<storage, read_write> NodeBuffer_92964 : NodeBuffer_92964Struct;
 
-struct NodeBuffer_45854Struct {
+struct NodeBuffer_92965Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45854 : NodeBuffer_45854Struct;
+var<storage, read_write> NodeBuffer_92965 : NodeBuffer_92965Struct;
 
-struct NodeBuffer_45855Struct {
+struct NodeBuffer_92966Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45855 : NodeBuffer_45855Struct;
+var<storage, read_write> NodeBuffer_92966 : NodeBuffer_92966Struct;
 
 struct objectStruct {
 	nodeUniform5 : u32
@@ -1146,12 +1062,12 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform5 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 10u ] );
-	NodeBuffer_45852.value[ 1u ] = nodeConst0;
-	NodeBuffer_45853.value[ 1u ] = nodeConst0;
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 11u ] );
-	NodeBuffer_45854.value[ 1u ] = nodeConst1;
-	NodeBuffer_45855.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 10u ] );
+	NodeBuffer_92963.value[ 1u ] = nodeConst0;
+	NodeBuffer_92964.value[ 1u ] = nodeConst0;
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 11u ] );
+	NodeBuffer_92965.value[ 1u ] = nodeConst1;
+	NodeBuffer_92966.value[ 1u ] = nodeConst1;
 
 	
 
@@ -1174,35 +1090,35 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45861Struct {
+struct NodeBuffer_92972Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45861 : NodeBuffer_45861Struct;
+var<storage, read_write> NodeBuffer_92972 : NodeBuffer_92972Struct;
 
-struct NodeBuffer_45862Struct {
+struct NodeBuffer_92973Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45862 : NodeBuffer_45862Struct;
+var<storage, read_write> NodeBuffer_92973 : NodeBuffer_92973Struct;
 
-struct NodeBuffer_45863Struct {
+struct NodeBuffer_92974Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45863 : NodeBuffer_45863Struct;
+var<storage, read_write> NodeBuffer_92974 : NodeBuffer_92974Struct;
 
-struct NodeBuffer_45864Struct {
+struct NodeBuffer_92975Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45864 : NodeBuffer_45864Struct;
+var<storage, read_write> NodeBuffer_92975 : NodeBuffer_92975Struct;
 
 struct objectStruct {
 	nodeUniform5 : u32
@@ -1235,12 +1151,12 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform5 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 14u ] );
-	NodeBuffer_45861.value[ 1u ] = nodeConst0;
-	NodeBuffer_45862.value[ 1u ] = nodeConst0;
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 15u ] );
-	NodeBuffer_45863.value[ 1u ] = nodeConst1;
-	NodeBuffer_45864.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 14u ] );
+	NodeBuffer_92972.value[ 1u ] = nodeConst0;
+	NodeBuffer_92973.value[ 1u ] = nodeConst0;
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 15u ] );
+	NodeBuffer_92974.value[ 1u ] = nodeConst1;
+	NodeBuffer_92975.value[ 1u ] = nodeConst1;
 
 	
 
@@ -1263,35 +1179,35 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45870Struct {
+struct NodeBuffer_92981Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45870 : NodeBuffer_45870Struct;
+var<storage, read_write> NodeBuffer_92981 : NodeBuffer_92981Struct;
 
-struct NodeBuffer_45871Struct {
+struct NodeBuffer_92982Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45871 : NodeBuffer_45871Struct;
+var<storage, read_write> NodeBuffer_92982 : NodeBuffer_92982Struct;
 
-struct NodeBuffer_45872Struct {
+struct NodeBuffer_92983Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45872 : NodeBuffer_45872Struct;
+var<storage, read_write> NodeBuffer_92983 : NodeBuffer_92983Struct;
 
-struct NodeBuffer_45873Struct {
+struct NodeBuffer_92984Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45873 : NodeBuffer_45873Struct;
+var<storage, read_write> NodeBuffer_92984 : NodeBuffer_92984Struct;
 
 struct objectStruct {
 	nodeUniform5 : u32
@@ -1324,12 +1240,12 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform5 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 18u ] );
-	NodeBuffer_45870.value[ 1u ] = nodeConst0;
-	NodeBuffer_45871.value[ 1u ] = nodeConst0;
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 19u ] );
-	NodeBuffer_45872.value[ 1u ] = nodeConst1;
-	NodeBuffer_45873.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 18u ] );
+	NodeBuffer_92981.value[ 1u ] = nodeConst0;
+	NodeBuffer_92982.value[ 1u ] = nodeConst0;
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 19u ] );
+	NodeBuffer_92983.value[ 1u ] = nodeConst1;
+	NodeBuffer_92984.value[ 1u ] = nodeConst1;
 
 	
 
@@ -1352,35 +1268,35 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45828Struct {
+struct NodeBuffer_92939Struct {
 	value : array< atomic<u32> >
 };
 @binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45828 : NodeBuffer_45828Struct;
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
 
-struct NodeBuffer_45879Struct {
+struct NodeBuffer_92990Struct {
 	value : array< u32 >
 };
 @binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45879 : NodeBuffer_45879Struct;
+var<storage, read_write> NodeBuffer_92990 : NodeBuffer_92990Struct;
 
-struct NodeBuffer_45880Struct {
+struct NodeBuffer_92991Struct {
 	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45880 : NodeBuffer_45880Struct;
+var<storage, read_write> NodeBuffer_92991 : NodeBuffer_92991Struct;
 
-struct NodeBuffer_45881Struct {
+struct NodeBuffer_92992Struct {
 	value : array< u32 >
 };
 @binding( 3 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45881 : NodeBuffer_45881Struct;
+var<storage, read_write> NodeBuffer_92992 : NodeBuffer_92992Struct;
 
-struct NodeBuffer_45882Struct {
+struct NodeBuffer_92993Struct {
 	value : array< u32 >
 };
 @binding( 4 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45882 : NodeBuffer_45882Struct;
+var<storage, read_write> NodeBuffer_92993 : NodeBuffer_92993Struct;
 
 struct objectStruct {
 	nodeUniform5 : u32
@@ -1413,12 +1329,12 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 
 	if ( instanceIndex >= object.nodeUniform5 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45828.value[ 22u ] );
-	NodeBuffer_45879.value[ 1u ] = nodeConst0;
-	NodeBuffer_45880.value[ 1u ] = nodeConst0;
-	let nodeConst1 = atomicLoad( &NodeBuffer_45828.value[ 23u ] );
-	NodeBuffer_45881.value[ 1u ] = nodeConst1;
-	NodeBuffer_45882.value[ 1u ] = nodeConst1;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 22u ] );
+	NodeBuffer_92990.value[ 1u ] = nodeConst0;
+	NodeBuffer_92991.value[ 1u ] = nodeConst0;
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 23u ] );
+	NodeBuffer_92992.value[ 1u ] = nodeConst1;
+	NodeBuffer_92993.value[ 1u ] = nodeConst1;
 
 	
 
@@ -1441,26 +1357,32 @@ var<private> instanceIndex : u32;
 
 // uniforms
 
-struct NodeBuffer_45887Struct {
-	value : array< atomic<u32> >
-};
-@binding( 0 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45887 : NodeBuffer_45887Struct;
-
-struct NodeBuffer_45888Struct {
+struct NodeBuffer_92997Struct {
 	value : array< u32 >
 };
-@binding( 1 ) @group( 0 )
-var<storage, read_write> NodeBuffer_45888 : NodeBuffer_45888Struct;
+@binding( 0 ) @group( 0 )
+var<storage, read_write> NodeBuffer_92997 : NodeBuffer_92997Struct;
 
-struct objectStruct {
-	nodeUniform2 : u32
+struct NodeBuffer_92939Struct {
+	value : array< atomic<u32> >
+};
+@binding( 1 ) @group( 0 )
+var<storage, read_write> NodeBuffer_92939 : NodeBuffer_92939Struct;
+
+struct NodeBuffer_92998Struct {
+	value : array< u32 >
 };
 @binding( 2 ) @group( 0 )
+var<storage, read_write> NodeBuffer_92998 : NodeBuffer_92998Struct;
+
+struct objectStruct {
+	nodeUniform3 : u32
+};
+@binding( 3 ) @group( 0 )
 var<uniform> object : objectStruct;
 
 // vars
-
+var<private> nodeVar0 : u32;
 
 // codes
 
@@ -1482,10 +1404,29 @@ fn main( @builtin( global_invocation_id ) globalId : vec3<u32>,
 	// flow
 	// code
 
-	if ( instanceIndex >= object.nodeUniform2 ) { return; }
+	if ( instanceIndex >= object.nodeUniform3 ) { return; }
 
-	let nodeConst0 = atomicLoad( &NodeBuffer_45887.value[ 0u ] );
-	NodeBuffer_45888.value[ 1u ] = min( nodeConst0, 96u );
+	nodeVar0 = 0u;
+	NodeBuffer_92997.value[ 12u ] = nodeVar0;
+	let nodeConst0 = atomicLoad( &NodeBuffer_92939.value[ 2u ] );
+	nodeVar0 = ( nodeVar0 + ( min( nodeConst0, 16u ) * NodeBuffer_92997.value[ 1u ] ) );
+	NodeBuffer_92997.value[ 13u ] = nodeVar0;
+	let nodeConst1 = atomicLoad( &NodeBuffer_92939.value[ 6u ] );
+	nodeVar0 = ( nodeVar0 + ( min( nodeConst1, 16u ) * NodeBuffer_92997.value[ 3u ] ) );
+	NodeBuffer_92997.value[ 14u ] = nodeVar0;
+	let nodeConst2 = atomicLoad( &NodeBuffer_92939.value[ 10u ] );
+	nodeVar0 = ( nodeVar0 + ( min( nodeConst2, 16u ) * NodeBuffer_92997.value[ 5u ] ) );
+	NodeBuffer_92997.value[ 15u ] = nodeVar0;
+	let nodeConst3 = atomicLoad( &NodeBuffer_92939.value[ 14u ] );
+	nodeVar0 = ( nodeVar0 + ( min( nodeConst3, 16u ) * NodeBuffer_92997.value[ 7u ] ) );
+	NodeBuffer_92997.value[ 16u ] = nodeVar0;
+	let nodeConst4 = atomicLoad( &NodeBuffer_92939.value[ 18u ] );
+	nodeVar0 = ( nodeVar0 + ( min( nodeConst4, 16u ) * NodeBuffer_92997.value[ 9u ] ) );
+	NodeBuffer_92997.value[ 17u ] = nodeVar0;
+	let nodeConst5 = atomicLoad( &NodeBuffer_92939.value[ 22u ] );
+	nodeVar0 = ( nodeVar0 + ( min( nodeConst5, 16u ) * NodeBuffer_92997.value[ 11u ] ) );
+	NodeBuffer_92997.value[ 18u ] = nodeVar0;
+	NodeBuffer_92998.value[ 1u ] = ( ( nodeVar0 + 3071u ) / 3072u );
 
 	
 

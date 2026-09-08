@@ -300,6 +300,35 @@ console.log('\ncompact mode + validation failure in forest-gpu');
     merged.geometry.index.count === chunk && chunk !== compact.summary.pulledArena.indexSlot, String(chunk));
   check('the merged indirect starts at the chunk and zero instances',
     merged.geometry.indirect.array[0] === chunk && merged.geometry.indirect.array[1] === 0);
+
+  // ---- capacities: nothing the fixed chunk fetches may run off the end of an attribute ----
+  {
+    const g = merged.geometry, a = compact.summary.pulledArena;
+    check('the indirect args are the five uints an indexed indirect draw wants',
+      g.indirect.array.length === 5 && g.indirect.itemSize === 5, String(g.indirect.array.length));
+    check('firstIndex, baseVertex and firstInstance all start at zero',
+      g.indirect.array[2] === 0 && g.indirect.array[3] === 0 && g.indirect.array[4] === 0);
+    check('the indirect indexCount is the draw stride the module reports',
+      g.indirect.array[0] === a.drawStride && a.drawStride === chunk, `${g.indirect.array[0]} vs ${a.drawStride}`);
+    check('the identity index buffer is at least the chunk long', g.index.count >= chunk, String(g.index.count));
+    check('and it really is the identity, so vertexIndex is k',
+      g.index.array[0] === 0 && g.index.array[chunk - 1] === chunk - 1);
+    check('the largest index it can hand the fetcher is chunk-1',
+      Math.max(...g.index.array) === chunk - 1, String(Math.max(...g.index.array)));
+    for (const name of Object.keys(g.attributes)) {
+      check(`the dummy '${name}' attribute holds at least one chunk of vertices`,
+        g.attributes[name].count >= chunk, `${g.attributes[name].count} < ${chunk}`);
+    }
+    check('every dummy attribute value is finite',
+      Object.values(g.attributes).every(at => at.array.every(Number.isFinite)));
+    // The ceiling geo.instanceCount sets must cover the worst total the finalizer can write:
+    // every variant full at CAP, each contributing its own index count (bounded by the slot).
+    const worst = a.cap * a.indexSlot * compact.summary.variants;
+    check('geo.instanceCount covers the worst total the finalizer can ask for',
+      g.instanceCount >= Math.ceil(worst / chunk), `${g.instanceCount} vs ${Math.ceil(worst / chunk)}`);
+    check('drawRange is left alone, so the indirect args decide the draw',
+      g.drawRange.start === 0 && !Number.isFinite(g.drawRange.count));
+  }
   check('compact mode needs no merged instance buffer', compact.summary.pulledArena.instanceBytes === 0);
   const slots = make({ drawMode: 'pulled' }, fakeDevice());
   check('compact adds one compute pipeline where slots add two (no merged reset, no merged atomic)',
@@ -329,6 +358,91 @@ console.log('\ncompact mode + validation failure in forest-gpu');
   check('the per-variant L2 meshes come back without a rebuild',
     failing.meshes.filter(m => m.visible && /^forest:v\d+:branchesL2$/.test(m.name)).length === 2);
   check('the listener is removed so one error is enough', device.listening === 0);
+
+  // ---- the fallback's lifecycle ----
+  {
+    // A renderer that records what each recull dispatched, so "the merged finalizer stops" is a
+    // measurement rather than a claim about the source.
+    let dispatched = [];
+    const capturing = device => ({
+      computeAsync: async nodes => { dispatched.push(Array.isArray(nodes) ? nodes.length : 1); },
+      backend: { device },
+    });
+    const dev = fakeDevice();
+    const f = createForestGPU({
+      renderer: capturing(dev), camera, palette, heightAt: () => 0,
+      lodR0: 60, lodR1: 140, lodR2: 260, maxDrawRadius: 260, capPerVariant: 64,
+      billboards: false, shadowLayer: 5, drawMode: 'pulled-compact',
+    });
+    f.setChunk('a', [rec(0, -200, 0), rec(0, -210, 1)]);
+    f.setChunk('a', [rec(0, -200, 0), rec(0, -210, 1)]);
+    dispatched = []; await f.update();
+    const withMerged = dispatched[0] ?? 0;
+    check('a live recull dispatches the merged finalizer', withMerged > 0, String(withMerged));
+    const indirects = [0, 1].map(g => f.meshes.find(m => m.name === `forest:v${g}:branchesL2`).geometry.indirect);
+    check('the per-variant L2 indirect buffers exist while the merged draw is on', indirects.every(Boolean));
+
+    check('one listener, registered once', dev.listening === 1);
+    f.forcePulledFallback('a forced fallback for the test');
+    check('the forced fallback moves the mode', f.summary.drawMode === 'variants-fallback');
+    check('and keeps its reason verbatim', f.summary.pulledError === 'a forced fallback for the test');
+    check('the listener is gone after the fallback', dev.listening === 0);
+    check('a second fallback is a no-op', f.forcePulledFallback('again') === false);
+    check('and does not overwrite the first reason', f.summary.pulledError === 'a forced fallback for the test');
+
+    f.setChunk('a', [rec(0, -200, 0), rec(0, -210, 1)]);
+    dispatched = []; await f.update();
+    const afterMerged = dispatched[0] ?? 0;
+    check('after the fallback the merged finalizer is no longer dispatched', afterMerged === withMerged - 1,
+      `${afterMerged} vs ${withMerged}`);
+    check('the per-variant L2 finalizers still run, so their instance counts stay live',
+      f.meshes.filter(m => m.visible && /^forest:v\d+:branchesL2$/.test(m.name)).length === 2);
+    check('the merged mesh stays hidden across later frames',
+      f.meshes.find(m => m.name === 'forest:pulled:branchesL2').visible === false);
+    f.dispose();
+    check('dispose after a fallback leaves no listener', dev.listening === 0);
+
+    // Dispose alone must also remove it: a host that swaps the draw mode tears the forest down.
+    const dev2 = fakeDevice();
+    const g2 = createForestGPU({
+      renderer: capturing(dev2), camera, palette, heightAt: () => 0,
+      lodR0: 60, lodR1: 140, lodR2: 260, maxDrawRadius: 260, capPerVariant: 64,
+      billboards: false, shadowLayer: 5, drawMode: 'pulled-compact',
+    });
+    check('a fresh pulled forest listens', dev2.listening === 1);
+    g2.dispose();
+    check('dispose removes the listener even with no error', dev2.listening === 0);
+    // 'variants' must never touch the device at all.
+    const dev3 = fakeDevice();
+    const g3 = createForestGPU({
+      renderer: capturing(dev3), camera, palette, heightAt: () => 0,
+      lodR0: 60, lodR1: 140, lodR2: 260, maxDrawRadius: 260, capPerVariant: 64,
+      billboards: false, shadowLayer: 5, drawMode: 'variants',
+    });
+    check('the shipped variants path registers no listener', dev3.listening === 0);
+    g3.dispose();
+
+    // The scoped-validation seam: it reports the device's own message and falls back on it.
+    const dev4 = { ...fakeDevice(), pushErrorScope() { this.scoped = true; }, popErrorScope: async () => ({ message: 'entry point uses too many storage buffers' }) };
+    const listeners = new Map();
+    dev4.addEventListener = (t, fn) => listeners.set(t, fn);
+    dev4.removeEventListener = t => listeners.delete(t);
+    Object.defineProperty(dev4, 'listening', { get: () => listeners.size });
+    const g4 = createForestGPU({
+      renderer: capturing(dev4), camera, palette, heightAt: () => 0,
+      lodR0: 60, lodR1: 140, lodR2: 260, maxDrawRadius: 260, capPerVariant: 64,
+      billboards: false, shadowLayer: 5, drawMode: 'pulled-compact',
+    });
+    const scoped = await g4.capturePulledValidationScope(async () => 'drew');
+    check('the validation scope runs the caller\'s render and reports the scope',
+      scoped.scoped === true && scoped.result === 'drew');
+    check('an error inside the scope carries the device\'s own words',
+      scoped.error === 'entry point uses too many storage buffers');
+    check('and it disables the pulled draw', g4.summary.drawMode === 'variants-fallback');
+    check('with the device message kept in pulledError',
+      /too many storage buffers/.test(g4.summary.pulledError ?? ''), g4.summary.pulledError ?? '');
+    g4.dispose();
+  }
 
   let threw = null;
   try { compact.dispose(); slots.dispose(); failing.dispose(); } catch (e) { threw = e; }
@@ -438,6 +552,74 @@ console.log('\ncompact mapping');
     }
     check('the compact offset resolves the same arena vertex the slot mapping would', wrong === 0, `${wrong} wrong`);
     check('a variant with no live instances contributes no vertices', prefix[3] === 2 * ic[0] + ic[1]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The padded tail, exhaustively. For EVERY gi the merged draw can dispatch — chunk-aligned, so past
+// the total as well — either the mapping lands inside that variant's own [0, live) x [0, indexCount)
+// span, or it is not live and every index is forced to a safe constant. This is the CPU statement of
+// the shader's tail guard; test-forest-pulled-wgsl.mjs checks the guard is in the emitted WGSL.
+console.log('\ncompact tail guard, every dispatched vertex');
+{
+  const CAP = 64, INDEX_SLOT = 96;
+  // Each case: a name, per-variant index counts, per-variant live counts, and the chunk to use.
+  const cases = [
+    ['total 0 (nothing live)', [9, 6, 12], [0, 0, 0], 12],
+    ['total 3 (one triangle)', [3, 6, 12], [1, 0, 0], 12],
+    ['total 3069 (one short of a chunk)', [3069], [1], 3072],
+    ['total 3072 (exactly one chunk)', [3072], [1], 3072],
+    ['total 3075 (one triangle into a second chunk)', [3075], [1], 3072],
+    ['all-empty prefixes with real index counts', [9, 6, 12], [0, 0, 0], 3072],
+    ['the last non-empty variant followed by empty ones', [9, 6, 12, 15], [2, 0, 0, 0], 12],
+    ['only the last variant is live', [9, 6, 12], [0, 0, 3], 12],
+    ['a single live instance in the last variant', [9, 6, 12], [0, 0, 1], 3072],
+    ['an overflow fallback (indexCount 0) in the middle', [9, 0, 12], [2, 5, 3], 12],
+    ['an overflow fallback at the end', [9, 6, 0], [2, 3, 5], 12],
+    ['every variant an overflow fallback', [0, 0, 0], [4, 4, 4], 12],
+    ['a live count over the cap', [9, 6], [CAP + 50, 3], 12],
+  ];
+  for (const [name, ic, live, chunk] of cases) {
+    const prefix = pulledCompactPrefix(ic, live, CAP);
+    const total = prefix[ic.length];
+    const instances = pulledCompactInstances(total, chunk);
+    let bad = 0, tail = 0, hits = 0, firstBad = '';
+    const fail = (gi, why) => { bad++; firstBad ||= `gi ${gi}: ${why}`; };
+    for (let gi = 0; gi < instances * chunk; gi++) {
+      const h = pulledCompactLookup(gi, prefix, ic, CAP, INDEX_SLOT);
+      // Never variant V, never a negative or non-integer index, whatever the case.
+      if (!(h.variant >= 0 && h.variant < ic.length)) fail(gi, `variant ${h.variant}`);
+      if (!(h.instance >= 0 && h.instance < CAP)) fail(gi, `instance ${h.instance}`);
+      if (!(h.k >= 0 && h.k < INDEX_SLOT)) fail(gi, `k ${h.k}`);
+      if (gi < total) {
+        hits++;
+        if (!h.live) fail(gi, 'live vertex reported as tail');
+        if (h.instance >= Math.min(live[h.variant], CAP)) fail(gi, `instance ${h.instance} past live`);
+        if (h.k >= ic[h.variant]) fail(gi, `k ${h.k} past indexCount ${ic[h.variant]}`);
+        if (ic[h.variant] === 0) fail(gi, 'landed on a variant with no indices');
+      } else {
+        tail++;
+        if (h.live) fail(gi, 'tail vertex reported as live');
+        // The safe path: variant 0, instance 0, index 0 — one constant point, no arena dependence.
+        if (h.variant !== 0 || h.instance !== 0 || h.k !== 0) fail(gi, `unsafe tail ${h.variant}/${h.instance}/${h.k}`);
+      }
+    }
+    check(`${name}: every dispatched vertex is in range (${hits} live, ${tail} tail, ${instances} chunks)`,
+      bad === 0, firstBad);
+    check(`${name}: the dispatch covers the total and wastes under a chunk`,
+      instances * chunk >= total && instances * chunk - total < chunk, `${instances}x${chunk} vs ${total}`);
+    if (total === 0) check(`${name}: an empty rung dispatches nothing`, instances === 0);
+  }
+
+  // The tail is never half a triangle: every prefix boundary and the chunk are multiples of three.
+  {
+    const ic = [1092, 1356, 6660], live = [7, 0, 3];
+    const prefix = pulledCompactPrefix(ic, live, 64);
+    check('every boundary of a mixed live frame is a multiple of three',
+      [...prefix].every(p => p % 3 === 0) && PULLED_COMPACT_CHUNK % 3 === 0);
+    const total = prefix[3];
+    const start = total % PULLED_COMPACT_CHUNK;
+    check('the tail of the last chunk starts on a triangle boundary', start % 3 === 0, String(start));
   }
 }
 

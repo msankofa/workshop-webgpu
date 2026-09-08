@@ -300,25 +300,29 @@ export function pulledCompactInstances(total, chunk = PULLED_COMPACT_CHUNK) {
 //
 // gi past the total (the tail of the last chunk) reports live:false and collapses to variant 0's
 // k=0, so every such vertex is the same point and its triangle has no area.
-export function pulledCompactLookup(gi, prefix, indexCounts) {
+// The clamps are the shader's tail guard, not decoration: min(v, V-1), min(instance, cap-1) and
+// min(k, indexSlot-1) are what keep every dynamic storage index in range even if the prefix table
+// and the index counts disagree. `cap` and `indexSlot` default to no clamp for older callers.
+export function pulledCompactLookup(gi, prefix, indexCounts, cap = Infinity, indexSlot = Infinity) {
   const V = indexCounts.length;
   const total = prefix[V];
   const inRange = gi < total;
   let v = 0;
   for (let u = 1; u < V; u++) if (gi >= prefix[u]) v++;
-  if (!inRange) v = 0;
+  v = inRange ? Math.min(v, V - 1) : 0;
   const r = inRange ? gi - prefix[v] : 0;
   const ic = Math.max(indexCounts[v] ?? 0, 1);
-  const instance = Math.floor(r / ic);
-  return { live: inRange, variant: v, instance, k: r % ic };
+  const instance = Math.min(Math.floor(r / ic), cap - 1);
+  const k = Math.min(r - instance * ic, indexSlot - 1);
+  return { live: inRange, variant: v, instance, k };
 }
 
 // The compact twin of pulledVertexOffset: gi straight to an arena float offset.
-export function pulledCompactVertex(gi, prefix, arena) {
-  const V = arena.counts.length / 2;
+export function pulledCompactVertex(gi, prefix, arena, cap = Infinity) {
+  const V = prefix.length - 1;
   const indexCounts = [];
   for (let v = 0; v < V; v++) indexCounts.push(arena.counts[v * 2 + 1]);
-  const hit = pulledCompactLookup(gi, prefix, indexCounts);
+  const hit = pulledCompactLookup(gi, prefix, indexCounts, cap, arena.indexSlot);
   const local = arena.indexData[hit.variant * arena.indexSlot + hit.k];
   return { ...hit, offset: (hit.variant * arena.vertexSlot + local) * PULLED_VERTEX_STRIDE };
 }

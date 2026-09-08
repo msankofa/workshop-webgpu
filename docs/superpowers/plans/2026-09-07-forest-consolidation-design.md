@@ -5,7 +5,8 @@ default `'variants'`. Every program of both modes now builds to WGSL headless; n
 validated as WGSL and nothing has been rendered.** See STATUS ADDENDUM (what was built instead of
 section 4.3, and why) and STATUS ADDENDUM 2 (the headless compile, device limits, normals, and the
 measured slot cost) and STATUS ADDENDUM 3 (the compact live-count mapping, admission from the
-device, and the validation-failure fallback) at the end of this file. The original design text below is unedited.
+device, and the validation-failure fallback) and STATUS ADDENDUM 4 (the tail guard, the boundary
+cases, the capacities and the fallback's lifecycle) at the end of this file. The original design text below is unedited.
 
 Original status: design only, nothing implemented. Read-only pass over `forest-gpu.js`,
 `forest-cull.js`, `base-game-forest.js`, `base-game.html`, `hiz-test.js`, `shared-draw-geometry.js`
@@ -786,3 +787,106 @@ three, and gains a failure-path check:
 
 Nothing else in the page changes: `forestDrawMode` is already a `PALETTE_KEYS` member, already a
 local-quality key, and `base-game-forest.js` validates the value against `FOREST_DRAW_MODES`.
+
+# STATUS ADDENDUM 4 (agent F4, 2026-09-08) — the tail guard, boundary cases, capacities, fallback lifecycle
+
+**State: implemented and Node-tested, still unrendered.** No pulled mode is recommended; `'variants'`
+stays the default and is unchanged. This addendum answers the review of ADDENDUM 3.
+
+## The tail guard, as coded
+
+`pulledInstanceNodes()` in `forest-gpu.js`, compact branch. `gi = instanceIndex*chunk + vertexIndex`,
+then `inRange = gi < prefix[V]`. Everything after that comparison is forced in range before it
+indexes anything:
+
+- the variant is `select(inRange, min(searchCount, V-1), 0)` — the search can only reach `V-1` on its
+  own, so the `min` is insurance against a corrupt prefix table, and index `V` is unreachable;
+- the instance is `min(r / indexCount, CAP-1)`;
+- the local index is `min(r - instance*indexCount, indexSlot-1)`;
+- the world position is `select(inRange, computed, vec3(0,0,0))`.
+
+The only storage reads that happen **before** the guard are the prefix boundaries at fixed indices
+inside the counts buffer (`PREFIX_BASE + u`), which are always in bounds. The builder lowers the
+position select into a real `if`, so in the emitted WGSL the entire arena chase — counts at a dynamic
+index, the arena index buffer, the arena vertices, and the per-variant draw buffer — sits inside the
+`if (inRange)` block and the tail executes none of it. Every tail vertex is the same finite constant,
+so every tail triangle has zero area; `total` and the chunk are both multiples of 3, so no triangle
+is half tail and half real.
+
+The slot mapping got the same treatment for a different reason: its variant id is `uint(rec1.y)`, a
+float the cull wrote, so it is now `min(uint(rec1.y), V-1)` and its `k` is clamped to `indexSlot-1`.
+
+Cost of the branch, read off the dumped WGSL: the arena chase is re-emitted once per consumer
+(position, uv, colour, normal) instead of hoisted — the arena index read goes 1 → 6 occurrences in
+`main`, the counts read 8 → 15. The arena **vertex** read was already emitted 13 times before this
+change, so the mode already leaned on the driver CSEing identical read-only loads. Not measured.
+
+`forest-cull.js`'s `pulledCompactLookup` gained the same three clamps (`cap` and `indexSlot`
+arguments, defaulting to no clamp for older callers) so the twin still matches line for line.
+
+## What the tests now assert
+
+`test-forest-pulled-wgsl.mjs` (55 checks, exit 0) reads the guard **out of the WGSL the builder
+emitted**, not out of the CPU model: the `gi < prefix[V]` comparison exists; every storage read
+before it is a constant index; no dynamically indexed read sits between the guard and its branch; the
+tail emits `vec3<f32>( 0.0, 0.0, 0.0 )`; the three `min` clamps are present with the right constants;
+and the arena's `vertexSlot` stride appears nowhere before the guard.
+
+`test-forest-pulled-arena.mjs` (148 checks, exit 0) sweeps **every `gi` the merged draw can dispatch**
+— chunk-aligned, so past the total as well — for thirteen cases: total 0, 3, 3069, 3072, 3075;
+all-empty prefixes; the last non-empty variant followed by empty ones; only the last variant live; a
+single live instance in the last variant; an `indexCount 0` overflow fallback in the middle, at the
+end and in every variant; and a live count over the cap. For each `gi` it must be either live and
+inside that variant's own `[0, live) x [0, indexCount)` span, or not live with variant, instance and
+index all 0. Variant `V`, an instance past `CAP` and an index past `indexSlot` are unreachable in
+every case; every case's dispatch covers its total and wastes under one chunk; a zero total
+dispatches nothing.
+
+## Capacities
+
+From the built geometry, asserted in `test-forest-pulled-arena.mjs`: the indirect attribute is the
+5-uint `[indexCount, instanceCount, firstIndex, baseVertex, firstInstance]` layout with the last
+three at zero; `indexCount` equals `PULLED_COMPACT_CHUNK` and `summary.pulledArena.drawStride`; the
+identity index buffer is at least a chunk long, really is the identity, and its largest value is
+`chunk-1`; every dummy attribute (`position`, `normal`, `uv`) holds at least a chunk of finite
+values, so the fixed chunk cannot fetch past one; `geo.instanceCount` is
+`ceil(indexSlot * V * CAP / chunk)`, which covers the largest total the finalizer can write; and
+`drawRange` is left at its default so the indirect args alone decide the draw.
+
+## The fallback lifecycle, as coded and tested
+
+- Registered once per `createForestGPU`, and only with a pulled mode admitted and the arena packed —
+  `variants` registers nothing.
+- Removed by `disablePulled` (one error is enough) and by `dispose()`. A rebuild and a draw-mode
+  change both go through `base-game-forest.js`'s `teardownRenderer`, which disposes the old forest
+  before building the new one, so neither leaks a listener nor double-registers.
+- **After a fallback the merged reset and finalizer stop being dispatched.** `update()` drops them
+  from the `computeAsync` array while `pulledActive` is false: the merged mesh is hidden so their
+  output is unread, and a device that has already failed is not poked again. Tested by counting the
+  nodes a capturing stub renderer receives before and after.
+- The per-variant finalizers are untouched by any of this, so the L2 meshes' indirect instance counts
+  are already right on the frame the fallback happens; `disablePulled` calls `syncRenderParts()`,
+  which un-hides them at once. Tested with the fake device from ADDENDUM 3's suite.
+- `summary.pulledError` keeps the device's own message unedited. The listener's wording is now "the
+  device reported an error" rather than "a validation error", because an `uncapturederror` may be
+  out-of-memory or internal. **Hiding the prototype is not recovery of a lost device**; the doc and
+  the code comment both say so.
+- Two new seams: `forcePulledFallback(reason)` (the switch without a device; `false` if it already
+  happened, and it does not overwrite the first reason) and `capturePulledValidationScope(renderFn)`,
+  which wraps one render call in `pushErrorScope('validation')` / `popErrorScope()` so a merged-draw
+  error is attributed with its own message. **r184's backend offers no per-draw hook inside this
+  module**, so the caller passes the render call in; with no device it is a plain await that captures
+  nothing, and the unfiltered listener stays in place either way.
+
+## The browser plan, reduced
+
+`variants` vs `pulled-compact` is the whole acceptance comparison: pixel diff plus a GPU timestamp on
+the LOD2 branch rung at the same seeded window and standing spot, and a forced-failure check of the
+fallback. The padded `'pulled'` mode is a diagnostic control — run it at slack 1.25 and 2 only if a
+mapping or cost question survives that.
+
+## What this still is not
+
+WGSL generation is not device compilation. `node_modules` carries no naga or tint, so WGSL type
+errors and every device limit remain invisible until a browser runs it, and the 2.74x figure is
+invocation arithmetic, not GPU timing. Nothing here has been rendered.

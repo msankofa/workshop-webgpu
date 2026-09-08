@@ -122,8 +122,35 @@ for (const mode of ['variants', 'pulled', 'pulled-compact']) {
       if (mode === 'pulled') check('the padded index collapses onto k=0', /if \( \( vertexIndex </.test(vs));
       // gi = instance*chunk + vertexIndex, then a divide by the variant's index count and a
       // multiply-subtract for the remainder (TSL has no u32 % here).
-      else check('the compact mapping walks instance*chunk + vertexIndex and divides by an index count',
-        new RegExp(`instanceIndex \\* ${forest.summary.pulledArena.chunk}u`).test(vs) && / \/ /.test(vs));
+      else {
+        const a = forest.summary.pulledArena;
+        check('the compact mapping walks instance*chunk + vertexIndex and divides by an index count',
+          new RegExp(`instanceIndex \\* ${a.chunk}u`).test(vs) && / \/ /.test(vs));
+        // ---- the tail guard, read out of the WGSL the builder actually emitted ----
+        const body = vs.slice(vs.indexOf('fn main('));
+        const V = forest.summary.variants, PREFIX_BASE = V * 2;
+        // The only storage reads before the guard are the prefix table at FIXED indices.
+        const guard = body.search(new RegExp(`< NodeBuffer_\\d+\\.value\\[ ${PREFIX_BASE + V}u \\]`));
+        check('the guard compares gi against the total', guard >= 0);
+        const loads = [...body.matchAll(/NodeBuffer_\d+\.value\[ ([^\]]*)\]/g)];
+        const before = loads.filter(m => m.index < guard);
+        check('every storage read before the guard is a constant index into the prefix table',
+          before.every(m => /^\s*\d+u\s*$/.test(m[1])), before.map(m => m[1]).join(' | '));
+        // No dynamic read may exist outside the guarded branch either.
+        const gStart = body.indexOf('if ( ', guard);
+        const dynamicOutside = loads.filter(m => m.index > guard && m.index < gStart && !/^\s*\d+u\s*$/.test(m[1]));
+        check('no dynamically indexed storage read sits between the guard and its branch',
+          dynamicOutside.length === 0, dynamicOutside.map(m => m[1]).join(' | '));
+        check('the tail emits a finite constant position, so its triangles have no area',
+          /vec3<f32>\( 0\.0, 0\.0, 0\.0 \)/.test(body));
+        // Variant V can never be reached: the search is clamped to V-1 and the tail forces 0.
+        check(`the variant search is clamped to ${V - 1}`, new RegExp(`min\\([^;]*\\), ${V - 1}u \\)`).test(body));
+        check(`the instance is clamped to the per-variant cap`, new RegExp(`min\\( \\([^;]*/ [^;]*\\), ${a.cap - 1}u \\)`).test(body),
+          'no min(r / ic, CAP-1)');
+        check(`the local index is clamped to the index slot`, new RegExp(`, ${a.indexSlot - 1}u \\)`).test(body));
+        check('and the arena is only ever indexed by the clamped variant',
+          !new RegExp(`\\* ${a.vertexSlot}u`).test(body.slice(0, guard)));
+      }
       check('the fragment stage needs no storage buffer', count(src.fragment, /var<storage/g) === 0);
       check('uv, colour and the shading normal cross as varyings, not per-fragment arena reads',
         /v_pulledUv/.test(vs) && /v_pulledColor/.test(vs) && /v_pulledNormal/.test(vs));

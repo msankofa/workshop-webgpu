@@ -71,13 +71,14 @@ var<private> varyings : VaryingsStruct;
 var<private> nodeVar0 : u32;
 var<private> nodeVar1 : u32;
 var<private> nodeVar2 : u32;
-var<private> nodeVar3 : f32;
+var<private> nodeVar3 : u32;
 var<private> nodeVar4 : f32;
 var<private> nodeVar5 : f32;
-var<private> nodeVar6 : vec2<f32>;
+var<private> nodeVar6 : f32;
+var<private> nodeVar7 : vec2<f32>;
 var<private> normalLocal : vec3<f32>;
 var<private> modelViewMatrix : mat4x4<f32>;
-var<private> VERTEX_nodeVar144 : vec4<f32>;
+var<private> VERTEX_nodeVar145 : vec4<f32>;
 var<private> positionLocal : vec3<f32>;
 var<private> v_modelViewProjection : vec4<f32>;
 var<private> v_positionView : vec3<f32>;
@@ -97,33 +98,34 @@ fn main( @builtin( instance_index ) instanceIndex : u32,
 
 	positionLocal = position;
 	nodeVar0 = ( instanceIndex * 2u );
+	nodeVar1 = min( u32( NodeBuffer_45886.value[ ( nodeVar0 + 1u ) ].y ), 5u );
 
-	if ( ( vertexIndex < NodeBuffer_45885.value[ ( ( u32( NodeBuffer_45886.value[ ( nodeVar0 + 1u ) ].y ) * 2u ) + 1u ) ] ) ) {
+	if ( ( vertexIndex < NodeBuffer_45885.value[ ( ( nodeVar1 * 2u ) + 1u ) ] ) ) {
 
-		nodeVar1 = vertexIndex;
+		nodeVar2 = vertexIndex;
 
 	} else {
 
-		nodeVar1 = 0u;
+		nodeVar2 = 0u;
 
 	}
 
-	nodeVar2 = ( ( ( u32( NodeBuffer_45886.value[ ( nodeVar0 + 1u ) ].y ) * 2313u ) + NodeBuffer_45884.value[ ( ( u32( NodeBuffer_45886.value[ ( nodeVar0 + 1u ) ].y ) * 8325u ) + nodeVar1 ) ] ) * 3u );
-	nodeVar3 = cos( NodeBuffer_45886.value[ ( nodeVar0 + 1u ) ].x );
-	nodeVar4 = sin( NodeBuffer_45886.value[ ( nodeVar0 + 1u ) ].x );
-	nodeVar5 = ( NodeBuffer_45886.value[ nodeVar0 ].w * object.nodeUniform4 );
-	positionLocal = vec3<f32>( ( NodeBuffer_45886.value[ nodeVar0 ].x + ( ( ( NodeBuffer_45883.value[ nodeVar2 ].x * nodeVar3 ) + ( NodeBuffer_45883.value[ nodeVar2 ].z * nodeVar4 ) ) * nodeVar5 ) ), ( NodeBuffer_45886.value[ nodeVar0 ].y + ( NodeBuffer_45883.value[ nodeVar2 ].y * nodeVar5 ) ), ( NodeBuffer_45886.value[ nodeVar0 ].z + ( ( ( NodeBuffer_45883.value[ nodeVar2 ].z * nodeVar3 ) - ( NodeBuffer_45883.value[ nodeVar2 ].x * nodeVar4 ) ) * nodeVar5 ) ) );
-	varyings.v_pulledColor = NodeBuffer_45883.value[ ( nodeVar2 + 2u ) ].xyz;
-	nodeVar6 = vec2<f32>( NodeBuffer_45883.value[ nodeVar2 ].w, NodeBuffer_45883.value[ ( nodeVar2 + 1u ) ].w );
-	varyings.v_pulledUv = nodeVar6;
+	nodeVar3 = ( ( ( nodeVar1 * 2313u ) + NodeBuffer_45884.value[ ( ( nodeVar1 * 8325u ) + min( nodeVar2, 8324u ) ) ] ) * 3u );
+	nodeVar4 = cos( NodeBuffer_45886.value[ ( nodeVar0 + 1u ) ].x );
+	nodeVar5 = sin( NodeBuffer_45886.value[ ( nodeVar0 + 1u ) ].x );
+	nodeVar6 = ( NodeBuffer_45886.value[ nodeVar0 ].w * object.nodeUniform4 );
+	positionLocal = vec3<f32>( ( NodeBuffer_45886.value[ nodeVar0 ].x + ( ( ( NodeBuffer_45883.value[ nodeVar3 ].x * nodeVar4 ) + ( NodeBuffer_45883.value[ nodeVar3 ].z * nodeVar5 ) ) * nodeVar6 ) ), ( NodeBuffer_45886.value[ nodeVar0 ].y + ( NodeBuffer_45883.value[ nodeVar3 ].y * nodeVar6 ) ), ( NodeBuffer_45886.value[ nodeVar0 ].z + ( ( ( NodeBuffer_45883.value[ nodeVar3 ].z * nodeVar4 ) - ( NodeBuffer_45883.value[ nodeVar3 ].x * nodeVar5 ) ) * nodeVar6 ) ) );
+	varyings.v_pulledColor = NodeBuffer_45883.value[ ( nodeVar3 + 2u ) ].xyz;
+	nodeVar7 = vec2<f32>( NodeBuffer_45883.value[ nodeVar3 ].w, NodeBuffer_45883.value[ ( nodeVar3 + 1u ) ].w );
+	varyings.v_pulledUv = nodeVar7;
 	normalLocal = normal;
 	varyings.v_normalViewGeometry = normalize( ( render.cameraViewMatrix * vec4<f32>( ( object.nodeUniform9 * normalLocal ), 0.0 ) ).xyz );
-	varyings.v_pulledNormal = vec3<f32>( ( ( NodeBuffer_45883.value[ ( nodeVar2 + 1u ) ].x * nodeVar3 ) + ( NodeBuffer_45883.value[ ( nodeVar2 + 1u ) ].z * nodeVar4 ) ), NodeBuffer_45883.value[ ( nodeVar2 + 1u ) ].y, ( ( NodeBuffer_45883.value[ ( nodeVar2 + 1u ) ].z * nodeVar3 ) - ( NodeBuffer_45883.value[ ( nodeVar2 + 1u ) ].x * nodeVar4 ) ) );
+	varyings.v_pulledNormal = vec3<f32>( ( ( NodeBuffer_45883.value[ ( nodeVar3 + 1u ) ].x * nodeVar4 ) + ( NodeBuffer_45883.value[ ( nodeVar3 + 1u ) ].z * nodeVar5 ) ), NodeBuffer_45883.value[ ( nodeVar3 + 1u ) ].y, ( ( NodeBuffer_45883.value[ ( nodeVar3 + 1u ) ].z * nodeVar4 ) - ( NodeBuffer_45883.value[ ( nodeVar3 + 1u ) ].x * nodeVar5 ) ) );
 	modelViewMatrix = ( render.cameraViewMatrix * object.nodeUniform16 );
 	v_positionView = ( modelViewMatrix * vec4<f32>( positionLocal, 1.0 ) ).xyz;
 	varyings.v_positionViewDirection = ( - v_positionView );
-	VERTEX_nodeVar144 = ( render.cameraProjectionMatrix * vec4<f32>( v_positionView, 1.0 ) );
-	VERTEX_v_modelViewProjection = VERTEX_nodeVar144;
+	VERTEX_nodeVar145 = ( render.cameraProjectionMatrix * vec4<f32>( v_positionView, 1.0 ) );
+	VERTEX_v_modelViewProjection = VERTEX_nodeVar145;
 
 	// result
 
