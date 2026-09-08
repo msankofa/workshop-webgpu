@@ -7,7 +7,7 @@ import { MeshStandardNodeMaterial } from 'three/webgpu';
 import { instancedBoxes, clearBoxes } from './map-boxes.js';
 import { createConcreteMaterial } from './concrete-material.js';
 import { createStructureCollision } from './base-game-structure-collision.js';
-import { clearanceAgainstRects, structureStampPaths } from './base-game-structures.js';
+import { clearanceAgainstRects, rectsClearanceBounds, structureStampPaths } from './base-game-structures.js';
 import { SPAWN_BUILDING_CHUNK, SPAWN_CONCRETE_WALL, SPAWN_CONCRETE_COVER } from './base-game-spawn-building.js';
 
 export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, renderer = null, camera = null, materials: shared = null, seaLevel = () => 0, seed = 1, spacing = 480, chance = 1, scatter = { count: 5, reach: 110 }, chunk = SPAWN_BUILDING_CHUNK, collision: collisionOptions = {} }) {
@@ -51,10 +51,16 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, re
   warm().catch(() => { warmup.done = true; });
   // Cover keep-out: every resident building's floor rects, for the field derive (tiles arriving
   // after a building) and for the stamp over resident posts (a building arriving after a tile).
-  const floorRects = new Map();    // tile key -> rects
+  const floorRects = new Map();    // tile key -> { rects, bounds }: the box outside which the rects answer 1
+  // Asked once per texel of every arriving field tile, for every resident building: the bounds test
+  // is what keeps that from walking every slab in the world (1.3 GB of a 3.8 GB profile, 2026-09-08).
   const clearanceAt = (x, z) => {
     let clear = 1;
-    for (const rects of floorRects.values()) { clear = Math.min(clear, clearanceAgainstRects(rects, x, z)); if (clear === 0) break; }
+    for (const { rects, bounds } of floorRects.values()) {
+      if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) continue;
+      clear = Math.min(clear, clearanceAgainstRects(rects, x, z));
+      if (clear === 0) break;
+    }
     return clear;
   };
   terrain.setStructureClearance?.(clearanceAt);
@@ -115,7 +121,7 @@ export function createBaseGameStructures({ THREE, scene, worldQuery, terrain, re
     root.add(group);
     groups.set(key, group);
     stats.meshes += meshes;
-    floorRects.set(key, tile.keepOut);
+    floorRects.set(key, { rects: tile.keepOut, bounds: rectsClearanceBounds(tile.keepOut) });
     stamp(tile);
   }
   function undress(key) {

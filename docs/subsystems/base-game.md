@@ -3901,7 +3901,7 @@ concrete. `clearanceAgainstRects(rects, x, z)` in `base-game-structures.js` is 0
 `STRUCTURE_CLEAR.margin` (1.5 m) of a floor rect and rises to 1 over `fade` (6 m);
 `structureStampPaths(model)` gives one polyline per slab along its long axis with a reach that
 covers the clearance, which the test proves misses no post. Two routes, both through that one
-function: the page module registers `terrain.setStructureClearance(clearanceAt)`, which the
+function (which takes its options without a destructured default, since a default object per call was 850 MB of a 3.8 GB allocation profile on 2026-09-08). The page keeps each dressed tile's rects with `rectsClearanceBounds` and skips a tile whose box, expanded by margin + fade, does not contain the point; outside that box every rect answers 1, so the skip is exact (tested), and the derive no longer walks every resident slab per texel (1.3 GB of the same profile). The page module registers `terrain.setStructureClearance(clearanceAt)`, which the
 terrain composes with the trails' clearance as a product for the tile derive (tiles arriving
 after a building), and it stamps the resident posts through `terrain.fields.stampAlong` when a
 tile is dressed (a building arriving after a tile). Unlike the trail hook this one does not clear

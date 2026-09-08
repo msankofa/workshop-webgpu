@@ -90,8 +90,12 @@ export function structureFloorRects(model) {
   return model.layout.walls.filter((r) => r.y < 0).map((r) => ({ x: r.x, z: r.z, w: r.w, d: r.d }));
 }
 
-// 0..1 clearance at (x, z) against a list of floor rects.
-export function clearanceAgainstRects(rects, x, z, { margin = STRUCTURE_CLEAR.margin, fade = STRUCTURE_CLEAR.fade } = {}) {
+// 0..1 clearance at (x, z) against a list of floor rects. No destructured options: the field derive
+// asks this once per texel per resident building, and a default object per call was 850 MB of a
+// 3.8 GB allocation profile (2026-09-08).
+export function clearanceAgainstRects(rects, x, z, opts) {
+  const margin = opts && opts.margin !== undefined ? opts.margin : STRUCTURE_CLEAR.margin;
+  const fade = opts && opts.fade !== undefined ? opts.fade : STRUCTURE_CLEAR.fade;
   let clear = 1;
   for (const r of rects) {
     const dx = Math.max(0, Math.abs(x - r.x) - r.w / 2), dz = Math.max(0, Math.abs(z - r.z) - r.d / 2);
@@ -101,6 +105,18 @@ export function clearanceAgainstRects(rects, x, z, { margin = STRUCTURE_CLEAR.ma
     if (clear === 0) break;
   }
   return clear;
+}
+
+// The XZ box outside which every rect in the list answers 1: a caller with many buildings tests
+// this before walking the rects, and the answer is unchanged because min(1, ...) is 1 out there.
+export function rectsClearanceBounds(rects, { margin = STRUCTURE_CLEAR.margin, fade = STRUCTURE_CLEAR.fade } = {}) {
+  const reach = margin + fade;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const r of rects) {
+    minX = Math.min(minX, r.x - r.w / 2 - reach); maxX = Math.max(maxX, r.x + r.w / 2 + reach);
+    minZ = Math.min(minZ, r.z - r.d / 2 - reach); maxZ = Math.max(maxZ, r.z + r.d / 2 + reach);
+  }
+  return { minX, maxX, minZ, maxZ };
 }
 
 // Polylines that, stamped with radius `reach`, visit every post a slab's clearance touches: one

@@ -1,6 +1,6 @@
 // Node checks for base-game-structures.js: which building stands at a site, and how it is seated.
 // Run: node test-base-game-structures.mjs
-import { STRUCTURE_DEFAULTS, STRUCTURE_CLEAR, SCATTER_DEFAULTS, scatterForStructure, structureKindFor, structuresForTile, createStructureModel, structureNavRects, structureBounds, structureFloorRects, clearanceAgainstRects, structureStampPaths } from './base-game-structures.js';
+import { STRUCTURE_DEFAULTS, STRUCTURE_CLEAR, SCATTER_DEFAULTS, scatterForStructure, structureKindFor, structuresForTile, createStructureModel, structureNavRects, structureBounds, structureFloorRects, clearanceAgainstRects, rectsClearanceBounds, structureStampPaths } from './base-game-structures.js';
 import { ECO_KINDS } from './base-game-spawn-layout.js';
 import { SIGHT_BLOCK_HEIGHT } from './nav-visibility.js';
 
@@ -78,6 +78,20 @@ for (const kind of ECO_KINDS.filter((k) => k !== 'spawn')) {
   const half = clearanceAgainstRects(rects, edgeX + STRUCTURE_CLEAR.margin + STRUCTURE_CLEAR.fade / 2, r0.z);
   ok(half > 0 && half < 1 || clearanceAgainstRects(rects, edgeX + STRUCTURE_CLEAR.margin + STRUCTURE_CLEAR.fade / 2, r0.z) === 0, 'and fades past the margin (or another slab still covers)');
   ok(clearanceAgainstRects(rects, 1000, 1000) === 1, 'far away the ground is clear');
+  // The bounds prefilter the page uses: outside the box every rect answers 1, so skipping is exact.
+  const bounds = rectsClearanceBounds(rects);
+  let seed = 99; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  let outsideAllOne = true, insideSeen = 0;
+  for (let i = 0; i < 4000; i++) {
+    const x = bounds.minX - 40 + rnd() * (bounds.maxX - bounds.minX + 80), z = bounds.minZ - 40 + rnd() * (bounds.maxZ - bounds.minZ + 80);
+    const inside = x >= bounds.minX && x <= bounds.maxX && z >= bounds.minZ && z <= bounds.maxZ;
+    const c = clearanceAgainstRects(rects, x, z);
+    if (!inside && c !== 1) outsideAllOne = false;
+    if (inside && c < 1) insideSeen++;
+  }
+  ok(outsideAllOne, 'outside the clearance bounds every point is clear, so the page may skip the rects');
+  ok(insideSeen > 0, 'and inside them some points are not');
+  ok(clearanceAgainstRects(rects, 0, 0, { margin: 0, fade: 1 }) === 0 && clearanceAgainstRects(rects, 1000, 1000, { margin: 0, fade: 1 }) === 1, 'explicit options still apply');
   const paths = structureStampPaths(m);
   ok(paths.length === rects.length, 'one stamp path per slab');
   // Every post within reach of a path is a post the clearance would touch, and every post the
