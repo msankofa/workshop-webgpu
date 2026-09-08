@@ -695,6 +695,12 @@ export function createBaseGameTerrain({
   const nearHideRule = chunk => chunk.stale && volumetricMode && !chunk.meta.volumetric && farLodMode;
   const cascadeHideRule = () => false;
   // Every batcher, near and cascade, as one list the scheduler and the material pass both walk.
+  // Resident vs target as sets, not a count difference: a resident set can lack target keys and hold extras at once.
+  function residencyOf(sys, batched) {
+    let both = 0, extra = 0;
+    for (const key of sys.chunks.keys()) { if (sys.targetKeys.has(key)) both++; else extra++; }
+    return { target: sys.targetKeys.size, resident: sys.chunks.size, batched, both, extra, missing: sys.targetKeys.size - both };
+  }
   function batchTargets() {
     const out = [{ sys: system, b: batcher, batched: batchedChunks, hideRule: nearHideRule }];
     for (const c of cascade) {
@@ -1388,14 +1394,11 @@ export function createBaseGameTerrain({
           queued: planScheduler.stats.queued, inFlight: planScheduler.stats.inFlight,
           extent: planWindow().extent } : null,
         batches: batcher.stats,
-        // Resident vs wanted, per streamer. resident - target is the margin/hysteresis overhang:
-        // chunks kept past the draw radius, which still draw while they are in view.
+        // Resident vs wanted, per streamer, as set differences: `extra` is resident keys outside the
+        // target set (the hysteresis overhang, which still draws in view), `missing` target keys not resident.
         residency: {
-          near: { target: system.targetChunkCount, resident: system.chunks.size, batched: batcher.residentCount, margin: system.chunks.size - system.targetChunkCount },
-          levels: cascade.map(c => {
-            const cb = cascadeBatchers.get(c.system);
-            return { level: c.level, target: c.system.targetChunkCount, resident: c.system.chunks.size, batched: cb ? cb.batcher.residentCount : 0, margin: c.system.chunks.size - c.system.targetChunkCount };
-          }),
+          near: residencyOf(system, batcher.residentCount),
+          levels: cascade.map(c => ({ level: c.level, ...residencyOf(c.system, cascadeBatchers.get(c.system)?.batcher.residentCount ?? 0) })),
         },
         // Cumulative logical upload accounting over every batcher, plus this frame's slice.
         upload: (() => {

@@ -286,6 +286,12 @@ console.log('\n[batch lifecycle] a long session, a source swap and the upload co
   const settled = t.stats;
   ok(settled.residency.near.resident === t.system.chunks.size && settled.residency.near.target === t.system.targetChunkCount,
     `residency reports resident ${settled.residency.near.resident} against target ${settled.residency.near.target}`);
+  {
+    const r = settled.residency.near;
+    let extra = 0; for (const key of t.system.chunks.keys()) if (!t.system.targetKeys.has(key)) extra++;
+    ok(r.both + r.extra === r.resident && r.both + r.missing === r.target && r.extra === extra,
+      `residency is a set relation: both ${r.both} + extra ${r.extra} = resident, both + missing ${r.missing} = target, extra counted from the keys ${extra}`);
+  }
   ok(settled.residency.near.margin === settled.residency.near.resident - settled.residency.near.target,
     `margin (${settled.residency.near.margin}) is what residency keeps past the target set`);
   ok(settled.residency.near.batched === t.batcher.residentCount && settled.upload.total.firstUploads >= t.system.chunks.size,

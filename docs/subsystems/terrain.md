@@ -428,9 +428,12 @@ the compaction ration. `batcher.stats.upload` is the cumulative total.
   / `batchCompactions` / `batchCompactionShifts` / `batchCompactionBytes` / `colorizeBytes` — this
   frame, as flat scalars (the page shallow-copies `frameCost` into `terrainCost` in the capture).
 - `stats.upload` — `{ total, frame, colorizeBytesTotal, colorizeBytesFrame }`.
-- `stats.residency` — `{ near: { target, resident, batched, margin }, levels: [...] }` per streamer.
-  `margin = resident - target` is the hysteresis/prefetch overhang: chunks kept past the draw radius,
-  which still draw while they are in view. This is the number that sizes margin-chunk overdraw from
+- `stats.residency` — `{ near: { target, resident, batched, both, extra, missing }, levels: [...] }`
+  per streamer, as set relations between the resident keys and the target keys: `both` is the
+  intersection, `extra` the resident keys outside the target set (the hysteresis/prefetch overhang:
+  chunks kept past the draw radius, which still draw while they are in view), `missing` the target
+  keys not yet resident. `resident = both + extra` and `target = both + missing`; a plain
+  `resident - target` would hide a set that is short on one side and long on the other. `extra` is the number that sizes margin-chunk overdraw from
   a capture; the hide rules never test radius, so it is not culled by them.
 
 Both reach the performance capture through the objects `base-game.html` already copies
