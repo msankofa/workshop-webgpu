@@ -165,6 +165,12 @@
       "title": "The trace names the uniforms rewritten per object",
       "body": "The largest allocator standing still is Three allocating a range object and a Map entry per changed uniform per object per frame. That fires only when a value changed, so the question is which uniform changes on every object every frame; Three’s own per-object uniforms are matrices, so a per-frame Vector3 is most likely ours in the per-object group of a shared material. render-trace now tallies the changed uniforms by group and name from each updateBinding’s ranges (uniformWriteRows in the capture); test added. Task 15 asks for one standing ?trace=1 capture. Gemini’s storage-buffer advice was assessed: it describes what the big groups here already do and does not remove the per-RenderObject refresh; the applicable part is the render-group move.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T00:50Z",
+      "title": "bf189b5 heap profiles were taken with the trace on",
+      "body": "Five allocation profiles and two DevTools recordings on bf189b5, all with ?trace=1. With the trace on, its wrappers are the nearest own frame for Three’s per-object work and its own name recording allocates per write, so the trace is the top allocator in these profiles (25 to 40%) and they cannot be compared with the 19:00 profiles. The uniform names live in the game’s performance capture, which was not taken. Task 15 reworded. The two DevTools recordings (all on, all off) are handed to Astra for long-task reading on the fixed build, where the user reports no more hard stutter.",
+      "commits": []
     }
   ]
 }
