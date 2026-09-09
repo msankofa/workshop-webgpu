@@ -215,6 +215,12 @@
       "title": "Clean control for the shared light uniforms; the plant cost is object count",
       "body": "Control (02:54Z, walking, plants off, sharing off, same session and route as the shared runs): p50 42.5 ms against 17.2 to 17.5, p95 69.5 against 26 to 36, 365 per 1000 over 50 ms against 0, writes 121 against 66 to 68, bindings 17.4 against 2.3, encode 26.4 against 7.5. Plants-on traced walk (03:08 to 03:09Z, sharing on): p50 33 ms, 186 to 207 objects against 94, encode 17 to 18 against 7.5, bindings 4.7, nodes 5.1 to 5.4, draw 1.6 to 1.9, forest and grass slots under 1 ms: the plant cost is about 100 more objects through the encode at roughly 0.1 ms each. Frames over 50 ms carry more render call, twice the gap, 49 to 56 ms long tasks and more terrain in flight. Task 20 asks the user which forest objects to give up (variants, a LOD rung, leaf shadows) or whether to build the all-roles merge.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T03:40Z",
+      "title": "Review applied: coverage test for the light patch, task 20 reframed, the refresh skip proposed for the forest",
+      "body": "Astra: patch correctness needs coverage beyond a default-scene look; task 20 must not make quality cuts the prerequisite; \"plants are the only source of frames over 50 ms\" is this session’s observation, not a rule. Done: test-three-shared-light-uniforms.mjs now covers different lights not sharing, property mutation reaching every node, a shadow-casting spot, two material graphs sharing the light nodes (their render groups came out identical, recorded), disposal and recreation, a fresh light, and the flag off after nodes exist; 15 checks. The claim is reworded in task 13. Task 20 reframed as optional. The plants-on trace read again for the implementation route: 186 objects and 68 writes, none from the forest’s 144 meshes, yet 6.2 ms of bindings diffing and 5.5 ms of node updates; Three refreshes every node-material object every frame (NodeMaterialObserver.needsRefresh returns true on hasNode before it looks at object.static), model-view is composed in the shader from the shared camera matrix so the object group is camera-independent, the forest uses seven shared materials, and the observer already refreshes the first object per material per render. Task 21 proposes honouring object.static for node materials behind a flag and marking the forest meshes static; expected about 9 ms of the plants-on encode by arithmetic.",
+      "commits": []
     }
   ]
 }
