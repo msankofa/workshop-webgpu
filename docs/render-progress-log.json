@@ -241,6 +241,14 @@
       "title": "Leaves: two agents launched",
       "body": "The user, playing the build, finds tree leaves cause the most lag (relayed by Astra with the constraints: keep the canopy, no species/variant/leaf/shadow removal as the remedy, check effective material settings before assuming sorting, prioritise per-fragment work, redundant per-object updates and actual LOD selection). Agent 1 (Opus, owns forest-gpu.js and its tests): dump the leaf vertex and fragment WGSL headless, count instance-buffer loads and transform work in the fragment stage, and if redundant, move it to the vertex stage as varyings with identical shading; tests on the generated WGSL. Agent 2 (Opus, read-only): geometry per leaf rung and for the shadow role, effective material settings, culling and LOD selection, what the captures attribute to leaf objects, ranked candidates. Task 22 tells the user nothing is needed yet.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T20:00Z",
+      "title": "Leaf fragment fix: the instance normal is a varying, no draw-buffer loads per pixel",
+      "body": "Agent 1’s audit on the generated WGSL (headless WGSLNodeBuilder): forest-gpu.js assigned the raw yaw-rotated normal expression to normalNode, which Three evaluates in the fragment stage, so every leaf and bark fragment declared the draw storage buffer, loaded the instance record, ran cos and sin, and carried instanceIndex as a flat varying only to index it: per role 1 fragment storage binding, 2 loads, 2 cos/sin. Fix: the rotated normal crosses as a varying (v_forestNormal); yaw is constant per instance so interpolating the rotated normal equals rotating the interpolated one; neither form normalized or flipped for double sides, so only float association changed. After: 0 fragment bindings, 0 loads, 0 cos/sin (bark keeps one pair from its own colour noise), four varyings instead of five. instanceNormalVarying:false keeps the old form for the test only. test-forest-leaf-shaders.mjs (45 checks) re-measures both forms each run; every forest test green. Not measured: GPU cost and pixel parity. Flagged, untouched: normalView receives the custom normal with no view-space transform in both forms. Committed b46d0fd; the user is asked to look and to walk with the trace.",
+      "commits": [
+        "b46d0fd"
+      ]
     }
   ]
 }
