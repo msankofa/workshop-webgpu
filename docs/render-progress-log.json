@@ -122,7 +122,8 @@
     {
       "at": "2026-09-08T20:55Z",
       "title": "Astra’s points on tasks 6 to 8 applied",
-      "body": "Fixed-threshold dip rates (frames over 33 and over 50 ms per 1000) added beside the per-run p99 spikes; on them the one-worker runs sit at the low end of a two-worker spread wider than the difference, so the worker A/B establishes nothing either way. The long tasks were aligned by raw start and end: every one is the page’s own frame callback past 50 ms, so \"long tasks none of our slots hold\" is withdrawn. A spike frame decomposes as the render call roughly doubling, the timed slots doubling with it, a 4 to 22 ms gap before the frame, and 4 to 14 ms unaccounted; everything slows together. Forest conclusion scoped to this role, layout and runs, GPU cost unmeasured. Heap slope and drop frequency noted as not giving allocation volume or an allocator; profiler overhead noted on task 9. Remaining supported sharing and lifecycle items listed separately in comms.",
+      "body": "Fixed-threshold dip rates (frames over 33 and over 50 ms per 1000) added beside the per-run p99 spikes; on them the one-worker runs sit at the low end of a two-worker spread wider than the difference, so the worker A/B establishes nothing either way. The long tasks were aligned by raw start and end: every one is the page’s own frame callback past 50 ms, so \"long tasks none of our slots hold\" is withdrawn. A spike frame decomposes as the render call roughly doubling, the timed slots doubling with it, a 4 to 22 ms gap before the frame, and 4 to 14 ms unaccounted; everything slows together. Forest conclusion scoped to this role, layout and runs, GPU cost unmeasured. Heap slope and drop frequency noted as not giving allocation volume or an allocator; profiler overhead noted on task 9. Remaining supported sharing and lifecycle items listed separately in comms."
+
       "commits": []
     },
     {
@@ -249,6 +250,12 @@
       "commits": [
         "b46d0fd"
       ]
+    },
+    {
+      "at": "2026-09-09T20:30Z",
+      "title": "Leaf census: what the rungs draw, what the captures attribute, and what only GPU timing can separate",
+      "body": "Agent 2 (read-only; scratchpads/fps-churn/leaves/03-leaf-census.md): (1) leavesL1 draws the full LOD0 leaf geometry because forest-palette builds leavesMid only when midLeafRatio/midLeafSizeMult are passed and base-game-forest never passes them; 153,000 to 163,000 triangles, the largest leaf role. (2) leavesL1 and coarseLeavesL2 are active for all 16 variants in every plants-on capture while leavesL0 falls to 6 to 9: 32 leaf draws a frame, correct behaviour (trees exist in those bands), not a gate fault. (3) L0 and shadow leaf materials are DoubleSide with a custom normalNode, so both faces shade alike; doubleBillboard is two PERPENDICULAR cards, not a flipped duplicate, so FrontSide would change the picture: not a same-content fix. (4) Alpha-tested overdraw: all leaf materials alphaTest 0.5, opaque, depth-writing, about 192,000 cards; no GPU evidence. (5) leafShadow is 16 of the sun pass’s 32 draws and every named row there (3.5 to 5.5 ms CPU); geometry is already the 30% bucket. (6) Per-vertex sway on all leaf materials. No per-role GPU timing exists. Task 22 asks for ?gputime=1 walks with the leaves and leaf-shadow toggles off one at a time as diagnostics; task 23 offers the mid-leaf LOD as an optional look decision. The per-object CPU part of (2) and (5) is what the static refresh skip (task 21) would remove.",
+      "commits": []
     }
   ]
 }
