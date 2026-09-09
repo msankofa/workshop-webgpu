@@ -209,6 +209,12 @@
       "title": "Standing control with the sharing off",
       "body": "Two standing captures with ?trace=1&sharedlights=0 parsed (02:46 and 02:50Z, plants off). Same 36 writes a frame as with sharing, but the bindings stage is 2.6 to 2.8 ms p50 against 0.9 to 1.1 with sharing and the encode 7.3 to 8.0 against 3.7: with sharing off, 18 separate render-group buffers are diffed per frame even when nothing in them changed. Frame p50 13.7 to 17.1 against 13.3. The walking control and the traced plants-on walk are still missing.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T03:20Z",
+      "title": "Clean control for the shared light uniforms; the plant cost is object count",
+      "body": "Control (02:54Z, walking, plants off, sharing off, same session and route as the shared runs): p50 42.5 ms against 17.2 to 17.5, p95 69.5 against 26 to 36, 365 per 1000 over 50 ms against 0, writes 121 against 66 to 68, bindings 17.4 against 2.3, encode 26.4 against 7.5. Plants-on traced walk (03:08 to 03:09Z, sharing on): p50 33 ms, 186 to 207 objects against 94, encode 17 to 18 against 7.5, bindings 4.7, nodes 5.1 to 5.4, draw 1.6 to 1.9, forest and grass slots under 1 ms: the plant cost is about 100 more objects through the encode at roughly 0.1 ms each. Frames over 50 ms carry more render call, twice the gap, 49 to 56 ms long tasks and more terrain in flight. Task 20 asks the user which forest objects to give up (variants, a LOD rung, leaf shadows) or whether to build the all-roles merge.",
+      "commits": []
     }
   ]
 }
