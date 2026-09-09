@@ -197,6 +197,12 @@
       "commits": [
         "72977c0"
       ]
+    },
+    {
+      "at": "2026-09-09T02:20Z",
+      "title": "Plants on the fixed build: free standing, 9 to 12 ms walking, and the only source of frames over 50 ms",
+      "body": "Five captures 02:10 to 02:13Z on the vendored build, no trace. Trees and grass on: standing 13.4 ms p50 (equal to plants off), walking 25.3 p50, p95 43.6, 16 per 1000 over 50 ms, 205 over 33. Plants off, same session, walking 13.4 to 16.4 p50, none over 50. The user saw nothing wrong. The sharedlights=0 control has still not landed: two more attempts carried ?trace=1&?sharedlights=0, whose stray ? makes the key ?sharedlights; no capture has the flag parsed. Task 19 asks for a traced plants-on walk and the control with the exact address.",
+      "commits": []
     }
   ]
 }
