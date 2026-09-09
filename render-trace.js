@@ -196,15 +196,23 @@ const bindingBytesOf = binding => rangedBytesOf(binding, binding?.buffer);
 // "group/uniform" for each update range of a uniforms group about to be written: the range starts
 // at the changed uniform's offset. Read before the call; the backend clears the ranges after it.
 export const UNIFORM_ROWS = 16;
-export function changedUniformNames(binding) {
+// Three names node uniforms nodeUniformN, so the row also carries the value's type, the node's own
+// name when the author set one, and the object and material being encoded (a per-object group's
+// uniform belongs to exactly one render object; a shared material's rewrite shows once per object).
+export function changedUniformNames(binding, owner = null) {
   const ranges = binding?.updateRanges, uniforms = binding?.uniforms;
   if (!Array.isArray(ranges) || !ranges.length || !Array.isArray(uniforms)) return [];
   const group = binding.name || '?';
   const out = [];
   for (const range of ranges) {
-    let name = null;
-    for (const u of uniforms) if (u && u.offset === range.start) { name = u.name; break; }
-    out.push(`${group}/${name ?? ('@' + range.start)}`);
+    let u = null;
+    for (const c of uniforms) if (c && c.offset === range.start) { u = c; break; }
+    if (!u) { out.push(`${group}/@${range.start}`); continue; }
+    const node = u.nodeUniform?.node;
+    const value = node ? node.value : u.getValue?.();
+    const type = value == null ? typeof value : (typeof value === 'object' ? (value.constructor?.name || 'object') : typeof value);
+    const label = node?.name ? `${u.name}(${node.name})` : u.name;
+    out.push(`${group}/${label}:${type}${owner ? ' @' + owner : ''}`);
   }
   return out;
 }
@@ -358,12 +366,14 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
       entry.draws++;
       entry.materials.add(material);   // so the unique-material count survives a missing manager hook
       entry.depth.encode++;
+      entry.encoding = `${object?.name || object?.type || 'object'}/${material?.name || material?.type || 'material'}`;
       const childBefore = entry.childMs;
       const t0 = tick();
       try {
         return original.call(this, object, material, ...rest);
       } finally {
         entry.depth.encode--;
+        entry.encoding = null;
         const ms = tick() - t0;
         entry.encodeMs += ms;
         // What this one object cost, with any nested scene render taken back out, so the post
@@ -528,7 +538,7 @@ export function createRenderTrace({ now = () => performance.now(), timePhases = 
         entry.bindingWrites++;
         entry.bindingWriteBytes += pre.bytes;
         for (const name of pre.names) entry.uniformWrites.set(name, (entry.uniformWrites.get(name) || 0) + 1);
-      }, args => ({ bytes: bindingBytesOf(args[0]), names: changedUniformNames(args[0]) }));
+      }, args => ({ bytes: bindingBytesOf(args[0]), names: changedUniformNames(args[0], current().encoding) }));
       wrapCounter(renderer.backend, 'updateAttribute', 'backend.updateAttribute', (entry, result, args, bytes) => {
         entry.attributeWrites++;
         entry.attributeWriteBytes += bytes;

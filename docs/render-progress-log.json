@@ -171,6 +171,12 @@
       "title": "bf189b5 heap profiles were taken with the trace on",
       "body": "Five allocation profiles and two DevTools recordings on bf189b5, all with ?trace=1. With the trace on, its wrappers are the nearest own frame for Three’s per-object work and its own name recording allocates per write, so the trace is the top allocator in these profiles (25 to 40%) and they cannot be compared with the 19:00 profiles. The uniform names live in the game’s performance capture, which was not taken. Task 15 reworded. The two DevTools recordings (all on, all off) are handed to Astra for long-task reading on the fixed build, where the user reports no more hard stutter.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T01:05Z",
+      "title": "Standing trace capture: 37 uniform writes a frame, four per-object ones unnamed",
+      "body": "The 00:14Z standing capture (plants and structures off, 92 objects, five scene renders) shows 106 refresh checks and 37 binding writes a frame, none in the shadow passes; the per-object rows are four uniforms Three names nodeUniform61, 8, 6 and 29, all rewritten every frame standing still. Too few writes to carry the allocation share the profiles charged to this path, which therefore belongs to movement (model-view matrices per object). The trace rows now add the value type, the node’s own name and the object/material being encoded. Task 16 asks for a standing and a walking capture with the trace on.",
+      "commits": []
     }
   ]
 }
