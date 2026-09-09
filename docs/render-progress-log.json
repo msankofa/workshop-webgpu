@@ -235,6 +235,12 @@
       "title": "Astra verified the vendor diff and corrected the control claim",
       "body": "Astra diffed vendor/three-0.184 against node_modules (core and tsl unchanged; webgpu carries the intended caching and flag exports), read the script, test, page wiring and sharing code, ran the 15-check test (15 passed) and found no code defect; not browser validation of every camera and shadow configuration. Capture check: sharing on p50 17.2 to 17.5 ms, bindings 2.3, writes 66 to 68; sharing off p50 42.5, bindings 17.4, writes 121, settings matched. Correction: movement is not matched. The sharing-on walks ran at about 6.2 m/s for most frames; the control averaged 2.75 m/s with no frames above 5 m/s, an hour later. \"Only the flag differs\" is withdrawn: 42.5 to 17 ms is a cross-run observation, the write and bindings counts are the isolated evidence. Verdict as Astra put it: a supported, useful optimization whose exact gain and multi-camera shadow parity remain unverified.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T04:20Z",
+      "title": "Leaves: two agents launched",
+      "body": "The user, playing the build, finds tree leaves cause the most lag (relayed by Astra with the constraints: keep the canopy, no species/variant/leaf/shadow removal as the remedy, check effective material settings before assuming sorting, prioritise per-fragment work, redundant per-object updates and actual LOD selection). Agent 1 (Opus, owns forest-gpu.js and its tests): dump the leaf vertex and fragment WGSL headless, count instance-buffer loads and transform work in the fragment stage, and if redundant, move it to the vertex stage as varyings with identical shading; tests on the generated WGSL. Agent 2 (Opus, read-only): geometry per leaf rung and for the shadow role, effective material settings, culling and LOD selection, what the captures attribute to leaf objects, ranked candidates. Task 22 tells the user nothing is needed yet.",
+      "commits": []
     }
   ]
 }
