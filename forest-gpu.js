@@ -323,6 +323,8 @@ export function createForestGPU(opts) {
   // Canopy sway (base-game). The graph is only built when a host asks for it, so a host that does
   // not pass leafSway keeps the time-independent material it had.
   const swayEnabled = opts.leafSway !== undefined;
+  // false restores the per-fragment form, kept only so the leaf-shader test can measure both.
+  const normalVarying = opts.instanceNormalVarying !== false;
   const uLeafSway = uniform(opts.leafSway ?? 0);
   // Base Game's render origin. Records arrive GLOBAL and the buffer holds render-local, so a
   // rebase moves where a tree draws without touching which trees exist.
@@ -540,7 +542,9 @@ export function createForestGPU(opts) {
       rec0.z.add(rz.mul(scale)),
     );
     const nx = normalLocal.x, ny = normalLocal.y, nz = normalLocal.z;
-    const nWorld = vec3(nx.mul(cy).add(nz.mul(sy)), ny, nz.mul(cy).sub(nx.mul(sy)));
+    const nRot = vec3(nx.mul(cy).add(nz.mul(sy)), ny, nz.mul(cy).sub(nx.mul(sy)));
+    // As a varying: normalNode runs per fragment, and the raw expression re-read the draw record there (test-forest-leaf-shaders.mjs).
+    const nWorld = normalVarying ? varying(nRot, 'v_forestNormal') : nRot;
     return { world, nWorld };
   }
   // Camera-facing billboard node: ignores instance yaw, aligns plane to always face camera.
