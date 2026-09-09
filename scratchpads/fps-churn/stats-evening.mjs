@@ -11,6 +11,22 @@ const per1000 = (rows, ms) => Math.round(1000 * rows.filter(r => r.frameMs > ms)
 const SLOTS = ['simMs', 'bodiesMs', 'skyMs', 'terrainMs', 'terrainIntegrateMs', 'forestMs', 'grassMs'];
 const slotSum = a => SLOTS.reduce((s, k) => s + (mean(a, k) || 0), 0);
 
+export function tracePairSection(entries) {
+  const caps = entries.filter(e => e.capturedAt >= '2026-09-09T00:20' && e.capturedAt < '2026-09-09T00:30' && e.context?.render?.trace?.enabled);
+  if (!caps.length) return '';
+  const rows = caps.map(e => {
+    const lf = e.context.render.trace.lastFrame || {}, main = (lf.scenes || []).find(s => s.name === 'Scene') || {}, pa = e.performance.passes || {};
+    const moving = rowsOf(e.performance).some(r => r.speed > 0.5);
+    const top = (main.uniformWriteRows || []).slice(0, 3).map(r => `${r.count}× ${r.name.split(' @')[0]}${r.name.includes(' @') ? ' @' + r.name.split(' @')[1].split('/')[0] : ''}`).join('; ');
+    return `<tr><td>${hhmm(e.capturedAt)}</td><td>${moving ? 'moving' : 'standing'}</td><td>${r1(e.performance.frameMs.p50)}</td><td>${r0(main.objects)}</td><td>${r1(main.encodeMs)}</td><td>${r1(main.bindingsMs)}</td><td>${r1(pa.passTraceBindingsMs?.p50)}</td><td>${r1(pa.passTraceBindingsMs?.p95)}</td><td>${r0(main.bindingWrites)}</td><td>${esc(top)}</td></tr>`;
+  }).join('');
+  return `
+<h3>Standing against moving with the trace on (2026-09-09, 00:24 to 00:26Z; plants and structures off)</h3>
+<p>The same scene, first still, then walking, then still. "bindings" is the stage of the object encode that diffs and writes uniform buffers; "writes" is how many uniform buffers the backend was asked to write in the last frame of the capture, and the last column names the most-written uniforms with the object encoding them.</p>
+<table><thead><tr><th>time</th><th></th><th>frame p50</th><th>main-scene objects</th><th>encode (last frame)</th><th>bindings (last frame)</th><th>bindings p50</th><th>p95</th><th>uniform writes</th><th>most written</th></tr></thead><tbody>${rows}</tbody></table>
+<p class="fnote">Moving quadruples the bindings stage on the same objects, and the added writes are the camera view matrix and the light positions, each written once per instanced batch rather than once per frame: Three keys an instanced mesh's node build by its uuid (getMaterialCacheKey, a TODO citing PR 29066), so the light uniform nodes are rebuilt per mesh and the shared render bind group's identity check fails. The standing per-object writes (water and cloud numbers, one terrain batch number) are ours and small.</p>`;
+}
+
 export function eveningSection(entries) {
   const ev = entries.filter(e => e.capturedAt >= '2026-09-08T19:40' && e.capturedAt < '2026-09-08T20:10');
   if (!ev.length) return '';

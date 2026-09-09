@@ -177,6 +177,12 @@
       "title": "Standing trace capture: 37 uniform writes a frame, four per-object ones unnamed",
       "body": "The 00:14Z standing capture (plants and structures off, 92 objects, five scene renders) shows 106 refresh checks and 37 binding writes a frame, none in the shadow passes; the per-object rows are four uniforms Three names nodeUniform61, 8, 6 and 29, all rewritten every frame standing still. Too few writes to carry the allocation share the profiles charged to this path, which therefore belongs to movement (model-view matrices per object). The trace rows now add the value type, the node’s own name and the object/material being encoded. Task 16 asks for a standing and a walking capture with the trace on.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T01:30Z",
+      "title": "The movement cost is the bindings stage: camera and light uniforms rewritten once per instanced mesh",
+      "body": "Seven ?trace=1 captures, plants and structures off. Standing: main-scene bindings stage 2 ms, 36 writes a frame. Moving: 9 to 18 ms and 117 to 197 writes with the same 92 objects. The rows name the writes: cameraViewMatrix and the light position Vector3s in the render group, written 18 times for the cloth material, once per body-part batch, and likewise per weapon and debris batch. Three’s source explains it: the render group is shared by uniform-node identity, but getMaterialCacheKey appends object.uuid for every InstancedMesh (three.webgpu.js:30160 area, TODO citing PR 29066), so each instanced mesh gets its own node build, its own light uniform nodes and its own render bind group. Standing per-object writes are ours and small (water and cloud numbers, one terrain batch number). Task 17 asks for a decision: patch the vendored Three (A), move the batches to storage-driven meshes (B), or accept (C). This is the camera-data separation Astra proposed, now measured at 7 to 16 ms of a moving frame at this scene.",
+      "commits": []
     }
   ]
 }
