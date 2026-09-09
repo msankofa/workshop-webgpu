@@ -81,9 +81,9 @@
 
 <script type="importmap">
 { "imports": {
-  "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
-  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
-  "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+  "three": "./vendor/three-0.184/three.webgpu.js",
+  "three/webgpu": "./vendor/three-0.184/three.webgpu.js",
+  "three/tsl": "./vendor/three-0.184/three.tsl.js",
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
   "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.0/build/index.module.js"
 } }
@@ -100,7 +100,13 @@ window.addEventListener('unhandledrejection', event => reportBaseGameError(event
 
 <script type="module">
 import * as THREE from 'three';
-import { WebGPURenderer, RenderPipeline, TimestampQuery, BundleGroup } from 'three/webgpu';
+import { WebGPURenderer, RenderPipeline, TimestampQuery, BundleGroup, setSharedLightUniforms, getSharedLightUniforms } from 'three/webgpu';
+// The served Three is the 0.184 build with one local patch (vendor/three-0.184, scratchpads/fps-churn/
+// patch-three-shared-lights.py): light and shadow uniform nodes are cached per light, so instanced
+// meshes of one material share one render bind group and the camera and light uniforms are written
+// once a frame instead of once per object (measured 18 writes a frame for one material). Off with
+// ?sharedlights=0, which restores upstream behaviour for an A/B.
+setSharedLightUniforms(new URLSearchParams(location.search).get('sharedlights') !== '0');
 import { pass, renderOutput } from 'three/tsl';
 import { createDepthOfField } from './depth-of-field.js';
 import { createHiZ } from './hiz-pyramid.js';
@@ -6383,6 +6389,8 @@ function captureContext() {
       passes: lastRenderPassSummary,
       // What the device granted, so a capture says whether the pulled forest could bind at all.
       deviceLimits: forestDeviceLimits(renderer),
+      // Which Three the page ran: the vendored patched build, and whether its light-uniform sharing was on.
+      three: { source: 'vendor/three-0.184', revision: THREE.REVISION, sharedLightUniforms: getSharedLightUniforms() },
       pipelineMeterInstalled: pipelineMeter.installed,
       passRecorderInstalled: renderPasses.installed,
       // A browser without longtask support reads the same zeros as a quiet main thread; these two

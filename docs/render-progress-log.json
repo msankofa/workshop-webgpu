@@ -183,6 +183,12 @@
       "title": "The movement cost is the bindings stage: camera and light uniforms rewritten once per instanced mesh",
       "body": "Seven ?trace=1 captures, plants and structures off. Standing: main-scene bindings stage 2 ms, 36 writes a frame. Moving: 9 to 18 ms and 117 to 197 writes with the same 92 objects. The rows name the writes: cameraViewMatrix and the light position Vector3s in the render group, written 18 times for the cloth material, once per body-part batch, and likewise per weapon and debris batch. Three’s source explains it: the render group is shared by uniform-node identity, but getMaterialCacheKey appends object.uuid for every InstancedMesh (three.webgpu.js:30160 area, TODO citing PR 29066), so each instanced mesh gets its own node build, its own light uniform nodes and its own render bind group. Standing per-object writes are ours and small (water and cloud numbers, one terrain batch number). Task 17 asks for a decision: patch the vendored Three (A), move the batches to storage-driven meshes (B), or accept (C). This is the camera-data separation Astra proposed, now measured at 7 to 16 ms of a moving frame at this scene.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T02:30Z",
+      "title": "Option A shipped: a vendored Three with shared light uniforms",
+      "body": "The page loaded Three from the CDN, so the patch needed a served copy: vendor/three-0.184 (three.webgpu.js, three.core.js, three.tsl.js from node_modules) with scratchpads/fps-churn/patch-three-shared-lights.py applied. The patch caches per light the uniform nodes AnalyticLightNode, PointLightNode, SpotLightNode, HemisphereLightNode and RectAreaLightNode created per build (colour, cone, penumbra, cutoff, decay, half extents) and per shadow the reference nodes the shadow filters created per build (mapSize, radius, bias, blurSamples, intensity, normalBias, camera near and far), so the bind-group identity key matches across builds and instanced meshes of one material share one render bind group. setSharedLightUniforms(false) and ?sharedlights=0 restore upstream. test-three-shared-light-uniforms.mjs: identical render-group node ids across two instanced builds with the flag on, different with it off; the light colour updates through the shared node; a light with its own colorNode keeps it. base-game.html importmap now points at the vendored build and the capture context records it. Unseen in a browser; task 18 asks for the look, the trace pair and the sharedlights=0 control.",
+      "commits": []
     }
   ]
 }
