@@ -221,6 +221,14 @@
       "title": "Review applied: coverage test for the light patch, task 20 reframed, the refresh skip proposed for the forest",
       "body": "Astra: patch correctness needs coverage beyond a default-scene look; task 20 must not make quality cuts the prerequisite; \"plants are the only source of frames over 50 ms\" is this session’s observation, not a rule. Done: test-three-shared-light-uniforms.mjs now covers different lights not sharing, property mutation reaching every node, a shadow-casting spot, two material graphs sharing the light nodes (their render groups came out identical, recorded), disposal and recreation, a fresh light, and the flag off after nodes exist; 15 checks. The claim is reworded in task 13. Task 20 reframed as optional. The plants-on trace read again for the implementation route: 186 objects and 68 writes, none from the forest’s 144 meshes, yet 6.2 ms of bindings diffing and 5.5 ms of node updates; Three refreshes every node-material object every frame (NodeMaterialObserver.needsRefresh returns true on hasNode before it looks at object.static), model-view is composed in the shader from the shared camera matrix so the object group is camera-independent, the forest uses seven shared materials, and the observer already refreshes the first object per material per render. Task 21 proposes honouring object.static for node materials behind a flag and marking the forest meshes static; expected about 9 ms of the plants-on encode by arithmetic.",
       "commits": []
+    },
+    {
+      "at": "2026-09-09T03:50Z",
+      "title": "Pushed",
+      "body": "48 commits, 492de74 to e08ebea, pushed at the user’s word. Uncommitted and therefore not pushed: the user’s saved shipped default (base-game-default-state.json), two ordination files and the grass WGSL dumps. Task 21 is open for questions before a yes.",
+      "commits": [
+        "e08ebea"
+      ]
     }
   ]
 }
