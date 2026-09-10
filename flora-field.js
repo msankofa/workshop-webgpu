@@ -61,20 +61,26 @@ function slopeGate(normalY, minNormalY) {
 }
 
 // The whole rule, for one point. `weights` comes from splatWeights(height, normalY, splatCfg).
-export function coverAt(biome, moisture, weights, { height = null, seaLevel = 0, normalY = 1, opts = FLORA_COVER_DEFAULTS } = {}) {
+// `out`: an optional { grass, plant, tree } to write into; without it a fresh object, as before.
+export function coverAt(biome, moisture, weights, { height = null, seaLevel = 0, normalY = 1, opts = FLORA_COVER_DEFAULTS, out = null } = {}) {
   const o = opts === FLORA_COVER_DEFAULTS ? opts : { ...FLORA_COVER_DEFAULTS, ...opts };
-  if (biome == null || !weights) return { grass: 0, plant: 0, tree: 0 };
   const wet = clamp01(moisture ?? 0);
-  const drowned = height != null && height < seaLevel + o.waterMargin;
-  if (drowned) return { grass: 0, plant: 0, tree: 0 };
-  const moistureFactor = (strength) => 1 - strength * (1 - wet);
+  // No closures here: once per texel.
+  if (biome == null || !weights || (height != null && height < seaLevel + o.waterMargin)) {
+    if (!out) return { grass: 0, plant: 0, tree: 0 };
+    out.grass = 0; out.plant = 0; out.tree = 0;
+    return out;
+  }
+  const dry = 1 - wet;
   const grass = clamp01((BIOME_GRASS[biome] ?? 0) * groundWelcome(weights, o.grassGround)
-    * slopeGate(normalY, o.grassMinNormalY) * moistureFactor(o.grassMoisture));
+    * slopeGate(normalY, o.grassMinNormalY) * (1 - o.grassMoisture * dry));
   const plant = clamp01((BIOME_PLANTS[biome] ?? 0) * groundWelcome(weights, o.plantGround)
-    * slopeGate(normalY, o.plantMinNormalY) * moistureFactor(o.plantMoisture));
+    * slopeGate(normalY, o.plantMinNormalY) * (1 - o.plantMoisture * dry));
   const tree = clamp01(treeDensityForBiome(biome) * groundWelcome(weights, o.treeGround)
-    * slopeGate(normalY, o.treeMinNormalY) * moistureFactor(o.treeMoisture));
-  return { grass, plant, tree };
+    * slopeGate(normalY, o.treeMinNormalY) * (1 - o.treeMoisture * dry));
+  if (!out) return { grass, plant, tree };
+  out.grass = grass; out.plant = plant; out.tree = tree;
+  return out;
 }
 
 // Central difference on a tile's own grid, one-sided at the border (the apron covers the interior).
@@ -102,6 +108,10 @@ export function createTileCover({ seaLevel = 0, splatCfg = STREAMED_SPLAT_DEFAUL
   // Rows finished so far for a tile whose derivation paused; the channels are attached only at the end.
   const progress = new WeakMap();
   const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  // Per-texel scratch: three fresh objects per texel before, on 16k-texel tiles.
+  const weightScratch = [0, 0, 0, 0, 0];
+  const coverScratch = { grass: 0, plant: 0, tree: 0 };
+  const coverOpts = { height: 0, seaLevel: 0, normalY: 1, opts: merged, out: coverScratch };
   return {
     get splatCfg() { return cfg; },
     setSplatCfg(next) { cfg = next ?? STREAMED_SPLAT_DEFAULTS; },
@@ -126,8 +136,9 @@ export function createTileCover({ seaLevel = 0, splatCfg = STREAMED_SPLAT_DEFAUL
           const i = iz * texels + ix;
           const height = heights[i];
           const normalY = normalYFromTile(heights, texels, step, ix, iz);
+          coverOpts.height = height; coverOpts.seaLevel = sea; coverOpts.normalY = normalY;
           const cover = coverAt(biomeNames[biomeIds[i]] ?? null, moisture ? moisture[i] : 0,
-            splatWeights(height, normalY, cfg), { height, seaLevel: sea, normalY, opts: merged });
+            splatWeights(height, normalY, cfg, weightScratch), coverOpts);
           const x = (tile.originX ?? 0) + ix * step;
           const z = (tile.originZ ?? 0) + iz * step;
           const clear = clamp01(clearanceAt ? clearanceAt(x, z) : 1);

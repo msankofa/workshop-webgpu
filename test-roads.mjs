@@ -4,7 +4,7 @@
 // Run: node test-roads.mjs
 import {
   curvePointAt, distanceXZ, pathLengthXZ, cumulativeDistances, estimateCurvature, tangentAtInto,
-  projectPointToSegmentXZ, distancePointToPolylineXZ, nearestPathIndex, segmentIntersectionXZ,
+  projectPointToSegmentXZ, distancePointToPolylineXZ, distancePointToSegmentXZ, nearestPathIndex, segmentIntersectionXZ,
   simplifyPath, divisionsFor, samplePathOnGround, ROAD_SAMPLE_SPACING,
 } from './road-path.js';
 import { createRoadNetwork, ROAD_NETWORK_DEFAULTS } from './road-network.js';
@@ -526,6 +526,121 @@ const bumpy = (x, z) => Math.sin(x * 0.5) * 0.6 + Math.cos(z * 0.4) * 0.4;
   }
   ok(agree === total && bounded === 0, `bounded nearestDistance agrees with the full walk inside the radius (${agree} of ${total}, ${bounded} wrong)`);
   ok(index.nearestDistance(1e6, 1e6) === reference(1e6, 1e6, Infinity) || index.nearestDistance(1e6, 1e6) >= 0, 'the unbounded query still answers');
+}
+
+// ---- allocation pass: the hypot-on-the-winner index must be bit-identical to the old index ----
+// The reference below IS the previous nearestDistanceWithin, copied verbatim (per-segment
+// Math.hypot, folded straight into `best`). Every answer must match with ===, not a tolerance.
+{
+  const CELL_SIZE = 24, RUN_SEGMENTS = 8;
+  const packCell = (cx, cz) => ((cx + 32768) & 0xffff) | (((cz + 32768) & 0xffff) << 16);
+  const pathBounds = (path) => {
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const q of path) { if (q.x < minX) minX = q.x; if (q.x > maxX) maxX = q.x; if (q.z < minZ) minZ = q.z; if (q.z > maxZ) maxZ = q.z; }
+    return { minX, maxX, minZ, maxZ };
+  };
+  // Previous implementation, rebuilt over the same network so it indexes identically.
+  function referenceIndex(nodes, edges) {
+    const nodeCells = new Map(), runCells = new Map(), edgeHalfWidths = new Map();
+    for (const edge of edges) {
+      const path = edge.sampledPath.length >= 2 ? edge.sampledPath : edge.controlPoints;
+      if (path.length < 2) continue;
+      edgeHalfWidths.set(edge.id, edge.width * 0.5);
+      for (let from = 0; from < path.length - 1; from += RUN_SEGMENTS) {
+        const to = Math.min(path.length - 1, from + RUN_SEGMENTS);
+        const run = { path, from, to, bounds: pathBounds(path.slice(from, to + 1)) };
+        const rb = run.bounds;
+        for (let c = Math.floor(rb.minX / CELL_SIZE); c <= Math.floor(rb.maxX / CELL_SIZE); c++) {
+          for (let r = Math.floor(rb.minZ / CELL_SIZE); r <= Math.floor(rb.maxZ / CELL_SIZE); r++) {
+            const k = packCell(c, r);
+            const bucket = runCells.get(k);
+            if (bucket) bucket.push(run); else runCells.set(k, [run]);
+          }
+        }
+      }
+    }
+    for (const node of nodes) {
+      let surfaceRadius = 0;
+      for (const edgeId of node.edgeIds) surfaceRadius = Math.max(surfaceRadius, edgeHalfWidths.get(edgeId) || 0);
+      const k = packCell(Math.floor(node.position.x / CELL_SIZE), Math.floor(node.position.z / CELL_SIZE));
+      const indexed = { node, surfaceRadius };
+      const bucket = nodeCells.get(k);
+      if (bucket) bucket.push(indexed); else nodeCells.set(k, [indexed]);
+    }
+    const keysInRadius = (x, z, radius) => {
+      const out = [];
+      const minC = Math.floor((x - radius) / CELL_SIZE), maxC = Math.floor((x + radius) / CELL_SIZE);
+      const minR = Math.floor((z - radius) / CELL_SIZE), maxR = Math.floor((z + radius) / CELL_SIZE);
+      for (let c = minC; c <= maxC; c++) for (let r = minR; r <= maxR; r++) out.push(packCell(c, r));
+      return out;
+    };
+    function within(x, z, radius, best) {
+      const seenNode = new Set(), seenRun = new Set();
+      for (const key of keysInRadius(x, z, radius)) {
+        const ns = nodeCells.get(key);
+        if (ns) for (const indexed of ns) {
+          if (seenNode.has(indexed)) continue;
+          seenNode.add(indexed);
+          const d = Math.hypot(x - indexed.node.position.x, z - indexed.node.position.z);
+          if (d <= radius + 1e-6 && d < best) best = d;
+        }
+        const rs = runCells.get(key);
+        if (rs) for (const run of rs) {
+          if (seenRun.has(run)) continue;
+          seenRun.add(run);
+          const b = run.bounds;
+          if (x < b.minX - radius || x > b.maxX + radius || z < b.minZ - radius || z > b.maxZ + radius) continue;
+          const path = run.path;
+          for (let i = run.from; i < run.to; i++) {
+            const d = distancePointToSegmentXZ(x, z, path[i], path[i + 1]);
+            if (d < best) best = d;
+          }
+        }
+      }
+      return best;
+    }
+    return {
+      isEmpty: nodeCells.size === 0 && runCells.size === 0,
+      nearestDistance(x, z, maxDistance = Infinity) {
+        if (this.isEmpty) return Infinity;
+        if (Number.isFinite(maxDistance)) return within(x, z, maxDistance, Infinity);
+        let radius = CELL_SIZE * 2, best = Infinity;
+        for (let ring = 0; ring < 8; ring++) {
+          best = within(x, z, radius, best);
+          if (best <= radius * 0.85) return best;
+          radius *= 2;
+        }
+        return best;
+      },
+    };
+  }
+
+  let seed = 987654321;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const net = createRoadNetwork();
+  for (let r = 0; r < 14; r++) {
+    const pts = [];
+    for (let k = 0; k < 5; k++) pts.push(p(rnd() * 400 - 200, rnd() * 400 - 200));
+    net.addRoadPath(pts, 3 + rnd() * 3);
+  }
+  const index = net.getIndex();
+  const ref = referenceIndex([...net.nodes.values()], [...net.edges.values()]);
+  let mismatches = 0, finite = 0;
+  for (let i = 0; i < 4000; i++) {
+    const x = rnd() * 520 - 260, z = rnd() * 520 - 260, radius = 2 + rnd() * 60;
+    const got = index.nearestDistance(x, z, radius);
+    const want = ref.nearestDistance(x, z, radius);
+    if (Number.isFinite(want)) finite++;
+    if (got !== want) mismatches++;
+  }
+  ok(mismatches === 0 && finite > 500,
+    `bounded nearestDistance is bit-identical to the pre-allocation-pass implementation (${mismatches} mismatches over 4000 points, ${finite} finite)`);
+  let unboundedMismatches = 0;
+  for (let i = 0; i < 400; i++) {
+    const x = rnd() * 900 - 450, z = rnd() * 900 - 450;
+    if (index.nearestDistance(x, z) !== ref.nearestDistance(x, z)) unboundedMismatches++;
+  }
+  ok(unboundedMismatches === 0, `unbounded nearestDistance is bit-identical too (${unboundedMismatches} mismatches)`);
 }
 
 if (failed) { console.error(`\n${failed} assertion(s) failed`); process.exit(1); }

@@ -654,6 +654,8 @@ export function createBaseGameTerrain({
   // A chunk not yet in its batch draws its own mesh, which is correct, just one draw call more;
   // and a replaced chunk still has its predecessor's geometry in the batch under this key, so
   // that entry is hidden or it would draw over the new mesh.
+  // Reused: the old [...batched.keys()] spread was a fresh array per batcher per frame.
+  const batchRemovalScratch = [];
   function syncBatchVisibility(sys, b, batched, hideRule) {
     let pending = 0;
     b.beginFrame();
@@ -665,7 +667,11 @@ export function createBaseGameTerrain({
       else { pending++; if (b.has(key)) b.setVisible(key, false); }
       chunk.mesh.visible = !inBatch && !hidden;
     }
-    for (const key of [...batched.keys()]) if (!sys.chunks.has(key)) { b.remove(key); batched.delete(key); }
+    // Collected first, deleted after: a Map must not be mutated while it is being iterated.
+    batchRemovalScratch.length = 0;
+    for (const key of batched.keys()) if (!sys.chunks.has(key)) batchRemovalScratch.push(key);
+    for (let i = 0; i < batchRemovalScratch.length; i++) { b.remove(batchRemovalScratch[i]); batched.delete(batchRemovalScratch[i]); }
+    batchRemovalScratch.length = 0;
     return pending;
   }
   // Fold exactly one chunk into its batch. One operation, one deadline charge.
@@ -701,14 +707,25 @@ export function createBaseGameTerrain({
     for (const key of sys.chunks.keys()) { if (sys.targetKeys.has(key)) both++; else extra++; }
     return { target: sys.targetKeys.size, resident: sys.chunks.size, batched, both, extra, missing: sys.targetKeys.size - both };
   }
+  // Rebuilt in place: no caller keeps the list or its entries past its own call.
+  const batchTargetList = [];
+  function batchTargetSlot(i) {
+    let slot = batchTargetList[i];
+    if (!slot) { slot = { sys: null, b: null, batched: null, hideRule: null, level: null }; batchTargetList[i] = slot; }
+    return slot;
+  }
   function batchTargets() {
-    const out = [{ sys: system, b: batcher, batched: batchedChunks, hideRule: nearHideRule }];
+    const first = batchTargetSlot(0);
+    first.sys = system; first.b = batcher; first.batched = batchedChunks; first.hideRule = nearHideRule; first.level = null;
+    let n = 1;
     for (const c of cascade) {
       let cb = cascadeBatchers.get(c.system);
       if (!cb) { cb = { batcher: createChunkBatcher({ material: cascadeMaterial(c.level), name: `base-game-terrain-lod-${c.level}-batches`, slots: 64, vertices: 200_000, indices: 600_000, perObjectFrustumCulled: cfg.batchFrustumCulled }), batched: new Map() }; cascadeBatchers.set(c.system, cb); c.group.add(cb.batcher.group); }
-      out.push({ sys: c.system, b: cb.batcher, batched: cb.batched, hideRule: cascadeHideRule, level: c.level });
+      const slot = batchTargetSlot(n++);
+      slot.sys = c.system; slot.b = cb.batcher; slot.batched = cb.batched; slot.hideRule = cascadeHideRule; slot.level = c.level;
     }
-    return out;
+    batchTargetList.length = n;
+    return batchTargetList;
   }
   // Materials, wireframe and batch visibility. No folding and, since the worker tints, no
   // per-vertex work either: colorizeGeometry returns early on a chunk whose revision is current.
@@ -958,6 +975,23 @@ export function createBaseGameTerrain({
     const d = system.source?.project?.density;
     return d ? d.y_min : null;
   }
+  // Cached per (source, epoch, volumetric, 0.5 m of travel): the volumetric surface scan ran every frame, and the plane sits 80 m down.
+  const KILL_PLANE_CACHE_M = 0.5;
+  const killPlaneCache = { x: NaN, z: NaN, y: 0, source: null, epoch: -1, volumetric: null, valid: false };
+  function killPlaneY(x, z) {
+    if (killPlaneCache.valid && killPlaneCache.source === system.source && killPlaneCache.epoch === system.epoch
+      && killPlaneCache.volumetric === volumetricMode
+      && Math.abs(x - killPlaneCache.x) <= KILL_PLANE_CACHE_M && Math.abs(z - killPlaneCache.z) <= KILL_PLANE_CACHE_M) {
+      return killPlaneCache.y;
+    }
+    const surface = groundHeight(x, z) - cfg.killPlaneBelowSurface;
+    const floor = volumetricMode ? volumeFloorY() : null;
+    const y = floor == null ? surface : Math.min(surface, floor - 10);
+    killPlaneCache.x = x; killPlaneCache.z = z; killPlaneCache.y = y;
+    killPlaneCache.source = system.source; killPlaneCache.epoch = system.epoch;
+    killPlaneCache.volumetric = volumetricMode; killPlaneCache.valid = true;
+    return y;
+  }
 
   const api = {
     root,
@@ -1002,7 +1036,9 @@ export function createBaseGameTerrain({
     fieldSurfaceAt,
     // Kill plane follows the local surface so deep valleys never respawn a grounded player;
     // in volumetric mode caves reach down to the density floor, so it sits below that.
-    killPlaneYAt(x, z) {
+    killPlaneYAt(x, z) { return killPlaneY(x, z); },
+    // Exact, uncached: what the cache must agree with at a recompute point. Tests only.
+    killPlaneYAtExact(x, z) {
       const surface = groundHeight(x, z) - cfg.killPlaneBelowSurface;
       const floor = volumetricMode ? volumeFloorY() : null;
       return floor == null ? surface : Math.min(surface, floor - 10);

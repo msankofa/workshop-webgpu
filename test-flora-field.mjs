@@ -144,5 +144,37 @@ section('derive pauses at a deadline');
   check('every texel asked for clearance exactly once per derive', queries === 2 * texels * texels, `${queries}`);
 }
 
+section('allocation pass: derive is byte-identical to the pre-scratch implementation');
+{
+  // The checksum below was computed from versions/flora-field-before-allocation-pass-20260909-223107.js
+  // BEFORE derive started reusing scratch objects, over exactly the tile built here. If a future
+  // change to the cover rule moves it, that is a deliberate change to what the channels contain and
+  // this line has to be re-derived from the new rule, not just updated to whatever the code prints.
+  const EXPECTED = 2676199228;
+  const texels = 64, step = 8, n = texels * texels;
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const heights = new Float32Array(n), moisture = new Float32Array(n), biomeIds = new Uint8Array(n);
+  for (let i = 0; i < n; i++) { heights[i] = -20 + rnd() * 320; moisture[i] = rnd(); biomeIds[i] = Math.floor(rnd() * BIOMES.length); }
+  const cover = createTileCover({ seaLevel: 3, biomeNames: BIOMES, clearance: (x, z) => ((x + z) % 97 < 20 ? 0.25 : 1) });
+  const tile = cover.derive({ heights, biomeIds, moisture, texels, step, originX: -128, originZ: 64 });
+  let h = 2166136261 >>> 0;
+  for (const c of COVER_CHANNELS) for (let i = 0; i < n; i++) { h ^= tile[c][i]; h = Math.imul(h, 16777619) >>> 0; }
+  check('the three cover channels hash to the pre-change value', h === EXPECTED, `got ${h}, want ${EXPECTED}`);
+
+  // The scratch path and the allocating path must be the same rule, not two.
+  let same = true;
+  const out = { grass: 0, plant: 0, tree: 0 }, w = [0, 0, 0, 0, 0];
+  for (let i = 0; i < 400; i++) {
+    const height = -30 + rnd() * 340, normalY = rnd(), wet = rnd(), biome = BIOMES[Math.floor(rnd() * BIOMES.length)];
+    const fresh = coverAt(biome, wet, splatWeights(height, normalY, STREAMED_SPLAT_DEFAULTS), { height, seaLevel: 2, normalY });
+    const reused = coverAt(biome, wet, splatWeights(height, normalY, STREAMED_SPLAT_DEFAULTS, w), { height, seaLevel: 2, normalY, out });
+    if (reused !== out || fresh.grass !== reused.grass || fresh.plant !== reused.plant || fresh.tree !== reused.tree) same = false;
+  }
+  check('coverAt and splatWeights give the same numbers with an out parameter as without', same);
+  check('splatWeights still allocates a fresh array when no out is given',
+    splatWeights(24, 1, STREAMED_SPLAT_DEFAULTS) !== splatWeights(24, 1, STREAMED_SPLAT_DEFAULTS));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

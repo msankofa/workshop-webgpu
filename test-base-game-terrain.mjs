@@ -330,5 +330,43 @@ console.log('\n[batch lifecycle] a long session, a source swap and the upload co
   ok(t.batcher.batchCount === 0 && t.batcher.group.parent === null, 'dispose frees every batch slot and detaches the group');
 }
 
+console.log('\n[allocation pass] the kill-plane cache and the reused frame lists');
+{
+  const t = createBaseGameTerrain({ scene: new THREE.Scene(), worldQuery: createWorldQueryService(),
+    worldCoordinates: createWorldCoordinateSpace(), source: descA, useWorker: false, params: { renderRadius: 1 } });
+  t.setActive(true);
+  for (let i = 0; i < 60; i++) t.update([0, 0, 0], 1 / 60);
+
+  // At a recompute point the cache must be the exact answer, not an approximation of it.
+  ok(t.killPlaneYAt(0, 0) === t.killPlaneYAtExact(0, 0), 'a first query equals the uncached kill plane');
+  const at00 = t.killPlaneYAt(0, 0);
+  ok(t.killPlaneYAt(0.2, -0.3) === at00, 'a move inside the cache radius reuses the cached answer');
+  const exactNear = t.killPlaneYAtExact(0.2, -0.3);
+  ok(Math.abs(exactNear - at00) < 1, `and the staleness it buys is far smaller than the 80 m the plane sits below the ground (${Math.abs(exactNear - at00).toFixed(3)} m)`);
+  const far = [9.5, 7.25];
+  ok(t.killPlaneYAt(far[0], far[1]) === t.killPlaneYAtExact(far[0], far[1]), 'a move past the cache radius recomputes exactly');
+  ok(t.killPlaneYAt(far[0], far[1]) === t.killPlaneYAt(far[0], far[1]), 'and the recomputed answer is then itself cached');
+
+  // A source swap changes the ground under the same XZ; the cache must not answer from the old one.
+  const before = t.killPlaneYAt(far[0], far[1]);
+  t.setSource(descB);
+  for (let i = 0; i < 60; i++) t.update([0, 0, 0], 1 / 60);
+  const after = t.killPlaneYAt(far[0], far[1]);
+  ok(after === t.killPlaneYAtExact(far[0], far[1]), 'a source swap invalidates the cached kill plane');
+  ok(after !== before, `and the swap actually moved it (${before.toFixed(3)} -> ${after.toFixed(3)})`);
+
+  // The per-frame lists are reused now; two reads of a quiet frame must still agree.
+  const r1 = t.stats.residency.near, r2 = t.stats.residency.near;
+  ok(['target', 'resident', 'batched', 'both', 'extra', 'missing'].every(k => r1[k] === r2[k]),
+    'two consecutive residency reads report the same numbers');
+  ok(r1 !== r2, 'residency is still a fresh record per read, so a caller may keep one');
+  // syncBatchVisibility now collects removals into a reused array instead of spreading the map.
+  const beforeWalk = t.batcher.chunkCount;
+  for (let f = 0; f < 300; f++) t.update([f, 0, 0], 1 / 60);
+  ok(t.batcher.chunkCount === t.system.chunks.size && beforeWalk > 0,
+    `after a walk the batch still tracks residency exactly (${t.batcher.chunkCount} == ${t.system.chunks.size})`);
+  t.dispose();
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'}`);
 process.exit(failures === 0 ? 0 : 1);

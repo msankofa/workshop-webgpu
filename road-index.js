@@ -3,7 +3,7 @@
 // here?" goes through this: vegetation clearance, nav travel-cost bias, and the editor's snapping.
 // Ported from the TypeScript original (MIT). See docs/subsystems/roads.md.
 
-import { distancePointToPolylineXZ, distancePointToSegmentXZ } from './road-path.js';
+import { distancePointToPolylineXZ } from './road-path.js';
 
 const CELL_SIZE = 24;   // m per bucket; roads are long and thin, so buckets stay cheap to fill
 // The distance query indexes runs of this many segments with their own bounds: a placed trail has
@@ -120,28 +120,45 @@ export function createRoadIndex(nodes, edges) {
   // no result arrays and no per-call Sets, because the field derivation asks this per texel. Exact
   // for any centreline within the radius (every segment that close lies in a run whose bounds
   // overlap); past the radius the answer is a bound, as it always was for this bounded query.
+  // Argmin by squared distance, one hypot on the winner (same operands as before, so the same number); indexed loops, per texel.
   function nearestDistanceWithin(x, z, radius, best) {
     seenNodeScratch.clear(); seenRunScratch.clear();
-    for (const key of cellKeysInRadius(x, z, radius, keyScratch)) {
+    const keys = cellKeysInRadius(x, z, radius, keyScratch);
+    let bestSq = Infinity, bestDx = 0, bestDz = 0;
+    for (let ki = 0; ki < keys.length; ki++) {
+      const key = keys[ki];
       const nodes = nodeCells.get(key);
-      if (nodes) for (const indexed of nodes) {
+      if (nodes) for (let n = 0; n < nodes.length; n++) {
+        const indexed = nodes[n];
         if (seenNodeScratch.has(indexed)) continue;
         seenNodeScratch.add(indexed);
         const d = Math.hypot(x - indexed.node.position.x, z - indexed.node.position.z);
         if (d <= radius + 1e-6 && d < best) best = d;
       }
       const runs = runCells.get(key);
-      if (runs) for (const run of runs) {
+      if (runs) for (let ri = 0; ri < runs.length; ri++) {
+        const run = runs[ri];
         if (seenRunScratch.has(run)) continue;
         seenRunScratch.add(run);
         const b = run.bounds;
         if (x < b.minX - radius || x > b.maxX + radius || z < b.minZ - radius || z > b.maxZ + radius) continue;
         const path = run.path;
         for (let i = run.from; i < run.to; i++) {
-          const d = distancePointToSegmentXZ(x, z, path[i], path[i + 1]);
-          if (d < best) best = d;
+          // distancePointToSegmentXZ inlined so nothing escapes the loop.
+          const a = path[i], c = path[i + 1];
+          const abx = c.x - a.x, abz = c.z - a.z;
+          const lengthSq = abx * abx + abz * abz;
+          let t = lengthSq <= 1e-6 ? 0 : ((x - a.x) * abx + (z - a.z) * abz) / lengthSq;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const dx = x - (a.x + abx * t), dz = z - (a.z + abz * t);
+          const d2 = dx * dx + dz * dz;
+          if (d2 < bestSq) { bestSq = d2; bestDx = dx; bestDz = dz; }
         }
       }
+    }
+    if (bestSq < Infinity) {
+      const d = Math.hypot(bestDx, bestDz);
+      if (d < best) best = d;
     }
     return best;
   }

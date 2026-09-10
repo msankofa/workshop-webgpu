@@ -102,7 +102,8 @@ const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
 const sstep = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 
 // CPU twin of the shader's layer weights: [sand, grass, dirt, rock, snow], summing to 1.
-export function splatWeights(height, normalY, cfg = STREAMED_SPLAT_DEFAULTS) {
+// `out`: an optional 5-element array to write into; without it a fresh array, as before.
+export function splatWeights(height, normalY, cfg = STREAMED_SPLAT_DEFAULTS, out = null) {
   const sand = 1 - sstep(cfg.shoreTop - 1.5, cfg.shoreTop + 1.5, height);
   const dirtT = sstep(cfg.grassTop, cfg.dirtTop, height);
   const snow = sstep(cfg.snowBottom, cfg.snowTop, height);
@@ -111,6 +112,7 @@ export function splatWeights(height, normalY, cfg = STREAMED_SPLAT_DEFAULTS) {
   let snowW = (1 - sand) * snow;
   const rock = 1 - sstep(cfg.rockFull, cfg.rockSlope, normalY);
   const flat = 1 - rock;
+  if (out) { out[0] = sand * flat; out[1] = grass * flat; out[2] = dirt * flat; out[3] = rock; out[4] = snowW * flat; return out; }
   return [sand * flat, grass * flat, dirt * flat, rock, snowW * flat];
 }
 
