@@ -3759,13 +3759,17 @@ their own `updateWorld(0)` does it, so the datum is sampled from the surface tha
 moment. Before the fix the building was seated on the heightfield and the density surface then
 warped up over its floor, which is why a volumetric load spawned you under the ground. A reseat
 also resets the scattered structures and re-publishes the planter flora structure. Solo, a
-player standing on a floor slab within `FLOOR_TOLERANCE` (0.5 m) of the old datum is put on the
-new datum at the same X/Z (`playerAfterReseat`), or at the safe spawn when an upward ray finds no
-headroom there; a player over a slab but buried by the new floor goes to the safe spawn; roofs,
-courts, the air and vehicle or drone control are left alone. Online the server owns the
-respawn, so the hooks do nothing. `test-base-game-spawn-seat.mjs` drives the record through the
-page's order with a fake terrain and a rebuild spy, and checks page/server datum parity through
-the shared model. Unseen in a browser.
+player who is grounded on a floor slab within `FLOOR_TOLERANCE` (0.5 m) of the old datum is put
+on the new datum at the same X/Z (`createSpawnSeatPlayer`, `playerAfterReseat`), or at the safe
+spawn when their live stance capsule, resolved through the world query at the new foot position,
+is displaced, meets a ceiling, or the query throws; a player over a slab but buried by the new
+floor goes to the safe spawn; a jumping player, roofs, courts and vehicle or drone control are
+left alone. Online the server owns the respawn, so the hooks do nothing.
+`test-base-game-spawn-seat.mjs` drives the record with a fake terrain and a rebuild spy, runs
+the real player controller on the real building collider through up, down, jumping and
+obstructed reseats, checks page/server datum parity through the shared model, and reads the
+page source to assert the volumetric switch precedes the seat sync and that the apply and adopt
+paths hold no reseat of their own (the page is not executed in Node). Unseen in a browser.
 
 **The spawn-area world** (phase 5, 2026-09-03). The world kind that used to be the bare
 traversal lab (`kind: 'traversalLab'`, the page's default `worldMode`) is now the building on a

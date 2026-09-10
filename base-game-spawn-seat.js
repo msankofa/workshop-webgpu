@@ -9,6 +9,7 @@
 // unpublished so the next update retries.
 //
 // Usage:
+//   const player = createSpawnSeatPlayer({ controller, worldQuery, safeSpawn, active });
 //   const seat = createSpawnSeatSync({ building, ground, wanted, onSeated, player });
 //   seat.sync();   // at the end of updateWorld, after terrain.setVolumetric
 
@@ -23,8 +24,8 @@ export function spawnSeatChanged(prev, next) {
     || prev.volumetric !== next.volumetric || prev.seaLevel !== next.seaLevel;
 }
 
-// A solo player on the building floor stays on it when the floor moves; anyone else is left where
-// they are unless the new building embeds them, when they go to the safe spawn.
+// A grounded player on the building floor stays on it when the floor moves; anyone else is left
+// where they are unless the new building embeds them, when they go to the safe spawn.
 export const FLOOR_TOLERANCE = 0.5;
 export function playerAfterReseat({ position, wasOnFloor, onFloor, newFloor, headroom, safeSpawn }) {
   if (wasOnFloor) {
@@ -33,6 +34,40 @@ export function playerAfterReseat({ position, wasOnFloor, onFloor, newFloor, hea
   }
   if (onFloor && position[1] < newFloor - FLOOR_TOLERANCE) return { action: 'spawn', position: safeSpawn() };
   return { action: 'keep', position };
+}
+
+// The page's hooks around a rebuild. `active()` says the local body is the thing to move (solo,
+// not in a vehicle or flying a drone). Headroom resolves the player's live stance capsule at the
+// candidate foot position: any displacement, a ceiling, or a query failure means it does not fit.
+export function createSpawnSeatPlayer({ controller, worldQuery, safeSpawn, active = () => true, slopeLimitCos = 0.5, iterations = 4 }) {
+  function headroom(to) {
+    try {
+      const c = controller.getCapsule();
+      const dy = to[1] - controller.getPosition()[1];
+      const capsule = { start: [to[0], c.start[1] + dy, to[2]], end: [to[0], c.end[1] + dy, to[2]], radius: c.radius };
+      const probe = worldQuery.resolveCapsule({ capsule, velocity: [0, 0, 0], slopeLimitCos, iterations, walkableVerticalResolution: true });
+      const moved = Math.hypot(probe.capsule.start[0] - capsule.start[0], probe.capsule.start[1] - capsule.start[1], probe.capsule.start[2] - capsule.start[2]);
+      return moved < 1e-4 && !probe.ceiling;
+    } catch { return false; }
+  }
+  return {
+    capture(building) {
+      if (!active() || !controller.grounded) return null;
+      const here = controller.getPosition();
+      const wasOnFloor = building.footprintContains(here[0], here[2]) && Math.abs(here[1] - building.stats.baseY) <= FLOOR_TOLERANCE;
+      return { wasOnFloor };
+    },
+    settle(building, before) {
+      if (!active()) return null;
+      const position = controller.getPosition();
+      const r = playerAfterReseat({
+        position, wasOnFloor: !!before?.wasOnFloor, onFloor: building.footprintContains(position[0], position[2]),
+        newFloor: building.stats.baseY, headroom, safeSpawn,
+      });
+      if (r.action !== 'keep') controller.reset(r.position);
+      return r;
+    },
+  };
 }
 
 export function createSpawnSeatSync({ building, ground, wanted, onSeated = null, player = null, onError = null, initial = null }) {

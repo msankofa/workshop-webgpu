@@ -159,7 +159,7 @@ import { createWorldCoordinateSpace } from './world-coordinates.js';
 import { createWorldQueryService } from './world-query.js';
 import { createBaseGameTraversalLab } from './base-game-traversal-lab.js';
 import { createBaseGameSpawnBuilding } from './base-game-spawn-building.js';
-import { createSpawnSeatSync, spawnSeatState, playerAfterReseat, FLOOR_TOLERANCE } from './base-game-spawn-seat.js';
+import { createSpawnSeatSync, spawnSeatState, createSpawnSeatPlayer } from './base-game-spawn-seat.js';
 import { shiftedLabLayout, flatGround, SPAWN_AREA_BUILDING_OPTIONS, SPAWN_AREA_SEA_LEVEL } from './base-game-spawn-collider.js';
 import { createTraversalLabLayout } from './traversal-lab-layout.js';
 import { createBaseGamePlayerController } from './base-game-player-controller.js';
@@ -1528,22 +1528,22 @@ function structureParams() {
 // The building is reseated once per world update whose seat inputs changed (source, effective
 // volumetric, sea level, world mode), at the end of updateWorld, after the volumetric switch.
 let floraForBuilding = null;   // set once the flora exists (it is created after the terrain)
-// A solo player standing on the floor rides it to its new height; a buried one goes to the spawn.
+// A grounded solo player on the floor rides it to its new height; a buried one goes to the spawn.
+// The hooks are created on first use: the player controller is built after the building.
+let spawnSeatPlayerHooks = null;
+function seatPlayerHooks() {
+  if (!simulationReady) return null;
+  spawnSeatPlayerHooks ??= createSpawnSeatPlayer({
+    controller: playerController, worldQuery, safeSpawn: worldSpawn,
+    active: () => !isOnline() && !playerController.controlledVehicle && !droneCtl.active,
+  });
+  return spawnSeatPlayerHooks;
+}
 const spawnSeatPlayer = {
-  capture(building) {
-    if (!simulationReady || isOnline() || playerController.controlledVehicle || droneCtl.active) return null;
-    const here = playerController.getPosition();
-    const onFloor = building.footprintContains(here[0], here[2]) && Math.abs(here[1] - building.stats.baseY) <= FLOOR_TOLERANCE;
-    return { wasOnFloor: onFloor };
-  },
+  capture: (building) => seatPlayerHooks()?.capture(building) ?? null,
   settle(building, before) {
-    if (!before) return;
-    const position = playerController.getPosition();
-    const headroom = (p) => { let hit; try { hit = worldQuery.raycast({ origin: [p[0], p[1] + 0.2, p[2]], direction: [0, 1, 0], maxDistance: 2 }); } catch { hit = null; } return !hit; };
-    const r = playerAfterReseat({ position, wasOnFloor: before.wasOnFloor, onFloor: building.footprintContains(position[0], position[2]), newFloor: building.stats.baseY, headroom, safeSpawn: worldSpawn });
-    if (r.action === 'keep') return;
-    playerController.reset(r.position);
-    playerController.interpolatedPosition(1, playerRenderPosition);
+    const r = seatPlayerHooks()?.settle(building, before);
+    if (r && r.action !== 'keep') playerController.interpolatedPosition(1, playerRenderPosition);
   },
 };
 // The planters are a biome inside the building's rectangle. Occlusion needs no marked roots any
