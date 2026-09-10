@@ -345,6 +345,12 @@
       "commits": [
         "a533f0a"
       ]
+    },
+    {
+      "at": "2026-09-10T23:55Z",
+      "title": "Third flag-on walk: the refresh policy skipped 100 to 106 forest meshes per render; stages halved",
+      "body": "Two ?trace=1&foreststatic=1 walking captures at 23:43 and 23:44 after a533f0a: refused {}, skipped 100 and 106 per render, main scene refreshes 114/214 and 114/220 (the same trace read 214/214 and 217/217 with the flag off). Per-frame stage figures, which compare directly across captures of this kind: bindings stage p50 2.3 and 2.5 ms (off: 4.1 to 4.3), p95 3.9 (off: 6.1 to 7.5); nodes stage p50 2.1 and 2.3 (off: 4.6 to 5.1); the main scene’s last-frame encode 6.0 and 7.0 ms (off: 14.0 to 19.1). Whole-frame, cross-run and loosely comparable: frame p50 19.2 and 20.4 ms, p95 30 to 31 (off, 21:17 to 21:24: p50 28.0 to 31.4, p95 44 to 52); fps p50 49 and 52 (off: 34 to 36). Movement share was higher in the flag-on runs (97 per cent of frames above 0.5 m/s against 87 to 94), so movement does not explain the gain. Not covered: the sun’s shadow pass refreshed all 32 of its objects; Three renders it under its own override depth material, so the forest’s observer is not consulted there. Unverified: the user’s eyes on the trees during those walks; default enablement waits on that answer. Reported to Astra.",
+      "commits": []
     }
   ]
 }
