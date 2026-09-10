@@ -1756,3 +1756,4 @@ date,subsystem,files,summary
 2026-09-09T19:45,vegetation,"forest-gpu.js;test-forest-leaf-shaders.mjs;docs/subsystems/vegetation.md",instanceNodes now hands the yaw-rotated normal to the fragment stage as a varying so leaf and bark fragments no longer bind and read the draw buffer per pixel
 2026-09-09T21:00,multi,"base-game-forest.js;base-game.html;docs/render-tasks.json;docs/render-progress-log.json;comms.txt","forestNormalVarying setting and the leafnormal=fragment flag give the leaf fragment fix a same-content A/B; task 24 proposes the view-space normal fix as a look decision; progress log JSON repaired."
 2026-09-09T21:20,entry,"base-game.html","The forestNormalVarying setting gets its panel toggle; the settings audit threw at load without it."
+2026-09-10T00:20,infra,"docs/render-tasks.json;docs/render-progress-log.json;comms.txt","Trees-on captures read: submission not GPU; GPU timestamp columns set aside as stale; allocation pass launched."
