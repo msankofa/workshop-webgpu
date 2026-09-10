@@ -460,8 +460,12 @@ donor's behaviour so `environment-viewer.html` is untouched:
     `userData.forestEpoch` (the merged pulled mesh and the billboards never do, so those modes stay
     outside the opt-in), the graph is not allowlisted, or the base reports `hasAnimation` /
     `needsVelocity`;
-  - **the allowlist** (`forestGraphVerdict`) refuses a render object whose built graph has any
-    `updateBefore`/`updateAfter` node, or any OBJECT-typed update node outside
+  - **the allowlist** (`forestGraphVerdict`) refuses a render object whose built graph has a
+    per-object `updateBefore`/`updateAfter` node (a per-render or per-frame one, such as the sun's
+    `ShadowNode`, runs once per render id whichever object triggers it, `three.webgpu.js:53079`,
+    so it is allowed), any update node in a shared group is allowed (the shadow's bias, radius and
+    map-size references are object-typed but live in the render group, which the one refresh per
+    material per render writes), and otherwise any OBJECT-typed update node outside
     `UniformGroupNode('object')`, `UserDataNode.slotOffset`, `ModelNode:worldMatrix`, three's own
     `modelNormalMatrix` singleton (by identity — it reads `object.matrixWorld` alone, so it is
     camera-independent) and `MaterialReferenceNode`. A host's `addEmissive` that adds a per-object

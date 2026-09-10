@@ -329,6 +329,12 @@
       "commits": [
         "e308556"
       ]
+    },
+    {
+      "at": "2026-09-10T21:40Z",
+      "title": "First foreststatic=1 walks skipped nothing: the shadow-casting sun was refused; verdict fixed",
+      "body": "The user’s two ?trace=1&foreststatic=1 captures: skipped 0, refreshed 88 and 109, refused {\"updateBefore nodes in the graph\": 6}. Cause: the page’s sun casts shadows, which puts Three’s ShadowNode (updateBeforeType render) and five object-typed ReferenceNodes (bias, normalBias, radius, mapSize, intensity on the DirectionalLightShadow) into every forest graph; the test scene’s light cast none, so “updateBeforeNodes empty for all nine” was a fact about the test, not the page. Probed headless against both the stock and the vendored build (identical); the five references sit in the shared render group. Verdict change: refuse only a per-object updateBefore/updateAfter (a per-render one runs once per render id whichever object triggers it, three.webgpu.js:53079); allow any update node whose group is shared. test-forest-object-group builds a role under a shadow-casting sun and asserts the ShadowNode and render-group references are present and allowed (69 checks); every forest suite and the page syntax pass. Measurement: the five captures (three control, two flag-on) read the same within spread: frame p50 28.0 to 31.4 ms, p95 44 to 52, bindings stage p50 4.1 to 4.3, nodes 4.6 to 5.1, main-scene refreshes 184 to 217 of the same. So nothing is known yet about the policy’s effect. Task 21 asks for one flag-on walk again.",
+      "commits": []
     }
   ]
 }

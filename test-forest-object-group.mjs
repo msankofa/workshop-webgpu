@@ -195,10 +195,33 @@ section('a render-updated uniform: refused in the object group, allowed in a sha
   inShared.dispose();
 }
 
-section('a graph with an updateBefore or updateAfter node is refused');
+section('the sun casts shadows, as on the page: the ShadowNode and the shadow references are allowed');
 {
-  check('updateBefore refuses', forestGraphVerdict({ updateNodes: [], updateBeforeNodes: [{}], updateAfterNodes: [] }).ok === false);
-  check('updateAfter refuses', forestGraphVerdict({ updateNodes: [], updateBeforeNodes: [], updateAfterNodes: [{}] }).ok === false);
+  // The page's sun casts shadows and the earlier scene did not, which is why nine roles passed headless while the browser refused every graph with "updateBefore nodes".
+  const shadowScene = new THREE.Scene();
+  const sun = new THREE.DirectionalLight(); sun.castShadow = true; shadowScene.add(sun);
+  const f = makeBaseGameForest({});
+  f.applyTextureSet((b, l) => bindTreeMaterials(b, l, null));
+  const mesh = f.variantMeshes(0).find(m => m.name === 'forest:v0:branchesL0');
+  const b = THREE.WebGPUBackend.prototype.createNodeBuilder(mesh, renderer);
+  b.scene = shadowScene; b.camera = camera; b.material = mesh.material;
+  b.lightsNode = new THREE.LightsNode().setLights([sun]);
+  b.environmentNode = null; b.fogNode = null; b.clippingContext = null; b.build();
+  const before = b.updateBeforeNodes.map(n => `${n.constructor?.type}:${n.getUpdateBeforeType?.() ?? n.updateBeforeType}`);
+  check('the graph carries a per-render ShadowNode updateBefore', before.includes('ShadowNode:render'), before.join(','));
+  const refs = b.updateNodes.filter(n => /^ReferenceNode$/.test(n.constructor?.type ?? '')).map(n => `${n.property}@${(n.node ?? n).groupNode?.name}`);
+  check('and the shadow references sit in the shared render group', refs.length >= 4 && refs.every(r => r.endsWith('@render')), refs.join(','));
+  const v = forestGraphVerdict(stateOf(b));
+  check('the verdict allows it', v.ok === true, v.reason ?? '');
+  f.dispose();
+}
+
+section('a graph with a per-object updateBefore or updateAfter node is refused');
+{
+  const objBefore = { getUpdateBeforeType: () => 'object' }, renderBefore = { getUpdateBeforeType: () => 'render' };
+  check('a per-render updateBefore alone is allowed', forestGraphVerdict({ updateNodes: [], updateBeforeNodes: [renderBefore], updateAfterNodes: [] }).ok === true);
+  check('a per-object updateBefore refuses', forestGraphVerdict({ updateNodes: [], updateBeforeNodes: [objBefore], updateAfterNodes: [] }).ok === false);
+  check('a per-object updateAfter refuses', forestGraphVerdict({ updateNodes: [], updateBeforeNodes: [], updateAfterNodes: [{ getUpdateAfterType: () => 'object' }] }).ok === false);
   check('no builder state refuses', forestGraphVerdict(null).ok === false);
 }
 

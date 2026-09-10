@@ -268,3 +268,26 @@ left in place. `commitHookOwners(nodes)` is exported for tests. `test-forest-sta
 now covers two forests sharing one renderer with disposal in both orders, an overlapping rebuild
 (new forest built before the old one is disposed), a later wrapper surviving the last release and a
 fresh forest wrapping it, and a second `dispose()` being a no-op: 72 checks.
+
+
+## Addendum 2026-09-10, 21:30: the first browser walks refused every graph
+
+The user's two `?trace=1&foreststatic=1` walks reported `skipped: 0`, `refreshed: 88` and `109`,
+and `refused: { "updateBefore nodes in the graph": 6 }`. The report's statement that
+`updateBeforeNodes` is empty for all nine roles was true of the test scene and false of the page:
+the page's sun casts shadows, and a shadow-casting light puts Three's `ShadowNode` into the graph as
+an `updateBefore` node of type `render`, plus five object-typed `ReferenceNode`s (`bias`,
+`normalBias`, `radius`, `mapSize`, `intensity` on the `DirectionalLightShadow`). Probed headless
+with `castShadow = true` against both the stock and the vendored build
+(`scratchpads/fps-churn/probe-updatebefore.mjs`, run through `vendor-three-register.mjs` for the
+vendored one): identical lists, and all five references sit in the shared `render` group.
+
+The verdict now refuses only a per-object `updateBefore`/`updateAfter` node — a per-render one runs
+once per render id whichever object triggers it (`NodeFrame.updateBeforeNode`,
+`three.webgpu.js:53079`), so the one refresh per material per render serves it — and allows any
+update node whose uniform group is shared, since that first refresh writes the shared buffer every
+mesh binds. `test-forest-object-group.mjs` now builds a role under a shadow-casting sun, asserts the
+`ShadowNode:render` updateBefore and the render-group references are present, and that the verdict
+allows it (69 checks). The two walks are void as a measurement of the policy: with and without the
+flag every object refreshed (217/217), and the frame, bindings and nodes figures of the five
+captures are the same within their spread. The walk is asked for again.

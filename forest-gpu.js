@@ -87,10 +87,13 @@ function classifyObjectUpdateNode(node) {
 // Whether one built graph may take the skip. Anything the allowlist does not know -- an onObjectUpdate uniform a caller's addEmissive added, a camera-dependent ModelNode scope, an onRenderUpdate/onFrameUpdate uniform left in the object group, any updateBefore/updateAfter node -- refuses it.
 export function forestGraphVerdict(state) {
   if (!state) return { ok: false, reason: 'no node builder state' };
-  if (state.updateBeforeNodes?.length) return { ok: false, reason: 'updateBefore nodes in the graph' };
-  if (state.updateAfterNodes?.length) return { ok: false, reason: 'updateAfter nodes in the graph' };
+  // A per-render or per-frame updateBefore/updateAfter (the sun's ShadowNode) runs once per render id whichever object triggers it (three.webgpu.js:53079), so the one refresh per material per render serves it; a per-object one refuses.
+  for (const node of state.updateBeforeNodes ?? []) if ((node.getUpdateBeforeType?.() ?? node.updateBeforeType) === 'object') return { ok: false, reason: 'a per-object updateBefore node in the graph' };
+  for (const node of state.updateAfterNodes ?? []) if ((node.getUpdateAfterType?.() ?? node.updateAfterType) === 'object') return { ok: false, reason: 'a per-object updateAfter node in the graph' };
   for (const node of state.updateNodes ?? []) {
     const updateType = node.getUpdateType?.() ?? node.updateType;
+    // The shadow's bias, radius and map-size references are object-typed but live in the shared render group, which that first refresh writes and every mesh binds.
+    if ((node.node ?? node).groupNode?.shared === true) continue;
     if (updateType !== 'object') {
       // A frame- or render-updated uniform in a shared group is written by the one refresh per material per render; the same uniform in the unshared object group would reach only that first mesh, so it refuses.
       if (node.groupNode && node.groupNode.shared === false) return { ok: false, reason: `a ${updateType}-updated uniform lives in the object group` };
