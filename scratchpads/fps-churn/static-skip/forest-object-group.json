@@ -1,0 +1,4533 @@
+{
+  "meshCensus": {
+    "forest:v0:branchesL0": 1,
+    "forest:v0:leavesL0": 1,
+    "forest:v0:shadowL0": 1,
+    "forest:v0:branchesL1": 1,
+    "forest:v0:leavesL1": 1,
+    "forest:v0:branchesL2": 1,
+    "forest:v0:coarseLeavesL2": 1,
+    "forest:v0:barkShadow": 1,
+    "forest:v0:leafShadow": 1,
+    "forest:v1:branchesL0": 1,
+    "forest:v1:leavesL0": 1,
+    "forest:v1:shadowL0": 1,
+    "forest:v1:branchesL1": 1,
+    "forest:v1:leavesL1": 1,
+    "forest:v1:branchesL2": 1,
+    "forest:v1:coarseLeavesL2": 1,
+    "forest:v1:barkShadow": 1,
+    "forest:v1:leafShadow": 1,
+    "forest:v2:branchesL0": 1,
+    "forest:v2:leavesL0": 1,
+    "forest:v2:shadowL0": 1,
+    "forest:v2:branchesL1": 1,
+    "forest:v2:leavesL1": 1,
+    "forest:v2:branchesL2": 1,
+    "forest:v2:coarseLeavesL2": 1,
+    "forest:v2:barkShadow": 1,
+    "forest:v2:leafShadow": 1,
+    "forest:v3:branchesL0": 1,
+    "forest:v3:leavesL0": 1,
+    "forest:v3:shadowL0": 1,
+    "forest:v3:branchesL1": 1,
+    "forest:v3:leavesL1": 1,
+    "forest:v3:branchesL2": 1,
+    "forest:v3:coarseLeavesL2": 1,
+    "forest:v3:barkShadow": 1,
+    "forest:v3:leafShadow": 1,
+    "forest:v4:branchesL0": 1,
+    "forest:v4:leavesL0": 1,
+    "forest:v4:shadowL0": 1,
+    "forest:v4:branchesL1": 1,
+    "forest:v4:leavesL1": 1,
+    "forest:v4:branchesL2": 1,
+    "forest:v4:coarseLeavesL2": 1,
+    "forest:v4:barkShadow": 1,
+    "forest:v4:leafShadow": 1,
+    "forest:v5:branchesL0": 1,
+    "forest:v5:leavesL0": 1,
+    "forest:v5:shadowL0": 1,
+    "forest:v5:branchesL1": 1,
+    "forest:v5:leavesL1": 1,
+    "forest:v5:branchesL2": 1,
+    "forest:v5:coarseLeavesL2": 1,
+    "forest:v5:barkShadow": 1,
+    "forest:v5:leafShadow": 1
+  },
+  "variants": 6,
+  "roles": [
+    {
+      "mesh": "forest:v0:branchesL0",
+      "material": "MeshStandardNodeMaterial",
+      "materialUuid": "690166c4-186e-4a73-b563-be2dbb4b9380",
+      "slotOffset": 0,
+      "geometryUuid": "175d7c0f-52a2-4252-8e2d-48fa94d829e2",
+      "attributes": [
+        "position",
+        "normal",
+        "uv",
+        "color"
+      ],
+      "hasIndex": true,
+      "indirect": true,
+      "instanceCount": 16,
+      "updateNodes": [
+        "UniformGroupNode(object)[object]",
+        "UserDataNode[object]",
+        "UniformNode(cameraProjectionMatrix)[render]",
+        "UniformGroupNode(render)[render]",
+        "UniformNode(cameraViewMatrix)[render]",
+        "ModelNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "UniformNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "DirectionalLightNode[frame]",
+        "UniformNode[render]",
+        "UniformNode[render]"
+      ],
+      "updateBeforeNodes": [],
+      "updateAfterNodes": [],
+      "uniformGroups": {
+        "object": [
+          {
+            "name": "nodeUniform1",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform2",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform3",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform4",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform5",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0.9
+            }
+          },
+          {
+            "name": "nodeUniform7",
+            "type": "Matrix3NodeUniform",
+            "uniformCtor": "Matrix3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "object",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform8",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform9",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform14",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": null
+            }
+          }
+        ],
+        "render": [
+          {
+            "name": "cameraProjectionMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraProjectionMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0.8033332537924395,
+                0,
+                0,
+                0,
+                0,
+                1.4281480067421146,
+                0,
+                0,
+                0,
+                0,
+                -1.00010000500025,
+                -1,
+                0,
+                0,
+                -0.200010000500025,
+                0
+              ]
+            }
+          },
+          {
+            "name": "cameraViewMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraViewMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform13",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform11",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform12",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "bindings": {
+        "vertex": [
+          {
+            "cls": "NodeStorageBuffer",
+            "name": "StorageBuffer_0",
+            "group": "object",
+            "isStorage": true,
+            "isTexture": false,
+            "isSampler": false,
+            "access": "readWrite",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform7",
+              "nodeUniform8",
+              "nodeUniform9",
+              "nodeUniform14"
+            ]
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform13",
+              "nodeUniform11",
+              "nodeUniform12"
+            ]
+          }
+        ],
+        "fragment": [
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform7",
+              "nodeUniform8",
+              "nodeUniform9",
+              "nodeUniform14"
+            ]
+          },
+          {
+            "cls": "NodeSampler",
+            "name": "nodeUniform15_sampler",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": true,
+            "access": null,
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeSampledTexture",
+            "name": "nodeUniform15",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": true,
+            "isSampler": true,
+            "access": "readOnly",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform13",
+              "nodeUniform11",
+              "nodeUniform12"
+            ]
+          }
+        ],
+        "compute": []
+      },
+      "wgslGreps": {
+        "modelViewMatrix": {
+          "vertex": 3,
+          "fragment": 0
+        },
+        "modelWorldMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "cameraViewMatrix": {
+          "vertex": 3,
+          "fragment": 2
+        },
+        "cameraProjectionMatrix": {
+          "vertex": 2,
+          "fragment": 1
+        },
+        "modelNormalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "normalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelViewProjection": {
+          "vertex": 4,
+          "fragment": 0
+        },
+        "instanceIndex": {
+          "vertex": 2,
+          "fragment": 0
+        },
+        "vertexIndex": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "var<storage": {
+          "vertex": 1,
+          "fragment": 0
+        }
+      },
+      "vertexStructs": [
+        "struct NodeBuffer_913Struct {\n\tvalue : array< vec4<f32> >\n}",
+        "struct objectStruct {\n\tnodeUniform1 : u32,\n\tnodeUniform2 : f32,\n\tnodeUniform3 : f32,\n\tnodeUniform4 : f32,\n\tnodeUniform5 : f32,\n\tnodeUniform7 : mat3x3<f32>,\n\tnodeUniform8 : vec3<f32>,\n\tnodeUniform9 : f32,\n\tnodeUniform14 : mat4x4<f32>\n}",
+        "struct renderStruct {\n\tcameraProjectionMatrix : mat4x4<f32>,\n\tcameraViewMatrix : mat4x4<f32>,\n\tnodeUniform13 : vec3<f32>,\n\tnodeUniform11 : vec3<f32>,\n\tnodeUniform12 : vec3<f32>\n}",
+        "struct VaryingsStruct {\n\t@location( 0 ) v_normalViewGeometry : vec3<f32>,\n\t@location( 1 ) v_forestNormal : vec3<f32>,\n\t@location( 2 ) v_positionViewDirection : vec3<f32>,\n\t@location( 3 ) nodeVarying7 : vec3<f32>,\n\t@location( 4 ) nodeVarying8 : vec2<f32>,\n\t@builtin( position ) builtinClipSpace : vec4<f32>\n}"
+      ]
+    },
+    {
+      "mesh": "forest:v0:leavesL0",
+      "material": "MeshStandardNodeMaterial",
+      "materialUuid": "b86681f1-3f24-446e-816f-ea3f70048869",
+      "slotOffset": 0,
+      "geometryUuid": "23899419-c931-4791-b896-78b4a8e86e71",
+      "attributes": [
+        "position",
+        "normal",
+        "uv",
+        "color"
+      ],
+      "hasIndex": true,
+      "indirect": true,
+      "instanceCount": 16,
+      "updateNodes": [
+        "UniformGroupNode(object)[object]",
+        "UserDataNode[object]",
+        "UniformNode(cameraProjectionMatrix)[render]",
+        "UniformGroupNode(render)[render]",
+        "UniformNode(cameraViewMatrix)[render]",
+        "ModelNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "UniformNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "DirectionalLightNode[frame]",
+        "UniformNode[render]",
+        "UniformNode[render]"
+      ],
+      "updateBeforeNodes": [],
+      "updateAfterNodes": [],
+      "uniformGroups": {
+        "object": [
+          {
+            "name": "nodeUniform1",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform2",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform3",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform4",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform5",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform6",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform7",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform9",
+            "type": "Matrix3NodeUniform",
+            "uniformCtor": "Matrix3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "object",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform10",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform11",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform16",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": null
+            }
+          }
+        ],
+        "render": [
+          {
+            "name": "cameraProjectionMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraProjectionMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0.8033332537924395,
+                0,
+                0,
+                0,
+                0,
+                1.4281480067421146,
+                0,
+                0,
+                0,
+                0,
+                -1.00010000500025,
+                -1,
+                0,
+                0,
+                -0.200010000500025,
+                0
+              ]
+            }
+          },
+          {
+            "name": "cameraViewMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraViewMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform15",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform13",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform14",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "bindings": {
+        "vertex": [
+          {
+            "cls": "NodeStorageBuffer",
+            "name": "StorageBuffer_1",
+            "group": "object",
+            "isStorage": true,
+            "isTexture": false,
+            "isSampler": false,
+            "access": "readWrite",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "fragment": [
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeSampler",
+            "name": "nodeUniform17_sampler",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": true,
+            "access": null,
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeSampledTexture",
+            "name": "nodeUniform17",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": true,
+            "isSampler": true,
+            "access": "readOnly",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "compute": []
+      },
+      "wgslGreps": {
+        "modelViewMatrix": {
+          "vertex": 3,
+          "fragment": 0
+        },
+        "modelWorldMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "cameraViewMatrix": {
+          "vertex": 3,
+          "fragment": 2
+        },
+        "cameraProjectionMatrix": {
+          "vertex": 2,
+          "fragment": 1
+        },
+        "modelNormalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "normalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelViewProjection": {
+          "vertex": 4,
+          "fragment": 0
+        },
+        "instanceIndex": {
+          "vertex": 2,
+          "fragment": 0
+        },
+        "vertexIndex": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "var<storage": {
+          "vertex": 1,
+          "fragment": 0
+        }
+      },
+      "vertexStructs": [
+        "struct NodeBuffer_913Struct {\n\tvalue : array< vec4<f32> >\n}",
+        "struct objectStruct {\n\tnodeUniform1 : u32,\n\tnodeUniform2 : f32,\n\tnodeUniform3 : f32,\n\tnodeUniform4 : vec3<f32>,\n\tnodeUniform5 : f32,\n\tnodeUniform6 : f32,\n\tnodeUniform7 : f32,\n\tnodeUniform9 : mat3x3<f32>,\n\tnodeUniform10 : vec3<f32>,\n\tnodeUniform11 : f32,\n\tnodeUniform16 : mat4x4<f32>\n}",
+        "struct renderStruct {\n\tcameraProjectionMatrix : mat4x4<f32>,\n\tcameraViewMatrix : mat4x4<f32>,\n\tnodeUniform15 : vec3<f32>,\n\tnodeUniform13 : vec3<f32>,\n\tnodeUniform14 : vec3<f32>\n}",
+        "struct VaryingsStruct {\n\t@location( 0 ) v_normalViewGeometry : vec3<f32>,\n\t@location( 1 ) v_forestNormal : vec3<f32>,\n\t@location( 2 ) v_positionViewDirection : vec3<f32>,\n\t@location( 3 ) nodeVarying7 : vec4<f32>,\n\t@builtin( position ) builtinClipSpace : vec4<f32>\n}"
+      ]
+    },
+    {
+      "mesh": "forest:v0:shadowL0",
+      "material": "MeshStandardNodeMaterial",
+      "materialUuid": "b86681f1-3f24-446e-816f-ea3f70048869",
+      "slotOffset": 0,
+      "geometryUuid": "6c398a0f-d57b-4187-97ee-50e4d720c00f",
+      "attributes": [
+        "position",
+        "normal",
+        "uv",
+        "color"
+      ],
+      "hasIndex": true,
+      "indirect": true,
+      "instanceCount": 16,
+      "updateNodes": [
+        "UniformGroupNode(object)[object]",
+        "UserDataNode[object]",
+        "UniformNode(cameraProjectionMatrix)[render]",
+        "UniformGroupNode(render)[render]",
+        "UniformNode(cameraViewMatrix)[render]",
+        "ModelNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "UniformNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "DirectionalLightNode[frame]",
+        "UniformNode[render]",
+        "UniformNode[render]"
+      ],
+      "updateBeforeNodes": [],
+      "updateAfterNodes": [],
+      "uniformGroups": {
+        "object": [
+          {
+            "name": "nodeUniform1",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform2",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform3",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform4",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform5",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform6",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform7",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform9",
+            "type": "Matrix3NodeUniform",
+            "uniformCtor": "Matrix3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "object",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform10",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform11",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform16",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": null
+            }
+          }
+        ],
+        "render": [
+          {
+            "name": "cameraProjectionMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraProjectionMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0.8033332537924395,
+                0,
+                0,
+                0,
+                0,
+                1.4281480067421146,
+                0,
+                0,
+                0,
+                0,
+                -1.00010000500025,
+                -1,
+                0,
+                0,
+                -0.200010000500025,
+                0
+              ]
+            }
+          },
+          {
+            "name": "cameraViewMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraViewMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform15",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform13",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform14",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "bindings": {
+        "vertex": [
+          {
+            "cls": "NodeStorageBuffer",
+            "name": "StorageBuffer_2",
+            "group": "object",
+            "isStorage": true,
+            "isTexture": false,
+            "isSampler": false,
+            "access": "readWrite",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "fragment": [
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeSampler",
+            "name": "nodeUniform17_sampler",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": true,
+            "access": null,
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeSampledTexture",
+            "name": "nodeUniform17",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": true,
+            "isSampler": true,
+            "access": "readOnly",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "compute": []
+      },
+      "wgslGreps": {
+        "modelViewMatrix": {
+          "vertex": 3,
+          "fragment": 0
+        },
+        "modelWorldMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "cameraViewMatrix": {
+          "vertex": 3,
+          "fragment": 2
+        },
+        "cameraProjectionMatrix": {
+          "vertex": 2,
+          "fragment": 1
+        },
+        "modelNormalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "normalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelViewProjection": {
+          "vertex": 4,
+          "fragment": 0
+        },
+        "instanceIndex": {
+          "vertex": 2,
+          "fragment": 0
+        },
+        "vertexIndex": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "var<storage": {
+          "vertex": 1,
+          "fragment": 0
+        }
+      },
+      "vertexStructs": [
+        "struct NodeBuffer_913Struct {\n\tvalue : array< vec4<f32> >\n}",
+        "struct objectStruct {\n\tnodeUniform1 : u32,\n\tnodeUniform2 : f32,\n\tnodeUniform3 : f32,\n\tnodeUniform4 : vec3<f32>,\n\tnodeUniform5 : f32,\n\tnodeUniform6 : f32,\n\tnodeUniform7 : f32,\n\tnodeUniform9 : mat3x3<f32>,\n\tnodeUniform10 : vec3<f32>,\n\tnodeUniform11 : f32,\n\tnodeUniform16 : mat4x4<f32>\n}",
+        "struct renderStruct {\n\tcameraProjectionMatrix : mat4x4<f32>,\n\tcameraViewMatrix : mat4x4<f32>,\n\tnodeUniform15 : vec3<f32>,\n\tnodeUniform13 : vec3<f32>,\n\tnodeUniform14 : vec3<f32>\n}",
+        "struct VaryingsStruct {\n\t@location( 0 ) v_normalViewGeometry : vec3<f32>,\n\t@location( 1 ) v_forestNormal : vec3<f32>,\n\t@location( 2 ) v_positionViewDirection : vec3<f32>,\n\t@location( 3 ) nodeVarying7 : vec4<f32>,\n\t@builtin( position ) builtinClipSpace : vec4<f32>\n}"
+      ]
+    },
+    {
+      "mesh": "forest:v0:branchesL1",
+      "material": "MeshStandardNodeMaterial",
+      "materialUuid": "a8432a82-6994-4fde-bc41-1ec201c0581c",
+      "slotOffset": 16,
+      "geometryUuid": "55c6b3a5-be09-4bb5-ba89-2b8d47b9ed9b",
+      "attributes": [
+        "position",
+        "normal",
+        "uv",
+        "color"
+      ],
+      "hasIndex": true,
+      "indirect": true,
+      "instanceCount": 16,
+      "updateNodes": [
+        "UniformGroupNode(object)[object]",
+        "UserDataNode[object]",
+        "UniformNode(cameraProjectionMatrix)[render]",
+        "UniformGroupNode(render)[render]",
+        "UniformNode(cameraViewMatrix)[render]",
+        "ModelNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "UniformNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "DirectionalLightNode[frame]",
+        "UniformNode[render]",
+        "UniformNode[render]"
+      ],
+      "updateBeforeNodes": [],
+      "updateAfterNodes": [],
+      "uniformGroups": {
+        "object": [
+          {
+            "name": "nodeUniform1",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 16
+            }
+          },
+          {
+            "name": "nodeUniform2",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform3",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform4",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform5",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0.9
+            }
+          },
+          {
+            "name": "nodeUniform7",
+            "type": "Matrix3NodeUniform",
+            "uniformCtor": "Matrix3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "object",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform8",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform9",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform14",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": null
+            }
+          }
+        ],
+        "render": [
+          {
+            "name": "cameraProjectionMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraProjectionMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0.8033332537924395,
+                0,
+                0,
+                0,
+                0,
+                1.4281480067421146,
+                0,
+                0,
+                0,
+                0,
+                -1.00010000500025,
+                -1,
+                0,
+                0,
+                -0.200010000500025,
+                0
+              ]
+            }
+          },
+          {
+            "name": "cameraViewMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraViewMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform13",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform11",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform12",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "bindings": {
+        "vertex": [
+          {
+            "cls": "NodeStorageBuffer",
+            "name": "StorageBuffer_3",
+            "group": "object",
+            "isStorage": true,
+            "isTexture": false,
+            "isSampler": false,
+            "access": "readWrite",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform7",
+              "nodeUniform8",
+              "nodeUniform9",
+              "nodeUniform14"
+            ]
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform13",
+              "nodeUniform11",
+              "nodeUniform12"
+            ]
+          }
+        ],
+        "fragment": [
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform7",
+              "nodeUniform8",
+              "nodeUniform9",
+              "nodeUniform14"
+            ]
+          },
+          {
+            "cls": "NodeSampler",
+            "name": "nodeUniform15_sampler",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": true,
+            "access": null,
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeSampledTexture",
+            "name": "nodeUniform15",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": true,
+            "isSampler": true,
+            "access": "readOnly",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform13",
+              "nodeUniform11",
+              "nodeUniform12"
+            ]
+          }
+        ],
+        "compute": []
+      },
+      "wgslGreps": {
+        "modelViewMatrix": {
+          "vertex": 3,
+          "fragment": 0
+        },
+        "modelWorldMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "cameraViewMatrix": {
+          "vertex": 3,
+          "fragment": 2
+        },
+        "cameraProjectionMatrix": {
+          "vertex": 2,
+          "fragment": 1
+        },
+        "modelNormalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "normalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelViewProjection": {
+          "vertex": 4,
+          "fragment": 0
+        },
+        "instanceIndex": {
+          "vertex": 2,
+          "fragment": 0
+        },
+        "vertexIndex": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "var<storage": {
+          "vertex": 1,
+          "fragment": 0
+        }
+      },
+      "vertexStructs": [
+        "struct NodeBuffer_913Struct {\n\tvalue : array< vec4<f32> >\n}",
+        "struct objectStruct {\n\tnodeUniform1 : u32,\n\tnodeUniform2 : f32,\n\tnodeUniform3 : f32,\n\tnodeUniform4 : f32,\n\tnodeUniform5 : f32,\n\tnodeUniform7 : mat3x3<f32>,\n\tnodeUniform8 : vec3<f32>,\n\tnodeUniform9 : f32,\n\tnodeUniform14 : mat4x4<f32>\n}",
+        "struct renderStruct {\n\tcameraProjectionMatrix : mat4x4<f32>,\n\tcameraViewMatrix : mat4x4<f32>,\n\tnodeUniform13 : vec3<f32>,\n\tnodeUniform11 : vec3<f32>,\n\tnodeUniform12 : vec3<f32>\n}",
+        "struct VaryingsStruct {\n\t@location( 0 ) v_normalViewGeometry : vec3<f32>,\n\t@location( 1 ) v_forestNormal : vec3<f32>,\n\t@location( 2 ) v_positionViewDirection : vec3<f32>,\n\t@location( 3 ) nodeVarying7 : vec3<f32>,\n\t@location( 4 ) nodeVarying8 : vec2<f32>,\n\t@builtin( position ) builtinClipSpace : vec4<f32>\n}"
+      ]
+    },
+    {
+      "mesh": "forest:v0:leavesL1",
+      "material": "MeshStandardNodeMaterial",
+      "materialUuid": "8d13b918-99eb-42c9-9fae-9bde9bbabd5a",
+      "slotOffset": 16,
+      "geometryUuid": "145d7c41-d12f-4ad0-afe0-4ca6d1817b9e",
+      "attributes": [
+        "position",
+        "normal",
+        "uv",
+        "color"
+      ],
+      "hasIndex": true,
+      "indirect": true,
+      "instanceCount": 16,
+      "updateNodes": [
+        "UniformGroupNode(object)[object]",
+        "UserDataNode[object]",
+        "UniformNode(cameraProjectionMatrix)[render]",
+        "UniformGroupNode(render)[render]",
+        "UniformNode(cameraViewMatrix)[render]",
+        "ModelNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "UniformNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "DirectionalLightNode[frame]",
+        "UniformNode[render]",
+        "UniformNode[render]"
+      ],
+      "updateBeforeNodes": [],
+      "updateAfterNodes": [],
+      "uniformGroups": {
+        "object": [
+          {
+            "name": "nodeUniform1",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 16
+            }
+          },
+          {
+            "name": "nodeUniform2",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform3",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform4",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform5",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform6",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform7",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform9",
+            "type": "Matrix3NodeUniform",
+            "uniformCtor": "Matrix3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "object",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform10",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform11",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform16",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": null
+            }
+          }
+        ],
+        "render": [
+          {
+            "name": "cameraProjectionMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraProjectionMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0.8033332537924395,
+                0,
+                0,
+                0,
+                0,
+                1.4281480067421146,
+                0,
+                0,
+                0,
+                0,
+                -1.00010000500025,
+                -1,
+                0,
+                0,
+                -0.200010000500025,
+                0
+              ]
+            }
+          },
+          {
+            "name": "cameraViewMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraViewMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform15",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform13",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform14",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "bindings": {
+        "vertex": [
+          {
+            "cls": "NodeStorageBuffer",
+            "name": "StorageBuffer_4",
+            "group": "object",
+            "isStorage": true,
+            "isTexture": false,
+            "isSampler": false,
+            "access": "readWrite",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "fragment": [
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeSampler",
+            "name": "nodeUniform17_sampler",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": true,
+            "access": null,
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeSampledTexture",
+            "name": "nodeUniform17",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": true,
+            "isSampler": true,
+            "access": "readOnly",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "compute": []
+      },
+      "wgslGreps": {
+        "modelViewMatrix": {
+          "vertex": 3,
+          "fragment": 0
+        },
+        "modelWorldMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "cameraViewMatrix": {
+          "vertex": 3,
+          "fragment": 2
+        },
+        "cameraProjectionMatrix": {
+          "vertex": 2,
+          "fragment": 1
+        },
+        "modelNormalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "normalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelViewProjection": {
+          "vertex": 4,
+          "fragment": 0
+        },
+        "instanceIndex": {
+          "vertex": 2,
+          "fragment": 0
+        },
+        "vertexIndex": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "var<storage": {
+          "vertex": 1,
+          "fragment": 0
+        }
+      },
+      "vertexStructs": [
+        "struct NodeBuffer_913Struct {\n\tvalue : array< vec4<f32> >\n}",
+        "struct objectStruct {\n\tnodeUniform1 : u32,\n\tnodeUniform2 : f32,\n\tnodeUniform3 : f32,\n\tnodeUniform4 : vec3<f32>,\n\tnodeUniform5 : f32,\n\tnodeUniform6 : f32,\n\tnodeUniform7 : f32,\n\tnodeUniform9 : mat3x3<f32>,\n\tnodeUniform10 : vec3<f32>,\n\tnodeUniform11 : f32,\n\tnodeUniform16 : mat4x4<f32>\n}",
+        "struct renderStruct {\n\tcameraProjectionMatrix : mat4x4<f32>,\n\tcameraViewMatrix : mat4x4<f32>,\n\tnodeUniform15 : vec3<f32>,\n\tnodeUniform13 : vec3<f32>,\n\tnodeUniform14 : vec3<f32>\n}",
+        "struct VaryingsStruct {\n\t@location( 0 ) v_normalViewGeometry : vec3<f32>,\n\t@location( 1 ) v_forestNormal : vec3<f32>,\n\t@location( 2 ) v_positionViewDirection : vec3<f32>,\n\t@location( 3 ) nodeVarying7 : vec4<f32>,\n\t@builtin( position ) builtinClipSpace : vec4<f32>\n}"
+      ]
+    },
+    {
+      "mesh": "forest:v0:branchesL2",
+      "material": "MeshStandardNodeMaterial",
+      "materialUuid": "b2cbbc5d-b3ed-4bdd-9003-f4080fe8fedd",
+      "slotOffset": 32,
+      "geometryUuid": "bf351e4e-bf8f-45e1-9bf2-aa81a98b36b5",
+      "attributes": [
+        "position",
+        "normal",
+        "uv",
+        "color"
+      ],
+      "hasIndex": true,
+      "indirect": true,
+      "instanceCount": 16,
+      "updateNodes": [
+        "UniformGroupNode(object)[object]",
+        "UserDataNode[object]",
+        "UniformNode(cameraProjectionMatrix)[render]",
+        "UniformGroupNode(render)[render]",
+        "UniformNode(cameraViewMatrix)[render]",
+        "ModelNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "UniformNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "DirectionalLightNode[frame]",
+        "UniformNode[render]",
+        "UniformNode[render]"
+      ],
+      "updateBeforeNodes": [],
+      "updateAfterNodes": [],
+      "uniformGroups": {
+        "object": [
+          {
+            "name": "nodeUniform1",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 32
+            }
+          },
+          {
+            "name": "nodeUniform2",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform3",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform4",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform5",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0.9
+            }
+          },
+          {
+            "name": "nodeUniform7",
+            "type": "Matrix3NodeUniform",
+            "uniformCtor": "Matrix3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "object",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform8",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform9",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform14",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": null
+            }
+          }
+        ],
+        "render": [
+          {
+            "name": "cameraProjectionMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraProjectionMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0.8033332537924395,
+                0,
+                0,
+                0,
+                0,
+                1.4281480067421146,
+                0,
+                0,
+                0,
+                0,
+                -1.00010000500025,
+                -1,
+                0,
+                0,
+                -0.200010000500025,
+                0
+              ]
+            }
+          },
+          {
+            "name": "cameraViewMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraViewMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform13",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform11",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform12",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "bindings": {
+        "vertex": [
+          {
+            "cls": "NodeStorageBuffer",
+            "name": "StorageBuffer_5",
+            "group": "object",
+            "isStorage": true,
+            "isTexture": false,
+            "isSampler": false,
+            "access": "readWrite",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform7",
+              "nodeUniform8",
+              "nodeUniform9",
+              "nodeUniform14"
+            ]
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform13",
+              "nodeUniform11",
+              "nodeUniform12"
+            ]
+          }
+        ],
+        "fragment": [
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform7",
+              "nodeUniform8",
+              "nodeUniform9",
+              "nodeUniform14"
+            ]
+          },
+          {
+            "cls": "NodeSampler",
+            "name": "nodeUniform15_sampler",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": true,
+            "access": null,
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeSampledTexture",
+            "name": "nodeUniform15",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": true,
+            "isSampler": true,
+            "access": "readOnly",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform13",
+              "nodeUniform11",
+              "nodeUniform12"
+            ]
+          }
+        ],
+        "compute": []
+      },
+      "wgslGreps": {
+        "modelViewMatrix": {
+          "vertex": 3,
+          "fragment": 0
+        },
+        "modelWorldMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "cameraViewMatrix": {
+          "vertex": 3,
+          "fragment": 2
+        },
+        "cameraProjectionMatrix": {
+          "vertex": 2,
+          "fragment": 1
+        },
+        "modelNormalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "normalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelViewProjection": {
+          "vertex": 4,
+          "fragment": 0
+        },
+        "instanceIndex": {
+          "vertex": 2,
+          "fragment": 0
+        },
+        "vertexIndex": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "var<storage": {
+          "vertex": 1,
+          "fragment": 0
+        }
+      },
+      "vertexStructs": [
+        "struct NodeBuffer_913Struct {\n\tvalue : array< vec4<f32> >\n}",
+        "struct objectStruct {\n\tnodeUniform1 : u32,\n\tnodeUniform2 : f32,\n\tnodeUniform3 : f32,\n\tnodeUniform4 : f32,\n\tnodeUniform5 : f32,\n\tnodeUniform7 : mat3x3<f32>,\n\tnodeUniform8 : vec3<f32>,\n\tnodeUniform9 : f32,\n\tnodeUniform14 : mat4x4<f32>\n}",
+        "struct renderStruct {\n\tcameraProjectionMatrix : mat4x4<f32>,\n\tcameraViewMatrix : mat4x4<f32>,\n\tnodeUniform13 : vec3<f32>,\n\tnodeUniform11 : vec3<f32>,\n\tnodeUniform12 : vec3<f32>\n}",
+        "struct VaryingsStruct {\n\t@location( 0 ) v_normalViewGeometry : vec3<f32>,\n\t@location( 1 ) v_forestNormal : vec3<f32>,\n\t@location( 2 ) v_positionViewDirection : vec3<f32>,\n\t@location( 3 ) nodeVarying7 : vec3<f32>,\n\t@location( 4 ) nodeVarying8 : vec2<f32>,\n\t@builtin( position ) builtinClipSpace : vec4<f32>\n}"
+      ]
+    },
+    {
+      "mesh": "forest:v0:coarseLeavesL2",
+      "material": "MeshStandardNodeMaterial",
+      "materialUuid": "49a1db20-dd40-41b0-bc6d-d94ebe3615a1",
+      "slotOffset": 32,
+      "geometryUuid": "d9979719-f7d7-45bf-93d3-c30ff0c73448",
+      "attributes": [
+        "position",
+        "normal",
+        "uv",
+        "color"
+      ],
+      "hasIndex": true,
+      "indirect": true,
+      "instanceCount": 16,
+      "updateNodes": [
+        "UniformGroupNode(object)[object]",
+        "UserDataNode[object]",
+        "UniformNode(cameraProjectionMatrix)[render]",
+        "UniformGroupNode(render)[render]",
+        "UniformNode(cameraViewMatrix)[render]",
+        "ModelNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "UniformNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "DirectionalLightNode[frame]",
+        "UniformNode[render]",
+        "UniformNode[render]"
+      ],
+      "updateBeforeNodes": [],
+      "updateAfterNodes": [],
+      "uniformGroups": {
+        "object": [
+          {
+            "name": "nodeUniform1",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 32
+            }
+          },
+          {
+            "name": "nodeUniform2",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform3",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform4",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform5",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform6",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform7",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform9",
+            "type": "Matrix3NodeUniform",
+            "uniformCtor": "Matrix3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "object",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform10",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform11",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform16",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": null
+            }
+          }
+        ],
+        "render": [
+          {
+            "name": "cameraProjectionMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraProjectionMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0.8033332537924395,
+                0,
+                0,
+                0,
+                0,
+                1.4281480067421146,
+                0,
+                0,
+                0,
+                0,
+                -1.00010000500025,
+                -1,
+                0,
+                0,
+                -0.200010000500025,
+                0
+              ]
+            }
+          },
+          {
+            "name": "cameraViewMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraViewMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform15",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform13",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform14",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "bindings": {
+        "vertex": [
+          {
+            "cls": "NodeStorageBuffer",
+            "name": "StorageBuffer_6",
+            "group": "object",
+            "isStorage": true,
+            "isTexture": false,
+            "isSampler": false,
+            "access": "readWrite",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "fragment": [
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeSampler",
+            "name": "nodeUniform17_sampler",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": true,
+            "access": null,
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeSampledTexture",
+            "name": "nodeUniform17",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": true,
+            "isSampler": true,
+            "access": "readOnly",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "compute": []
+      },
+      "wgslGreps": {
+        "modelViewMatrix": {
+          "vertex": 3,
+          "fragment": 0
+        },
+        "modelWorldMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "cameraViewMatrix": {
+          "vertex": 3,
+          "fragment": 2
+        },
+        "cameraProjectionMatrix": {
+          "vertex": 2,
+          "fragment": 1
+        },
+        "modelNormalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "normalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelViewProjection": {
+          "vertex": 4,
+          "fragment": 0
+        },
+        "instanceIndex": {
+          "vertex": 2,
+          "fragment": 0
+        },
+        "vertexIndex": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "var<storage": {
+          "vertex": 1,
+          "fragment": 0
+        }
+      },
+      "vertexStructs": [
+        "struct NodeBuffer_913Struct {\n\tvalue : array< vec4<f32> >\n}",
+        "struct objectStruct {\n\tnodeUniform1 : u32,\n\tnodeUniform2 : f32,\n\tnodeUniform3 : f32,\n\tnodeUniform4 : vec3<f32>,\n\tnodeUniform5 : f32,\n\tnodeUniform6 : f32,\n\tnodeUniform7 : f32,\n\tnodeUniform9 : mat3x3<f32>,\n\tnodeUniform10 : vec3<f32>,\n\tnodeUniform11 : f32,\n\tnodeUniform16 : mat4x4<f32>\n}",
+        "struct renderStruct {\n\tcameraProjectionMatrix : mat4x4<f32>,\n\tcameraViewMatrix : mat4x4<f32>,\n\tnodeUniform15 : vec3<f32>,\n\tnodeUniform13 : vec3<f32>,\n\tnodeUniform14 : vec3<f32>\n}",
+        "struct VaryingsStruct {\n\t@location( 0 ) v_normalViewGeometry : vec3<f32>,\n\t@location( 1 ) v_forestNormal : vec3<f32>,\n\t@location( 2 ) v_positionViewDirection : vec3<f32>,\n\t@location( 3 ) nodeVarying7 : vec4<f32>,\n\t@builtin( position ) builtinClipSpace : vec4<f32>\n}"
+      ]
+    },
+    {
+      "mesh": "forest:v0:barkShadow",
+      "material": "MeshStandardNodeMaterial",
+      "materialUuid": "a159093f-151d-4814-b94a-165754587d69",
+      "slotOffset": 48,
+      "geometryUuid": "b9761723-aa7f-4aec-ba5f-d972d99e4ff3",
+      "attributes": [
+        "position",
+        "normal",
+        "uv",
+        "color"
+      ],
+      "hasIndex": true,
+      "indirect": true,
+      "instanceCount": 16,
+      "updateNodes": [
+        "UniformGroupNode(object)[object]",
+        "UserDataNode[object]",
+        "UniformNode(cameraProjectionMatrix)[render]",
+        "UniformGroupNode(render)[render]",
+        "UniformNode(cameraViewMatrix)[render]",
+        "ModelNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "UniformNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "DirectionalLightNode[frame]",
+        "UniformNode[render]",
+        "UniformNode[render]"
+      ],
+      "updateBeforeNodes": [],
+      "updateAfterNodes": [],
+      "uniformGroups": {
+        "object": [
+          {
+            "name": "nodeUniform1",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 48
+            }
+          },
+          {
+            "name": "nodeUniform2",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform3",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform4",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform5",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0.9
+            }
+          },
+          {
+            "name": "nodeUniform7",
+            "type": "Matrix3NodeUniform",
+            "uniformCtor": "Matrix3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "object",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform8",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform9",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform14",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": null
+            }
+          }
+        ],
+        "render": [
+          {
+            "name": "cameraProjectionMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraProjectionMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0.8033332537924395,
+                0,
+                0,
+                0,
+                0,
+                1.4281480067421146,
+                0,
+                0,
+                0,
+                0,
+                -1.00010000500025,
+                -1,
+                0,
+                0,
+                -0.200010000500025,
+                0
+              ]
+            }
+          },
+          {
+            "name": "cameraViewMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraViewMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform13",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform11",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform12",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "bindings": {
+        "vertex": [
+          {
+            "cls": "NodeStorageBuffer",
+            "name": "StorageBuffer_7",
+            "group": "object",
+            "isStorage": true,
+            "isTexture": false,
+            "isSampler": false,
+            "access": "readWrite",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform7",
+              "nodeUniform8",
+              "nodeUniform9",
+              "nodeUniform14"
+            ]
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform13",
+              "nodeUniform11",
+              "nodeUniform12"
+            ]
+          }
+        ],
+        "fragment": [
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform7",
+              "nodeUniform8",
+              "nodeUniform9",
+              "nodeUniform14"
+            ]
+          },
+          {
+            "cls": "NodeSampler",
+            "name": "nodeUniform15_sampler",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": true,
+            "access": null,
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeSampledTexture",
+            "name": "nodeUniform15",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": true,
+            "isSampler": true,
+            "access": "readOnly",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform13",
+              "nodeUniform11",
+              "nodeUniform12"
+            ]
+          }
+        ],
+        "compute": []
+      },
+      "wgslGreps": {
+        "modelViewMatrix": {
+          "vertex": 3,
+          "fragment": 0
+        },
+        "modelWorldMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "cameraViewMatrix": {
+          "vertex": 3,
+          "fragment": 2
+        },
+        "cameraProjectionMatrix": {
+          "vertex": 2,
+          "fragment": 1
+        },
+        "modelNormalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "normalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelViewProjection": {
+          "vertex": 4,
+          "fragment": 0
+        },
+        "instanceIndex": {
+          "vertex": 2,
+          "fragment": 0
+        },
+        "vertexIndex": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "var<storage": {
+          "vertex": 1,
+          "fragment": 0
+        }
+      },
+      "vertexStructs": [
+        "struct NodeBuffer_913Struct {\n\tvalue : array< vec4<f32> >\n}",
+        "struct objectStruct {\n\tnodeUniform1 : u32,\n\tnodeUniform2 : f32,\n\tnodeUniform3 : f32,\n\tnodeUniform4 : f32,\n\tnodeUniform5 : f32,\n\tnodeUniform7 : mat3x3<f32>,\n\tnodeUniform8 : vec3<f32>,\n\tnodeUniform9 : f32,\n\tnodeUniform14 : mat4x4<f32>\n}",
+        "struct renderStruct {\n\tcameraProjectionMatrix : mat4x4<f32>,\n\tcameraViewMatrix : mat4x4<f32>,\n\tnodeUniform13 : vec3<f32>,\n\tnodeUniform11 : vec3<f32>,\n\tnodeUniform12 : vec3<f32>\n}",
+        "struct VaryingsStruct {\n\t@location( 0 ) v_normalViewGeometry : vec3<f32>,\n\t@location( 1 ) v_forestNormal : vec3<f32>,\n\t@location( 2 ) v_positionViewDirection : vec3<f32>,\n\t@location( 3 ) nodeVarying7 : vec3<f32>,\n\t@location( 4 ) nodeVarying8 : vec2<f32>,\n\t@builtin( position ) builtinClipSpace : vec4<f32>\n}"
+      ]
+    },
+    {
+      "mesh": "forest:v0:leafShadow",
+      "material": "MeshStandardNodeMaterial",
+      "materialUuid": "ad736ce9-bb47-495d-9f8c-8fc4f5460de2",
+      "slotOffset": 48,
+      "geometryUuid": "464a872f-172a-47c9-88cb-18622129863b",
+      "attributes": [
+        "position",
+        "normal",
+        "uv",
+        "color"
+      ],
+      "hasIndex": true,
+      "indirect": true,
+      "instanceCount": 16,
+      "updateNodes": [
+        "UniformGroupNode(object)[object]",
+        "UserDataNode[object]",
+        "UniformNode(cameraProjectionMatrix)[render]",
+        "UniformGroupNode(render)[render]",
+        "UniformNode(cameraViewMatrix)[render]",
+        "ModelNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "UniformNode[object]",
+        "MaterialReferenceNode[object]",
+        "MaterialReferenceNode[object]",
+        "DirectionalLightNode[frame]",
+        "UniformNode[render]",
+        "UniformNode[render]"
+      ],
+      "updateBeforeNodes": [],
+      "updateAfterNodes": [],
+      "uniformGroups": {
+        "object": [
+          {
+            "name": "nodeUniform1",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 48
+            }
+          },
+          {
+            "name": "nodeUniform2",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform3",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform4",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform5",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform6",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 0
+            }
+          },
+          {
+            "name": "nodeUniform7",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform9",
+            "type": "Matrix3NodeUniform",
+            "uniformCtor": "Matrix3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "object",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform10",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform11",
+            "type": "NumberNodeUniform",
+            "uniformCtor": "NumberNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": 1
+            }
+          },
+          {
+            "name": "nodeUniform16",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "object",
+              "path": null,
+              "objectNodeScope": null,
+              "value": null
+            }
+          }
+        ],
+        "render": [
+          {
+            "name": "cameraProjectionMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraProjectionMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0.8033332537924395,
+                0,
+                0,
+                0,
+                0,
+                1.4281480067421146,
+                0,
+                0,
+                0,
+                0,
+                -1.00010000500025,
+                -1,
+                0,
+                0,
+                -0.200010000500025,
+                0
+              ]
+            }
+          },
+          {
+            "name": "cameraViewMatrix",
+            "type": "Matrix4NodeUniform",
+            "uniformCtor": "Matrix4NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "cameraViewMatrix",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform15",
+            "type": "ColorNodeUniform",
+            "uniformCtor": "ColorNodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "none",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                1,
+                1,
+                1
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform13",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          },
+          {
+            "name": "nodeUniform14",
+            "type": "Vector3NodeUniform",
+            "uniformCtor": "Vector3NodeUniform",
+            "node": {
+              "ctor": "UniformNode",
+              "name": "",
+              "updateType": "render",
+              "updateBeforeType": "none",
+              "groupNode": "render",
+              "path": null,
+              "objectNodeScope": null,
+              "value": [
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "bindings": {
+        "vertex": [
+          {
+            "cls": "NodeStorageBuffer",
+            "name": "StorageBuffer_8",
+            "group": "object",
+            "isStorage": true,
+            "isTexture": false,
+            "isSampler": false,
+            "access": "readWrite",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "fragment": [
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "object",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "nodeUniform1",
+              "nodeUniform2",
+              "nodeUniform3",
+              "nodeUniform4",
+              "nodeUniform5",
+              "nodeUniform6",
+              "nodeUniform7",
+              "nodeUniform9",
+              "nodeUniform10",
+              "nodeUniform11",
+              "nodeUniform16"
+            ]
+          },
+          {
+            "cls": "NodeSampler",
+            "name": "nodeUniform17_sampler",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": true,
+            "access": null,
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeSampledTexture",
+            "name": "nodeUniform17",
+            "group": "object",
+            "isStorage": false,
+            "isTexture": true,
+            "isSampler": true,
+            "access": "readOnly",
+            "uniformNames": []
+          },
+          {
+            "cls": "NodeUniformsGroup",
+            "name": "render",
+            "group": "render",
+            "isStorage": false,
+            "isTexture": false,
+            "isSampler": false,
+            "access": null,
+            "uniformNames": [
+              "cameraProjectionMatrix",
+              "cameraViewMatrix",
+              "nodeUniform15",
+              "nodeUniform13",
+              "nodeUniform14"
+            ]
+          }
+        ],
+        "compute": []
+      },
+      "wgslGreps": {
+        "modelViewMatrix": {
+          "vertex": 3,
+          "fragment": 0
+        },
+        "modelWorldMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "cameraViewMatrix": {
+          "vertex": 3,
+          "fragment": 2
+        },
+        "cameraProjectionMatrix": {
+          "vertex": 2,
+          "fragment": 1
+        },
+        "modelNormalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "normalMatrix": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "modelViewProjection": {
+          "vertex": 4,
+          "fragment": 0
+        },
+        "instanceIndex": {
+          "vertex": 2,
+          "fragment": 0
+        },
+        "vertexIndex": {
+          "vertex": 0,
+          "fragment": 0
+        },
+        "var<storage": {
+          "vertex": 1,
+          "fragment": 0
+        }
+      },
+      "vertexStructs": [
+        "struct NodeBuffer_913Struct {\n\tvalue : array< vec4<f32> >\n}",
+        "struct objectStruct {\n\tnodeUniform1 : u32,\n\tnodeUniform2 : f32,\n\tnodeUniform3 : f32,\n\tnodeUniform4 : vec3<f32>,\n\tnodeUniform5 : f32,\n\tnodeUniform6 : f32,\n\tnodeUniform7 : f32,\n\tnodeUniform9 : mat3x3<f32>,\n\tnodeUniform10 : vec3<f32>,\n\tnodeUniform11 : f32,\n\tnodeUniform16 : mat4x4<f32>\n}",
+        "struct renderStruct {\n\tcameraProjectionMatrix : mat4x4<f32>,\n\tcameraViewMatrix : mat4x4<f32>,\n\tnodeUniform15 : vec3<f32>,\n\tnodeUniform13 : vec3<f32>,\n\tnodeUniform14 : vec3<f32>\n}",
+        "struct VaryingsStruct {\n\t@location( 0 ) v_normalViewGeometry : vec3<f32>,\n\t@location( 1 ) v_forestNormal : vec3<f32>,\n\t@location( 2 ) v_positionViewDirection : vec3<f32>,\n\t@location( 3 ) nodeVarying7 : vec4<f32>,\n\t@builtin( position ) builtinClipSpace : vec4<f32>\n}"
+      ]
+    }
+  ],
+  "sharedMaterialPairs": [
+    {
+      "name": "branchesL0",
+      "sameMaterial": true,
+      "slotOffsetA": 0,
+      "slotOffsetB": 64,
+      "sameGeometry": false,
+      "geoA": "175d7c0f-52a2-4252-8e2d-48fa94d829e2",
+      "geoB": "4c23388e-547e-41f8-9419-bf9c3f431ac4"
+    },
+    {
+      "name": "leavesL0",
+      "sameMaterial": true,
+      "slotOffsetA": 0,
+      "slotOffsetB": 64,
+      "sameGeometry": false,
+      "geoA": "23899419-c931-4791-b896-78b4a8e86e71",
+      "geoB": "a177daaf-cd12-4f87-a5f8-be7b0508bbff"
+    },
+    {
+      "name": "branchesL2",
+      "sameMaterial": true,
+      "slotOffsetA": 32,
+      "slotOffsetB": 96,
+      "sameGeometry": false,
+      "geoA": "bf351e4e-bf8f-45e1-9bf2-aa81a98b36b5",
+      "geoB": "1844959b-ff91-4554-ac32-4299084b8149"
+    }
+  ]
+}

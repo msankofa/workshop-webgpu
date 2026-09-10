@@ -1,0 +1,12 @@
+import NodeManager from '../../../node_modules/three/src/renderers/common/nodes/NodeManager.js';
+import { objectGroup } from '../../../node_modules/three/src/nodes/core/UniformGroupNode.js';
+import ChainMap from '../../../node_modules/three/src/renderers/common/ChainMap.js';
+const nm = Object.create(NodeManager.prototype);
+nm.groupsData = new ChainMap();
+const g = { groupNode: objectGroup };
+console.log('call1', nm.updateGroup(g));
+console.log('call2', nm.updateGroup(g));
+objectGroup.update();
+console.log('after objectGroup.update()', nm.updateGroup(g));
+console.log('call4', nm.updateGroup(g));
+console.log('objectGroup.version', objectGroup.version, 'updateType', objectGroup.updateType);
