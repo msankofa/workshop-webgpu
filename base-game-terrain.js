@@ -659,8 +659,9 @@ export function createBaseGameTerrain({
   function syncBatchVisibility(sys, b, batched, hideRule) {
     let pending = 0;
     b.beginFrame();
-    for (const [key, chunk] of sys.chunks) {
+    for (const chunk of sys.chunks.values()) {   // values(), not entries: no [key, chunk] pair per chunk per frame
       if (!chunk.mesh) continue;
+      const key = chunk.key;
       const hidden = hideRule(chunk);
       const inBatch = batched.get(key) === chunk;
       if (inBatch) b.setVisible(key, !hidden);

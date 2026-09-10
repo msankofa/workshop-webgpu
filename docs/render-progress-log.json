@@ -273,6 +273,12 @@
       "title": "Allocation pass: four same-content changes on the walking hot paths",
       "body": "Opus agent, reviewed: (1) road-index nearestDistanceWithin inlines the segment arithmetic, takes the argmin by squared distance and one Math.hypot on the winner, indexed loops; test-roads carries a verbatim copy of the old implementation and asserts === over 4,000 bounded and 400 unbounded queries, 0 mismatches. (2) base-game-terrain killPlaneYAt cached per source identity, epoch, volumetric mode and 0.5 m of travel (groundHeight is a pure function of those; the plane sits 80 m down; measured staleness inside the radius 0.018 m); killPlaneYAtExact kept, tests that the cache equals it at recompute points and that a source swap invalidates. (3) syncBatchVisibility reuses a removal array instead of spreading batched.keys(); batchTargets reuses its list and records (no caller retains them); residency records left fresh because captures keep them. (4) flora-field coverAt and splatWeights take an optional out; derive uses scratch objects and drops two per-texel closures; 37,056 channel values identical to the pre-change file, fixed-seed checksum pinned in the test. (5) HUD skipped: it runs on a 500 ms tick and its result is cloned. Nine tests and the page syntax green. Not measured: the browser GC effect; task 25 asks for one walking heap profile.",
       "commits": []
+    },
+    {
+      "at": "2026-09-10T02:50Z",
+      "title": "After the allocation pass: road query down four to five times, kill plane and cover objects gone from the top, batch walk fixed again",
+      "body": "Two heap profiles (22:47 trees on, 22:50 plants off), both with ?trace=1 on so the trace’s bookkeeping is a third of each: nearestDistanceWithin 42 MB against 167 to 208 before; hashedCell3 (kill plane) and derive/coverAt/splatWeights no longer in the top twelve; syncBatchVisibility unchanged at 57 MB because for (const [key, chunk] of sys.chunks) built a pair per chunk per frame, now values() with chunk.key. Remaining of ours: the capsule against the terrain BVH (intersectsTriangle 177 MB, raycastAll 106), library internals. Trace walks on the full build: plants on 25.8 and 35.1 ms p50, 204 to 207 objects, encode 14.2 to 18.8 p50; plants off 16.1, 94 objects, 6.6. The leafnormal=fragment pair never ran; the fragment fix stands on its shader test. Tasks 22 and 25 closed; task 21 (static refresh skip) is the open lever for the trees.",
+      "commits": []
     }
   ]
 }
