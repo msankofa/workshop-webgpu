@@ -37,7 +37,102 @@ import {
   vec2, vec3, vec4, cos, sin, atan, acos, clamp, length, modInt, positionLocal, normalLocal,
   atomicAdd, atomicStore, atomicLoad, min, max, dot, dFdx, dFdy, inverseSqrt, varying,
   normalize, cross, cameraPosition, texture, time, userData, vertexIndex, select,
+  modelNormalMatrix,
 } from 'three/tsl';
+
+// ---- static refresh policy (opts.staticRefresh, off by default) ----------------------------
+// A forest mesh's object-group state only changes at events this file raises, so Three's per-object refresh is redundant between them. NodeMaterial.setupObserver is the seam: the renderer only ever calls needsRefresh(renderObject, nodeFrame) on what it returns. Design and evidence: scratchpads/fps-churn/static-skip/03-design.md.
+export const FOREST_COMMIT = Symbol.for('forest-gpu.staticRefresh.commit');
+const forestPolicyContext = new WeakMap();   // material -> the forest's shared policy context
+
+// The object-typed update nodes the policy knows are immutable between invalidate() calls. Returns null when allowed, else the node type that refused the skip.
+function classifyObjectUpdateNode(node) {
+  const type = node?.constructor?.type ?? node?.constructor?.name ?? 'unknown';
+  if (type === 'UniformGroupNode' && node.name === 'object') return null;
+  if (type === 'UserDataNode' && node.property === 'slotOffset') return null;
+  if (type === 'ModelNode' && node.scope === 'worldMatrix') return null;
+  // modelNormalMatrix reads object.matrixWorld and nothing else -- no camera, no pass (vendor/three-0.184/three.webgpu.js:14622). Identity, so a look-alike does not pass.
+  if (node === modelNormalMatrix) return null;
+  if (type === 'MaterialReferenceNode') return null;   // material values; tracked by material.version
+  return type;
+}
+
+// Whether one built graph may take the skip. Anything the allowlist does not know -- an onObjectUpdate/onRenderUpdate uniform a caller's addEmissive added, a camera-dependent ModelNode scope, any updateBefore/updateAfter node -- refuses it.
+export function forestGraphVerdict(state) {
+  if (!state) return { ok: false, reason: 'no node builder state' };
+  if (state.updateBeforeNodes?.length) return { ok: false, reason: 'updateBefore nodes in the graph' };
+  if (state.updateAfterNodes?.length) return { ok: false, reason: 'updateAfter nodes in the graph' };
+  for (const node of state.updateNodes ?? []) {
+    if ((node.getUpdateType?.() ?? node.updateType) !== 'object') continue;
+    const refused = classifyObjectUpdateNode(node);
+    if (refused) return { ok: false, reason: `${refused} is not on the object-group allowlist` };
+  }
+  return { ok: true, reason: null };
+}
+
+function createForestObserver(base, ctx) {
+  const marks = new WeakMap();   // renderObject -> what it was last refreshed at
+  let renderId = -1;
+  let verdict = null;            // per builder state, so per material+pass
+  // Recorded on EVERY refresh this policy returns true for, the first-of-render one included, so an invalidated first mesh takes no redundant second refresh when render order changes.
+  const mark = (renderObject) => {
+    const object = renderObject.object;
+    let m = marks.get(renderObject);
+    if (!m) { m = { matrix: new Float64Array(16) }; marks.set(renderObject, m); }
+    m.epoch = object.userData.forestEpoch;
+    m.version = renderObject.material.version;
+    m.geometryId = object.geometry?.id;
+    m.matrix.set(object.matrixWorld.elements);
+    m.pending = true;            // only the commit hook clears this, after the work actually ran
+    ctx.stats.refreshed++;
+    return true;
+  };
+  return {
+    [FOREST_COMMIT](renderObject) {
+      const m = marks.get(renderObject);
+      if (m) m.pending = false;
+    },
+    needsRefresh(renderObject, nodeFrame) {
+      if (!ctx.enabled()) return base.needsRefresh(renderObject, nodeFrame);
+      const object = renderObject.object;
+      if (object.userData.forestEpoch === undefined) return base.needsRefresh(renderObject, nodeFrame);
+      if (ctx.renderId !== nodeFrame.renderId) {
+        ctx.renderId = nodeFrame.renderId;
+        ctx.stats.skippedLastRender = ctx.stats.skippedThisRender;
+        ctx.stats.skippedThisRender = 0;
+      }
+      if (base.firstInitialization(renderObject)) return mark(renderObject);
+      if (base.hasAnimation || base.needsVelocity(nodeFrame.renderer)) return mark(renderObject);
+      if (verdict === null) {
+        verdict = forestGraphVerdict(renderObject.getNodeBuilderState?.());
+        if (!verdict.ok) ctx.stats.refused[verdict.reason] = (ctx.stats.refused[verdict.reason] ?? 0) + 1;
+      }
+      if (!verdict.ok) return base.needsRefresh(renderObject, nodeFrame);
+      // One render object per material per render still refreshes, so this material's shared render-group UBO (camera matrices, lights) is written. three.webgpu.js:703-709.
+      if (renderId !== nodeFrame.renderId) { renderId = nodeFrame.renderId; return mark(renderObject); }
+      const m = marks.get(renderObject);
+      if (!m || m.pending) return mark(renderObject);
+      if (m.epoch !== object.userData.forestEpoch) return mark(renderObject);
+      if (m.version !== renderObject.material.version) return mark(renderObject);
+      // Backstops for anything that moves a mesh or swaps its geometry without an invalidate().
+      if (m.geometryId !== object.geometry?.id) return mark(renderObject);
+      const e = object.matrixWorld.elements;
+      for (let i = 0; i < 16; i++) if (m.matrix[i] !== e[i]) return mark(renderObject);
+      ctx.stats.skipped++;
+      ctx.stats.skippedThisRender++;
+      return false;
+    },
+  };
+}
+
+// The forest's own material. A subclass, not an own property: RenderObject.getMaterialCacheKey walks own keys plus prototype getters, so a per-instance setupObserver would land in the key.
+class ForestNodeMaterial extends MeshStandardNodeMaterial {
+  setupObserver(builder) {
+    const base = super.setupObserver(builder);
+    const ctx = forestPolicyContext.get(this);
+    return ctx ? createForestObserver(base, ctx) : base;
+  }
+}
 
 // Storage buffers the pulled vertex stage binds: the merged live-instance list, the arena
 // vertices, the arena indices, the per-variant counts. test-forest-pulled-wgsl.mjs counts the
@@ -120,6 +215,21 @@ export function createForestGPU(opts) {
   // that fourth region would allocate, finalize and precompile resources which can never draw.
   const HAS_BILLBOARDS = opts.billboards !== false;
   const LODS = HAS_BILLBOARDS ? 4 : 3;
+  // Off by default. Only the per-variant meshes drawMesh builds are marked; the merged pulled mesh and the billboards carry no epoch, so their materials delegate to Three's own observer.
+  const STATIC_REFRESH = opts.staticRefresh === true;
+  let forestEpoch = 1;
+  const staticRefreshStats = {
+    enabled: STATIC_REFRESH, skipped: 0, skippedThisRender: 0, skippedLastRender: 0,
+    refreshed: 0, refused: Object.create(null),
+  };
+  const policyContext = { enabled: () => STATIC_REFRESH, stats: staticRefreshStats, renderId: -1 };
+  // Every event that changes what a marked mesh's object group holds bumps the epoch.
+  function invalidate(list) {
+    forestEpoch++;
+    for (const m of (list ?? meshes)) {
+      if (m?.userData?.forestEpoch !== undefined) m.userData.forestEpoch = forestEpoch;
+    }
+  }
   // Shadow list (Base Game): a host that names a layer gets one extra region per variant holding
   // every instance within uShadowReach, cone or not, drawn by two shadow-only meshes on that layer.
   const SHADOW_LAYER = Number.isInteger(opts.shadowLayer) ? opts.shadowLayer : null;
@@ -682,6 +792,7 @@ export function createForestGPU(opts) {
     const g2 = drawableGeometry(geom, indirectAttr);
     const mesh = new THREE.Mesh(g2, mat);
     mesh.userData.slotOffset = slotOffset;   // where this variant's records start in the draw buffer
+    mesh.userData.forestEpoch = forestEpoch; // what the static refresh policy watches; see invalidate()
     mesh.name = name;   // so a scene census can attribute the forest's always-on meshes
     mesh.frustumCulled = false;
     mesh.castShadow = castShadow;
@@ -733,12 +844,14 @@ export function createForestGPU(opts) {
   const sideSwitchableMats = new Set();
 
   function makeMat(roughness, doubleSide) {
-    return new MeshStandardNodeMaterial({
+    const mat = new ForestNodeMaterial({
       vertexColors: true,
       roughness,
       metalness: 0.0,
       side: doubleSide ? THREE.DoubleSide : THREE.FrontSide,
     });
+    forestPolicyContext.set(mat, policyContext);
+    return mat;
   }
 
   // P5/Milestone 6 (finding 5): leaf cards are genuinely single-sided quads (verified in
@@ -905,6 +1018,25 @@ export function createForestGPU(opts) {
     syncRenderParts();
     return true;
   }
+  // The success signal for the policy's clean mark. Nodes.updateAfter runs only after the renderer performed the four gated updates AND the draw (three.webgpu.js:61351), so a refresh that threw or whose pipeline was not ready never commits, and the next call refreshes again. A runtime wrap, not a vendor edit -- render-trace.js wraps renderer._nodes.needsRefresh the same way.
+  let removeCommitHook = () => {};
+  function installCommitHook() {
+    const nodes = renderer?._nodes;
+    if (!STATIC_REFRESH || !nodes || typeof nodes.updateAfter !== 'function' || nodes.__forestStaticCommit) return;
+    const original = nodes.updateAfter;
+    const patched = function (renderObject) {
+      original.call(this, renderObject);
+      renderObject?.getMonitor?.()?.[FOREST_COMMIT]?.(renderObject);
+    };
+    nodes.updateAfter = patched;
+    nodes.__forestStaticCommit = true;
+    removeCommitHook = () => {
+      if (nodes.updateAfter === patched) nodes.updateAfter = original;
+      nodes.__forestStaticCommit = false;
+      removeCommitHook = () => {};
+    };
+  }
+  installCommitHook();
   function removePulledListener() {
     if (pulledDeviceListener && pulledDevice?.removeEventListener) {
       pulledDevice.removeEventListener('uncapturederror', pulledDeviceListener);
@@ -1061,6 +1193,7 @@ export function createForestGPU(opts) {
     arenaCountAttr.clearUpdateRanges();
     arenaCountAttr.addUpdateRange(g * 2, 2);
     arenaCountAttr.needsUpdate = true;
+    invalidate();   // the merged mesh is unmarked anyway; this keeps the arena off the audit list
   }
   function syncRenderParts() {
     if (rungGateDirty) refreshRungCandidates();
@@ -1289,6 +1422,7 @@ export function createForestGPU(opts) {
       mat.side = side;
       mat.needsUpdate = true;
     }
+    invalidate();
   });
 
   // The merged reset runs with the per-variant one, the merged finalizer after the rest, so the
@@ -1367,6 +1501,7 @@ export function createForestGPU(opts) {
         }
       }
       if (arenaOk) repackArenaVariant(g, variant);
+      invalidate(meshes.slice(start, start + MESHES_PER_VARIANT));
       palette.variants[g] = variant;
       uTreeRadius.value = Math.max(uTreeRadius.value, variantCanopyRadius(variant));
       uTreeHeight.value = Math.max(uTreeHeight.value, variantHeight(variant));
@@ -1397,6 +1532,7 @@ export function createForestGPU(opts) {
       // binder that uv and vertex colour come from the arena, not from vertex attributes.
       if (mergedMat) fn(mergedMat, coarseMat);
       if (SHADOW_LIST) fn(shadowMats.bark, shadowMats.leaf);   // the leaf cutout needs its map
+      invalidate();
     },
     get materials() { return sharedMats.slice(); },
     get billboardMaterials() { return billboardMats; },
@@ -1407,12 +1543,18 @@ export function createForestGPU(opts) {
       syncRenderParts();
     },
     refreshVisibility: syncRenderParts,
+    // The escape hatch for anything that writes a forest material value without bumping its version. Harmless with the policy off; the epoch is only read when it is on.
+    invalidateStaticRefresh(list) { invalidate(list); },
+    get staticRefreshStats() { return { ...staticRefreshStats, refused: { ...staticRefreshStats.refused }, epoch: forestEpoch }; },
     setTreeScale(v) {
       const next = Math.max(0.1, Math.min(2, Number(v) || 1));
-      if (uTreeScale.value !== next) { uTreeScale.value = next; markDirty(); }
+      if (uTreeScale.value !== next) { uTreeScale.value = next; markDirty(); invalidate(); }
     },
     setLeafScale(v) {
-      uLeafScale.value = Math.max(0.1, Math.min(2, Number(v) || 1));
+      const next = Math.max(0.1, Math.min(2, Number(v) || 1));
+      if (uLeafScale.value === next) return;
+      uLeafScale.value = next;
+      invalidate();
     },
     setFarLeavesDoubleSided(v) {
       const side = v ? THREE.DoubleSide : THREE.FrontSide;
@@ -1420,6 +1562,7 @@ export function createForestGPU(opts) {
         mat.side = side;
         mat.needsUpdate = true;
       }
+      invalidate();
     },
     applyBillboardMap(g, tex) {
       if (!HAS_BILLBOARDS) return false;
@@ -1455,7 +1598,13 @@ export function createForestGPU(opts) {
       treeBaseOffset = v;
       needsRebuild = true;
     },
-    setLeafSway(v) { uLeafSway.value = Number.isFinite(v) ? v : 0; },
+    // Guarded on value change: base-game-forest calls this on every syncRenderState.
+    setLeafSway(v) {
+      const next = Number.isFinite(v) ? v : 0;
+      if (uLeafSway.value === next) return;
+      uLeafSway.value = next;
+      invalidate();
+    },
     // Per-rung visibility (D5b). Accepts an array or an object keyed by rung index.
     setLodEnabled(next) {
       let changed = false;
@@ -1672,12 +1821,15 @@ export function createForestGPU(opts) {
         billboardInstances: est.billboard,
         treeScale: uTreeScale.value, leafScale: uLeafScale.value,
         renderParts: { ...renderParts },
+        // What the refresh policy did: refreshes it skipped, and any graph it refused, with why.
+        staticRefresh: { ...staticRefreshStats, refused: { ...staticRefreshStats.refused }, epoch: forestEpoch },
       };
     },
     // Storage attributes have no dispose event, and ComputeNode.dispose() frees pipelines and bind
     // groups but not the buffers, so a host that rebuilds the forest leaks them without this. Same
     // guarded renderer._attributes path grass-compute.js uses.
     dispose() {
+      removeCommitHook();
       removePulledListener();
       const mats = new Set();
       meshes.forEach(m => {

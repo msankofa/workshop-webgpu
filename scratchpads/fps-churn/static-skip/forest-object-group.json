@@ -60,9 +60,9 @@
     {
       "mesh": "forest:v0:branchesL0",
       "material": "MeshStandardNodeMaterial",
-      "materialUuid": "690166c4-186e-4a73-b563-be2dbb4b9380",
+      "materialUuid": "682a1a6a-9d00-4638-827f-22f3ca2cc0ae",
       "slotOffset": 0,
-      "geometryUuid": "175d7c0f-52a2-4252-8e2d-48fa94d829e2",
+      "geometryUuid": "9682e479-2bfc-4236-8b23-a1aaebf46dea",
       "attributes": [
         "position",
         "normal",
@@ -532,9 +532,9 @@
     {
       "mesh": "forest:v0:leavesL0",
       "material": "MeshStandardNodeMaterial",
-      "materialUuid": "b86681f1-3f24-446e-816f-ea3f70048869",
+      "materialUuid": "09263f59-eb32-4e82-8431-6d59db51a036",
       "slotOffset": 0,
-      "geometryUuid": "23899419-c931-4791-b896-78b4a8e86e71",
+      "geometryUuid": "aa50ecb5-65db-4fe9-8593-babfcd1e7530",
       "attributes": [
         "position",
         "normal",
@@ -1043,9 +1043,9 @@
     {
       "mesh": "forest:v0:shadowL0",
       "material": "MeshStandardNodeMaterial",
-      "materialUuid": "b86681f1-3f24-446e-816f-ea3f70048869",
+      "materialUuid": "09263f59-eb32-4e82-8431-6d59db51a036",
       "slotOffset": 0,
-      "geometryUuid": "6c398a0f-d57b-4187-97ee-50e4d720c00f",
+      "geometryUuid": "bec1b7bf-a301-41bd-9504-b0498fee49b3",
       "attributes": [
         "position",
         "normal",
@@ -1554,9 +1554,9 @@
     {
       "mesh": "forest:v0:branchesL1",
       "material": "MeshStandardNodeMaterial",
-      "materialUuid": "a8432a82-6994-4fde-bc41-1ec201c0581c",
+      "materialUuid": "cd673089-6e15-4908-a507-4673a43edc29",
       "slotOffset": 16,
-      "geometryUuid": "55c6b3a5-be09-4bb5-ba89-2b8d47b9ed9b",
+      "geometryUuid": "e15d102e-bbcc-4aae-a45a-31b26b2fe1aa",
       "attributes": [
         "position",
         "normal",
@@ -2026,9 +2026,9 @@
     {
       "mesh": "forest:v0:leavesL1",
       "material": "MeshStandardNodeMaterial",
-      "materialUuid": "8d13b918-99eb-42c9-9fae-9bde9bbabd5a",
+      "materialUuid": "36f61241-c468-400a-ac4c-ec5dbf358d88",
       "slotOffset": 16,
-      "geometryUuid": "145d7c41-d12f-4ad0-afe0-4ca6d1817b9e",
+      "geometryUuid": "826a2529-fd8a-4459-b023-c588505de379",
       "attributes": [
         "position",
         "normal",
@@ -2537,9 +2537,9 @@
     {
       "mesh": "forest:v0:branchesL2",
       "material": "MeshStandardNodeMaterial",
-      "materialUuid": "b2cbbc5d-b3ed-4bdd-9003-f4080fe8fedd",
+      "materialUuid": "3038c4cd-827f-4e84-918c-fd20c6a1ae47",
       "slotOffset": 32,
-      "geometryUuid": "bf351e4e-bf8f-45e1-9bf2-aa81a98b36b5",
+      "geometryUuid": "f86281a7-eecd-475a-a53f-c54f35f4c50f",
       "attributes": [
         "position",
         "normal",
@@ -3009,9 +3009,9 @@
     {
       "mesh": "forest:v0:coarseLeavesL2",
       "material": "MeshStandardNodeMaterial",
-      "materialUuid": "49a1db20-dd40-41b0-bc6d-d94ebe3615a1",
+      "materialUuid": "cbfc0a11-3dfc-4bf4-8d6b-eb0327f3d563",
       "slotOffset": 32,
-      "geometryUuid": "d9979719-f7d7-45bf-93d3-c30ff0c73448",
+      "geometryUuid": "5ff4d474-e355-4acf-a00f-074b9d3f824b",
       "attributes": [
         "position",
         "normal",
@@ -3520,9 +3520,9 @@
     {
       "mesh": "forest:v0:barkShadow",
       "material": "MeshStandardNodeMaterial",
-      "materialUuid": "a159093f-151d-4814-b94a-165754587d69",
+      "materialUuid": "ae280537-7773-41e8-ab91-b7491cd2f7af",
       "slotOffset": 48,
-      "geometryUuid": "b9761723-aa7f-4aec-ba5f-d972d99e4ff3",
+      "geometryUuid": "1b4101c6-77f9-4289-b513-94f4ac4c462b",
       "attributes": [
         "position",
         "normal",
@@ -3992,9 +3992,9 @@
     {
       "mesh": "forest:v0:leafShadow",
       "material": "MeshStandardNodeMaterial",
-      "materialUuid": "ad736ce9-bb47-495d-9f8c-8fc4f5460de2",
+      "materialUuid": "3ac1f97b-15df-495e-ba8a-ba38ae13dcb1",
       "slotOffset": 48,
-      "geometryUuid": "464a872f-172a-47c9-88cb-18622129863b",
+      "geometryUuid": "b5b41b30-801f-4a20-a765-05a488934040",
       "attributes": [
         "position",
         "normal",
@@ -4508,8 +4508,8 @@
       "slotOffsetA": 0,
       "slotOffsetB": 64,
       "sameGeometry": false,
-      "geoA": "175d7c0f-52a2-4252-8e2d-48fa94d829e2",
-      "geoB": "4c23388e-547e-41f8-9419-bf9c3f431ac4"
+      "geoA": "9682e479-2bfc-4236-8b23-a1aaebf46dea",
+      "geoB": "b1b7bff6-ecf8-4504-b450-d7a86d21801a"
     },
     {
       "name": "leavesL0",
@@ -4517,8 +4517,8 @@
       "slotOffsetA": 0,
       "slotOffsetB": 64,
       "sameGeometry": false,
-      "geoA": "23899419-c931-4791-b896-78b4a8e86e71",
-      "geoB": "a177daaf-cd12-4f87-a5f8-be7b0508bbff"
+      "geoA": "aa50ecb5-65db-4fe9-8593-babfcd1e7530",
+      "geoB": "1969c035-8950-4e4e-aac3-9e8e741a48fa"
     },
     {
       "name": "branchesL2",
@@ -4526,8 +4526,8 @@
       "slotOffsetA": 32,
       "slotOffsetB": 96,
       "sameGeometry": false,
-      "geoA": "bf351e4e-bf8f-45e1-9bf2-aa81a98b36b5",
-      "geoB": "1844959b-ff91-4554-ac32-4299084b8149"
+      "geoA": "f86281a7-eecd-475a-a53f-c54f35f4c50f",
+      "geoB": "7c9c50fa-9610-4348-9a58-bbff6c85f901"
     }
   ]
 }

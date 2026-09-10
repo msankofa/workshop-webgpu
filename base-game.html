@@ -328,6 +328,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   treeVariantsPerSpecies: BASE_GAME_FOREST_DEFAULTS.treeVariantsPerSpecies,
   forestDrawMode: BASE_GAME_FOREST_DEFAULTS.forestDrawMode,
   forestNormalVarying: BASE_GAME_FOREST_DEFAULTS.forestNormalVarying,
+  forestStaticRefresh: BASE_GAME_FOREST_DEFAULTS.forestStaticRefresh,
   treeVerticalOffset: BASE_GAME_TREE_DEFAULTS.treeVerticalOffset,
   treeLeafSize: BASE_GAME_FOREST_DEFAULTS.treeLeafSize,
   treeTrunkHeight: BASE_GAME_FOREST_DEFAULTS.treeTrunkHeight,
@@ -775,6 +776,8 @@ if (new URLSearchParams(location.search).get('defaults') !== 'stock') {
 if (shippedState?.data?.settings) assignLoadedSettings(shippedState.data.settings);
 // ?leafnormal=fragment rebuilds the forest with the per-fragment instance normal (the form before b46d0fd) for a same-content A/B.
 if (new URLSearchParams(location.search).get('leafnormal') === 'fragment') settings.forestNormalVarying = false;
+// ?foreststatic=1 rebuilds the forest with its own refresh policy, for an A/B on the trace's refresh count.
+if (new URLSearchParams(location.search).get('foreststatic') === '1') settings.forestStaticRefresh = true;
 function applyArmPresetToSettings(name) {
   const preset = ARM_POSE_PRESETS[name] || ARM_POSE_PRESETS.relaxed;
   for (const [key, read] of Object.entries(ARM_SLIDER_KEYS)) settings[key] = read(preset);
@@ -3730,7 +3733,7 @@ const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'tree
   'treeTexMode', 'treeVariantsPerSpecies', 'treeLeafSize', 'treeTrunkHeight', 'treeTrunkWidth',
   'treeVerticalOffset', 'treeDrawRadius', 'drawDistance', 'treeLodR0', 'treeLodR1', 'treeLodR2',
   'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway', 'treeHizRecullFrames',
-  'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows', 'forestDrawMode', 'forestNormalVarying'];
+  'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows', 'forestDrawMode', 'forestNormalVarying', 'forestStaticRefresh'];
 const appliedForest = {};
 let forestLoading = false;
 function applyForestSettings() {
@@ -5235,6 +5238,8 @@ addSelect(treeLookSec, 'treeTexMode', 'Tree textures', ['authored', 'procedural'
 // Local quality, rebuilds the forest: the LOD2 branch rung as one merged pulled draw (prototype, unseen in a browser) or one draw per variant.
 addSelect(treeLookSec, 'forestDrawMode', 'LOD2 branch submission', ['variants', 'pulled', 'pulled-compact'], ['One draw per variant', 'One merged draw', 'One merged draw, compact']);
 addToggle(treeLookSec, 'forestNormalVarying', 'Instance normal as a varying');   // off = the per-fragment form before b46d0fd, for an A/B
+// Rebuilds the forest: its materials take over the per-object refresh decision from three.
+addToggle(treeLookSec, 'forestStaticRefresh', 'Skip refreshing unchanged tree meshes');
 addCommitRange(treeLookSec, 'treeVariantsPerSpecies', 'Variants per species', 1, 8, 1,
   value => {
     const species = selectedTreeSpeciesIds(settings.treeSpeciesSelection).length;

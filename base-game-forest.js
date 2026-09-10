@@ -37,6 +37,9 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
   forestDrawMode: 'variants',
   // false restores the per-fragment instance normal (b46d0fd's before form) for a same-content A/B.
   forestNormalVarying: true,
+  // Experiment, off by default: the forest supplies its own node-material refresh policy so a mesh
+  // whose object group did not change is skipped. scratchpads/fps-churn/static-skip/03-design.md.
+  forestStaticRefresh: false,
   treeLeafSway: 1,
   treeHizRecullFrames: 4,      // frames between Hi-Z re-tests while the camera is under the forest's move/turn gate
   treeBark: true, treeLeaves: true, treeBarkShadows: true, treeLeafShadows: true,
@@ -60,7 +63,7 @@ export const FOREST_DRAW_MODES = Object.freeze(['variants', 'pulled', 'pulled-co
 // Palette-shaping settings: changing one rebakes the geometry and rebuilds the instance buffers,
 // so they are commit-on-release in the panel and deferred to the next update() here.
 const PALETTE_KEYS = Object.freeze([
-  'forestDrawMode', 'forestNormalVarying',
+  'forestDrawMode', 'forestNormalVarying', 'forestStaticRefresh',
   'treeTexMode', 'treeSpecies', 'treeSpeciesSelection', 'treeDiversity', 'treeGeneralization', 'treeVariantsPerSpecies', 'treeCapPerVariant',
   'treeLeafCount', 'treeLeafSize', 'treeLeafStart', 'treeLeafSpread', 'treeLeafShadowPct',
   'treeCoarseLeafRatio', 'treeCoarseLeafSizeMult', 'treeSeedOffset',
@@ -427,6 +430,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
           progressive: true,
           drawMode: FOREST_DRAW_MODES.includes(cfg.forestDrawMode) ? cfg.forestDrawMode : 'variants',
           instanceNormalVarying: cfg.forestNormalVarying !== false,
+          staticRefresh: cfg.forestStaticRefresh === true,
           shadowLayer,
           hiz,
         });
@@ -634,6 +638,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     stats.lod0 = f.lod0Instances; stats.lod1 = f.lod1Instances; stats.lod2 = f.lod2Instances;
     stats.rejectedCone = f.rejectedFrustum; stats.rejectedFar = f.rejectedFar;
     stats.cullEstimates = f.cullEstimates;
+    stats.staticRefresh = f.staticRefresh;
     const on = f.lodEnabled;
     stats.triangles = Math.round(
       (on[0] ? f.lod0Instances * rungTris[0] : 0)

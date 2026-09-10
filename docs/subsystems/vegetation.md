@@ -450,6 +450,40 @@ donor's behaviour so `environment-viewer.html` is untouched:
   the source, draw, count, atomic and 8-per-variant indirect buffers — about 2 MB at 12 variants,
   on a slider. Now freed through the same guarded `renderer._attributes.delete` path
   `grass-compute.js` uses. This fixes `environment-viewer.html`'s `rebuildForestGPU` too.
+- **`staticRefresh` — the forest's own per-object refresh policy (off by default).** Every forest
+  material is a `ForestNodeMaterial` (a `MeshStandardNodeMaterial` subclass) that overrides
+  `setupObserver(builder)`. Three's `NodeMaterialObserver` short-circuits `needsRefresh` to `true`
+  for any material carrying a node (`three.webgpu.js:698`), so all 144 forest meshes re-run
+  `_geometries`/`_nodes`/`_bindings` `updateForRender` every pass even though their object group
+  never changed. With the option on, the policy answers instead:
+  - it delegates to Three's observer whenever the flag is off, the mesh carries no
+    `userData.forestEpoch` (the merged pulled mesh and the billboards never do, so those modes stay
+    outside the opt-in), the graph is not allowlisted, or the base reports `hasAnimation` /
+    `needsVelocity`;
+  - **the allowlist** (`forestGraphVerdict`) refuses a render object whose built graph has any
+    `updateBefore`/`updateAfter` node, or any OBJECT-typed update node outside
+    `UniformGroupNode('object')`, `UserDataNode.slotOffset`, `ModelNode:worldMatrix`, three's own
+    `modelNormalMatrix` singleton (by identity — it reads `object.matrixWorld` alone, so it is
+    camera-independent) and `MaterialReferenceNode`. A host's `addEmissive` that adds a per-object
+    uniform is refused, and the reason is counted in `stats.staticRefresh.refused`;
+  - one render object per material per render still refreshes, so that material's shared `render`
+    group (camera matrices, lights) is written — the same rule as `three.webgpu.js:703`;
+  - every refresh it returns `true` for records the render object's epoch, `material.version`,
+    geometry id and world matrix, and marks it **pending**. The clean mark is committed only from a
+    hook on `renderer._nodes.updateAfter`, which the renderer calls after the four updates and the
+    draw (`three.webgpu.js:61351`), so a refresh that threw or whose pipeline was not ready is
+    retried rather than skipped. The hook is a runtime wrap installed on the renderer, removed in
+    `dispose()`; there is no vendor change.
+  - `invalidate()` bumps the epoch at `setTreeScale`, `setLeafScale`, `setLeafSway` (all guarded on
+    a value change — `base-game-forest.js` calls `setLeafSway` every `syncRenderState`),
+    `installVariant` (that variant's meshes only), `applyTextureSet`, the double-sided toggles and
+    the arena uploads. A render-origin rebase deliberately does **not**: it only re-bakes the CPU
+    source records, which the cull kernels read through the ungated `Bindings.updateForCompute`,
+    and it moves no forest mesh. The geometry-id and world-matrix compares are the backstop if that
+    ever stops being true.
+  `base-game-forest.js` passes it as `forestStaticRefresh` (a palette key, so it rebuilds);
+  `base-game.html` has the panel toggle in Tree look and a `?foreststatic=1` override.
+  Covered by `test-forest-static-observer.mjs` and `test-forest-object-group.mjs`.
 - `leafSway` — an optional canopy sway ported from `bot-trees.js`. The graph is only built when a
   host passes the option, so a host that does not keeps its time-independent material.
 
@@ -616,15 +650,19 @@ export function createForestPalette({ createTree, params, masterSeed, variantsPe
 
 // forest-gpu.js
 export function createForestGPU(opts: { renderer, camera, palette, heightAt?, treeBaseOffset?, capPerVariant?,
-  lodR0?, lodR1?, lodR2?, maxDrawRadius?, coneMargin?, addEmissive? }):
+  lodR0?, lodR1?, lodR2?, maxDrawRadius?, coneMargin?, addEmissive?, staticRefresh? }):
   { meshes, applyTextureSet(fn), materials, billboardMaterials, applyBillboardMap(g, tex), setBillboardBrightness(val),
+    invalidateStaticRefresh(list?), staticRefreshStats,
     setChunk(key, records), setChunks(map), clearChunk(key), setLodDistances(r0, r1, r2),
     setMaxDrawRadius(r), setConeEnabled(v), setConeMargin(v), setRecullThresholds(moveDist, headingDeg),
     update(): Promise<void>, stats, dispose() }
   // stats: { draws, visibleVariants, instances, variants, reculls, skippedReculls, dirty,
   //   cullDispatchInstances, rejectedFrustum, rejectedFar, lod0Instances, lod1Instances,
-  //   lod2Instances, billboardInstances } -- the rejected*/lod*/billboard fields are lazy CPU
-  //   estimates (computeCullEstimate()), not a GPU readback; see the architecture note below.
+  //   lod2Instances, billboardInstances, staticRefresh } -- the rejected*/lod*/billboard fields are
+  //   lazy CPU estimates (computeCullEstimate()), not a GPU readback; see the architecture note below.
+  // staticRefresh: { enabled, skipped, skippedThisRender, skippedLastRender, refreshed, refused, epoch }
+export const FOREST_COMMIT: symbol                       // the observer method the commit hook calls
+export function forestGraphVerdict(nodeBuilderState): { ok, reason }   // the object-group allowlist
   // Also registers perfAB controls from inside createForestGPU itself (no viewer wiring needed):
   // 'Forest frustum cull' toggle, 'Forest cone margin' / 'Tree max draw radius' /
   // 'Recull cell size' / 'Recull angle deg' sliders, 'Tree leaves double-sided' toggle (default

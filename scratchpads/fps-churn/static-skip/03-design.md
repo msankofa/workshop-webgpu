@@ -1,4 +1,4 @@
-# 03 — The smallest provably-correct change
+# 03 — A proposed forest refresh policy
 
 Labels as in 01/02. This is a design document; no runtime file has been edited.
 
@@ -12,8 +12,8 @@ thing the renderer ever calls on the object it returns is `needsRefresh( renderO
 (**[source]** `:29786-29790` → `:55129-55136`; the only other references to `.observer` in the whole
 build are the three that store and pass it: `:21260`, `:48444`, `:54650`). So the forest can supply
 its own refresh policy for its own nine materials by subclassing `MeshStandardNodeMaterial` and
-overriding one method. Nothing outside `forest-gpu.js` changes, the vendored file stays a pristine
-third-party artifact, and every other node material in the page keeps Three's exact behaviour.
+overriding one method. Nothing outside `forest-gpu.js` changes, the vendored file needs
+no additional vendor change, and every other node material in the page keeps Three's exact behaviour.
 
 ### Why not the others
 
