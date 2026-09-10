@@ -40,9 +40,8 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
   // Space the instance normal reaches lighting in. 'view' is correct (three consumes normalNode as
   // view space); 'world' is the pre-fix form, where the lit side of a tree follows the camera yaw.
   forestNormalSpace: 'view',
-  // Experiment, off by default: the forest supplies its own node-material refresh policy so a mesh
-  // whose object group did not change is skipped. scratchpads/fps-churn/static-skip/03-design.md.
-  forestStaticRefresh: false,
+  // The forest supplies its own node-material refresh policy so a mesh whose object group did not change is skipped (default since 2026-09-11; scratchpads/fps-churn/static-skip/03-design.md).
+  forestStaticRefresh: true,
   treeLeafSway: 1,
   treeHizRecullFrames: 4,      // frames between Hi-Z re-tests while the camera is under the forest's move/turn gate
   treeBark: true, treeLeaves: true, treeBarkShadows: true, treeLeafShadows: true,

@@ -780,8 +780,8 @@ if (shippedState?.data?.settings) assignLoadedSettings(shippedState.data.setting
 if (new URLSearchParams(location.search).get('leafnormal') === 'fragment') settings.forestNormalVarying = false;
 // ?leafnormal=world rebuilds the forest with the object-space instance normal (the pre-fix form), where the lit side follows the camera.
 if (new URLSearchParams(location.search).get('leafnormal') === 'world') settings.forestNormalSpace = 'world';
-// ?foreststatic=1 rebuilds the forest with its own refresh policy, for an A/B on the trace's refresh count.
-if (new URLSearchParams(location.search).get('foreststatic') === '1') settings.forestStaticRefresh = true;
+// ?foreststatic=0 rebuilds the forest without its own refresh policy (the default since 2026-09-11), for an A/B on the trace's refresh count.
+if (new URLSearchParams(location.search).get('foreststatic') === '0') settings.forestStaticRefresh = false;
 function applyArmPresetToSettings(name) {
   const preset = ARM_POSE_PRESETS[name] || ARM_POSE_PRESETS.relaxed;
   for (const [key, read] of Object.entries(ARM_SLIDER_KEYS)) settings[key] = read(preset);

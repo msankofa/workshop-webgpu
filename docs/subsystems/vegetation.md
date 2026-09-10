@@ -494,8 +494,11 @@ donor's behaviour so `environment-viewer.html` is untouched:
     source records, which the cull kernels read through the ungated `Bindings.updateForCompute`,
     and it moves no forest mesh. The geometry-id and world-matrix compares are the backstop if that
     ever stops being true.
-  `base-game-forest.js` passes it as `forestStaticRefresh` (a palette key, so it rebuilds);
-  `base-game.html` has the panel toggle in Tree look and a `?foreststatic=1` override.
+  `base-game-forest.js` passes it as `forestStaticRefresh` (a palette key, so it rebuilds), on by
+  default since 2026-09-11 after the user's walks (trace: 114 of 214 main-scene objects refreshed
+  against 214 of 214, bindings and node-update stages halved); `base-game.html` has the panel
+  toggle in Tree look and a `?foreststatic=0` override. The sun's shadow pass is not covered: Three
+  draws it under its own override depth material, so this observer is never consulted there.
   Covered by `test-forest-static-observer.mjs` and `test-forest-object-group.mjs`.
 - `leafSway` — an optional canopy sway ported from `bot-trees.js`. The graph is only built when a
   host passes the option, so a host that does not keeps its time-independent material.

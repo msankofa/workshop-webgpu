@@ -40,7 +40,7 @@ import {
   modelNormalMatrix, transformNormalToView,
 } from 'three/tsl';
 
-// ---- static refresh policy (opts.staticRefresh, off by default) ----------------------------
+// ---- static refresh policy (opts.staticRefresh; Base Game passes true by default) ----------------------------
 // A forest mesh's object-group state only changes at events this file raises, so Three's per-object refresh is redundant between them. NodeMaterial.setupObserver is the seam: the renderer only ever calls needsRefresh(renderObject, nodeFrame) on what it returns. Design and evidence: scratchpads/fps-churn/static-skip/03-design.md.
 export const FOREST_COMMIT = Symbol.for('forest-gpu.staticRefresh.commit');
 const forestPolicyContext = new WeakMap();   // material -> the forest's shared policy context
