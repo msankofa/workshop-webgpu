@@ -356,7 +356,9 @@
       "at": "2026-09-11T00:05Z",
       "title": "Forest refresh policy on by default",
       "body": "At the user’s word after the 23:43 and 23:44 walks: forestStaticRefresh defaults to true in BASE_GAME_FOREST_DEFAULTS; the URL override flips to ?foreststatic=0; the Tree look toggle is unchanged. The shipped default-state file carries no entry for the key, so the code default applies on load. Not covered by it: the sun’s shadow pass (override depth material). Astra told.",
-      "commits": []
+      "commits": [
+        "f5d93ea"
+      ]
     }
   ]
 }
