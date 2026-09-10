@@ -3747,6 +3747,26 @@ ruined, weathering block; lattice bars are light steel, soil dark, water a dark 
 sheet. `materials` is exposed for the page's rain decorator and the root is named
 `spawn-building` for the visor's heat sweep.
 
+**When it is seated** (2026-09-10, `base-game-spawn-seat.js`). The seat depends on four inputs:
+the world mode, the terrain source object, whether the ground is the density surface (the
+adapter's effective `terrain.volumetric`, false on a source without density whatever the setting
+says) and `terrain.seaLevel`. `spawnBuildingGround()` returns that record with the samplers, and
+`createSpawnSeatSync` compares it with the record last applied, once per `updateWorld`, at the
+end, after `terrain.setVolumetric` and the water settings have run. Only a changed record
+rebuilds; the record is published only after the rebuild succeeds, a throw is reported once and
+stays due. The project apply and the room adopt path no longer reseat by hand after `setSource`;
+their own `updateWorld(0)` does it, so the datum is sampled from the surface that is live at that
+moment. Before the fix the building was seated on the heightfield and the density surface then
+warped up over its floor, which is why a volumetric load spawned you under the ground. A reseat
+also resets the scattered structures and re-publishes the planter flora structure. Solo, a
+player standing on a floor slab within `FLOOR_TOLERANCE` (0.5 m) of the old datum is put on the
+new datum at the same X/Z (`playerAfterReseat`), or at the safe spawn when an upward ray finds no
+headroom there; a player over a slab but buried by the new floor goes to the safe spawn; roofs,
+courts, the air and vehicle or drone control are left alone. Online the server owns the
+respawn, so the hooks do nothing. `test-base-game-spawn-seat.mjs` drives the record through the
+page's order with a fake terrain and a rebuild spy, and checks page/server datum parity through
+the shared model. Unseen in a browser.
+
 **The spawn-area world** (phase 5, 2026-09-03). The world kind that used to be the bare
 traversal lab (`kind: 'traversalLab'`, the page's default `worldMode`) is now the building on a
 flat concrete slab at the origin, with the lab's diagnostic geometry kept in the same world 200 m
