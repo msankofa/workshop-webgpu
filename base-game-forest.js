@@ -35,6 +35,8 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
   // the whole rung is a single draw -- slots vs a live-count prefix mapping. Both are prototypes,
   // unseen in a browser: docs/superpowers/plans/2026-09-07-forest-consolidation-design.md.
   forestDrawMode: 'variants',
+  // false restores the per-fragment instance normal (b46d0fd's before form) for a same-content A/B.
+  forestNormalVarying: true,
   treeLeafSway: 1,
   treeHizRecullFrames: 4,      // frames between Hi-Z re-tests while the camera is under the forest's move/turn gate
   treeBark: true, treeLeaves: true, treeBarkShadows: true, treeLeafShadows: true,
@@ -58,7 +60,7 @@ export const FOREST_DRAW_MODES = Object.freeze(['variants', 'pulled', 'pulled-co
 // Palette-shaping settings: changing one rebakes the geometry and rebuilds the instance buffers,
 // so they are commit-on-release in the panel and deferred to the next update() here.
 const PALETTE_KEYS = Object.freeze([
-  'forestDrawMode',
+  'forestDrawMode', 'forestNormalVarying',
   'treeTexMode', 'treeSpecies', 'treeSpeciesSelection', 'treeDiversity', 'treeGeneralization', 'treeVariantsPerSpecies', 'treeCapPerVariant',
   'treeLeafCount', 'treeLeafSize', 'treeLeafStart', 'treeLeafSpread', 'treeLeafShadowPct',
   'treeCoarseLeafRatio', 'treeCoarseLeafSizeMult', 'treeSeedOffset',
@@ -188,6 +190,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     variants: 0, readyVariants: 0, visibleVariants: 0, paletteMs: 0, paletteWorker: false,
     paletteLoadMs: 0, paletteBakeMs: 0, paletteSource: 'none', paletteKey: null, paletteStored: null, compileMs: 0, firstCompileMs: null, compiledMeshes: 0, computeCompileMs: 0, updateMs: 0,
     lod0: 0, lod1: 0, lod2: 0, rejectedCone: 0, rejectedFar: 0,
+    normalVarying: true,   // which leaf-normal form the built forest uses
     reculls: 0, skippedReculls: 0, cullEstimates: 0,
     // Placement, mirrored up so one readout answers "what did the density slider actually buy".
     trees: 0, requestedTrees: 0, coverThinning: 0, resident: 0, deferred: 0, placeMs: 0,
@@ -423,6 +426,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
           billboards: false,
           progressive: true,
           drawMode: FOREST_DRAW_MODES.includes(cfg.forestDrawMode) ? cfg.forestDrawMode : 'variants',
+          instanceNormalVarying: cfg.forestNormalVarying !== false,
           shadowLayer,
           hiz,
         });
@@ -613,7 +617,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     stats.resident = t.resident; stats.deferred = t.deferred; stats.placeMs = t.placeMs;
     if (!forestGPU) return;
     const f = forestGPU.summary;
-    stats.draws = f.draws; stats.shadowDraws = f.shadowDraws;
+    stats.draws = f.draws; stats.shadowDraws = f.shadowDraws; stats.normalVarying = cfg.forestNormalVarying !== false;
     stats.instances = f.instances; stats.variants = f.variants;
     stats.readyVariants = f.readyVariants;
     stats.visibleVariants = f.visibleVariants;

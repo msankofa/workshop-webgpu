@@ -327,6 +327,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   treeTexMode: BASE_GAME_FOREST_DEFAULTS.treeTexMode,
   treeVariantsPerSpecies: BASE_GAME_FOREST_DEFAULTS.treeVariantsPerSpecies,
   forestDrawMode: BASE_GAME_FOREST_DEFAULTS.forestDrawMode,
+  forestNormalVarying: BASE_GAME_FOREST_DEFAULTS.forestNormalVarying,
   treeVerticalOffset: BASE_GAME_TREE_DEFAULTS.treeVerticalOffset,
   treeLeafSize: BASE_GAME_FOREST_DEFAULTS.treeLeafSize,
   treeTrunkHeight: BASE_GAME_FOREST_DEFAULTS.treeTrunkHeight,
@@ -772,6 +773,8 @@ if (new URLSearchParams(location.search).get('defaults') !== 'stock') {
   } catch { /* no file, no server: the built-in defaults stand */ }
 }
 if (shippedState?.data?.settings) assignLoadedSettings(shippedState.data.settings);
+// ?leafnormal=fragment rebuilds the forest with the per-fragment instance normal (the form before b46d0fd) for a same-content A/B.
+if (new URLSearchParams(location.search).get('leafnormal') === 'fragment') settings.forestNormalVarying = false;
 function applyArmPresetToSettings(name) {
   const preset = ARM_POSE_PRESETS[name] || ARM_POSE_PRESETS.relaxed;
   for (const [key, read] of Object.entries(ARM_SLIDER_KEYS)) settings[key] = read(preset);
@@ -3727,7 +3730,7 @@ const FOREST_APPLY_KEYS = ['treesEnabled', 'worldMode', 'treesPerHectare', 'tree
   'treeTexMode', 'treeVariantsPerSpecies', 'treeLeafSize', 'treeTrunkHeight', 'treeTrunkWidth',
   'treeVerticalOffset', 'treeDrawRadius', 'drawDistance', 'treeLodR0', 'treeLodR1', 'treeLodR2',
   'treeLod0', 'treeLod1', 'treeLod2', 'treeCapPerVariant', 'treeLeafSway', 'treeHizRecullFrames',
-  'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows', 'forestDrawMode'];
+  'treeBark', 'treeLeaves', 'treeBarkShadows', 'treeLeafShadows', 'forestDrawMode', 'forestNormalVarying'];
 const appliedForest = {};
 let forestLoading = false;
 function applyForestSettings() {
