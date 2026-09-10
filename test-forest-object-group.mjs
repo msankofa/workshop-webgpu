@@ -10,7 +10,7 @@
 // node test-forest-object-group.mjs
 
 import * as THREE from 'three/webgpu';
-import { context, uniform, vec3 } from 'three/tsl';
+import { context, uniform, vec3, renderGroup } from 'three/tsl';
 import { createTree } from './trees.js';
 import { createForestPalette } from './forest-palette.js';
 import { createForestGPU, forestGraphVerdict } from './forest-gpu.js';
@@ -173,6 +173,26 @@ section('a graph extension that adds a per-object uniform is refused');
   check('the allowlist refuses a graph with an injected onObjectUpdate uniform', verdict.ok === false, verdict.reason ?? 'accepted');
   check('and says which node type refused it', /UniformNode/.test(verdict.reason ?? ''), verdict.reason ?? '');
   injected.dispose();
+}
+
+section('a render-updated uniform: refused in the object group, allowed in a shared group');
+{
+  // Frame/render callbacks are not object-typed, so the allowlist above never sees them. What matters is the group: a shared group is written by the one refresh per material per render; the object group is per mesh.
+  const inObject = makeBaseGameForest({
+    addEmissive: () => uniform(vec3(0, 0, 0)).onRenderUpdate(({ camera }, self) => { self.value.setScalar(camera.position.y); return self.value; }),
+  });
+  inObject.applyTextureSet((b, l) => bindTreeMaterials(b, l, null));
+  const v1 = forestGraphVerdict(stateOf(build(inObject.variantMeshes(0).find(m => m.name === 'forest:v0:branchesL0'))));
+  check('an onRenderUpdate uniform in the object group refuses', v1.ok === false, v1.reason ?? 'accepted');
+  check('and the reason names the group', /object group/.test(v1.reason ?? ''), v1.reason ?? '');
+  inObject.dispose();
+  const inShared = makeBaseGameForest({
+    addEmissive: () => uniform(vec3(0, 0, 0)).setGroup(renderGroup).onRenderUpdate(({ camera }, self) => { self.value.setScalar(camera.position.y); return self.value; }),
+  });
+  inShared.applyTextureSet((b, l) => bindTreeMaterials(b, l, null));
+  const v2 = forestGraphVerdict(stateOf(build(inShared.variantMeshes(0).find(m => m.name === 'forest:v0:branchesL0'))));
+  check('the same uniform in the shared render group is allowed', v2.ok === true, v2.reason ?? '');
+  inShared.dispose();
 }
 
 section('a graph with an updateBefore or updateAfter node is refused');

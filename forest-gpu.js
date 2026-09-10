@@ -45,6 +45,33 @@ import {
 export const FOREST_COMMIT = Symbol.for('forest-gpu.staticRefresh.commit');
 const forestPolicyContext = new WeakMap();   // material -> the forest's shared policy context
 
+// One patch of renderer._nodes.updateAfter per node manager, shared by every forest on that renderer and released by the last owner; a wrapper someone installed after ours is left in place.
+const commitHooks = new WeakMap();   // nodes -> { original, patched, owners }
+function acquireCommitHook(nodes) {
+  let entry = commitHooks.get(nodes);
+  if (!entry) {
+    const original = nodes.updateAfter;
+    const patched = function (renderObject) {
+      original.call(this, renderObject);
+      renderObject?.getMonitor?.()?.[FOREST_COMMIT]?.(renderObject);
+    };
+    nodes.updateAfter = patched;
+    entry = { original, patched, owners: 0 };
+    commitHooks.set(nodes, entry);
+  }
+  entry.owners++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (--entry.owners > 0) return;
+    if (nodes.updateAfter === entry.patched) nodes.updateAfter = entry.original;
+    commitHooks.delete(nodes);
+  };
+}
+// How many live forests hold the commit hook on this node manager (tests and stats).
+export function commitHookOwners(nodes) { return commitHooks.get(nodes)?.owners ?? 0; }
+
 // The object-typed update nodes the policy knows are immutable between invalidate() calls. Returns null when allowed, else the node type that refused the skip.
 function classifyObjectUpdateNode(node) {
   const type = node?.constructor?.type ?? node?.constructor?.name ?? 'unknown';
@@ -57,13 +84,18 @@ function classifyObjectUpdateNode(node) {
   return type;
 }
 
-// Whether one built graph may take the skip. Anything the allowlist does not know -- an onObjectUpdate/onRenderUpdate uniform a caller's addEmissive added, a camera-dependent ModelNode scope, any updateBefore/updateAfter node -- refuses it.
+// Whether one built graph may take the skip. Anything the allowlist does not know -- an onObjectUpdate uniform a caller's addEmissive added, a camera-dependent ModelNode scope, an onRenderUpdate/onFrameUpdate uniform left in the object group, any updateBefore/updateAfter node -- refuses it.
 export function forestGraphVerdict(state) {
   if (!state) return { ok: false, reason: 'no node builder state' };
   if (state.updateBeforeNodes?.length) return { ok: false, reason: 'updateBefore nodes in the graph' };
   if (state.updateAfterNodes?.length) return { ok: false, reason: 'updateAfter nodes in the graph' };
   for (const node of state.updateNodes ?? []) {
-    if ((node.getUpdateType?.() ?? node.updateType) !== 'object') continue;
+    const updateType = node.getUpdateType?.() ?? node.updateType;
+    if (updateType !== 'object') {
+      // A frame- or render-updated uniform in a shared group is written by the one refresh per material per render; the same uniform in the unshared object group would reach only that first mesh, so it refuses.
+      if (node.groupNode && node.groupNode.shared === false) return { ok: false, reason: `a ${updateType}-updated uniform lives in the object group` };
+      continue;
+    }
     const refused = classifyObjectUpdateNode(node);
     if (refused) return { ok: false, reason: `${refused} is not on the object-group allowlist` };
   }
@@ -1026,23 +1058,7 @@ export function createForestGPU(opts) {
   }
   // The success signal for the policy's clean mark. Nodes.updateAfter runs only after the renderer performed the four gated updates AND the draw (three.webgpu.js:61351), so a refresh that threw or whose pipeline was not ready never commits, and the next call refreshes again. A runtime wrap, not a vendor edit -- render-trace.js wraps renderer._nodes.needsRefresh the same way.
   let removeCommitHook = () => {};
-  function installCommitHook() {
-    const nodes = renderer?._nodes;
-    if (!STATIC_REFRESH || !nodes || typeof nodes.updateAfter !== 'function' || nodes.__forestStaticCommit) return;
-    const original = nodes.updateAfter;
-    const patched = function (renderObject) {
-      original.call(this, renderObject);
-      renderObject?.getMonitor?.()?.[FOREST_COMMIT]?.(renderObject);
-    };
-    nodes.updateAfter = patched;
-    nodes.__forestStaticCommit = true;
-    removeCommitHook = () => {
-      if (nodes.updateAfter === patched) nodes.updateAfter = original;
-      nodes.__forestStaticCommit = false;
-      removeCommitHook = () => {};
-    };
-  }
-  installCommitHook();
+  if (STATIC_REFRESH && renderer?._nodes && typeof renderer._nodes.updateAfter === 'function') removeCommitHook = acquireCommitHook(renderer._nodes);
   function removePulledListener() {
     if (pulledDeviceListener && pulledDevice?.removeEventListener) {
       pulledDevice.removeEventListener('uncapturederror', pulledDeviceListener);

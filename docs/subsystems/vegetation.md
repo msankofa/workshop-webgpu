@@ -465,15 +465,21 @@ donor's behaviour so `environment-viewer.html` is untouched:
     `UniformGroupNode('object')`, `UserDataNode.slotOffset`, `ModelNode:worldMatrix`, three's own
     `modelNormalMatrix` singleton (by identity — it reads `object.matrixWorld` alone, so it is
     camera-independent) and `MaterialReferenceNode`. A host's `addEmissive` that adds a per-object
-    uniform is refused, and the reason is counted in `stats.staticRefresh.refused`;
+    uniform is refused, and the reason is counted in `stats.staticRefresh.refused`. Frame- and
+    render-updated nodes are not object-typed and are not inspected by that list: one in a shared
+    group is written by the one refresh per material per render below, so it is allowed; one left
+    in the unshared object group would reach only that first mesh, so it is refused too;
   - one render object per material per render still refreshes, so that material's shared `render`
     group (camera matrices, lights) is written — the same rule as `three.webgpu.js:703`;
   - every refresh it returns `true` for records the render object's epoch, `material.version`,
     geometry id and world matrix, and marks it **pending**. The clean mark is committed only from a
     hook on `renderer._nodes.updateAfter`, which the renderer calls after the four updates and the
     draw (`three.webgpu.js:61351`), so a refresh that threw or whose pipeline was not ready is
-    retried rather than skipped. The hook is a runtime wrap installed on the renderer, removed in
-    `dispose()`; there is no vendor change.
+    retried rather than skipped. The hook is a runtime wrap installed on the renderer, one per
+    node manager and shared by every forest built on that renderer (a module `WeakMap` keyed by
+    `renderer._nodes` holds the original, the patch and an owner count; `commitHookOwners(nodes)`
+    reads it). Each forest's `dispose()` releases once; the last owner restores the original, and a
+    wrapper someone installed after ours is left in place. There is no vendor change.
   - `invalidate()` bumps the epoch at `setTreeScale`, `setLeafScale`, `setLeafSway` (all guarded on
     a value change — `base-game-forest.js` calls `setLeafSway` every `syncRenderState`),
     `installVariant` (that variant's meshes only), `applyTextureSet`, the double-sided toggles and

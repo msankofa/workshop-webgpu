@@ -190,10 +190,14 @@ whole forest every frame. `setLeafScale` had no guard either.
 
 In the allowlist the distinction is explicit: `MaterialReferenceNode` (the known material
 scalars/colours — roughness, metalness, opacity, colour, emissive, emissiveIntensity) is **allowed**
-and covered by the `material.version` compare; an unsupported custom callback (any
-`onObjectUpdate`/`onRenderUpdate`/`onFrameUpdate` uniform a host's graph extension added, which
-appears as an object-typed `UniformNode` that is not `modelNormalMatrix`) is **refused** and the
-graph falls back to Three.
+and covered by the `material.version` compare; an `onObjectUpdate` uniform a host's graph
+extension added (an object-typed `UniformNode` that is not `modelNormalMatrix`) is **refused** and
+the graph falls back to Three. `onRenderUpdate`/`onFrameUpdate` uniforms are a separate case, added
+2026-09-10 after Astra's review: they are not object-typed, so the allowlist never sees them. One in
+a shared group (`renderGroup`/`frameGroup`) is written by the one refresh per material per render
+and is allowed; one left in the unshared object group would be written into only that first mesh's
+buffer, so the verdict refuses it by its `groupNode.shared === false`. Tested both ways in
+`test-forest-object-group.mjs`.
 
 **Tests** — *"the setters that write a shared uniform value, guarded on change"* calls the real
 setters: a new value on any of the three refreshes both meshes; the same value again refreshes only
@@ -250,3 +254,17 @@ None outright. Two things are narrower than they sound:
   change, but it is a dependency on a private name; if a Three upgrade renames it, the hook silently
   does not install and every marked render object stays pending — i.e. it degrades to Three's own
   refresh count, not to a stale picture.
+
+
+## Addendum 2026-09-10: shared-renderer ownership of the commit hook
+
+Astra's review found that the boolean `__forestStaticCommit` mark let a second forest on the same
+renderer install nothing, so disposing the first forest restored the original `updateAfter` while
+the second was live and its marks stayed pending (its skip silently disappeared). Replaced by a
+module-level `WeakMap` keyed by `renderer._nodes` holding `{ original, patched, owners }`:
+`acquireCommitHook(nodes)` wraps once and counts owners, returns an idempotent release; the last
+release restores the original only if `nodes.updateAfter` is still our patch, so a later wrapper is
+left in place. `commitHookOwners(nodes)` is exported for tests. `test-forest-static-observer.mjs`
+now covers two forests sharing one renderer with disposal in both orders, an overlapping rebuild
+(new forest built before the old one is disposed), a later wrapper surviving the last release and a
+fresh forest wrapping it, and a second `dispose()` being a no-op: 72 checks.
