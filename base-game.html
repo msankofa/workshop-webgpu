@@ -5234,6 +5234,7 @@ addSelect(treeLookSec, 'treeTexMode', 'Tree textures', ['authored', 'procedural'
 // material count both. Rebuild-class: it rebakes the palette.
 // Local quality, rebuilds the forest: the LOD2 branch rung as one merged pulled draw (prototype, unseen in a browser) or one draw per variant.
 addSelect(treeLookSec, 'forestDrawMode', 'LOD2 branch submission', ['variants', 'pulled', 'pulled-compact'], ['One draw per variant', 'One merged draw', 'One merged draw, compact']);
+addToggle(treeLookSec, 'forestNormalVarying', 'Instance normal as a varying');   // off = the per-fragment form before b46d0fd, for an A/B
 addCommitRange(treeLookSec, 'treeVariantsPerSpecies', 'Variants per species', 1, 8, 1,
   value => {
     const species = selectedTreeSpeciesIds(settings.treeSpeciesSelection).length;
