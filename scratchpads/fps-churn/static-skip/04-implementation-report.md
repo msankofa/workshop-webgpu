@@ -291,3 +291,27 @@ mesh binds. `test-forest-object-group.mjs` now builds a role under a shadow-cast
 allows it (69 checks). The two walks are void as a measurement of the policy: with and without the
 flag every object refreshed (217/217), and the frame, bindings and nodes figures of the five
 captures are the same within their spread. The walk is asked for again.
+
+
+## Addendum 2026-09-10, 22:20: the second walk refused every graph too (authored textures)
+
+The re-walk at 22:06 read `skipped: 0`, `refused: { "TextureNode is not on the object-group
+allowlist": 6 }`. The page binds authored bark, bark-normal and leaf maps; a material map's
+`TextureNode` is object-typed when it carries a uv-matrix (or flipY) uniform
+(`three.webgpu.js:12467`), and that uniform is in each mesh's own UBO. The headless harness bound
+no textures (`bindTreeMaterials(b, l, null)`), so it never saw one. Same failure shape as the
+shadow node: the test scene did not reproduce the page.
+
+Fix: `classifyObjectUpdateNode` allows a `TextureNode` over a real texture, the verdict returns
+the distinct textures it saw, and every mark records each texture's `matrix` elements and
+`version`; a mismatch refreshes the mesh (`texture.repeat` + `updateMatrix()`, or
+`needsUpdate = true`, both tested on the second mesh). A mark made before the verdict existed
+(first initialisation) has no texture record and refreshes once more. The object-group test now
+builds bark and leaf roles under a shadow-casting sun, with authored textures and `FogExp2`
+(Three's fog references are `setGroup(renderGroup)`, `three.webgpu.js:54912`), and asserts the
+object-typed `TextureNode` is present and allowed. Suites: object-group 75, static-observer 77,
+leaf-shaders 78, forest-cull 48, base-game-forest 123, page syntax clean.
+
+What the page's graph has that the harness now reproduces: shadow-casting sun, authored maps,
+FogExp2. What it may still have that the harness does not: nothing known; the next walk's
+`refused` map is the check.

@@ -193,6 +193,29 @@ section('a material value change with an unchanged shader key refreshes the SECO
   check('and settles back to one refresh afterwards', JSON.stringify(render()) === '["v0"]');
 }
 
+section('an authored texture: its uv transform and image changes refresh the second mesh too');
+{
+  // Neither texture.matrix nor texture.version bumps material.version, and the map's uv-matrix uniform lives in each mesh's own UBO.
+  const rT = makeRenderer();
+  const set = { mode: 'authored', barkMap: new THREE.Texture(), barkNormalMap: new THREE.Texture(), leafMap: new THREE.Texture(), leafAlphaTest: 0.5 };
+  const fT = makeForest(rT);
+  fT.applyTextureSet((b, l) => bindTreeMaterials(b, l, set));
+  const m0 = fT.variantMeshes(0).find(m => m.name === 'forest:v0:branchesL0');
+  const m1 = fT.variantMeshes(1).find(m => m.name === 'forest:v1:branchesL0');
+  const bT = buildObserver(rT, m0);
+  const a = makeRenderObject(m0, bT, 'a'), c = makeRenderObject(m1, bT, 'c');
+  const renderT = () => { const f = frame(rT), log = []; renderObjectDirect(rT, a, f, { log }); renderObjectDirect(rT, c, f, { log }); return log; };
+  renderT(); renderT();
+  check('settled: one refresh', JSON.stringify(renderT()) === '["a"]');
+  set.barkMap.repeat.set(2, 2); set.barkMap.updateMatrix();
+  check('a uv transform change refreshes both', JSON.stringify(renderT()) === '["a","c"]');
+  check('and settles', JSON.stringify(renderT()) === '["a"]');
+  set.barkMap.needsUpdate = true;
+  check('an image change (needsUpdate) refreshes both', JSON.stringify(renderT()) === '["a","c"]');
+  check('and settles', JSON.stringify(renderT()) === '["a"]');
+  fT.dispose();
+}
+
 section('the same mesh in three passes keeps three sets of books');
 {
   // RenderObjects.get keys on (object, material, renderContext, lightsNode) plus a passId chain,

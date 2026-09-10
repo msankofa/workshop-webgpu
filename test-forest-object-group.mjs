@@ -10,7 +10,7 @@
 // node test-forest-object-group.mjs
 
 import * as THREE from 'three/webgpu';
-import { context, uniform, vec3, renderGroup } from 'three/tsl';
+import { context, uniform, vec3, renderGroup, reference, fog, densityFogFactor } from 'three/tsl';
 import { createTree } from './trees.js';
 import { createForestPalette } from './forest-palette.js';
 import { createForestGPU, forestGraphVerdict } from './forest-gpu.js';
@@ -213,6 +213,32 @@ section('the sun casts shadows, as on the page: the ShadowNode and the shadow re
   check('and the shadow references sit in the shared render group', refs.length >= 4 && refs.every(r => r.endsWith('@render')), refs.join(','));
   const v = forestGraphVerdict(stateOf(b));
   check('the verdict allows it', v.ok === true, v.reason ?? '');
+  f.dispose();
+}
+
+section('authored tree textures, a shadow-casting sun and fog, as on the page: allowed');
+{
+  // The page binds bark, bark-normal and leaf maps; three gives each map node a uv-matrix uniform in the object group, which made the verdict refuse every graph on 2026-09-10.
+  const shadowScene = new THREE.Scene();
+  const sun = new THREE.DirectionalLight(); sun.castShadow = true; shadowScene.add(sun);
+  const set = { mode: 'authored', barkMap: new THREE.Texture(), barkNormalMap: new THREE.Texture(), leafMap: new THREE.Texture(), leafAlphaTest: 0.5 };
+  // The page also has scene.fog = FogExp2; three builds it from render-group references (three.webgpu.js:54912).
+  const sceneFog = new THREE.FogExp2(0x8a929c, 0.002);
+  const fogNode = fog(reference('color', 'color', sceneFog).setGroup(renderGroup), densityFogFactor(reference('density', 'float', sceneFog).setGroup(renderGroup)));
+  const f = makeBaseGameForest({});
+  f.applyTextureSet((b, l) => bindTreeMaterials(b, l, set));
+  for (const role of ['branchesL0', 'leavesL0']) {
+    const mesh = f.variantMeshes(0).find(m => m.name === `forest:v0:${role}`);
+    const b = THREE.WebGPUBackend.prototype.createNodeBuilder(mesh, renderer);
+    b.scene = shadowScene; b.camera = camera; b.material = mesh.material;
+    b.lightsNode = new THREE.LightsNode().setLights([sun]);
+    b.environmentNode = null; b.fogNode = fogNode; b.clippingContext = null; b.build();
+    const texNodes = b.updateNodes.filter(n => n.constructor?.type === 'TextureNode' && (n.getUpdateType?.() ?? n.updateType) === 'object');
+    check(`${role}: the graph carries an object-typed TextureNode`, texNodes.length >= 1, String(texNodes.length));
+    const v = forestGraphVerdict(stateOf(b));
+    check(`${role}: the verdict allows it`, v.ok === true, v.reason ?? '');
+    check(`${role}: and lists its textures for the mark`, v.textures.length === texNodes.length && v.textures.every(x => x.isTexture), String(v.textures?.length));
+  }
   f.dispose();
 }
 

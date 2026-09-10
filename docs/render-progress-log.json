@@ -337,6 +337,12 @@
       "commits": [
         "3dec44e"
       ]
+    },
+    {
+      "at": "2026-09-10T22:20Z",
+      "title": "Second flag-on walk refused every graph again: authored map nodes; allowed with a texture watch",
+      "body": "The 22:06 ?trace=1&foreststatic=1 captures: skipped 0, refused {\"TextureNode is not on the object-group allowlist\": 6}. The page binds authored bark, bark-normal and leaf maps; a map’s TextureNode is object-typed for its uv-matrix uniform (three.webgpu.js:12467), which lives in each mesh’s own UBO; the harness bound null textures so it never saw one. Fix in forest-gpu.js: TextureNode over a real texture is allowed; forestGraphVerdict returns the distinct textures; every mark records each texture’s matrix elements and version and a mismatch refreshes (repeat+updateMatrix and needsUpdate both tested on the second mesh); a mark made before the verdict refreshes once more. Test scene now: shadow-casting sun, authored maps, FogExp2 (Three’s fog references are render-group, three.webgpu.js:54912). Suites: object-group 75, static-observer 77, leaf-shaders 78, cull 48, base-game-forest 123; page syntax clean. Two harness-versus-page gaps in a row; the next walk’s refused map is the check for a third. Frame numbers of the 22:06 captures are not comparable (one is 85 frames, both read every object refreshed).",
+      "commits": []
     }
   ]
 }

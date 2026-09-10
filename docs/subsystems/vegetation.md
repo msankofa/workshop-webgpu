@@ -468,7 +468,10 @@ donor's behaviour so `environment-viewer.html` is untouched:
     material per render writes), and otherwise any OBJECT-typed update node outside
     `UniformGroupNode('object')`, `UserDataNode.slotOffset`, `ModelNode:worldMatrix`, three's own
     `modelNormalMatrix` singleton (by identity — it reads `object.matrixWorld` alone, so it is
-    camera-independent) and `MaterialReferenceNode`. A host's `addEmissive` that adds a per-object
+    camera-independent), `MaterialReferenceNode`, and a `TextureNode` over a real texture (an
+    authored map is object-typed for its uv-matrix uniform, `three.webgpu.js:12467`; the verdict
+    lists those textures and every mark records each one's `matrix` and `version`, so a uv
+    transform or image change refreshes every mesh). A host's `addEmissive` that adds a per-object
     uniform is refused, and the reason is counted in `stats.staticRefresh.refused`. Frame- and
     render-updated nodes are not object-typed and are not inspected by that list: one in a shared
     group is written by the one refresh per material per render below, so it is allowed; one left

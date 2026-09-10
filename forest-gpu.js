@@ -81,6 +81,8 @@ function classifyObjectUpdateNode(node) {
   // modelNormalMatrix reads object.matrixWorld and nothing else -- no camera, no pass (vendor/three-0.184/three.webgpu.js:14622). Identity, so a look-alike does not pass.
   if (node === modelNormalMatrix) return null;
   if (type === 'MaterialReferenceNode') return null;   // material values; tracked by material.version
+  // An authored map's node is object-typed for its uv matrix uniform (three.webgpu.js:12467); the value is the texture's, so the mark watches texture.matrix and texture.version instead.
+  if (type === 'TextureNode' && node.value?.isTexture) return null;
   return type;
 }
 
@@ -90,8 +92,10 @@ export function forestGraphVerdict(state) {
   // A per-render or per-frame updateBefore/updateAfter (the sun's ShadowNode) runs once per render id whichever object triggers it (three.webgpu.js:53079), so the one refresh per material per render serves it; a per-object one refuses.
   for (const node of state.updateBeforeNodes ?? []) if ((node.getUpdateBeforeType?.() ?? node.updateBeforeType) === 'object') return { ok: false, reason: 'a per-object updateBefore node in the graph' };
   for (const node of state.updateAfterNodes ?? []) if ((node.getUpdateAfterType?.() ?? node.updateAfterType) === 'object') return { ok: false, reason: 'a per-object updateAfter node in the graph' };
+  const textures = [];
   for (const node of state.updateNodes ?? []) {
     const updateType = node.getUpdateType?.() ?? node.updateType;
+    if (updateType === 'object' && node.constructor?.type === 'TextureNode' && node.value?.isTexture && !textures.includes(node.value)) textures.push(node.value);
     // The shadow's bias, radius and map-size references are object-typed but live in the shared render group, which that first refresh writes and every mesh binds.
     if ((node.node ?? node).groupNode?.shared === true) continue;
     if (updateType !== 'object') {
@@ -102,7 +106,7 @@ export function forestGraphVerdict(state) {
     const refused = classifyObjectUpdateNode(node);
     if (refused) return { ok: false, reason: `${refused} is not on the object-group allowlist` };
   }
-  return { ok: true, reason: null };
+  return { ok: true, reason: null, textures };
 }
 
 function createForestObserver(base, ctx) {
@@ -118,6 +122,9 @@ function createForestObserver(base, ctx) {
     m.version = renderObject.material.version;
     m.geometryId = object.geometry?.id;
     m.matrix.set(object.matrixWorld.elements);
+    const textures = verdict?.textures ?? [];
+    if (!m.tex || m.tex.length !== textures.length) m.tex = textures.map(() => ({ version: -1, matrix: new Float64Array(9) }));
+    for (let i = 0; i < textures.length; i++) { m.tex[i].version = textures[i].version; m.tex[i].matrix.set(textures[i].matrix.elements); }
     m.pending = true;            // only the commit hook clears this, after the work actually ran
     ctx.stats.refreshed++;
     return true;
@@ -153,6 +160,15 @@ function createForestObserver(base, ctx) {
       if (m.geometryId !== object.geometry?.id) return mark(renderObject);
       const e = object.matrixWorld.elements;
       for (let i = 0; i < 16; i++) if (m.matrix[i] !== e[i]) return mark(renderObject);
+      // A texture's uv transform or image change would go into every mesh's own UBO; neither bumps material.version.
+      const textures = verdict.textures ?? [];
+      if (!m.tex || m.tex.length !== textures.length) return mark(renderObject);   // marked before the verdict existed
+      for (let t = 0; t < textures.length; t++) {
+        const tex = textures[t], rec = m.tex[t];
+        if (rec.version !== tex.version) return mark(renderObject);
+        const te = tex.matrix.elements;
+        for (let i = 0; i < 9; i++) if (rec.matrix[i] !== te[i]) return mark(renderObject);
+      }
       ctx.stats.skipped++;
       ctx.stats.skippedThisRender++;
       return false;
