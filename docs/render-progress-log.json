@@ -326,7 +326,9 @@
       "at": "2026-09-10T07:10Z",
       "title": "Astra’s code review of the refresh policy: hook ownership fixed, object-group refusal widened",
       "body": "Astra ran the three forest suites and accepted the updateAfter seam for this pinned, opt-in case, then found a shared-renderer lifecycle defect at forest-gpu.js:1029-1042: the boolean __forestStaticCommit let forest B install nothing, so disposing A restored the original while B lived and B’s marks stayed pending (a silent loss of the skip, not a stale picture). Fix: a module WeakMap keyed by renderer._nodes holding original, patch and owner count; acquireCommitHook wraps once and returns an idempotent release; the last owner restores the original only if updateAfter is still ours, so a later wrapper survives; commitHookOwners(nodes) exported. Tests: two forests on one renderer, dispose in both orders, overlapping rebuild, later wrapper kept and re-wrapped by a fresh forest, double dispose (test-forest-static-observer 72 checks). Second point: forestGraphVerdict only inspected OBJECT-typed update nodes, so an onRenderUpdate/onFrameUpdate uniform passed regardless of group; one in the unshared object group would be written into only the first mesh per render. The verdict now refuses any non-object update node whose groupNode.shared is false and allows the shared-group form, tested both ways (test-forest-object-group 65 checks). Doc and report wording corrected: the tested refusal is the OBJECT case; frame/render callbacks in shared groups ride the one-refresh-per-render rule. Still off by default; browser checks (task 21) unchanged.",
-      "commits": []
+      "commits": [
+        "e308556"
+      ]
     }
   ]
 }
