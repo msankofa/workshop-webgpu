@@ -285,6 +285,12 @@
       "title": "Astra’s task 21 review applied: framing withdrawn, GPU-bound conclusions retired, design work launched",
       "body": "Astra: task 21 must not be presented as identical picture or safe to skip before the contract is proven; forest meshes sharing a material carry private object state (userData slotOffset per mesh, own geometry and indirect buffers), so a once-per-material refresh maintains shared state but does not validate every skipped object’s resources; the events forcing a refresh must be enumerated and shown caught from generated shader and binding layouts; uniformWriteRows are top-16 rows of one retained frame, not full-frame counts; the 9 ms was an unvalidated upper bound. Also: withdraw categorical GPU-bound and CPU-bound conclusions that rested on the timestamp columns; lower sampled MB across profiles of different durations and instrumentation does not quantify the allocation pass (its parity and code-level evidence stands); the normal-space defect is a correctness issue to demonstrate with a fixed light and camera rotation, not an optional downgrade. Done: map, Problem tab and stats reworded (GPU columns set aside, “main thread” instead of “CPU-bound”); task 21 reworded as design in progress with an Opus agent producing what the gate skips, the forest object contract from generated bindings, and the smallest provable design or none; task 24 reworded as a defect with a demonstration plan. The user was told.",
       "commits": []
+    },
+    {
+      "at": "2026-09-10T03:45Z",
+      "title": "Normal-space defect shown in the generated shader",
+      "body": "From the leaf-shader test’s WGSL dump (leavesL0 fragment): normalView is assigned the yaw-rotated normalLocal directly (line 233) and then dotted with the view-space light direction (line 239), with no cameraViewMatrix or normal-matrix transform on the normal anywhere in the fragment; the only use of cameraViewMatrix transforms a position. So bark and leaf lighting is evaluated with a world-space normal against view-space light vectors: the lit side of a tree depends on the camera’s yaw. Task 24 now asks the user for the quarter-turn demonstration; the fix (view-space transform of the rotated normal in the vertex stage, behind a comparison flag) follows.",
+      "commits": []
     }
   ]
 }
