@@ -37,6 +37,9 @@ export const BASE_GAME_FOREST_DEFAULTS = Object.freeze({
   forestDrawMode: 'variants',
   // false restores the per-fragment instance normal (b46d0fd's before form) for a same-content A/B.
   forestNormalVarying: true,
+  // Space the instance normal reaches lighting in. 'view' is correct (three consumes normalNode as
+  // view space); 'world' is the pre-fix form, where the lit side of a tree follows the camera yaw.
+  forestNormalSpace: 'view',
   // Experiment, off by default: the forest supplies its own node-material refresh policy so a mesh
   // whose object group did not change is skipped. scratchpads/fps-churn/static-skip/03-design.md.
   forestStaticRefresh: false,
@@ -63,7 +66,7 @@ export const FOREST_DRAW_MODES = Object.freeze(['variants', 'pulled', 'pulled-co
 // Palette-shaping settings: changing one rebakes the geometry and rebuilds the instance buffers,
 // so they are commit-on-release in the panel and deferred to the next update() here.
 const PALETTE_KEYS = Object.freeze([
-  'forestDrawMode', 'forestNormalVarying', 'forestStaticRefresh',
+  'forestDrawMode', 'forestNormalVarying', 'forestNormalSpace', 'forestStaticRefresh',
   'treeTexMode', 'treeSpecies', 'treeSpeciesSelection', 'treeDiversity', 'treeGeneralization', 'treeVariantsPerSpecies', 'treeCapPerVariant',
   'treeLeafCount', 'treeLeafSize', 'treeLeafStart', 'treeLeafSpread', 'treeLeafShadowPct',
   'treeCoarseLeafRatio', 'treeCoarseLeafSizeMult', 'treeSeedOffset',
@@ -194,6 +197,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     paletteLoadMs: 0, paletteBakeMs: 0, paletteSource: 'none', paletteKey: null, paletteStored: null, compileMs: 0, firstCompileMs: null, compiledMeshes: 0, computeCompileMs: 0, updateMs: 0,
     lod0: 0, lod1: 0, lod2: 0, rejectedCone: 0, rejectedFar: 0,
     normalVarying: true,   // which leaf-normal form the built forest uses
+    normalSpace: 'view',   // which space that normal reaches lighting in
     reculls: 0, skippedReculls: 0, cullEstimates: 0,
     // Placement, mirrored up so one readout answers "what did the density slider actually buy".
     trees: 0, requestedTrees: 0, coverThinning: 0, resident: 0, deferred: 0, placeMs: 0,
@@ -430,6 +434,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
           progressive: true,
           drawMode: FOREST_DRAW_MODES.includes(cfg.forestDrawMode) ? cfg.forestDrawMode : 'variants',
           instanceNormalVarying: cfg.forestNormalVarying !== false,
+          normalSpace: cfg.forestNormalSpace === 'world' ? 'world' : 'view',
           staticRefresh: cfg.forestStaticRefresh === true,
           shadowLayer,
           hiz,
@@ -622,6 +627,7 @@ export function createBaseGameForest({ renderer, scene, camera, terrain, worldCo
     if (!forestGPU) return;
     const f = forestGPU.summary;
     stats.draws = f.draws; stats.shadowDraws = f.shadowDraws; stats.normalVarying = cfg.forestNormalVarying !== false;
+    stats.normalSpace = cfg.forestNormalSpace === 'world' ? 'world' : 'view';
     stats.instances = f.instances; stats.variants = f.variants;
     stats.readyVariants = f.readyVariants;
     stats.visibleVariants = f.visibleVariants;

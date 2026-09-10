@@ -37,7 +37,7 @@ import {
   vec2, vec3, vec4, cos, sin, atan, acos, clamp, length, modInt, positionLocal, normalLocal,
   atomicAdd, atomicStore, atomicLoad, min, max, dot, dFdx, dFdy, inverseSqrt, varying,
   normalize, cross, cameraPosition, texture, time, userData, vertexIndex, select,
-  modelNormalMatrix,
+  modelNormalMatrix, transformNormalToView,
 } from 'three/tsl';
 
 // ---- static refresh policy (opts.staticRefresh, off by default) ----------------------------
@@ -435,6 +435,8 @@ export function createForestGPU(opts) {
   const swayEnabled = opts.leafSway !== undefined;
   // false restores the per-fragment form, kept only so the leaf-shader test can measure both.
   const normalVarying = opts.instanceNormalVarying !== false;
+  // NodeMaterial.setupNormal hands normalNode straight to normalView with no transform (three.webgpu.js:21595), so the lighting normal must already be VIEW space. 'world' keeps the pre-fix object-space normal for an A/B.
+  const normalSpaceView = opts.normalSpace !== 'world';
   const uLeafSway = uniform(opts.leafSway ?? 0);
   // Base Game's render origin. Records arrive GLOBAL and the buffer holds render-local, so a
   // rebase moves where a tree draws without touching which trees exist.
@@ -653,8 +655,11 @@ export function createForestGPU(opts) {
     );
     const nx = normalLocal.x, ny = normalLocal.y, nz = normalLocal.z;
     const nRot = vec3(nx.mul(cy).add(nz.mul(sy)), ny, nz.mul(cy).sub(nx.mul(sy)));
+    // View space in the VERTEX stage: modelNormalMatrix then cameraViewMatrix, via three's own node.
+    const nOut = normalSpaceView ? transformNormalToView(nRot) : nRot;
     // As a varying: normalNode runs per fragment, and the raw expression re-read the draw record there (test-forest-leaf-shaders.mjs).
-    const nWorld = normalVarying ? varying(nRot, 'v_forestNormal') : nRot;
+    // Interpolation shortens the varying, so renormalize (one op, no buffer load) as three does for its own geometry normal.
+    const nWorld = normalVarying ? (normalSpaceView ? normalize(varying(nOut, 'v_forestNormal')) : varying(nOut, 'v_forestNormal')) : nOut;
     return { world, nWorld };
   }
   // Camera-facing billboard node: ignores instance yaw, aligns plane to always face camera.
@@ -758,14 +763,15 @@ export function createForestGPU(opts) {
     // back to its derivative frame (three.webgpu.js `tangentViewFrame`, thetenthplanet) built from
     // the `uv` ATTRIBUTE — which on the pulled mesh's dummy geometry is all zeros, giving a
     // degenerate frame. This is that same construction driven by the arena uv instead. The result
-    // is an OBJECT-space normal, which is what normalNode wants (transformNormalToView); the mesh
-    // sits at the origin with a world-space positionNode, so object space and world space coincide.
+    // is a world-space normal (the mesh sits at the origin, so object and world space coincide); normalFor takes it to view space at the end, which is what normalNode is consumed as.
     // FrontSide only, so there is no double-sided flip to reinstate.
     // Always the varying, never `nWorld` directly: normalNode is evaluated in the FRAGMENT stage,
     // and the raw node re-ran the whole arena index chase per fragment (and bound all four storage
     // buffers there) -- measured in test-forest-pulled-wgsl.mjs before this.
+    // The frame below is built from WORLD-space position derivatives, so the varying stays world space and the finished normal is taken to view space here instead (a mat3 multiply, no load).
+    const toView = n => (normalSpaceView ? transformNormalToView(n) : n);
     function normalFor(normalMap, scale = 1) {
-      if (!normalMap) return nVary;
+      if (!normalMap) return toView(normalSpaceView ? normalize(nVary) : nVary);
       const N = normalize(nVary);
       const q0 = dFdx(posVary), q1 = dFdy(posVary);
       const st0 = dFdx(uv), st1 = dFdy(uv);
@@ -778,7 +784,7 @@ export function createForestGPU(opts) {
       const m = texture(normalMap, uv).xyz.mul(2).sub(1);
       const t = m.x.mul(scale), b = m.y.mul(scale);
       const mapped = T.mul(inv).mul(t).add(B.mul(inv).mul(b)).add(N.mul(m.z));
-      return select(inv.greaterThan(float(0)), normalize(mapped), N);
+      return toView(select(inv.greaterThan(float(0)), normalize(mapped), N));
     }
     return { world, nWorld, uv, color, normalFor };
   }

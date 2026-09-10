@@ -161,6 +161,77 @@ section('the legacy fragment-side normal is still reachable, and is what it was'
   legacy.dispose();
 }
 
+// ---- the space the instance normal reaches lighting in ------------------------------------
+// NodeMaterial.setupNormal returns vec3(this.normalNode) and normalView consumes it with no
+// transform, so the normal handed over must already be VIEW space. These read the emitted WGSL
+// for the varying's own assignment line and ask which matrices touched it, and in which stage.
+const NORMAL_ROLES = ['branchesL0', 'leavesL0', 'leafShadow'];
+const normalAssign = src => (src.match(/varyings\.v_forestNormal\s*=\s*[^;]*;/) || [])[0] ?? '';
+const fragNormalLines = src => src.split('\n').filter(l => l.includes('v_forestNormal') && !l.includes('@location'));
+
+function normalShaders(f, tag) {
+  const meshes = f.variantMeshes(0);
+  const out = {};
+  for (const role of NORMAL_ROLES) {
+    const mesh = meshes.find(m => m.name === `forest:v0:${role}`);
+    if (!mesh) continue;
+    const src = buildMaterial(mesh);
+    write(`${tag}-${role}-vertex.wgsl`, src.vertex);
+    write(`${tag}-${role}-fragment.wgsl`, src.fragment);
+    out[role] = src;
+  }
+  return out;
+}
+
+section("the default 'view' form transforms the normal in the vertex stage");
+{
+  const f = makeForest();
+  f.applyTextureSet((b, l) => bindTreeMaterials(b, l, null));
+  const built = normalShaders(f, 'viewspace');
+  for (const role of NORMAL_ROLES) {
+    const src = built[role];
+    if (!src) { check(`the ${role} mesh exists`, false); continue; }
+    const vs = normalAssign(src.vertex);
+    check(`${role}: the vertex stage writes v_forestNormal`, vs.length > 0);
+    // modelNormalMatrix lands as an object-group uniform (object.nodeUniformN) on the same line.
+    check(`${role}: the model normal matrix is applied in the vertex stage`,
+      /object\.nodeUniform\d+\s*\*/.test(vs), vs.slice(0, 160));
+    check(`${role}: the camera view matrix is applied in the vertex stage`,
+      vs.includes('render.cameraViewMatrix'), vs.slice(0, 160));
+    const fs = fragNormalLines(src.fragment);
+    check(`${role}: the fragment stage applies no camera transform to the normal`,
+      fs.every(l => !l.includes('cameraViewMatrix')), fs.join(' | ').slice(0, 200));
+    check(`${role}: the fragment stage normalizes the interpolated normal`,
+      fs.some(l => /normalize\(\s*v_forestNormal\s*\)/.test(l)), fs.join(' | ').slice(0, 200));
+    check(`${role}: the fragment stage still binds no storage buffer`,
+      count(src.fragment, /var<storage,\s*read(_write)?>/g) === 0);
+    check(`${role}: the fragment stage still loads no draw record`,
+      count(src.fragment, /NodeBuffer_\d+\.value\[/g) === 0);
+  }
+  f.dispose();
+}
+
+section("the 'world' form is the pre-fix shader: no camera transform on the normal");
+{
+  const f = makeForest({ normalSpace: 'world' });
+  f.applyTextureSet((b, l) => bindTreeMaterials(b, l, null));
+  const built = normalShaders(f, 'worldspace');
+  for (const role of NORMAL_ROLES) {
+    const src = built[role];
+    if (!src) { check(`the ${role} mesh exists`, false); continue; }
+    const vs = normalAssign(src.vertex);
+    check(`${role}: world form still writes v_forestNormal`, vs.length > 0);
+    check(`${role}: world form applies no camera view matrix to the normal`,
+      !vs.includes('cameraViewMatrix'), vs.slice(0, 160));
+    check(`${role}: world form applies no model normal matrix to the normal`,
+      !/object\.nodeUniform\d+\s*\*/.test(vs), vs.slice(0, 160));
+    const fs = fragNormalLines(src.fragment);
+    check(`${role}: world form does not renormalize the varying either`,
+      fs.every(l => !/normalize\(\s*v_forestNormal\s*\)/.test(l)), fs.join(' | ').slice(0, 200));
+  }
+  f.dispose();
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (dump) console.log('WGSL written to scratchpads/fps-churn/leaves/wgsl/');
 process.exit(failed ? 1 : 0);
