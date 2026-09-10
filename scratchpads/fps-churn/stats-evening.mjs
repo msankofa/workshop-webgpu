@@ -96,7 +96,7 @@ ${decompTable}
 <h3>GPU time against main-thread time (?gputime=1, 20:03 to 20:08Z)</h3>
 <p>GPU columns are Three's timestamp queries resolved a frame or two late (the resolve is not awaited, which would cost a display interval) and summed over the render passes of the last resolved frame; the device reports in steps of about 65 µs. "render call CPU" is the main-thread time inside <code>renderer.render</code>. Neither column includes presentation or queue wait.</p>
 ${gpuTable}
-<p class="fnote">GPU pass execution stays under 2 ms in the worst frame of every run while the render call costs 11 to 33 ms of main-thread time. The frame is CPU-bound, and the 40 to 130 ms frames are not GPU pass time.</p>
+<p class="fnote">These GPU columns are set aside: they read lower moving than standing, which is not physical for a whole frame, and Three returns a stale value while a resolve is pending, which the page recorded. The render call costs 11 to 33 ms of main-thread time; the GPU share of a dip frame is unmeasured until the accounting is fixed.</p>
 
 <h3>JS heap growth and collections in spike frames</h3>
 <p>Heap is <code>performance.memory.usedJSHeapSize</code> sampled once per frame, which Chrome quantizes; a drop of more than 1 MB between consecutive frames is read as a collection. Growth is summed over the frames without a drop.</p>
